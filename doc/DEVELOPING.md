@@ -541,6 +541,15 @@ Fixtures that replace the host HTTPS broker must also coordinate app/HMR port
 claims across test processes. Keep each fixture's claim until its listeners
 have stopped, including restart intervals when the ports temporarily unbind.
 
+Heartbeat fixtures must drain active execution promises before truncating their
+database; a terminal run row does not prove that final writes have completed.
+Worker-exit cleanup restores owner permissions on directories inside its own
+temporary Paperclip home before removing immutable runtime-context bundles. It
+does not follow symlinks or change permissions in a developer's runtime.
+After fixture-only corrections, retain the original full-check receipt and
+record targeted reruns for every failed file, including worker teardown errors.
+Do not label a failed lane as passed without explicit recovery evidence.
+
 Run standalone checks without inherited provider credentials or endpoint
 overrides. Filesystem fixtures expect the normal `022` umask; keep private logs
 in a protected parent directory instead of imposing `077` on test processes.
