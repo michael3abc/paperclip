@@ -10,7 +10,7 @@ vi.mock("node:https", () => ({ request: (url: URL, options: object) => {
   return httpRequest(local, options);
 } }));
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 
 const mockAccess = vi.hoisted(() => ({ decide: vi.fn().mockResolvedValue({ allowed: true }) }));
@@ -109,6 +109,11 @@ async function createApp(input: {
 }
 
 describe("plugin scoped API routes", () => {
+  beforeAll(async () => {
+    // Finish cold imports before any request can outlive its test deadline.
+    await Promise.all([import("../routes/plugins.js"), import("../middleware/index.js")]);
+  });
+
   const pluginId = "11111111-1111-4111-8111-111111111111";
   const companyId = "22222222-2222-4222-8222-222222222222";
   const agentId = "33333333-3333-4333-8333-333333333333";

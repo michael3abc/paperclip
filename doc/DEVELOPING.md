@@ -1111,8 +1111,9 @@ family, including the separate deadline and settlement regressions, with:
 pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
 ```
 
-Route fixtures that reset modules should load their route and middleware modules
-in a setup hook after registering mocks. This keeps cold transforms within the
+Route fixtures with dynamic imports should load their route and middleware
+modules in a setup hook after registering mocks. Use `beforeAll` when modules
+are shared, or `beforeEach` after each module reset. This keeps cold transforms within the
 hook budget rather than consuming the first request test's timeout. Preserve
 per-test deadlines and assertions. Capacity-only cache tests should hold the
 clock fixed so TTL expiration does not depend on machine load.
