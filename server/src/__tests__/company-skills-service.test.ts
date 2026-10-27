@@ -694,6 +694,46 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
   });
 
+  it.each(["identical", "supporting-bytes", "extra-file", "executable-bit", "missing", "non-bundled"] as const)(
+    "retains a relocated bundled skill only with identical verified contents: %s",
+    async (change) => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Release relocation", issuePrefix: `T${companyId.slice(0, 6)}` });
+      const initial = await svc.list(companyId);
+      const skill = initial.find(s => s.key === "paperclipai/paperclip/paperclip")!;
+      expect(skill.sourceLocator).toBeTruthy();
+      const previous = await createManagedSkillDir(companyId, "previous-release-");
+      await fs.cp(skill.sourceLocator!, previous, { recursive: true });
+      const preservedUpdatedAt = new Date("2026-01-01T00:00:00.000Z");
+      await db.update(companySkills).set({ sourceLocator: previous, updatedAt: preservedUpdatedAt,
+        ...(change === "non-bundled" ? { metadata: { ...skill.metadata, sourceKind: "local_path" } } : {}),
+      }).where(eq(companySkills.id, skill.id));
+      if (change === "supporting-bytes") {
+        const support = skill.fileInventory.find(f => f.path !== "SKILL.md")!;
+        expect(support).toBeDefined();
+        const file = path.join(previous, support.path);
+        const bytes = await fs.readFile(file);
+        expect(bytes.length).toBeGreaterThan(0);
+        bytes[0] ^= 1;
+        await fs.writeFile(file, bytes);
+      } else if (change === "extra-file") {
+        await fs.writeFile(path.join(previous, "unexpected.txt"), "extra");
+      } else if (change === "executable-bit") {
+        const file = path.join(previous, "SKILL.md");
+        await fs.chmod(file, (await fs.stat(file)).mode ^ 0o100);
+      } else if (change === "missing") {
+        await fs.unlink(path.join(previous, "SKILL.md"));
+      }
+      const refreshed = (await companySkillService(db).list(companyId)).find(s => s.id === skill.id)!;
+      expect(refreshed.sourceLocator).toBe(change === "identical" ? previous : skill.sourceLocator);
+      if (change === "identical") {
+        expect(refreshed.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+        const runtime = (await svc.listRuntimeSkillEntries(companyId)).find(s => s.key === skill.key)!;
+        expect(runtime.source).toBe(previous);
+      }
+    },
+  );
+
   it("makes the onboarding skill resolvable and available to agent runtimes", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

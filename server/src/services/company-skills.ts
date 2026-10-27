@@ -1292,6 +1292,31 @@ function inventoryEntriesEqual(
   });
 }
 
+/** A release relocation alone must not rotate sessions using the same skill. */
+async function bundledSkillDirectoriesMatch(previous: string, incoming: string): Promise<boolean> {
+  // The incoming package is authoritative. An unavailable old location cannot
+  // be retained; normal import then adopts the incoming location and resets
+  // sessions through the existing configuration fingerprint checks.
+  const incomingInventory = await collectLocalSkillInventory(incoming);
+  try {
+    const previousInventory = await collectLocalSkillInventory(previous);
+    if (!inventoryEntriesEqual(previousInventory, incomingInventory)) return false;
+    for (const entry of incomingInventory) {
+      const before = path.join(previous, entry.path);
+      const after = path.join(incoming, entry.path);
+      const [beforeStat, afterStat] = await Promise.all([fs.lstat(before), fs.lstat(after)]);
+      if (!beforeStat.isFile() || !afterStat.isFile()
+        || (beforeStat.mode & 0o111) !== (afterStat.mode & 0o111)
+        || beforeStat.size !== afterStat.size) return false;
+      const [beforeBytes, afterBytes] = await Promise.all([fs.readFile(before), fs.readFile(after)]);
+      if (!beforeBytes.equals(afterBytes)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function stableJsonComparable(value: unknown): unknown {
   if (value === undefined) return undefined;
   if (Array.isArray(value)) {
@@ -6296,6 +6321,12 @@ export function companySkillService(db: Db) {
         metadata,
         updatedAt: new Date(),
       };
+      if (existing?.sourceType === "local_path" && values.sourceType === "local_path"
+        && existingMeta.sourceKind === "paperclip_bundled" && incomingKind === "paperclip_bundled"
+        && existing.sourceLocator && values.sourceLocator && existing.sourceLocator !== values.sourceLocator
+        && await bundledSkillDirectoriesMatch(existing.sourceLocator, values.sourceLocator)) {
+        values.sourceLocator = existing.sourceLocator;
+      }
       if (existing && importedSkillPersistValuesMatchExisting(existing, values)) {
         out.push(existing);
         continue;

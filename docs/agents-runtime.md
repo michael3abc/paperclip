@@ -74,6 +74,14 @@ execution logs remain in their existing runtime storage. See the
 transition rules. Removing the field restores the normal workspace policy and
 does not delete old workspace directories or records.
 
+Release deployment also preserves a registered bundled skill directory when the
+new package has exactly the same file inventory, bytes and executable bits.
+This avoids changing session configuration fingerprints solely because the
+application moved to a new release directory. Keep those registered directories
+with the retained old release. Changed, missing, unreadable or non-bundled sources
+use the incoming package location and the normal session compatibility checks;
+model, credential, permission and workspace changes still invalidate sessions.
+
 A plain directory is valid for in-place work. A `git_worktree` policy requires a
 Git checkout; a verified plain directory reports a configuration conflict,
 including when Git discovery stops at a filesystem mount boundary.
