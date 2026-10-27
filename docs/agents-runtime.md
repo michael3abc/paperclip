@@ -94,6 +94,29 @@ Task chat submits with Enter; Shift+Enter inserts a newline. IME composition and
 held-key repeats do not submit. Other Markdown editors retain their existing
 Ctrl/Cmd+Enter shortcut.
 
+### Compass and Local catalogs
+
+`scripts/native-routing` contains the native harness settings and deployment tools,
+without a CC Pocket checkout dependency. Copy `deployment.example.json` outside the
+repository, configure the company, operator, router origin, runtime locations and
+the four existing connection IDs, then set `PAPERCLIP_DEPLOYMENT_CONFIG` to that file.
+Database URLs and auth secrets are read from owner-only files, never command-line
+arguments or committed configuration.
+
+Run `node scripts/native-routing/sync-routes.mjs --receipt /private/plan.json` to
+review catalog changes. `--apply` updates model catalogs only after bound agents
+are paused and active work has drained. It uses row-locked comparison, retains
+connection IDs, grants and destinations, and refuses duplicate names or ownership
+drift. Local entries must be `ready`; missing or empty catalogs fail explicitly.
+There is no automatic model substitution or connection creation.
+
+`setup-runtime.mjs --release /absolute/new-release` installs the pinned native
+harness closure; `--apply` activates only with quiescent native agents, and
+`--restore` uses its private rollback receipt. Keep operational wrappers and units
+in the deployment's service-management directory, and runtime artifacts, receipts
+and secrets outside the source checkout. Existing subscriptions are independent of
+these catalog tools and remain unchanged.
+
 ## 3.5 Prompt templates
 
 You can set:

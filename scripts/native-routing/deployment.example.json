@@ -1,0 +1,19 @@
+{
+  "app": "/srv/paperclip/release",
+  "serverPackagePath": "/srv/paperclip/release/node_modules/@paperclipai/server",
+  "runtimeRoot": "/var/lib/paperclip/native-runtime",
+  "nodeBin": "/opt/node/bin",
+  "databaseUrlFile": "/var/lib/paperclip/secrets/database-url",
+  "authEnvFile": "/var/lib/paperclip/instances/default/.env",
+  "apiUrl": "http://127.0.0.1:3100",
+  "routerUrl": "http://127.0.0.1:8790",
+  "sessionCookieName": "paperclip-default.session_token",
+  "companyId": "00000000-0000-4000-8000-000000000001",
+  "ownerId": "00000000-0000-4000-8000-000000000002",
+  "connections": {
+    "anthropic-gateway": "00000000-0000-4000-8000-000000000003",
+    "anthropic-local": "00000000-0000-4000-8000-000000000004",
+    "openai-gateway": "00000000-0000-4000-8000-000000000005",
+    "openai-local": "00000000-0000-4000-8000-000000000006"
+  }
+}
