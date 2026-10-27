@@ -566,6 +566,7 @@ describe("codex remote execution", () => {
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(codexHomeDir, { recursive: true });
     await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+    runSshCommand.mockResolvedValueOnce({ stdout: "/home/fixture", stderr: "" });
 
     await execute({
       runId: "run-in-place",
@@ -616,14 +617,14 @@ describe("codex remote execution", () => {
       remoteDir: string;
     };
     expect(homeSyncArgs.localDir).toContain("paperclip-codex-home-sync");
-    expect(homeSyncArgs.remoteDir).toBe("/app/.paperclip-runtime/codex/home");
+    expect(homeSyncArgs.remoteDir).toBe("/home/fixture/.local/state/paperclip-ssh/company-1/agent-1/codex/home");
     const call = runChildProcess.mock.calls[0] as unknown as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe("/app");
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_REALIZATION_MODE).toBe("in_place");
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT).toBe("/app");
-    expect(call?.[3].env.CODEX_HOME).toBe("/app/.paperclip-runtime/codex/home");
+    expect(call?.[3].env.CODEX_HOME).toBe("/home/fixture/.local/state/paperclip-ssh/company-1/agent-1/codex/home");
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/app");
   });
 
