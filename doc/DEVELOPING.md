@@ -531,6 +531,16 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+Route fixtures that reset modules should load their route and middleware modules
+in a setup hook after registering mocks. This keeps cold transforms within the
+hook budget rather than consuming the first request test's timeout. Preserve
+per-test deadlines and assertions. Capacity-only cache tests should hold the
+clock fixed so TTL expiration does not depend on machine load.
+
+Run standalone checks without inherited provider credentials or endpoint
+overrides. Filesystem fixtures expect the normal `022` umask; keep private logs
+in a protected parent directory instead of imposing `077` on test processes.
+
 #### Embedded Postgres template cache
 
 Suites that call `startEmbeddedPostgresTestDatabase` (from `@paperclipai/db`)

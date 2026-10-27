@@ -21,6 +21,7 @@ describe("environment config helpers", () => {
     });
 
     expect(config).toEqual({
+      workspaceMode: "copy",
       host: "ssh.example.test",
       port: 2222,
       username: "ssh-user",
@@ -93,6 +94,7 @@ describe("environment config helpers", () => {
     expect(parsed).toEqual({
       driver: "ssh",
       config: {
+        workspaceMode: "copy",
         host: "ssh.example.test",
         port: 22,
         username: "ssh-user",

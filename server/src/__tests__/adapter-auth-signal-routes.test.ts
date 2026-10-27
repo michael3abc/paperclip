@@ -182,6 +182,14 @@ describe("adapter auth-signal route", () => {
     vi.clearAllMocks();
   });
 
+  // Charge cold route-module transforms to fixture setup, not request latency.
+  beforeEach(async () => {
+    await Promise.all([
+      vi.importActual("../routes/agents.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("returns present for codex_local when the readiness predictor reports ready", async () => {
     mockEvaluateCodexCredentialReadiness.mockResolvedValueOnce({
       managed: true,

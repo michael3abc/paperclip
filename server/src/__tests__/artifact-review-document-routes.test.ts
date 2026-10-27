@@ -218,6 +218,14 @@ describe("work product review-document route", () => {
     mockWorkProductService.getById.mockResolvedValue(makeWorkProduct());
   });
 
+  // Charge cold route-module transforms to fixture setup, not request latency.
+  beforeEach(async () => {
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("returns 404 when the work product belongs to another issue", async () => {
     mockWorkProductService.getById.mockResolvedValue(
       makeWorkProduct({ issueId: "55555555-5555-4555-8555-555555555555" }),

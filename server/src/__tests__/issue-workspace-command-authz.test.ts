@@ -263,6 +263,14 @@ describe("issue workspace command authorization", () => {
     }));
   });
 
+  // Charge cold route-module transforms to fixture setup, not request latency.
+  beforeEach(async () => {
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("rejects agent callers that create issue workspace runtime provision commands", async () => {
     const app = await createApp({
       type: "agent",

@@ -65,8 +65,10 @@ async function createApp(db: Record<string, unknown>) {
 }
 
 describe("invite-token endpoint rate limiting", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
+    // Charge cold route-module transforms to fixture setup, not request latency.
+    await Promise.all([import("../routes/access.js"), import("../middleware/index.js")]);
   });
 
   it(

@@ -240,13 +240,33 @@ describe("agent-created hires use managed AI connections", () => {
       try {
         const response = operation === "test"
           ? await request(f.app).post(`/api/companies/${f.companyId}/adapters/${f.adapterType}/test-environment`).send({ agentId: f.agentId, aiConnection: f.binding, adapterConfig: {} })
-          : await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterConfig: { model: "changed-model" } });
+          : await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterConfig: { model: "changed-model" }, runtimeConfig: { aiConnection: { ...f.binding, ...f.account, mode: "delegated" } } });
         expect(response.status, JSON.stringify(response.body)).toBe(operation === "test" ? 200 : 422);
         const rejected = status === 401 || status === 403;
         expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: rejected ? "needs_attention" : "connected" })]);
       } finally { network.mockRestore(); unregisterServerAdapter(f.adapterType); }
     });
   }
+
+  it.each(["api_key", "subscription"] as const)("preserves an unchanged %s binding without a provider probe when saving a model", async (method) => {
+    const f = await fixture("anthropic", method);
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
+    const original = getServerAdapter(f.adapterType);
+    const probe = vi.fn(async () => { throw new Error("Unexpected credential probe"); });
+    registerServerAdapter({ ...original, testEnvironment: probe });
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected provider request"));
+    try {
+      const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send({
+        adapterConfig: { model: "changed-model" },
+        runtimeConfig: { aiConnection: { mode: "responsible_user", method, provider: "anthropic" } },
+      });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.runtimeConfig.aiConnection).toEqual(f.binding);
+      expect(network).not.toHaveBeenCalled();
+      expect(probe).not.toHaveBeenCalled();
+      expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: "connected" })]);
+    } finally { network.mockRestore(); unregisterServerAdapter(f.adapterType); }
+  });
 
   it.each(["test", "save"] as const)("%s marks a hello-test authentication rejection as needing attention and reconnect repairs the same default", async (operation) => {
     const f = await fixture("anthropic", "subscription");
@@ -259,7 +279,7 @@ describe("agent-created hires use managed AI connections", () => {
     try {
       const response = operation === "test"
         ? await request(f.app).post(`/api/companies/${f.companyId}/adapters/${f.adapterType}/test-environment`).send({ agentId: f.agentId, aiConnection: f.binding, adapterConfig: {} })
-        : await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterConfig: { model: "changed-model" } });
+        : await request(f.app).patch(`/api/agents/${f.agentId}`).send({ adapterConfig: { model: "changed-model" }, runtimeConfig: { aiConnection: { ...f.binding, ...f.account, mode: "delegated" } } });
       expect(response.status, JSON.stringify(response.body)).toBe(operation === "test" ? 200 : 422);
       if (operation === "test") expect(response.body.status).toBe("fail");
       const service = aiConnectionService(db);

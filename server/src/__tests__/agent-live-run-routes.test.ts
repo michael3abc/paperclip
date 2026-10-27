@@ -478,6 +478,14 @@ describe("agent live run routes", () => {
     });
   });
 
+  // Charge cold route-module transforms to fixture setup, not request latency.
+  beforeEach(async () => {
+    await Promise.all([
+      vi.importActual("../routes/agents.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("returns a compact active run payload for issue polling", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get("/api/issues/pc1a2-1295/active-run"),

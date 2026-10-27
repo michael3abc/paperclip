@@ -284,6 +284,14 @@ describe("issue document revision routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  // Charge cold route-module transforms to fixture setup, not request latency.
+  beforeEach(async () => {
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("returns revision snapshots including title and format", async () => {
     const res = await request(await createApp()).get(`/api/issues/${issueId}/documents/plan/revisions`);
 
