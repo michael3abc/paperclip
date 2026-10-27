@@ -110,7 +110,7 @@ async function createApp(authPublicBaseUrl?: string) {
 }
 
 describe("invite URL: authPublicBaseUrl precedence", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/access.js");
@@ -119,6 +119,7 @@ describe("invite URL: authPublicBaseUrl precedence", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     logActivityMock.mockReset();
+    await Promise.all([import("../routes/access.js"), import("../middleware/index.js")]);
   });
 
   it("uses authPublicBaseUrl for inviteUrl when configured, ignoring request host", async () => {
