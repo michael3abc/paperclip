@@ -1,4 +1,5 @@
 import { resolveInPlaceAnchor } from "@paperclipai/adapter-utils/ssh-in-place";
+import { assertFixedProjectWorkspace, readWorkspaceBinding, validateFixedLocalDirectory, workspaceBindingConflict } from "../agent-workspace-binding.js";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFailure } from "../git-connection-failure.js";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
@@ -3488,7 +3489,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     const preferredProjectWorkspaceId =
       issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
     const resolvedProjectId = issueProjectId ?? contextProjectId;
-    const useProjectWorkspace = opts?.useProjectWorkspace !== false;
+    const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
+    const useProjectWorkspace = fixedBinding !== null || opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
 
     const unorderedProjectWorkspaceRows = workspaceProjectId
@@ -3514,6 +3516,19 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+    if (fixedBinding) {
+      const selected = preferredProjectWorkspaceId
+        ? projectWorkspaceRows.find(row => row.id === preferredProjectWorkspaceId)
+        : projectWorkspaceRows.find(row => row.isPrimary) ?? (projectWorkspaceRows.length === 1 ? projectWorkspaceRows[0] : null);
+      assertFixedProjectWorkspace(fixedBinding, selected ?? null, projectWorkspaceRows.length > 0 || Boolean(preferredProjectWorkspaceId));
+      if (opts?.executionEnvironmentDriver === "local") await validateFixedLocalDirectory(fixedBinding);
+      else if (opts?.executionEnvironmentDriver !== "ssh" || opts.executionEnvironmentConfig?.workspaceMode !== "in_place" || opts.executionEnvironmentConfig.remoteWorkspacePath !== fixedBinding.cwd) {
+        workspaceBindingConflict("environment_conflict", "The selected environment does not match the fixed working directory.");
+      }
+      return { cwd: fixedBinding.cwd, source: "task_session", projectId: resolvedProjectId,
+        workspaceId: selected?.id ?? null, repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
+        workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [], localPathOnlyWorkspace: true };
+    }
         const inPlace = resolveInPlaceAnchor({ rows: projectWorkspaceRows, preferredId: preferredProjectWorkspaceId, driver: opts?.executionEnvironmentDriver, config: opts?.executionEnvironmentConfig, projectId: resolvedProjectId, workspaceHints });
         if (inPlace) return inPlace;
 

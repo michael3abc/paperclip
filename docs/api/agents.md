@@ -77,6 +77,34 @@ PATCH /api/agents/{agentId}
 }
 ```
 
+## Fixed Working Directory
+
+Create, hire and update use the existing `runtimeConfig` JSON object:
+
+```json
+{
+  "runtimeConfig": {
+    "workspaceBinding": { "mode": "fixed", "cwd": "/srv/projects/example" }
+  }
+}
+```
+
+Only operators may set or remove this binding. Preserve other `runtimeConfig`
+fields when updating. `cwd` must be an absolute path; unknown binding fields and
+modes are rejected. `defaultEnvironmentId` selects the execution host. Before
+dispatch, Paperclip verifies that the directory already exists on that host.
+Project-path, isolation, provisioning and environment conflicts fail with
+`workspace_validation_failed`; they never create a directory or fall back to an
+agent home. This uses the existing JSONB column and requires no schema migration.
+
+The binding applies to operator Agent Chat, projectless tasks and continuations.
+External chat and low-trust tasks retain their isolation requirements. Independent
+sessions may share the path; each retains its own run and process ownership.
+An incompatible admitted execution is never rebound. A subsequent session starts
+fresh only after the old execution's termination is verified, with bounded history
+handoff and no replay of the previous input. Compatible host/cwd bindings retain
+native session identity. Existing workspace records and directories are retained.
+
 ## Pause Agent
 
 ```

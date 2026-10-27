@@ -67,6 +67,7 @@ import type {
   resolveExecutionWorkspaceReuseRequestForIssue,
 } from "./workspaces.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
+import { readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask } from "../agent-workspace-binding.js";
 import type {
   ParsedExecutionWorkspaceMode,
   ExecutionWorkspaceEnvironmentResolution,
@@ -145,6 +146,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   const { run, agent, controllerLease, nativeRunnerPreparationSpans } = input;
+  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
   const {
     issueRef,
     issueId,
@@ -218,6 +220,18 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
       return preflightEnvironment.driver;
     },
     resolveWorkspace: async () => {
+      if (fixedBinding) {
+        assertFixedWorkspacePolicy({
+          binding: fixedBinding, environment: selectedEnvironmentForConfig,
+          trustPreset: trustPreset.kind, mode: requestedExecutionWorkspaceMode, isDot: isDotRun,
+          external: await isExternalWorkspaceTask(db, agent.companyId, issueId),
+          strategies: [mergedConfig, mergedConfig.workspaceStrategy, configSnapshot, projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy, environmentExecutionWorkspaceSettings?.workspaceStrategy],
+        });
+        return resolveWorkspaceForRun(agent, context, previousSessionParams, {
+          executionEnvironmentDriver: selectedEnvironmentForConfig?.driver,
+          executionEnvironmentConfig: selectedEnvironmentForConfig?.config,
+        });
+      }
       if (isDotRun) {
         // This is private controller storage, never a provider filesystem.
         // v6 projects workspace.access=none and cwd=null to Dot.
@@ -472,7 +486,11 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
     executionWorkspace,
     reusedExecutionWorkspace,
     policy: resolvedWorkspaceReusePolicy,
-  } = isDotRun ? { executionWorkspace: { ...executionWorkspaceBase, strategy: "project_primary" as const, cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace, reusedExecutionWorkspace: false, policy: workspaceReuseProvisioningPolicy } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+  } = fixedBinding || isDotRun ? {
+    executionWorkspace: { ...executionWorkspaceBase, strategy: "project_primary" as const, cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
+    reusedExecutionWorkspace: Boolean(fixedBinding && workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.cwd === resolvedWorkspace.cwd && reusableExistingExecutionWorkspace.strategyType === "project_primary"),
+    policy: { ...workspaceReuseProvisioningPolicy, shouldRestoreExistingWorkspace: Boolean(fixedBinding && workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.cwd === resolvedWorkspace.cwd && reusableExistingExecutionWorkspace.strategyType === "project_primary") },
+  } : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
     {
       requestedShouldReuseExisting,
       existingExecutionWorkspaceId:

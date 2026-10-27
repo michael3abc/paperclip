@@ -3825,6 +3825,25 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     vi.clearAllMocks();
   });
 
+  it("edits a fixed path while preserving heartbeat and AI connection settings", async () => {
+    let save: (() => void) | null = null;
+    const runtimeConfig = { heartbeat: { enabled: false }, aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" }, workspaceBinding: { mode: "fixed", cwd: "/srv/original" } };
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "codex_local", runtimeConfig: runtimeConfig as Agent["runtimeConfig"] },
+      { onSaveActionChange: action => { save = action; } },
+    );
+    roots.push(result.root);
+    const input = result.container.querySelector<HTMLInputElement>('[aria-label="Fixed working directory"]')!;
+    expect(input.value).toBe("/srv/original");
+    await act(async () => setInputValue(input, "/srv/next"));
+    await flushReact();
+    await act(async () => save?.());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: {
+      ...runtimeConfig, workspaceBinding: { mode: "fixed", cwd: "/srv/next" },
+    } }));
+  });
+
   it("shows the host path and execution-engine fields when the policy is off", async () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],

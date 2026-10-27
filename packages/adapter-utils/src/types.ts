@@ -727,6 +727,7 @@ export interface CreateConfigValues {
   paperclipRunnerLifecycleMode?: "per_turn" | "warm";
   paperclipRunnerIdleTimeoutMs?: number;
   cwd: string;
+  fixedWorkspaceCwd?: string;
   instructionsFilePath?: string;
   promptTemplate: string;
   model: string;

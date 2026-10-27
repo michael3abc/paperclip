@@ -27,6 +27,7 @@ export interface AgentPermissions extends Record<string, unknown> {
 
 export type AgentRuntimeConfig = Record<string, unknown> & {
   aiConnection?: import("../ai-connection-router.js").AiRuntimeConnectionBinding;
+  workspaceBinding?: { mode: "fixed"; cwd: string };
 };
 
 export type AgentInstructionsBundleMode = "managed" | "external";

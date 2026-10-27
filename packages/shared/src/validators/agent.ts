@@ -68,8 +68,17 @@ export const createAgentInstructionsBundleSchema = z.object({
   }),
 });
 
+export const agentWorkspaceBindingSchema = z.object({
+  mode: z.literal("fixed"),
+  cwd: z.string().trim().min(1).max(4096).refine(
+    value => !/[\0\r\n]/.test(value) && /^(\/|[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(value),
+    "Fixed working directory must be an absolute path",
+  ),
+}).strict();
+
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
+  workspaceBinding: agentWorkspaceBindingSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

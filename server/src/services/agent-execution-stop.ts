@@ -8,13 +8,15 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
-export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
+export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], scope?: { runIds: string[] }) {
   if (!agentIds.length) return true;
-  const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
-  const runIds = db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
+  const predicate = and(inArray(heartbeatRuns.agentId, agentIds), scope ? inArray(heartbeatRuns.id, scope.runIds) : undefined);
+  const runs = await db.select().from(heartbeatRuns).where(predicate);
+  if (scope && runs.length !== new Set(scope.runIds).size) return false;
+  const runIds = db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(predicate);
   const leases = await db.select().from(environmentLeases).where(or(
     inArray(environmentLeases.heartbeatRunId, runIds),
-    inArray(sql`${environmentLeases.metadata}->>'agentId'`, agentIds),
+    scope ? undefined : inArray(sql`${environmentLeases.metadata}->>'agentId'`, agentIds),
   ));
   if (leases.some(lease => (!lease.releasedAt && !(lease.status === "retained" && lease.cleanupStatus === "success")) || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return false;
   const coordinators = await db.select().from(nativeRunFinalizations)
@@ -48,7 +50,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
             if (!dispatch) continue;
         }
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
-      if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt)) return false;
+      if ((scope || run.status === "cancelled") && !runLeases.every(hasRemoteTerminationReceipt)) return false;
       continue;
     }
     let processAlive = Boolean(run.processPid && !absent(run.processPid));
@@ -61,6 +63,9 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
       }
     }
     if (processAlive || groupAlive) return false;
+    if (scope && run.runtimeMode === "native" && run.startedAt && !run.processPid && !run.processGroupId &&
+        !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
+        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
     if (run.status !== "cancelled" || !run.startedAt) continue;
     if (run.runtimeMode === "native" && !run.processPid && !run.processGroupId &&
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&

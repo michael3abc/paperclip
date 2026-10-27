@@ -146,6 +146,7 @@ function Setup({
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
+  const [fixedWorkspaceCwd, setFixedWorkspaceCwd] = useState("");
   const [provider, setProvider] = useState("openrouter");
   const [apiKey, setApiKey] = useState("");
   const [providerBinding, setProviderBinding] = useState<EnvBinding | null>(
@@ -524,7 +525,7 @@ function Setup({
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
-        runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
+        runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false, fixedWorkspaceCwd }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
         budgetMonthlyCents: 0,
         ...(connection?.storedSessionId
           ? { storedSessionId: connection.storedSessionId }
@@ -1157,6 +1158,17 @@ function Setup({
                                 </option>
                               ))}
                           </select>
+                          {!isDot && !managedOnly && !forced.forced && (
+                            <Field label="固定工作目錄 / Fixed working directory">
+                              <Input
+                                aria-label="Fixed working directory"
+                                value={fixedWorkspaceCwd}
+                                onChange={event => { setFixedWorkspaceCwd(event.target.value); resetTest(); }}
+                                placeholder="/absolute/path/to/project"
+                              />
+                              <p className="text-xs text-muted-foreground">Every session uses this existing directory on the selected environment. Leave empty to use the default workspace policy.</p>
+                            </Field>
+                          )}
                         </section>
                       )}
                     </fieldset>

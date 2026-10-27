@@ -50,7 +50,8 @@ Follows the existing `NewIssueDialog` / `NewProjectDialog` pattern: a `Dialog` c
 |-------|---------|---------|-------|
 | Adapter Type | Chip popover (select) | `claude_local` | `claude_local`, `codex_local`, `process`, `http` |
 | Test environment | Button | -- | Runs adapter-specific diagnostics and returns pass/warn/fail checks for current unsaved config |
-| CWD | Text input | -- | Working directory for local adapters |
+| Fixed working directory | Text input | -- | Existing absolute directory on the selected environment, stored as `runtimeConfig.workspaceBinding`. Available in new-agent setup and Harness / Runtime editing. Empty removes the binding; conflicting project or isolation settings fail before execution. |
+| CWD (deprecated) | Text input | -- | Legacy adapter cwd, shown only for existing configurations |
 | Prompt Template | Textarea | -- | Supports `{{ agent.id }}`, `{{ agent.name }}` etc. |
 | Model | Text input | -- | Optional model override |
 

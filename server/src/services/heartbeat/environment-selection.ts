@@ -27,15 +27,16 @@ import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js
 import { WorkspaceBusyDeferral, type createHeartbeatRetries } from "./retries.js";
 import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
+import { assertFixedWorkspacePolicy, isExternalWorkspaceTask, readWorkspaceBinding, workspaceBindingConflict, fixedWorkspaceMatchesRun } from "../agent-workspace-binding.js";
 
 type Issue = typeof issues.$inferSelect;
 
 /** Selects policy and reuse inputs; lease acquisition and cleanup belong to the executor. */
 export interface HeartbeatEnvironmentSelectionInput {
   run: Pick<typeof heartbeatRuns.$inferSelect,
-    "id" | "runtimeMode" | "runnerProfileJson" | "scheduledRetryReason" | "scheduledRetryAttempt">;
+    "id" | "runtimeMode" | "runnerProfileJson" | "scheduledRetryReason" | "scheduledRetryAttempt"> & { contextSnapshot?: Record<string, unknown> | null };
   agent: Pick<typeof agents.$inferSelect,
-    "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId">;
+    "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId"> & { runtimeConfig?: Record<string, unknown> };
   task: {
     issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
     issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> | null;
@@ -235,6 +236,22 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       : selectedEnvironmentId
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
+  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
+  if (fixedBinding) {
+    assertFixedWorkspacePolicy({
+      binding: fixedBinding, environment: selectedEnvironmentForConfig,
+      trustPreset: trustPreset.kind, mode: requestedExecutionWorkspaceMode, isDot: isDotRun,
+      external: await isExternalWorkspaceTask(db, agent.companyId, issueId),
+      strategies: [config, config.workspaceStrategy, issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
+        projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy],
+    });
+    if (persistedNativeExecutionInput && !fixedWorkspaceMatchesRun({
+      binding: fixedBinding, environment: selectedEnvironmentForConfig,
+      run: { runnerProfileJson: run.runnerProfileJson, contextSnapshot: run.contextSnapshot },
+    })) {
+      workspaceBindingConflict("admitted_session_conflict", "This execution is already bound to another host or directory. Stop and reconcile its ownership before starting a new session; its saved binding will not be rewritten.");
+    }
+  }
   const nativeChatWorkspaceScope = await findNativeChatWorkspaceScope(db, {
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,

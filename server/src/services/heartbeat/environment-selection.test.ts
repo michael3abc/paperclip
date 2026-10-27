@@ -74,6 +74,24 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     return { input, issue, project, workspace, recover };
   }
 
+  it("preserves compatible fixed executions and refuses a different cwd or host", async () => {
+    const { input, workspace, recover } = await fixture();
+    const original = await workspace();
+    const local = await input.services.environmentsSvc.ensureLocalEnvironment(input.agent.companyId);
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: home } };
+    recover(original.id);
+    input.run.contextSnapshot = { paperclipEnvironment: { id: local.id, driver: "local" } };
+    const saved = structuredClone(input.run.runnerProfileJson);
+    const result = await selectHeartbeatEnvironment(db, input);
+    expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(original.id);
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: "/different" } };
+    await expect(selectHeartbeatEnvironment(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: home } };
+    input.run.contextSnapshot = { paperclipEnvironment: { id: local.id, driver: "ssh", host: "other" } };
+    await expect(selectHeartbeatEnvironment(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
+    expect(input.run.runnerProfileJson).toEqual(saved);
+  });
+
   it("keeps the admitted workspace binding when the issue points at a newer workspace", async () => {
     const { input, workspace, recover } = await fixture();
     const original = await workspace();
