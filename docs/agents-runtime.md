@@ -115,6 +115,8 @@ Ctrl/Cmd+Enter shortcut.
 without a CC Pocket checkout dependency. Copy `deployment.example.json` outside the
 repository, configure the company, operator, router origin, runtime locations and
 the four existing connection IDs, then set `PAPERCLIP_DEPLOYMENT_CONFIG` to that file.
+`ownerId` is the existing Better Auth user's opaque text ID; it need not be a UUID.
+Company and connection IDs remain UUIDs. Do not create a replacement operator identity.
 Database URLs and auth secrets are read from owner-only files, never command-line
 arguments or committed configuration.
 

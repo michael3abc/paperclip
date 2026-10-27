@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { catalogGroups, runnerConfig, bindingFor } from './routing.mjs';
 import { privateWrite } from './operation-files.mjs';
 const health = () => ({ status: 'ok', router: 'compass-codex-kit',
@@ -46,4 +47,22 @@ test('deployment router origin is used for both protocols', () => {
   const groups = catalogGroups(health(), 'https://router.example.invalid');
   assert.equal(groups[0].routing.baseUrl, 'https://router.example.invalid');
   assert.equal(groups[3].routing.baseUrl, 'https://router.example.invalid/v1');
+});
+
+test('deployment accepts opaque auth user IDs and still rejects malformed resource IDs', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-deployment-'));
+  try {
+    const config = JSON.parse(await fs.readFile(new URL('./deployment.example.json', import.meta.url)));
+    const file = path.join(dir, 'deployment.json');
+    const check = async value => {
+      await fs.writeFile(file, JSON.stringify(value));
+      return spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(new URL('./deployment.mjs', import.meta.url).href)})`], {
+        env: { ...process.env, PAPERCLIP_DEPLOYMENT_CONFIG: file }, encoding: 'utf8', timeout: 5000,
+      });
+    };
+    assert.equal((await check({ ...config, ownerId: 'OpaqueAuthUser123' })).status, 0);
+    assert.notEqual((await check({ ...config, ownerId: ' ' })).status, 0);
+    assert.notEqual((await check({ ...config, companyId: 'OpaqueCompany123' })).status, 0);
+    assert.notEqual((await check({ ...config, connections: { ...config.connections, 'openai-local': 'invalid' } })).status, 0);
+  } finally { await fs.rm(dir, { recursive: true }); }
 });
