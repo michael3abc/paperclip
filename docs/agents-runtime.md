@@ -74,6 +74,10 @@ execution logs remain in their existing runtime storage. See the
 transition rules. Removing the field restores the normal workspace policy and
 does not delete old workspace directories or records.
 
+A plain directory is valid for in-place work. A `git_worktree` policy requires a
+Git checkout; a verified plain directory reports a configuration conflict,
+including when Git discovery stops at a filesystem mount boundary.
+
 For local adapters, set:
 
 - `cwd` (working directory)
