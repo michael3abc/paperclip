@@ -1,5 +1,5 @@
-import { and, eq, lte, or, sql } from "drizzle-orm";
-import { environmentLeases, type Db } from "@paperclipai/db";
+import { and, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
 import type { ProviderResourceDisposition } from "./environment-runtime.js";
 import { ENVIRONMENT_CLEANUP_RETRY_MS, pendingCleanupDeadlineSql } from "./environment-cleanup-state.js";
 
@@ -7,6 +7,11 @@ import { ENVIRONMENT_CLEANUP_RETRY_MS, pendingCleanupDeadlineSql } from "./envir
 
 export function pendingRunLeaseReleaseCondition(destroy: boolean) {
   return or(eq(environmentLeases.status, "active"),
+    and(eq(environmentLeases.provider, "ssh"),
+      sql`${environmentLeases.metadata}->'workspaceRealization'->>'mode' = 'in_place'`,
+      inArray(environmentLeases.status, ["pending_cleanup", "released", "expired", "failed"]),
+      sql`not (${environmentLeases.metadata} ? 'remoteExecutionTermination')`,
+      sql`exists (select 1 from ${heartbeatRuns} r where r.id = ${environmentLeases.heartbeatRunId} and r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`),
     and(eq(environmentLeases.status, "pending_cleanup"),
       sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`),
     destroy ? and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed")) : undefined);

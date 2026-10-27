@@ -11,6 +11,7 @@ import { addNestedRepositoryWorktree, isVerifiedNestedRepositoryBase, nestedRepo
 export { materializeManagedProjectWorkspace } from "../managed-repository-checkout.js";
 import { sql } from "drizzle-orm";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { resolveInPlaceAnchor } from "@paperclipai/adapter-utils/ssh-in-place";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
 import {
@@ -3446,7 +3447,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null; executionEnvironmentDriver?: string | null; storageProviderPluginId?: string | null },
+    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null; executionEnvironmentDriver?: string | null; storageProviderPluginId?: string | null; executionEnvironmentConfig?: Record<string, unknown> | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3514,6 +3515,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+        const inPlace = resolveInPlaceAnchor({ rows: projectWorkspaceRows, preferredId: preferredProjectWorkspaceId, driver: opts?.executionEnvironmentDriver, config: opts?.executionEnvironmentConfig, projectId: resolvedProjectId, workspaceHints });
+        if (inPlace) return inPlace;
 
     if (opts?.executionEnvironmentDriver === "plugin" && agent.adapterType === "paperclip_runner") {
       if (workspaceProjectId) {
@@ -3720,6 +3723,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       configuredCwd?: string | null;
       executionEnvironmentDriver?: string | null;
       storageProviderPluginId?: string | null;
+      executionEnvironmentConfig?: Record<string, unknown> | null;
       anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
     },
   ): Promise<ResolvedWorkspaceForRun> {

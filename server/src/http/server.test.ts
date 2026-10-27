@@ -3,7 +3,7 @@ import dns from "node:dns";
 import { mkdtemp, rm } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
@@ -40,6 +40,38 @@ describe("Paperclip HTTP server runner transport", () => {
     runnerPrpWebSocketInternals.resetForTests();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+  });
+
+  it("keeps a dedicated PRP loopback separate from the authenticated runtime API listener", async () => {
+    const reservation = createServer();
+    reservation.listen(0, "127.0.0.1");
+    await once(reservation, "listening");
+    const address = reservation.address();
+    if (!address || typeof address === "string") throw new Error("Listener not bound");
+    await new Promise<void>(resolve => reservation.close(() => resolve()));
+    vi.stubEnv("PAPERCLIP_RUNNER_LOOPBACK_PORT", String(address.port));
+    const server = createPaperclipHttpServer((_req, response) => response.end("runtime-api"), {
+      apiUrl: "https://advertised.example.test",
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    try {
+      const apiOrigin = resolveLocalRuntimeApiUrl();
+      const prpOrigin = `http://127.0.0.1:${address.port}`;
+      expect(apiOrigin).not.toBe(prpOrigin);
+      expect(await (await fetch(apiOrigin)).text()).toBe("runtime-api");
+      const privateResponse = await fetch(prpOrigin);
+      expect(privateResponse.status).toBe(404);
+      await privateResponse.body?.cancel();
+      const runId = "00000000-0000-4000-8000-000000000776";
+      const registration = await registerRunnerPrpAuthority({ companyId: "company-1", runId,
+        authority: { handleUpgrade: vi.fn() } as unknown as DurablePrpControlPlane });
+      expect(registration.connectUrl).toBe(`${prpOrigin.replace("http:", "ws:")}/api/runner/v1/connect/${runId}`);
+      await registration.release();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 
   it("registers native runner authority without a separate startup call", async () => {

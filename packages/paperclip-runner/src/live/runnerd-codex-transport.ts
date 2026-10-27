@@ -6795,9 +6795,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       !recoveryIdentityMatches(core.store.state.identity, this.#eventIdentity)
     )
       return;
+        core.store.assertWritable();
     this.#flushPendingTraceRehydrations();
     const events = core.store.state.committedEvents;
-    for (;;) {
+    // Locate the cursor once: rescanning the retained window per event is quadratic.
+    let low = 0;
+    let high = events.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (events[middle]!.sourceSeq <= this.#eventSourceSeq) low = middle + 1;
+      else high = middle;
+    }
+    let eventIndex = low;
+    const deadline = performance.now() + 5;
+    for (let processed = 0; processed < 128; processed += 1) {
+      if (processed > 0 && performance.now() >= deadline) return;
       const deferredEvent =
         !this.#recoveryTurnBindingPending &&
         (!this.#turnStartResponsePending || this.#expectedProviderTurnId !== null)
@@ -6805,7 +6817,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           : undefined;
       const event =
         deferredEvent ??
-        events.find((candidate) => candidate.sourceSeq > this.#eventSourceSeq);
+        events[eventIndex++];
       if (event === undefined) {
         this.#eventSourceSeq = Math.max(this.#eventSourceSeq, core.recoveredSourceSeq);
         return;

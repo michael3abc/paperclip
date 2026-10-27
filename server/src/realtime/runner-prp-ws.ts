@@ -12,7 +12,18 @@ import {
 } from "../services/native-runtime/runtime-request-resolution-authority.js";
 
 import { logger } from "../middleware/logger.js";
-import { registerLocalRuntimeApiServer, resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../runtime-api.js";
+import { chooseLocalRuntimeApiUrl, registerLocalRuntimeApiServer, resolveLocalRuntimeApiUrl, runtimeApiInternals } from "../runtime-api.js";
+
+const dedicatedPrpListeners = new Set<Server>();
+
+function resolvePrpListenerUrl(): string {
+  const listeners = [...dedicatedPrpListeners].filter(server => server.listening);
+  if (dedicatedPrpListeners.size === 0) return resolveLocalRuntimeApiUrl();
+  if (listeners.length !== 1) throw new Error("runner_prp_listener_unavailable_or_ambiguous");
+  const address = listeners[0]!.address();
+  if (!address || typeof address === "string") throw new Error("runner_prp_listener_unavailable");
+  return chooseLocalRuntimeApiUrl({ bindHost: address.address, port: address.port });
+}
 
 const CONNECT_PATH_PREFIX = "/api/runner/v1/connect/";
 const UUID_PATTERN =
@@ -70,11 +81,16 @@ function rejectUpgrade(
 
 export function setupRunnerPrpWebSocketServer(
   server: Server,
-  _options?: { readonly apiUrl: string },
+  options?: { readonly apiUrl?: string; readonly dedicated?: boolean },
 ): void {
   // Older launchers may still pass an advertised apiUrl. Only the actual
   // bound listener can authorize native transport, including ephemeral ports.
-  registerLocalRuntimeApiServer(server);
+  if (options?.dedicated) {
+    dedicatedPrpListeners.add(server);
+    server.once("close", () => dedicatedPrpListeners.delete(server));
+  } else {
+    registerLocalRuntimeApiServer(server);
+  }
   server.on(
     "upgrade",
     (request: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -113,7 +129,7 @@ export async function registerRunnerPrpAuthority(input: {
   readonly runId: string;
   readonly authority: DurablePrpControlPlane;
 }): Promise<{ readonly connectUrl: string; release(): Promise<void> }> {
-  const apiUrl = new URL(resolveLocalRuntimeApiUrl());
+  const apiUrl = new URL(resolvePrpListenerUrl());
   apiUrl.protocol = "ws:";
   const loopbackOrigin = apiUrl.origin;
   if (!UUID_PATTERN.test(input.runId) || input.companyId.length === 0) {
@@ -313,6 +329,7 @@ export const runnerPrpWebSocketInternals = {
   resetForTests(): void {
     registrations.clear();
     currentLiveAuthorities.clear();
+    dedicatedPrpListeners.clear();
     runtimeApiInternals.resetForTests();
   },
 };

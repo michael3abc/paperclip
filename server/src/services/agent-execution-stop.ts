@@ -1,7 +1,8 @@
+import { isUndispatchedCredentialWait } from "@paperclipai/adapter-utils/ssh-in-place";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
@@ -36,6 +37,16 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (!["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(run.status)) return false;
     if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
     const runLeases = leases.filter(lease => lease.heartbeatRunId === run.id);
+        if (!runLeases.length && !coordinators.some(row => row.runId === run.id) && isUndispatchedCredentialWait(run)) {
+            const [dispatch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+                eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+                or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, [
+                    "adapter.invoke", "native.process_start_requested", "native.process_identity_recorded",
+                    "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
+                    "provider.event", "provider.rpc_result", "tool.execution.started",
+                ])))).limit(1);
+            if (!dispatch) continue;
+        }
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
       if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt)) return false;
       continue;

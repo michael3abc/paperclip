@@ -1720,6 +1720,8 @@ export interface TransportCloseReason {
 export interface PrpWireConnection {
   sendJson(value: unknown): void;
   close(code?: number): void;
+  pause?(): void;
+  resume?(): void;
   onJson(listener: (value: unknown) => void): void;
   onClose(listener: (reason: TransportCloseReason) => void): void;
 }
@@ -1733,12 +1735,17 @@ export interface PrpWireAttachment {
 export interface DurablePrpControlPlaneStore {
   readonly path: string;
   readonly state: StoredCoreState;
+  assertWritable(): void;
 }
 
 class RawWebSocketWireConnection implements PrpWireConnection {
   readonly socket: Duplex;
   #buffer = Buffer.alloc(0);
   #closed = false;
+    #fragments: Buffer[] = [];
+    #fragmentBytes = 0;
+    #fragmenting = false;
+    #fragmentCount = 0;
   #onJson: (value: unknown) => void = () => undefined;
   #onClose: (reason: TransportCloseReason) => void = () => undefined;
 
@@ -1772,6 +1779,8 @@ class RawWebSocketWireConnection implements PrpWireConnection {
   acceptInitialData(data: Buffer<ArrayBufferLike>): void {
     if (data.length > 0) this.#consume(data);
   }
+    pause() { this.socket.pause(); }
+    resume() { if (!this.#closed) this.socket.resume(); }
 
   sendJson(value: unknown): void {
     this.sendText(JSON.stringify(value));
@@ -1797,21 +1806,33 @@ class RawWebSocketWireConnection implements PrpWireConnection {
     this.socket.write(Buffer.concat([Buffer.from(header), payload]));
   }
 
-  close(_code?: number): void {
+  close(code?: number | string): void {
     if (this.#closed) {
       return;
     }
     this.#closed = true;
     this.socket.destroy();
-    this.#onClose({ message: "local_close" });
+    this.#buffer = Buffer.alloc(0);
+    this.#fragments = [];
+    this.#onClose({ message: typeof code === "string" ? code : "local_close" });
   }
 
   #consume(chunk: Buffer): void {
+        if (this.#closed)
+            return;
     this.#buffer = Buffer.concat([this.#buffer, chunk]);
-    while (this.#buffer.length >= 2) {
+    while (!this.#closed && this.#buffer.length >= 2) {
       const first = this.#buffer[0]!;
       const second = this.#buffer[1]!;
       const opcode = first & 0x0f;
+            const final = (first & 0x80) !== 0;
+            if ((first & 0x70) !== 0 || ![0, 1, 8, 9, 10].includes(opcode) ||
+                (opcode >= 8 && (!final || (second & 0x7f) > 125)) ||
+                (opcode === 0 && !this.#fragmenting) ||
+                (opcode === 1 && this.#fragmenting)) {
+                this.close("invalid_websocket_fragment");
+                return;
+            }
       const masked = (second & 0x80) !== 0;
       let length = second & 0x7f;
       let cursor = 2;
@@ -1823,14 +1844,15 @@ class RawWebSocketWireConnection implements PrpWireConnection {
         if (this.#buffer.length < 10) return;
         const extended = this.#buffer.readBigUInt64BE(2);
         if (extended > BigInt(maxFrameBytes)) {
-          this.close();
+          this.close("websocket_message_too_large");
           return;
         }
         length = Number(extended);
         cursor = 10;
       }
-      if (length > maxFrameBytes || !masked) {
-        this.close();
+      if (length > maxFrameBytes || !masked ||
+          (opcode < 8 && this.#fragmentBytes + length > maxFrameBytes)) {
+          this.close("invalid_websocket_length_or_mask");
         return;
       }
       if (this.#buffer.length < cursor + 4 + length) return;
@@ -1843,9 +1865,23 @@ class RawWebSocketWireConnection implements PrpWireConnection {
       for (let index = 0; index < payload.length; index += 1) {
         payload[index] = payload[index]! ^ mask[index % 4]!;
       }
-      if (opcode === 0x1) {
+      if (opcode === 0x1 || opcode === 0) {
+          if (++this.#fragmentCount > 4096) {
+              this.close("websocket_fragment_count_exceeded");
+              return;
+          }
+          if (payload.length > 0)
+              this.#fragments.push(payload);
+          this.#fragmentBytes += payload.length;
+          this.#fragmenting = !final;
+          if (!final)
+              continue;
+          const message = Buffer.concat(this.#fragments, this.#fragmentBytes);
+          this.#fragments = [];
+          this.#fragmentBytes = 0;
+          this.#fragmentCount = 0;
         try {
-          this.#onJson(JSON.parse(payload.toString("utf8")) as unknown);
+          this.#onJson(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(message)) as unknown);
         } catch (error) {
           this.#closed = true;
           this.socket.destroy();
@@ -1927,6 +1963,17 @@ class AuthorityConnection {
 
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
+    // Presentation events retain their original IDs and bytes. They are invisible
+    // to consumers until a complete snapshot is fsynced, then cumulatively ACKed.
+    #eventBatch: DurableRecoveryCommittedEvent[] = [];
+    #eventBatchBytes = 0;
+    #eventBatchTimer: ReturnType<typeof setTimeout> | null = null;
+    #eventBatchConnection: AuthorityConnection | null = null;
+    #eventBatchWrites = new Set<Promise<void>>();
+    #eventBatchWritesByConnection = new Map<AuthorityConnection, Promise<void>>();
+    #queuedFrames = 0;
+    #queuedBytes = 0;
+    #processedFrames = 0;
   #identity: DurableRecoveryIdentity;
   #stagedTargetCheckpointPublished: string | null = null;
   readonly #store: DurableCoreStore;
@@ -2076,7 +2123,8 @@ export class DurablePrpControlPlane {
     this.#publishedState = this.#capturePublishedState(captureCheckpoint(this.#store.state,
       this.#expectedRunnerVersion, this.#expectedRunnerDigest));
     const core = this;
-    this.#publishedStore = { path: this.#store.path, get state() { return core.#visibleState(); } };
+    this.#publishedStore = { path: this.#store.path, get state() { return core.#visibleState(); },
+      assertWritable() { core.#store.assertWritable(); } };
   }
 
   flushCheckpoint(): Promise<void> {
@@ -2218,6 +2266,9 @@ export class DurablePrpControlPlane {
   }
 
   async stop(): Promise<void> {
+        let flushError;
+        try { this.#flushEventBatch(); }
+        catch (error) { flushError = error; }
     for (const connection of this.#connections) {
       connection.close();
     }
@@ -2230,6 +2281,8 @@ export class DurablePrpControlPlane {
         server.close(() => resolveClose()),
       );
     }
+        if (flushError)
+            throw flushError;
   }
 
   /** Join admitted wire work after ingress has stopped, including queued
@@ -2243,17 +2296,19 @@ export class DurablePrpControlPlane {
         throw new Error("Connection processing drain requires stopped ingress.");
     };
     assertIngressStopped();
-    while (this.#connectionProcessing.size > 0) {
-      await Promise.allSettled([...this.#connectionProcessing.values()]);
+    while (this.#connectionProcessing.size > 0 || this.#eventBatchWrites.size > 0) {
+      await Promise.allSettled([...this.#connectionProcessing.values(), ...this.#eventBatchWrites]);
       assertIngressStopped();
     }
+        this.#flushEventBatch();
   }
 
   /** Retire this journal writer after stopped ingress is fully joined. A late
    * external effect keeps its committed input pending for reconciliation;
    * it must never overwrite the successor controller's durable state. */
   retireSemanticToolCallbacks(): void {
-    if (this.#server !== null || this.#connections.size !== 0 || this.#connectionProcessing.size !== 0) {
+        this.#flushEventBatch();
+    if (this.#server !== null || this.#connections.size !== 0 || this.#connectionProcessing.size !== 0 || this.#eventBatchWrites.size !== 0) {
       throw new Error("Semantic callback retirement requires drained, stopped ingress.");
     }
     this.#semanticCallbacksRetired = true;
@@ -2261,6 +2316,12 @@ export class DurablePrpControlPlane {
 
   /** Forces a resumable re-authentication after an immutable run attachment rotates. */
   disconnectActiveRunner(): void {
+        try { this.#flushEventBatch(); }
+        catch {
+            // This method is also the error-containment path for semantic result
+            // persistence. The store retains its indeterminate latch; never throw
+            // from containment and turn that failure into an unhandled rejection.
+        }
     const connections = [...this.#connections];
     this.#connections.clear();
     for (const connection of connections) connection.close();
@@ -2336,6 +2397,7 @@ export class DurablePrpControlPlane {
     identity: DurableRecoveryIdentity,
     runAttachTemplate?: Record<string, unknown>,
   ): void {
+        this.#flushEventBatch();
     if (this.#protocolIntegrityError !== null)
       throw this.#protocolIntegrityError;
     const completed = this.#store.state.completedWarmTransition;
@@ -2433,6 +2495,7 @@ export class DurablePrpControlPlane {
    * changing an established seed fails closed.
    */
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
+        this.#flushEventBatch();
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
     }
@@ -2472,6 +2535,7 @@ export class DurablePrpControlPlane {
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {
+        this.#flushEventBatch();
     this.#store.assertWritable();
     if (this.#store.state.warmTransition) {
       throw new Error(
@@ -2526,6 +2590,7 @@ export class DurablePrpControlPlane {
     },
     ttlMs = 5_000,
   ): string {
+        this.#flushEventBatch();
     this.#store.assertWritable();
     const pending = input.runnerState.warmTransition;
     const proof = warmTransitionRecoveryProof({
@@ -2611,6 +2676,7 @@ export class DurablePrpControlPlane {
     commandId?: string,
     deliverImmediately = false,
   ): DurableRecoveryCoreCommand {
+        this.#flushEventBatch();
     this.#store.assertWritable();
     const staged = this.#store.state.stagedRunAttachment;
     const retireStaged = stagedTargetActivated(this.#store.state) && (type === "turn.start"
@@ -2792,12 +2858,42 @@ export class DurablePrpControlPlane {
   attachWireConnection(wire: PrpWireConnection): PrpWireAttachment {
     let connection!: AuthorityConnection;
     let processing = Promise.resolve();
+    let pendingFrames = 0;
+    let pendingBytes = 0;
     connection = new AuthorityConnection({
       wire,
       onJson: (value) => {
+        if (!this.#connections.has(connection))
+            return;
+        const bytes = Buffer.byteLength(JSON.stringify(value));
+        if (this.#queuedFrames >= 4096 || this.#queuedBytes + bytes > 8 * 1024 * 1024) {
+            connection.close();
+            return;
+        }
+        pendingFrames += 1;
+        pendingBytes += bytes;
+        this.#queuedFrames += 1;
+        this.#queuedBytes += bytes;
+        if (pendingFrames >= 64 || pendingBytes >= 1024 * 1024)
+            wire.pause?.();
+        // Bound aggregate ingress without blocking a replacement owner's
+        // authentication on an old peer's external callback. Event publication
+        // is fenced by the exact authenticated owner after every await.
         processing = processing
-          .then(() => this.#handleJson(connection, value))
-          .catch(() => connection.close());
+            .then(async () => {
+                if (++this.#processedFrames % 32 === 0)
+                    await new Promise<void>((resolve) => setImmediate(resolve));
+                await this.#handleJson(connection, value);
+            })
+            .catch(() => connection.close())
+            .finally(() => {
+                pendingFrames -= 1;
+                pendingBytes -= bytes;
+                this.#queuedFrames -= 1;
+                this.#queuedBytes -= bytes;
+                if (pendingFrames < 16 && pendingBytes < 256 * 1024)
+                    wire.resume?.();
+            });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
@@ -2833,6 +2929,7 @@ export class DurablePrpControlPlane {
           ? (wire as Record<string, unknown>)
           : decryptSecureJson(connection.secureChannel, wire);
     } catch {
+            this.#flushEventBatch();
       this.#store.state.malformedFrames += 1;
       this.#store.save();
       connection.close();
@@ -2855,6 +2952,8 @@ export class DurablePrpControlPlane {
       return;
     }
     const kind = envelope.kind;
+        if (kind !== "event")
+            this.#flushEventBatch();
     if (connection.secureChannel === null && kind === "auth_hello") {
       this.#authHello(connection, envelope);
       return;
@@ -3840,13 +3939,90 @@ export class DurablePrpControlPlane {
       connection.close();
     }
   }
+  #flushEventBatch(asyncWrite = false): Promise<void> | void {
+    if (this.#eventBatchTimer !== null) {
+      clearTimeout(this.#eventBatchTimer);
+      this.#eventBatchTimer = null;
+    }
+    if (this.#eventBatch.length === 0) return;
+    const batch = this.#eventBatch;
+    const connection = this.#eventBatchConnection!;
+    const identity = this.#identity;
+    const ackedSourceSeq = batch.at(-1)!.sourceSeq;
+    const isCurrentOwner = () => this.#eventOwner === connection &&
+      this.#identity === identity && this.#protocolIntegrityError === null;
+    const buildCandidate = (state: StoredCoreState): StoredCoreState | null => {
+      if (batch[0].sourceSeq !== state.ackedSourceSeq + 1) return null;
+      let evictions = Math.max(0, state.committedEvents.length + batch.length - maxCommittedEventWindow);
+      const events = state.committedEvents.filter(event => {
+        if (evictions > 0 && !unsettledSemanticInput(event, state)) {
+          evictions -= 1;
+          return false;
+        }
+        return true;
+      });
+      if (evictions > 0) throw new Error("Presentation batch cannot evict unresolved semantic input.");
+      return { ...state, committedEvents: [...events, ...batch], ackedSourceSeq };
+    };
+    const clearBatch = () => {
+      this.#eventBatch = [];
+      this.#eventBatchBytes = 0;
+      this.#eventBatchConnection = null;
+    };
+    const acknowledge = () => {
+      if (isCurrentOwner() && this.#connections.has(connection)) {
+        this.#sendJson(connection, this.#controlEnvelope(connection, `ack_${ackedSourceSeq}`, "ack", { ackedSourceSeq }));
+      }
+    };
+    if (!asyncWrite) {
+      const candidate = buildCandidate(this.#store.state);
+      if (candidate === null) throw new Error("Presentation batch lost its source cursor.");
+      this.#store.commit(candidate);
+      clearBatch();
+      acknowledge();
+      return;
+    }
+    // The same staged writer used by upstream single-event delivery owns the
+    // batch. A synchronous command can absorb it in save(); a replacement
+    // authority invalidates it. Neither path repeats a staged write or ACKs an
+    // uncertain snapshot. Other peers remain free to authenticate while I/O waits.
+    clearBatch();
+    const pending = this.#store.commitEvent(buildCandidate, isCurrentOwner, false)
+      .then(committed => {
+        if (committed) acknowledge();
+        else if (isCurrentOwner()) connection.close();
+      })
+      .catch(() => connection.close());
+    this.#eventBatchWrites.add(pending);
+    this.#eventBatchWritesByConnection.set(connection, pending);
+    void pending.finally(() => {
+      this.#eventBatchWrites.delete(pending);
+      if (this.#eventBatchWritesByConnection.get(connection) === pending) {
+        this.#eventBatchWritesByConnection.delete(connection);
+      }
+    });
+    return pending;
+  }
 
   async #event(
     connection: AuthorityConnection,
     envelope: Record<string, unknown>,
   ): Promise<void> {
     if (this.#eventOwner !== connection) return;
+    const pendingBatch = this.#eventBatchWritesByConnection.get(connection);
+    if (pendingBatch) await pendingBatch;
+    if (this.#eventOwner !== connection) return;
     const identity = this.#identity;
+    const payload = isRecord(envelope.payload) ? envelope.payload : {};
+    // Checkpoint-backed streaming already uses upstream's sparse checkpoint
+    // policy. File-backed delivery batches fsyncs without bypassing that policy.
+    const presentation = payload.eventType === "item.delta" && payload.priority !== 0 &&
+      this.#persistCheckpoint === null && this.#connections.has(connection);
+    if (!presentation || this.#eventBatchConnection !== connection ||
+        this.#eventBatch.some(entry => entry.sourceEventId === payload.sourceEventId) ||
+        (typeof payload.sourceSeq === "number" && payload.sourceSeq <= (this.#eventBatch.at(-1)?.sourceSeq ?? -1))) {
+      this.#flushEventBatch();
+    }
     if (this.#protocolIntegrityError !== null) {
       connection.close();
       return;
@@ -3918,7 +4094,7 @@ export class DurablePrpControlPlane {
     );
     if (
       existing === undefined
-        ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
+        ? sourceSeq !== (this.#eventBatch.at(-1)?.sourceSeq ?? this.#store.state.ackedSourceSeq) + 1
         : sourceSeq !== existing.sourceSeq
     ) {
       connection.close();
@@ -3968,6 +4144,22 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+        if (presentation && existing === undefined) {
+            let required = Math.max(0, this.#store.state.committedEvents.length + this.#eventBatch.length + 1 - maxCommittedEventWindow);
+            for (const entry of this.#store.state.committedEvents) {
+                if (required === 0)
+                    break;
+                if (!unsettledSemanticInput(entry, this.#store.state))
+                    required -= 1;
+            }
+            if (required > 0) {
+                // Preserve admitted events but refuse this input. Do not rotate
+                // an unseen batch through a window pinned by pending tool calls.
+                this.#flushEventBatch();
+                connection.close();
+                return;
+            }
+        }
     // The caller's durable commit is the acknowledgement authority. A crash
     // after that idempotent commit but before the local cursor save is safe:
     // the runner replays the event, the caller observes a duplicate, and only
@@ -3990,6 +4182,30 @@ export class DurablePrpControlPlane {
     // commit cannot reopen delivery or invoke a new business operation.
     if (this.#protocolIntegrityError !== null) {
       connection.close();
+            return;
+        }
+        if (presentation && existing === undefined) {
+            const entry: DurableRecoveryCommittedEvent = {
+                sourceSeq, sourceEventId, eventType, priority,
+                envelope: structuredClone(envelope), deliveryCount: 1, logicalEffectCount: 1,
+            };
+            const bytes = Buffer.byteLength(JSON.stringify(entry));
+            if (this.#eventBatchBytes + bytes > 256 * 1024) {
+                await this.#flushEventBatch(true);
+                if (this.#eventOwner !== connection || this.#identity !== identity) return;
+            }
+            this.#eventBatch.push(entry);
+            this.#eventBatchBytes += bytes;
+            this.#eventBatchConnection = connection;
+            if (this.#eventBatch.length >= 64 || this.#eventBatchBytes >= 256 * 1024) {
+                await this.#flushEventBatch(true);
+            }
+            else if (this.#eventBatchTimer === null) {
+                this.#eventBatchTimer = setTimeout(() => {
+                    try { void this.#flushEventBatch(true); }
+                    catch { connection.close(); }
+                }, 10);
+            }
       return;
     }
 
