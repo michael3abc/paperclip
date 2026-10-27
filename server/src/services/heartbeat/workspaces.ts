@@ -1,3 +1,4 @@
+import { resolveInPlaceAnchor } from "@paperclipai/adapter-utils/ssh-in-place";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFailure } from "../git-connection-failure.js";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
@@ -3455,7 +3456,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; executionEnvironmentDriver?: string | null; executionEnvironmentConfig?: Record<string, unknown> | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3513,6 +3514,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+        const inPlace = resolveInPlaceAnchor({ rows: projectWorkspaceRows, preferredId: preferredProjectWorkspaceId, driver: opts?.executionEnvironmentDriver, config: opts?.executionEnvironmentConfig, projectId: resolvedProjectId, workspaceHints });
+        if (inPlace) return inPlace;
 
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -3704,6 +3707,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     opts?: {
       useProjectWorkspace?: boolean | null;
       executionEnvironmentDriver?: string | null;
+      executionEnvironmentConfig?: Record<string, unknown> | null;
       anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
     },
   ): Promise<ResolvedWorkspaceForRun> {

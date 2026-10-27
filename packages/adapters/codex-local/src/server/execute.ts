@@ -817,6 +817,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             runId,
             target: executionTarget,
             adapterKey: "codex",
+                    runtimeOwnerId: `${agent.companyId}/${agent.id}`,
             timeoutSec,
             workspaceLocalDir: cwd,
             workspaceRemoteDir:

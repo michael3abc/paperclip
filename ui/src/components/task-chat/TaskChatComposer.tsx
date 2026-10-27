@@ -1,4 +1,5 @@
 import { AgentAvatar } from "../AgentAvatar";
+import { createUuid } from "@/lib/uuid";
 import {
   useEffect,
   useRef,
@@ -680,7 +681,7 @@ export function TaskChatComposer({
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
-    const id = crypto.randomUUID();
+    const id = createUuid();
     setAttachments((prev) => [
       ...prev,
       {
@@ -1036,7 +1037,7 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (draftKey) {
         saveDraft(draftKey, submittedBody);
         saveDraftSubmission(draftKey, { attemptId, reviewed: false });
@@ -1350,6 +1351,7 @@ export function TaskChatComposer({
           <div data-testid="task-chat-composer-input">
             <MarkdownEditor
               ref={editorRef}
+              submitOnEnter
               value={body}
               onChange={changeBody}
               placeholder={
@@ -1597,7 +1599,7 @@ export function TaskChatComposer({
                       ? "Waiting for upload to finish"
                       : uploadFailed
                         ? "Remove the failed attachment to send"
-                        : creation ? `${creation.submitLabel} (⌘+Enter)` : "Send (⌘+Enter)"
+                        : creation ? `${creation.submitLabel} (Enter; Shift+Enter for newline)` : "Send (Enter; Shift+Enter for newline)"
               }
               aria-label={
                 showStop

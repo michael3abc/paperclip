@@ -1,3 +1,4 @@
+import { prepareInPlaceRuntime } from "./ssh-in-place.js";
 import path from "node:path";
 import { GIT_ARCHIVE_EXCLUDES, PROJECT_REPOSITORIES_DIR } from "./git-workspace-sync.js";
 import {
@@ -110,6 +111,8 @@ export async function prepareRemoteManagedRuntime(input: {
   spec: SshRemoteExecutionSpec;
   runId: string;
   adapterKey: string;
+  runtimeOwnerId?: string;
+  inPlaceRuntime?: boolean;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
@@ -133,7 +136,7 @@ export async function prepareRemoteManagedRuntime(input: {
         "workspace",
       )
     : baseWorkspaceRemoteDir;
-  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const runtimeRootDir = await prepareInPlaceRuntime(input, runSshCommand) ?? path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({

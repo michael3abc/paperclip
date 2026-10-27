@@ -1,3 +1,4 @@
+import { blocksAutomaticSshReplay } from "@paperclipai/adapter-utils/ssh-in-place";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
@@ -395,6 +396,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       delayMs?: number;
     },
   ) {
+        if (blocksAutomaticSshReplay(run, agent)) {
+            return { outcome: "not_scheduled" as const, reason: "SSH in_place execution may have changed the workspace; inspect its result before an explicit new attempt.", issueId: run.issueId ?? null };
+        }
     if (parseObject(agent.adapterConfig).provider === "openai_dot"
         || parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind === "openai_dot") {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };

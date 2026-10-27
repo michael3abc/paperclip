@@ -99,6 +99,7 @@ interface MarkdownEditorProps {
   actionCommands?: SlashCommandOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  submitOnEnter?: boolean;
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -742,6 +743,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   actionCommands = [],
   onSubmit,
+  submitOnEnter = false,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1373,9 +1375,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (readOnly || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+            if (onSubmit && event.key === "Enter" && (submitOnEnter ? !event.shiftKey && !event.altKey : event.metaKey || event.ctrlKey)) {
               event.preventDefault();
-              onSubmit();
+              if (!submitOnEnter || !event.repeat) onSubmit();
             }
           }}
           className={cn(
@@ -1409,6 +1412,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
+        if (submitOnEnter && e.key === "Enter" && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) return;
         if (
           (e.key === "Backspace" || e.key === "Delete")
           && e.target instanceof HTMLElement
@@ -1418,15 +1422,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           initialChildOnChangeRef.current = false;
         }
         // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey) && (!submitOnEnter || !e.shiftKey && !e.altKey)) {
           e.preventDefault();
           e.stopPropagation();
-          onSubmit();
+          if (!submitOnEnter || !e.repeat) onSubmit();
           return;
         }
 
         // Mention keyboard handling
-        if (mentionActive) {
+        if (mentionActive && !(submitOnEnter && e.key === "Enter" && e.shiftKey)) {
           if (e.key === " " && mentionStateRef.current?.trigger === "skill") {
             mentionStateRef.current = null;
             skillEnterArmedRef.current = false;
@@ -1471,6 +1475,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+        if (submitOnEnter && onSubmit && e.key === "Enter" && !e.shiftKey && !e.altKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!e.repeat) onSubmit();
         }
       }}
       onDragEnter={(evt) => {

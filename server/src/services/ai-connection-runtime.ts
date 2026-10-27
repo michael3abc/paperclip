@@ -118,6 +118,8 @@ export async function assertManagedAiProjectAuth(
 directory=$1; pattern=$2; shift 2
 while :; do
   for relative in "$@"; do
+    # Managed credentials replace the operator's global provider home.
+    if test "$directory" = "$HOME"; then continue; fi
     file="$directory/$relative"
     if test -f "$file"; then
       grep -Eq "$pattern" "$file"
@@ -152,8 +154,9 @@ done`,
   }
   let directory =
     typeof config.cwd === "string" ? path.resolve(config.cwd) : process.cwd();
+  const operatorHome = path.resolve(os.homedir());
   for (;;) {
-    for (const relative of files) {
+    for (const relative of directory === operatorHome ? [] : files) {
       try {
         const content = await readFile(path.join(directory, relative), "utf8");
         if (

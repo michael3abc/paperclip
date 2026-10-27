@@ -5112,9 +5112,7 @@ export function heartbeatService(
     const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
     const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
-      .where(and(inArray(heartbeatRuns.agentId, agentIds),
-        or(and(eq(heartbeatRuns.status, "cancelled"), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
-          and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed")))));
+      .where(and(inArray(heartbeatRuns.agentId, agentIds), or(and(eq(heartbeatRuns.status, "cancelled"), or(inArray(environmentLeases.status, ["active", "pending_cleanup"]), and(eq(environmentLeases.provider, "ssh"), sql `${environmentLeases.metadata}->'workspaceRealization'->>'mode' = 'in_place'`, sql `not (${environmentLeases.metadata} ? 'remoteExecutionTermination')`))), and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed")))));
     const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
     for (const run of runs) {
       if (!isHeartbeatRunTerminalStatus(run.status) || liveRunExecutions.has(run.id) ||

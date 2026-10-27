@@ -896,17 +896,19 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined, undefined, expect.any(String));
   });
 
-  it("does not submit on plain Enter or Shift+Enter (newline stays with the editor)", async () => {
+  it("keeps Shift+Enter with the editor and submits on Enter", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
 
     typeText("line one");
-    pressKey("Enter");
     pressKey("Enter", { shiftKey: true });
     await flushAsync();
 
     expect(onAdd).not.toHaveBeenCalled();
     expect(editable().textContent).toBe("line one");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith("line one", undefined, undefined, undefined, expect.any(String));
   });
 
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {

@@ -71,7 +71,30 @@ For local adapters, set:
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
 
-## 3.4 Prompt templates
+## 3.4 Managed connections and SSH in-place execution
+
+Managed AI connections replace the operator's global provider home. Auth overrides
+inside the project or its other ancestors still fail validation; configuration and
+credential contents are never returned by that check. Saving the same binding in a
+different JSON key order does not trigger a provider probe.
+
+An SSH environment can set `workspaceMode: "in_place"` with an existing canonical
+`remoteWorkspacePath`. Select a `remote_managed` project workspace with that exact
+path and no repository URL. Paperclip validates the directory on the remote host
+without creating or cloning it. The supported Codex managed wrapper keeps agent
+state under the remote user's `.local/state/paperclip-ssh`, outside the repository.
+The wrapper must be installed as `.local/lib/paperclip-ssh/codex-managed`.
+
+Resumption preserves the explicit SSH host, port, user and cwd. Cancellation needs
+a receipt bound to the original run and host; killing the local SSH client is not
+proof that remote work stopped. A dispatched in-place run is never automatically
+replayed after an uncertain outcome.
+
+Task chat submits with Enter; Shift+Enter inserts a newline. IME composition and
+held-key repeats do not submit. Other Markdown editors retain their existing
+Ctrl/Cmd+Enter shortcut.
+
+## 3.5 Prompt templates
 
 You can set:
 

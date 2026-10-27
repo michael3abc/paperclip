@@ -655,6 +655,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
   return {
     kind: "remote",
     transport: "ssh",
+        workspaceRealization: parsed.config.workspaceMode === "in_place" ? { mode: "in_place", authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] } : undefined,
     environmentId: input.environment.id ?? null,
     leaseId: input.leaseId ?? null,
     remoteCwd,

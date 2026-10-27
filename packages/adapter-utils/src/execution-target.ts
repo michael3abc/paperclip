@@ -930,6 +930,17 @@ export async function runAdapterExecutionTargetProcess(
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+    if (target?.kind === "remote" && target.transport === "ssh" && target.workspaceRealization?.mode === "in_place"
+        && (result.timedOut || result.signal || result.exitCode === 255 || result.exitCode === null)) {
+        const wrapper = options.env.PAPERCLIP_SSH_PROCESS_WRAPPER;
+        const home = options.env.CODEX_HOME;
+        if (!wrapper || !home) throw new Error("SSH in_place process ownership missing; reconciliation required");
+        const record = path.posix.join(path.posix.dirname(home), "processes", `${runId}.json`);
+        const receipt = await runSshCommand(target.spec, `${shellQuote(wrapper)} --stop-record ${shellQuote(record)}`, { timeoutMs: 15000, maxBuffer: 65536 });
+        const stopped = JSON.parse(receipt.stdout);
+        if (stopped.stopped !== true || stopped.runId !== runId) throw new Error("Remote cancellation unverified; reconciliation required");
+        options.onProcessStopped?.();
+    }
   // Closing an SSH client on timeout/disconnect does not prove the remote
   // provider exited. SSH status 255 is transport failure, never a stop receipt.
   if (!target || target.kind === "local" ||
@@ -1053,6 +1064,8 @@ export async function maybeRunSandboxInstallCommand(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
   adapterKey: string;
+  runtimeOwnerId?: string;
+  inPlaceRuntime?: boolean;
   installCommand: string;
   /** When provided, skip the install if `command -v <detectCommand>` succeeds. */
   detectCommand?: string | null;
@@ -1270,7 +1283,7 @@ export async function ensureAdapterExecutionTargetDirectory(
   cwd: string,
   options: AdapterExecutionTargetShellOptions & { createIfMissing?: boolean },
 ): Promise<void> {
-  const createIfMissing = options.createIfMissing ?? false;
+  const createIfMissing = target?.workspaceRealization?.mode === "in_place" ? false : options.createIfMissing ?? false;
 
   if (!target || target.kind === "local") {
     const { ensureAbsoluteDirectory } = await import("./server-utils.js");
@@ -1430,6 +1443,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   runId: string;
   target: AdapterExecutionTarget | null | undefined;
   adapterKey: string;
+  runtimeOwnerId?: string;
+  inPlaceRuntime?: boolean;
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
@@ -1482,8 +1497,11 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   }
 
   if (target.transport === "ssh") {
+        if (target.workspaceRealization?.mode === "in_place" && input.adapterKey !== "codex") throw new Error("SSH in_place requires Codex CLI with external agent instructions");
     const prepared = await prepareRemoteManagedRuntime({
       spec: target.spec,
+            runtimeOwnerId: input.runtimeOwnerId,
+            inPlaceRuntime: target.workspaceRealization?.mode === "in_place",
       runId: input.runId,
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
@@ -1968,6 +1986,8 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   target: AdapterExecutionTarget | null | undefined;
   runtimeRootDir: string | null | undefined;
   adapterKey: string;
+  runtimeOwnerId?: string;
+  inPlaceRuntime?: boolean;
   command: string;
   args: string[];
   cwd: string;
@@ -4333,6 +4353,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   target: AdapterExecutionTarget | null | undefined;
   runtimeRootDir: string | null | undefined;
   adapterKey: string;
+  runtimeOwnerId?: string;
+  inPlaceRuntime?: boolean;
   timeoutSec?: number | null;
   hostApiToken: string | null | undefined;
   hostApiUrl?: string | null;

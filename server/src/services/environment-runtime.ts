@@ -35,7 +35,8 @@ import type {
   PluginEnvironmentSyncResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import { ensureSshWorkspaceReady, parseSshRemoteExecutionSpec, runSshCommand } from "@paperclipai/adapter-utils/ssh";
+import { stopInPlaceLease } from "@paperclipai/adapter-utils/ssh-in-place";
 import {
   getActiveStepContext,
   runWithRuntimeParent,
@@ -1218,11 +1219,30 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           username: parsed.config.username,
           remoteWorkspacePath: parsed.config.remoteWorkspacePath,
           remoteCwd,
+                    ...(parsed.config.workspaceMode === "in_place" ? { workspaceRealization: { mode: "in_place", authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] } } : {}),
         },
       });
     },
 
     async releaseRunLease(input) {
+            if ((input.lease.metadata?.workspaceRealization as { mode?: unknown } | undefined)?.mode === "in_place") {
+                try {
+                    const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.lease.companyId, input.environment);
+                    if (parsed.driver !== "ssh") throw new Error("SSH lease environment changed");
+                    const spec = parseSshRemoteExecutionSpec({ ...parsed.config, remoteCwd: input.lease.metadata?.remoteCwd });
+                    if (!spec) throw new Error("Invalid SSH lease transport");
+                    const proof = await stopInPlaceLease(input.lease, spec, runSshCommand);
+                    const termination = remoteTerminationReceipt(input.lease, proof);
+                    if (!termination) throw new Error("SSH stop receipt missing");
+                    return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+                        cleanupStatus: "success", remoteExecutionTermination: termination,
+                    });
+                } catch {
+                    return await environmentsSvc.releaseLease(input.lease.id, "pending_cleanup", {
+                        cleanupStatus: "failed", failureReason: "ssh_stop_unverified",
+                    });
+                }
+            }
       return await environmentsSvc.releaseLease(input.lease.id, input.status);
     },
 
@@ -4062,7 +4082,13 @@ export function environmentRuntimeService(
         .where(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
-            or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
+            or(eq(environmentLeases.status, "active"), and(
+              eq(environmentLeases.provider, "ssh"),
+              sql`${environmentLeases.metadata}->'workspaceRealization'->>'mode' = 'in_place'`,
+              inArray(environmentLeases.status, ["pending_cleanup", "released", "expired", "failed"]),
+              sql`not (${environmentLeases.metadata} ? 'remoteExecutionTermination')`,
+              sql`exists (select 1 from ${heartbeatRuns} r where r.id = ${environmentLeases.heartbeatRunId} and r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`,
+            ), and(eq(environmentLeases.status, "pending_cleanup"),
               sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`),
               providerResourceDisposition === "destroy"
                 ? and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))

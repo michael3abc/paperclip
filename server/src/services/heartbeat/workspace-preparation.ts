@@ -245,6 +245,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
         }
         return resolveWorkspaceForRun(agent, context, previousSessionParams, {
           executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+                executionEnvironmentConfig: selectedEnvironmentForConfig?.config ?? null,
           anchorWorkspace: {
             cwd,
             source: "task_session",
@@ -307,6 +308,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
           // transport with the remote flag on. This never changes the anchor workspace.
           executionEnvironmentDriver:
             selectedEnvironmentForConfig?.driver ?? null,
+                executionEnvironmentConfig: selectedEnvironmentForConfig?.config ?? null,
         },
       );
       // Additional referenced projects are a separate trusted Board

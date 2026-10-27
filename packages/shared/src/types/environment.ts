@@ -12,6 +12,7 @@ export interface LocalEnvironmentConfig {
 }
 
 export interface SshEnvironmentConfig {
+  workspaceMode?: "copy" | "in_place";
   host: string;
   port: number;
   username: string;

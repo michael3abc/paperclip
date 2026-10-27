@@ -3,6 +3,7 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
   asString,
   parseObject,
@@ -98,7 +99,8 @@ async function prepareCodexHelloProbe(input: {
   let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
-    await preparedRuntime?.restoreWorkspace().catch(() => {});
+    if (input.target?.workspaceRealization?.mode === "in_place") await preparedRuntime?.restoreWorkspace();
+    else await preparedRuntime?.restoreWorkspace().catch(() => { });
     if (preparedRuntimeWorkspaceLocalDir) {
       await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -106,6 +108,7 @@ async function prepareCodexHelloProbe(input: {
       await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
     }
   };
+    if (input.target?.workspaceRealization?.mode === "in_place" && input.probeApiKey) throw new Error("SSH in_place probe requires managed subscription authentication");
 
   if (input.targetIsRemote && !input.probeApiKey) {
     // Prepare the exact home a real run would use, mirroring execute.ts: vend
@@ -172,6 +175,7 @@ async function prepareCodexHelloProbe(input: {
     // Pointing Codex at an empty uploaded home would mask any login already
     // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
     // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
+        if (!seededAuth && input.target?.workspaceRealization?.mode === "in_place") throw new Error("SSH in_place probe requires host managed authentication");
     if (!seededAuth && !(input.managedAiConnection && seededConfig)) {
       return {
         command: input.command,
@@ -188,6 +192,8 @@ async function prepareCodexHelloProbe(input: {
       runId: input.runId,
       target: input.target,
       adapterKey: "codex",
+            runtimeOwnerId: `${input.companyId}/probe-${input.runId}`,
+            syncWorkspace: input.target?.workspaceRealization?.mode === "in_place" ? false : undefined,
       workspaceLocalDir: preparedRuntimeWorkspaceLocalDir,
       // Pass `input.cwd` as the base (not a pre-built per-run subdir).
       // `prepareRemoteManagedRuntime` itself appends
@@ -203,6 +209,11 @@ async function prepareCodexHelloProbe(input: {
           key: "home",
           localDir: probeHomeLocalDir,
           followSymlinks: true,
+                    restore: input.target?.workspaceRealization?.mode === "in_place" ? async ({ assetDir, readFile }) => void (await copyBackCodexAuth({
+                        readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                        hostAuthPath: path.join(effectiveHome, "auth.json"),
+                        log: async () => {},
+                    })) : undefined,
         },
       ],
     });
@@ -280,6 +291,8 @@ export async function testEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+    const inPlace = target?.kind === "remote" && target.transport === "ssh" && target.workspaceRealization?.mode === "in_place";
+    const managedWrapper = inPlace && path.posix.basename(command) === "codex-managed";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -414,7 +427,7 @@ export async function testEnvironment(
       message: "Skipped hello probe because the installed Codex CLI cannot use the configured model.",
     });
   } else if (canRunProbe) {
-    if (!commandLooksLike(command, "codex")) {
+    if (!commandLooksLike(command, "codex") && !managedWrapper) {
       checks.push({
         code: "codex_hello_probe_skipped_custom_command",
         level: "info",
@@ -425,7 +438,7 @@ export async function testEnvironment(
     } else {
       const execArgs = buildCodexExecArgs(
         { ...config, fastMode: false },
-        { skipGitRepoCheck: targetIsSandbox },
+        { skipGitRepoCheck: targetIsSandbox || inPlace },
       );
       // A connection test needs one small response, not plugin catalog sync,
       // repository instructions, or a durable session. Keep provider/model
@@ -475,7 +488,7 @@ export async function testEnvironment(
         cwd,
         command,
         args,
-        env,
+        env: inPlace ? { ...env, PAPERCLIP_RUN_ID: runId, PAPERCLIP_SSH_PROCESS_WRAPPER: command } : env,
         probeApiKey,
       });
       try {

@@ -1,3 +1,4 @@
+import { existingWorkspaceCommand } from "./ssh-in-place.js";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
@@ -23,6 +24,7 @@ import {
 } from "./runtime-progress.js";
 
 export interface SshConnectionConfig {
+  workspaceMode?: "copy" | "in_place";
   host: string;
   port: number;
   username: string;
@@ -1844,6 +1846,12 @@ async function restoreWorkspaceRootFromSsh(input: {
 export async function ensureSshWorkspaceReady(
   config: SshConnectionConfig,
 ): Promise<{ remoteCwd: string }> {
+  if (config.workspaceMode === "in_place") {
+    const result = await runSshCommand(config, existingWorkspaceCommand(config.remoteWorkspacePath));
+    const remoteCwd = result.stdout.trim();
+    if (remoteCwd !== config.remoteWorkspacePath) throw new Error("SSH in_place path must be canonical; refusing an alias");
+    return { remoteCwd };
+  }
   const result = await runSshCommand(
     config,
     `mkdir -p ${shellQuote(config.remoteWorkspacePath)} && cd ${shellQuote(config.remoteWorkspacePath)} && pwd`,

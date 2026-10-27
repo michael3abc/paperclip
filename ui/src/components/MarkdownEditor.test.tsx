@@ -332,6 +332,30 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
 
+  it.each([false, true])("chat Enter respects composition, modifiers and repeats (plain text: %s)", async (fallback) => {
+    mdxEditorMockState.throwOnRender = fallback;
+    const root = createRoot(container);
+    const submit = vi.fn();
+    await act(async () => {
+      root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={submit} submitOnEnter />);
+    });
+    const editor = container.querySelector(fallback ? "textarea" : '[contenteditable="true"]')!;
+    expect(editor).not.toBeNull();
+    for (const options of [{ shiftKey: true }, { altKey: true }, { isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...options }));
+      });
+    }
+    expect(submit).not.toHaveBeenCalled();
+    for (const options of [{}, { ctrlKey: true }, { metaKey: true }]) {
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...options }));
+      });
+    }
+    expect(submit).toHaveBeenCalledTimes(3);
+    await act(async () => root.unmount());
+  });
+
   it("applies async external value updates once the editor ref becomes ready", async () => {
     const root = createRoot(container);
 
