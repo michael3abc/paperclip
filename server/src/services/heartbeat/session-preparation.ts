@@ -1,5 +1,8 @@
-import { and, desc, eq } from "drizzle-orm";
-import { agentConfigRevisions, type Db, type agents, type agentTaskSessions, type heartbeatRuns, type issues, type projects } from "@paperclipai/db";
+import { readWorkspaceBinding, fixedWorkspaceMatchesRun, fixedBindingOnlyRevision, workspaceBindingConflict } from "../agent-workspace-binding.js";
+import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
+import { parseObject } from "../../adapters/utils.js";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { agentConfigRevisions, type Db, type agents, type agentTaskSessions, heartbeatRuns, type issues, type projects } from "@paperclipai/db";
 import type { AiConnectionBinding, AiRuntimeConnectionBinding } from "@paperclipai/shared";
 import { getServerAdapter } from "../../adapters/index.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
@@ -153,6 +156,30 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
     };
   const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
   const compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
+  const issueId = issueRef?.id ?? readNonEmptyString(context.issueId);
+  const fixedWorkspaceBinding = readWorkspaceBinding(agent.runtimeConfig);
+  let fixedWorkspaceSessionCompatible = true;
+  if (fixedWorkspaceBinding && taskSession && !taskSession.lastRunId) {
+    workspaceBindingConflict("prior_session_unknown", "The saved session has no execution ownership record. Reconcile it before using a fixed working directory.");
+  }
+  if (fixedWorkspaceBinding && (taskSession?.lastRunId || issueId)) {
+    const [prior] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+      taskSession?.lastRunId ? eq(heartbeatRuns.id, taskSession.lastRunId) : and(
+        eq(heartbeatRuns.issueId, issueId!),
+        sql`${heartbeatRuns.createdAt} < ${run.createdAt.toISOString()}::timestamptz`,
+        sql`(${heartbeatRuns.processStartedAt} is not null or ${heartbeatRuns.nativeSessionId} is not null or ${heartbeatRuns.sessionIdAfter} is not null)`,
+      ),
+    )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+    fixedWorkspaceSessionCompatible = !prior ? !taskSession : fixedWorkspaceMatchesRun({ binding: fixedWorkspaceBinding, environment: selectedEnvironmentForConfig, run: prior });
+    if (!fixedWorkspaceSessionCompatible && (!prior || !await agentExecutionsHaveStopped(db, [agent.id], { runIds: [prior.id] }))) {
+      workspaceBindingConflict("prior_session_not_stopped", "The previous session uses another host or directory and its termination is not confirmed. Reconcile it before starting a fresh session.");
+    }
+    if (!fixedWorkspaceSessionCompatible) {
+      if (explicitResumeSessionParams || explicitResumeSessionDisplayId) workspaceBindingConflict("explicit_resume_conflict", "The requested old session is bound to another host or directory. Start a fresh session after reconciling it.");
+      context.forceFreshSession = true;
+    }
+  }
   const importedManagedInstructions = Boolean(taskSession && sessionConfigMetadataInput.managedInstructions?.contentHash
     && readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint);
   if (importedManagedInstructions) {
@@ -179,6 +206,20 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
         ...sessionConfigMetadataInput, ...candidate, retainManagedInstructionPaths: true,
       })] : []),
     ])));
+  }
+  if (fixedWorkspaceBinding && fixedWorkspaceSessionCompatible && taskSession && latestAgentConfigRevision) {
+    const revisions = await db.select().from(agentConfigRevisions).where(and(
+      eq(agentConfigRevisions.companyId, agent.companyId), eq(agentConfigRevisions.agentId, agent.id),
+    )).orderBy(desc(agentConfigRevisions.createdAt), desc(agentConfigRevisions.id)).limit(2);
+    const current = revisions[0];
+    const previous = revisions[1];
+    if (current?.id === latestAgentConfigRevision.id && fixedBindingOnlyRevision(current.beforeConfig, current.afterConfig)) {
+      compatibleConfigMetadata.push(await buildEffectiveRunSessionConfigMetadata({
+        ...sessionConfigMetadataInput,
+        agentRuntimeConfig: parseObject(current.beforeConfig.runtimeConfig),
+        agentConfigRevision: previous ? { id: previous.id, changedKeys: previous.changedKeys, configRevisionAt: previous.createdAt.toISOString() } : null,
+      }));
+    }
   }
   const configuredModel =
     readConfiguredModelFromAdapterConfig(runtimeConfig);

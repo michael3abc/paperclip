@@ -88,6 +88,7 @@ import type {
   resolveExecutionWorkspaceReuseRequestForIssue,
 } from "./workspaces.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
+import { readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask } from "../agent-workspace-binding.js";
 import type {
   ParsedExecutionWorkspaceMode,
   ExecutionWorkspaceEnvironmentResolution,
@@ -180,6 +181,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const providerApiPlacement = resolveProviderApiPlacement(input);
   const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";
   const timeWorkspace = createHeartbeatPreparationTiming(run.id);
+  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
   const {
     issueRef,
     issueId,
@@ -312,6 +314,22 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       return preflightEnvironment.driver;
     },
     resolveWorkspace: async () => {
+      if (fixedBinding) {
+        if (fresh || remoteAuthority || providerApiPlacement) {
+          throw new WorkspaceValidationFailure("Fixed working directories cannot replace a fresh, remote-storage, or provider-owned workspace.",
+            { reason: "fixed_workspace_policy_conflict" });
+        }
+        assertFixedWorkspacePolicy({
+          binding: fixedBinding, environment: selectedEnvironmentForConfig,
+          trustPreset: trustPreset.kind, mode: requestedExecutionWorkspaceMode, isDot: controllerOnly,
+          external: await isExternalWorkspaceTask(db, agent.companyId, issueId),
+          strategies: [mergedConfig, mergedConfig.workspaceStrategy, configSnapshot, projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy, environmentExecutionWorkspaceSettings?.workspaceStrategy],
+        });
+        return resolveWorkspaceForRun(agent, context, previousSessionParams, {
+          executionEnvironmentDriver: selectedEnvironmentForConfig?.driver,
+          executionEnvironmentConfig: selectedEnvironmentForConfig?.config,
+        });
+      }
       if (remoteAuthority) {
         const strategy = parseObject(mergedConfig.workspaceStrategy);
         const sourceState = await resolveRemoteWorkspaceSource(db, {
@@ -725,7 +743,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     executionWorkspace,
     reusedExecutionWorkspace,
     policy: resolvedWorkspaceReusePolicy,
-  } = pluginPrepared ? { executionWorkspace: { ...executionWorkspaceBase,
+  } = fixedBinding ? {
+    executionWorkspace: { ...executionWorkspaceBase, strategy: "project_primary" as const, cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
+    reusedExecutionWorkspace: Boolean(fixedBinding && workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.cwd === resolvedWorkspace.cwd && reusableExistingExecutionWorkspace.strategyType === "project_primary"),
+    policy: { ...workspaceReuseProvisioningPolicy, shouldRestoreExistingWorkspace: Boolean(fixedBinding && workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.cwd === resolvedWorkspace.cwd && reusableExistingExecutionWorkspace.strategyType === "project_primary") },
+  } : pluginPrepared ? { executionWorkspace: { ...executionWorkspaceBase,
     providerBinding: readWorkspaceProviderBinding(pluginPrepared.metadata)!,
     strategy: pluginPrepared.strategyType as "git_worktree" | "project_primary",
     cwd: `/workspaces/${pluginPrepared.id}`, branchName: pluginPrepared.branchName, worktreePath: null,

@@ -2176,6 +2176,9 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
+    if (req.actor.type === "agent" && normalized.workspaceBinding !== undefined) {
+      throw forbidden("Only an operator can configure a fixed working directory.");
+    }
     if (normalized.aiConnection) return normalized;
     if (req.actor.type === "agent") {
       const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -4278,6 +4281,9 @@ export function agentRoutes(
     if (!rollbackConfig) {
       throw unprocessable("Invalid revision snapshot");
     }
+    if (req.actor.type === "agent" && !isDeepStrictEqual(asRecord(rollbackConfig.runtimeConfig)?.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
+      throw forbidden("Only an operator can change a fixed working directory.");
+    }
     assertProviderTraceSettingTransition(
       req,
       rollbackConfig.runtimeConfig,
@@ -5554,6 +5560,9 @@ export function agentRoutes(
         existing.runtimeConfig,
       );
       requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
+      if (req.actor.type === "agent" && !isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
+        throw forbidden("Only an operator can change a fixed working directory.");
+      }
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||

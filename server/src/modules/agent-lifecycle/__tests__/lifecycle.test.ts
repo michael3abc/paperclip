@@ -134,6 +134,21 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(404);
   });
 
+  it("checks only the requested prior session while independent sessions stay active", async () => {
+    const agent = await hire();
+    const [prior] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "succeeded", runtimeMode: "native", startedAt: new Date(), processPid: process.pid,
+    }).returning();
+    await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "running" });
+    expect(await agentExecutionsHaveStopped(db, [agent.id], { runIds: [prior.id] })).toBe(false);
+    await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, prior.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id], { runIds: [prior.id] })).toBe(false);
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000 }).where(eq(heartbeatRuns.id, prior.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id], { runIds: [prior.id] })).toBe(true);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    expect(await agentExecutionsHaveStopped(db, [agent.id], { runIds: [randomUUID()] })).toBe(false);
+  });
+
   it("maps existing states without starting setup or clearing pause reasons", async () => {
     const rows = await db.insert(agents).values(["idle", "running", "error", "paused", "pending_approval", "terminated"].map(status => ({
       companyId, name: status, status, pauseReason: status === "paused" ? "budget" : null,

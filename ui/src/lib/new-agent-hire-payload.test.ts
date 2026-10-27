@@ -32,6 +32,7 @@ describe("buildNewAgentHirePayload", () => {
           ...defaultCreateValues,
           adapterType: "claude_local",
           defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
+          fixedWorkspaceCwd: "/srv/project",
         },
         adapterConfig: { foo: "bar" },
       }),
@@ -42,6 +43,7 @@ describe("buildNewAgentHirePayload", () => {
       defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
       adapterConfig: { foo: "bar" },
       budgetMonthlyCents: 0,
+      runtimeConfig: { workspaceBinding: { mode: "fixed", cwd: "/srv/project" } },
     });
   });
 

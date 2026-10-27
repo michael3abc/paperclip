@@ -63,6 +63,17 @@ In agent runtime settings, configure heartbeat policy:
 
 ## 3.3 Working directory and execution limits
 
+For a persistent project agent, set **Fixed working directory** in Harness /
+Runtime. This stores `runtimeConfig.workspaceBinding = { mode: "fixed", cwd }`.
+Choose its host with `defaultEnvironmentId`. The existing directory is shared by
+that agent's chats, tasks and sessions without creating checkouts. Parallel
+sessions remain independent; coordinate file ownership in the project team.
+Project or isolation conflicts fail explicitly. Runtime state, credentials and
+execution logs remain in their existing runtime storage. See the
+[API contract](api/agents#fixed-working-directory) for validation and session
+transition rules. Removing the field restores the normal workspace policy and
+does not delete old workspace directories or records.
+
 For local adapters, set:
 
 - `cwd` (working directory)
