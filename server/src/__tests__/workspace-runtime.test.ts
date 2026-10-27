@@ -8008,6 +8008,16 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     // Stands in for the persisted template's hard-coded 45439: a pinned port
     // outside the broker's dedicated allowlist, so the backfill has to relocate.
     const legacyPort = await reservePort();
+    // Fake brokers do not coordinate across Vitest processes like the real
+    // host broker does. Hold an exclusive claim until the entire lifecycle
+    // finishes, including the interval when a restarted listener is unbound.
+    const claimRoot = path.join(
+      await fs.realpath(process.platform === "win32" ? os.tmpdir() : "/tmp"),
+      `paperclip-https-backfill-ports-${process.getuid?.() ?? "test"}`,
+    );
+    await fs.mkdir(claimRoot, { recursive: true, mode: 0o700 });
+    let exposurePort: number | null = null;
+    let portClaim: { handle: Awaited<ReturnType<typeof fs.open>>; path: string } | null = null;
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -8103,7 +8113,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     };
     const installExposureDeps = () => setWorkspaceRuntimeExposureDepsForTests({
       broker,
-      isPortAvailable: isLoopbackPortFree,
+      isPortAvailable: async (port) => exposurePort !== null
+        && (port === exposurePort || port === deriveViteHmrPort(exposurePort))
+        && await isLoopbackPortFree(port),
       isBrokerAvailable: async () => true,
       resolveHostname: async () => "runner.tail123.ts.net",
       probeHealth: async () => true,
@@ -8111,6 +8123,27 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
 
     try {
+      // Scan from the opposite end to ordinary fake-broker fixtures, which
+      // start at 42000. Only this test's claimed pair is offered for allocation.
+      for (let port = 42_999; port >= 42_000; port -= 1) {
+        const claimPath = path.join(claimRoot, String(port));
+        let handle: Awaited<ReturnType<typeof fs.open>>;
+        try {
+          handle = await fs.open(claimPath, "wx", 0o600);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw error;
+        }
+        portClaim = { handle, path: claimPath };
+        if (await isLoopbackPortFree(port) && await isLoopbackPortFree(deriveViteHmrPort(port))) {
+          exposurePort = port;
+          break;
+        }
+        await handle.close();
+        await fs.unlink(claimPath);
+        portClaim = null;
+      }
+      if (exposurePort === null) throw new Error("No free app/HMR pair for HTTPS backfill fixture");
       // ---- Before: the workspace as it exists today, on plain HTTP. ----
       process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS = "off";
       const before = await startRuntimeServicesForWorkspaceControl({
@@ -8137,7 +8170,8 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       installExposureDeps();
 
       const result = await reconcilePersistedRuntimeServicesOnStartup(db);
-      expect(result).toMatchObject({ backfilled: 1, restarted: 1, restartFailed: 0 });
+      const reconciledRows = await db.select().from(workspaceRuntimeServices);
+      expect(result, JSON.stringify(reconciledRows)).toMatchObject({ backfilled: 1, restarted: 1, restartFailed: 0 });
       expect(brokerCalls).toEqual(["reserve", "expose"]);
 
       // ---- After: same row, verified HTTPS URL, no HTTP anywhere. ----
@@ -8180,6 +8214,10 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       await resetRuntimeServicesForTests();
       await fs.rm(paperclipHome, { recursive: true, force: true });
       await fs.rm(workspaceRoot, { recursive: true, force: true });
+      if (portClaim) {
+        await portClaim.handle.close();
+        await fs.unlink(portClaim.path);
+      }
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;

@@ -259,6 +259,14 @@ describe("issue attachment routes", () => {
     mockWorkProductService.update.mockReset();
   });
 
+  beforeEach(async () => {
+    // Load cold route modules during fixture setup, before exercising requests.
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("accepts zip uploads for issue attachments", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({

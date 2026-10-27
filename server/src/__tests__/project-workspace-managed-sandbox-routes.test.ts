@@ -218,6 +218,14 @@ describe("project workspace host-path floor", () => {
     setManagedSandboxOnly(false);
   });
 
+  beforeEach(async () => {
+    // Load cold route modules during fixture setup, before exercising requests.
+    await Promise.all([
+      vi.importActual("../routes/projects.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("creates a project workspace with a cwd when the policy is off", async () => {
     const app = await createApp();
     const res = await request(app)

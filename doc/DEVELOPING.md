@@ -536,6 +536,9 @@ in a setup hook after registering mocks. This keeps cold transforms within the
 hook budget rather than consuming the first request test's timeout. Preserve
 per-test deadlines and assertions. Capacity-only cache tests should hold the
 clock fixed so TTL expiration does not depend on machine load.
+Fixtures that replace the host HTTPS broker must also coordinate app/HMR port
+claims across test processes. Keep each fixture's claim until its listeners
+have stopped, including restart intervals when the ports temporarily unbind.
 
 Run standalone checks without inherited provider credentials or endpoint
 overrides. Filesystem fixtures expect the normal `022` umask; keep private logs

@@ -255,6 +255,14 @@ describe("issue activity event routes", () => {
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
   });
 
+  beforeEach(async () => {
+    // Load cold route modules during fixture setup, before exercising requests.
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it("returns a field-change receipt and omits a requested no-op field", async () => {
     const issue = makeIssue();
     mockIssueService.getById.mockResolvedValue(issue);

@@ -273,6 +273,14 @@ describe("issue update comment wakeups", () => {
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
   });
 
+  beforeEach(async () => {
+    // Load cold route modules during fixture setup, before exercising requests.
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
+  });
+
   it.each(["post", "patch"] as const)("rejects %s board messages under an inherited pause before any mutation", async (method) => {
     const existing = makeIssue();
     mockIssueService.getById.mockResolvedValue(existing);
