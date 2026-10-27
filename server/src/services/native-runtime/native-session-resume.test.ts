@@ -52,6 +52,7 @@ import {
   retainedNativeCleanupJournalMatches,
 } from "./native-session-executor.js";
 import * as publicationSignals from "../chat-publication-reconciliation.js";
+import * as runnerRuntime from "../../vendor/paperclip-runner/index.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import {
   LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION,
@@ -739,6 +740,8 @@ const recoveryFakeCodex = resolve(
     const onSpawn = async (meta: typeof ownedSpawns[number]) => { ownedSpawns.push(meta); };
     let executionCloseCompleted = false;
     const runnerDiagnostics: string[] = [];
+    const originalTransport = runnerRuntime.createRunnerdCodexTransport;
+    const providerTransport = vi.spyOn(runnerRuntime, "createRunnerdCodexTransport");
     const onRunnerLog = async (_stream: "stdout" | "stderr", chunk: string) => {
       runnerDiagnostics.push(chunk.slice(-4_096));
       if (runnerDiagnostics.length > 32) runnerDiagnostics.shift();
@@ -759,6 +762,12 @@ const recoveryFakeCodex = resolve(
         `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(recoveryFakeCodex)} "$CODEX_HOME/fake-state.json" 16\n`,
       );
       await chmod(command, 0o700);
+      // Installed provider dependencies take precedence over PATH. Pin only the
+      // synthetic provider boundary while retaining the real runner transport.
+      providerTransport.mockImplementation((options) => originalTransport({
+        ...options,
+        codexCommand: command,
+      }));
       await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
       const address = server.address();
       if (!address || typeof address === "string")
@@ -1048,6 +1057,11 @@ const recoveryFakeCodex = resolve(
           async onContinuityBreak(value) {
             continuity = value;
           },
+        }).then((result) => {
+          if (result.terminal?.runTerminalState !== "succeeded") {
+            throw new Error(`Recovery fixture returned an unsuccessful result: ${JSON.stringify(result)}`);
+          }
+          return result;
         }).catch(async (error: unknown) => {
           const eventRows = await db
             .select({
@@ -1228,6 +1242,7 @@ const recoveryFakeCodex = resolve(
       ));
       const closeFailures = closed.filter((result) => result.status === "rejected");
       runnerPrpWebSocketInternals.resetForTests();
+      providerTransport.mockRestore();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
       if (previousStateBase === undefined)
