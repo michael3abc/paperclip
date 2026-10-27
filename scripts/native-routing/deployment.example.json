@@ -9,7 +9,7 @@
   "routerUrl": "http://127.0.0.1:8790",
   "sessionCookieName": "paperclip-default.session_token",
   "companyId": "00000000-0000-4000-8000-000000000001",
-  "ownerId": "00000000-0000-4000-8000-000000000002",
+  "ownerId": "existing-better-auth-user-id",
   "connections": {
     "anthropic-gateway": "00000000-0000-4000-8000-000000000003",
     "anthropic-local": "00000000-0000-4000-8000-000000000004",

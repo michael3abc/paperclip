@@ -14,9 +14,11 @@ for (const key of ["apiUrl", "routerUrl"]) {
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw new Error(`Deployment ${key} must be a credential-free HTTP origin`);
   deployment[key] = url.origin;
 }
-for (const id of [deployment.companyId, deployment.ownerId, ...Object.values(deployment.connections ?? {})]) {
+for (const id of [deployment.companyId, ...Object.values(deployment.connections ?? {})]) {
   if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Deployment IDs must be explicit UUIDs");
 }
+// Better Auth user IDs are opaque text, unlike company and connection UUIDs.
+if (typeof deployment.ownerId !== "string" || !deployment.ownerId.trim() || deployment.ownerId !== deployment.ownerId.trim()) throw new Error("Configure the existing operator's opaque ownerId");
 const routeKeys = ["anthropic-gateway", "anthropic-local", "openai-gateway", "openai-local"];
 if (routeKeys.some(key => !deployment.connections?.[key]) || new Set(Object.values(deployment.connections)).size !== 4) throw new Error("Configure exactly four distinct existing routing connection IDs");
 if (!/^[a-zA-Z0-9_.-]+$/.test(deployment.sessionCookieName ?? "")) throw new Error("Configure the instance sessionCookieName");
