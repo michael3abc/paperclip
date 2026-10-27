@@ -1444,6 +1444,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     );
   }
 
+  const workspaceField = !isDotRunner && !hideHostPaths && (
+    <Field label="Workspace" hint="Use an existing absolute directory on the selected environment for every session. Conflicting project paths or isolation requirements fail explicitly; Paperclip does not create or clone this directory.">
+      <DraftInput
+        aria-label="Fixed working directory"
+        value={isCreate ? val!.fixedWorkspaceCwd ?? "" : String(((overlay.runtime.runtimeConfig ?? runtimeConfig) as { workspaceBinding?: { cwd?: string } }).workspaceBinding?.cwd ?? "")}
+        onCommit={(value) => {
+          if (isCreate) set!({ fixedWorkspaceCwd: value });
+          else {
+            const next = { ...runtimeConfig, ...(overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) };
+            if (value.trim()) next.workspaceBinding = { mode: "fixed", cwd: value.trim() };
+            else delete next.workspaceBinding;
+            mark("runtime", "runtimeConfig", next);
+          }
+        }}
+        immediate
+        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono"
+        placeholder="/absolute/path/to/project"
+      />
+    </Field>
+  );
+
   return (
     <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -1488,15 +1509,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 placeholder="e.g. VP of Engineering"
               />
             </Field>
-            <Field label="Reports to" hint={help.reportsTo}>
-              <ReportsToPicker
-                agents={companyAgents}
-                value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
-                onChange={(id) => mark("identity", "reportsTo", id)}
-                excludeAgentIds={[props.agent.id]}
-                chooseLabel="Choose manager…"
-              />
-            </Field>
+            <div className="grid gap-5 sm:grid-cols-2">
+              <Field label="Reports to" hint={help.reportsTo}>
+                <ReportsToPicker
+                  agents={companyAgents}
+                  value={eff("identity", "reportsTo", props.agent.reportsTo ?? null)}
+                  onChange={(id) => mark("identity", "reportsTo", id)}
+                  excludeAgentIds={[props.agent.id]}
+                  chooseLabel="Choose manager…"
+                />
+              </Field>
+              {workspaceField}
+            </div>
             {isLocal && !props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
@@ -1717,27 +1741,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             />
           )}
 
-          {/* Working directory */}
-          {!isDotRunner && !hideHostPaths && (
-            <Field label="固定工作目錄 / Fixed working directory" hint="Use an existing absolute directory on the selected environment for every session. Conflicting project paths or isolation requirements fail explicitly; Paperclip does not create or clone this directory.">
-              <DraftInput
-                aria-label="Fixed working directory"
-                value={isCreate ? val!.fixedWorkspaceCwd ?? "" : String(((overlay.runtime.runtimeConfig ?? runtimeConfig) as { workspaceBinding?: { cwd?: string } }).workspaceBinding?.cwd ?? "")}
-                onCommit={(value) => {
-                  if (isCreate) set!({ fixedWorkspaceCwd: value });
-                  else {
-                    const next = { ...runtimeConfig, ...(overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) };
-                    if (value.trim()) next.workspaceBinding = { mode: "fixed", cwd: value.trim() };
-                    else delete next.workspaceBinding;
-                    mark("runtime", "runtimeConfig", next);
-                  }
-                }}
-                immediate
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono"
-                placeholder="/absolute/path/to/project"
-              />
-            </Field>
-          )}
+          {/* Create mode has no identity section. */}
+          {isCreate && workspaceField}
           {showLegacyWorkingDirectoryField && (
             <Field label="Working directory (deprecated)" hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">

@@ -3836,6 +3836,9 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     roots.push(result.root);
     const input = result.container.querySelector<HTMLInputElement>('[aria-label="Fixed working directory"]')!;
     expect(input.value).toBe("/srv/original");
+    expect(input.closest('[data-config-section="identity"]')).not.toBeNull();
+    expect(input.closest(".grid")?.textContent).toContain("Reports to");
+    expect(result.container.querySelectorAll('[aria-label="Fixed working directory"]')).toHaveLength(1);
     await act(async () => setInputValue(input, "/srv/next"));
     await flushReact();
     await act(async () => save?.());
