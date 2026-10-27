@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFeedbackService = vi.hoisted(() => ({
   getFeedbackTraceById: vi.fn(),
@@ -148,6 +148,11 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("issue feedback trace routes", () => {
+  beforeAll(async () => {
+    // Finish cold imports before any request can outlive its test deadline.
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);

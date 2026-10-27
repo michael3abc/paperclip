@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 vi.mock("../services/fast-responses.js", () => ({
@@ -322,6 +322,11 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe("issue comment reopen routes", () => {
+  beforeAll(async () => {
+    // Finish cold imports before any request can outlive its test deadline.
+    await Promise.all([import("../routes/issues.js"), import("../middleware/index.js")]);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
