@@ -3847,6 +3847,24 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     } }));
   });
 
+  it("shows a project PM binding read-only instead of the fixed-path input", async () => {
+    const binding = {
+      mode: "project_pm", agentHome: "/srv/paperclip/agents/pm", projectId: "8a3c3c1e-2b8f-4c35-9d0a-111111111111",
+      workerRoot: "/srv/app", workerIsolation: "shared", workerSlots: 2, inboxIssueId: "8a3c3c1e-2b8f-4c35-9d0a-222222222222",
+    };
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "codex_local", runtimeConfig: { heartbeat: { enabled: false }, workspaceBinding: binding } as Agent["runtimeConfig"] },
+    );
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Fixed working directory"]')).toBeNull();
+    const summary = result.container.querySelector('[aria-label="Project PM workspace"]');
+    expect(summary?.textContent).toContain("/srv/paperclip/agents/pm");
+    expect(summary?.textContent).toContain("/srv/app");
+    expect(summary?.textContent).toContain(binding.inboxIssueId);
+    expect(summary?.closest('[data-config-section="identity"]')).not.toBeNull();
+  });
+
   it("shows the host path and execution-engine fields when the policy is off", async () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
