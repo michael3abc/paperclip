@@ -81,6 +81,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { projectPmRoutes } from "./routes/project-pm.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -813,6 +814,7 @@ export async function createApp(
     // production, so a failed login leaves no log trail.
     log: (line) => logger.info(line),
   });
+  api.use(projectPmRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     agentRoutes(db, {
       chatRunRetries: chatChannels,

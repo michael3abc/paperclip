@@ -6,6 +6,7 @@ import type {
   PauseReason,
   AgentRole,
   AgentStatus,
+  IssueStatus,
 } from "../constants.js";
 import type {
   CompanyMembership,
@@ -59,6 +60,34 @@ export interface PaperclipPmWorkspaceContext {
   cwd: string;
   issueId: string | null;
   inboxIssueId: string | null;
+}
+
+/** One row of `GET /api/companies/:companyId/pm-workspaces`. */
+export interface PmWorkspaceListing {
+  agentId: string;
+  agentName: string;
+  status: string;
+  projectId: string;
+  projectName: string | null;
+  agentHome: string;
+  workerRoot: string;
+  workerIsolation: ProjectPmWorkerIsolation;
+  workerSlots: number;
+  inboxIssueId: string | null;
+}
+
+export type PmIntakeResult =
+  | { status: "created"; commentId: string; issueId: string; runId: string | null; dedupeId: string }
+  | { status: "duplicate"; commentId: string; issueId: string; dedupeId: string };
+
+export type PmIntakeLookup =
+  | { status: "found"; commentId: string; issueId: string; createdAt: string }
+  | { status: "not_found" };
+
+/** `POST /api/issues/:id/continue` (202): the wake run, if one was queued, and the issue status after the call. */
+export interface IssueContinueResult {
+  runId: string | null;
+  status: IssueStatus;
 }
 
 export type AgentRuntimeConfig = Record<string, unknown> & {

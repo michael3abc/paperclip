@@ -106,6 +106,20 @@ export const agentWorkspaceBindingSchema = z.discriminatedUnion("mode", [
   agentProjectPmWorkspaceBindingSchema,
 ]);
 
+export const PM_INTAKE_SOURCES = ["console", "momo"] as const;
+
+export const pmIntakeDedupeIdSchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9:_-]+$/);
+
+export const createPmIntakeSchema = z.object({
+  dedupeId: pmIntakeDedupeIdSchema,
+  source: z.enum(PM_INTAKE_SOURCES),
+  text: z.string().min(1).max(20000),
+  /** Embedded in the receipt marker, so it may not contain whitespace or angle brackets. */
+  sourceRef: z.string().min(1).max(256).regex(/^[^\s<>]+$/).optional(),
+}).strict();
+
+export type CreatePmIntake = z.infer<typeof createPmIntakeSchema>;
+
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
   workspaceBinding: agentWorkspaceBindingSchema.optional(),

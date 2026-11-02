@@ -1080,6 +1080,14 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+/** `POST /api/issues/:id/continue`: reopen a closed issue if needed and wake its assignee. */
+export const continueIssueSchema = z.object({
+  commentId: z.string().uuid().optional(),
+  reason: z.string().trim().min(1).max(500).optional(),
+}).strict();
+
+export type ContinueIssue = z.infer<typeof continueIssueSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(
   ISSUE_THREAD_INTERACTION_STATUSES,
 );

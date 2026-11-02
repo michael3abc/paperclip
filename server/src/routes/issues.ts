@@ -73,6 +73,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  continueIssueSchema,
   acceptIssueThreadInteractionSchema,
   resolveConfirmationFromCommentSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -146,6 +147,7 @@ import {
   type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueComment,
   type IssueCommentPresentation,
+  type IssueContinueResult,
   type IssueQueuedCommentQueue,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
@@ -18108,6 +18110,212 @@ export function issueRoutes(
       res.json(issue);
     });
   }
+
+  // PM v2 "continue original worker": one explicit, awaited call that reopens a
+  // closed issue and wakes its assignee, returning the wake run. The comment
+  // route's `resume: true` does the same, but its wake is fire-and-forget after
+  // the response, so the caller cannot see whether a run was queued.
+  router.post(
+    "/issues/:id/continue",
+    validate(continueIssueSchema),
+    async (req, res) => {
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(req.params.id as string),
+        "Issue not found",
+      );
+      if (!issue) return;
+      const body = req.body as { commentId?: string; reason?: string };
+      if (req.actor.type === "agent") {
+        const runId = requireAgentRunId(req, res);
+        if (!runId) return;
+        const actorAgentId = req.actor.agentId;
+        if (!actorAgentId || actorAgentId !== issue.assigneeAgentId) {
+          res.status(403).json({
+            error: "Only the issue's assignee agent or a board user can continue this issue",
+            details: { issueId: issue.id, assigneeAgentId: issue.assigneeAgentId, actorAgentId: actorAgentId ?? null },
+          });
+          return;
+        }
+        const [run] = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, runId),
+            eq(heartbeatRuns.agentId, actorAgentId),
+            eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.status, "running"),
+          ))
+          .limit(1);
+        if (!run) {
+          res.status(403).json({ error: "Continue requires a run credential of an active run of the assignee agent" });
+          return;
+        }
+      } else if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Board or agent authentication required" });
+        return;
+      }
+      if (!issue.assigneeAgentId) {
+        res.status(409).json({
+          error: "Issue has no assignee agent to continue",
+          details: { issueId: issue.id },
+        });
+        return;
+      }
+      if (body.commentId) {
+        const [comment] = await db
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.id, body.commentId),
+            eq(issueComments.issueId, issue.id),
+            eq(issueComments.companyId, issue.companyId),
+            isNull(issueComments.deletedAt),
+          ))
+          .limit(1);
+        if (!comment) {
+          res.status(422).json({ error: "commentId must be a comment on this issue" });
+          return;
+        }
+      }
+      // Same gate as a comment with `resume: true`: low-trust actors, subtree
+      // pause holds, unresolved blockers and non-resumable statuses are refused.
+      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true }))) return;
+      if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "update"))) return;
+
+      const actor = getActorInfo(req);
+      const isClosed = isClosedIssueStatus(issue.status);
+      const isBlocked = issue.status === "blocked";
+      let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+      let reopenedGeneration: number | null = null;
+      const closedExecutionWorkspace = isClosed ? await getClosedIssueExecutionWorkspace(issue) : null;
+      if (closedExecutionWorkspace) {
+        const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace);
+        if (reopenOutcome === null) return;
+        if (reopenOutcome.outcome === "reopened") {
+          reopenedWorkspace = closedExecutionWorkspace;
+          reopenedGeneration = reopenOutcome.generation;
+        }
+      }
+      let currentIssue = issue;
+      guardReopenedWorkspaceConsumption({
+        req,
+        res,
+        issue,
+        workspace: reopenedWorkspace,
+        generation: reopenedGeneration,
+        finalIssueStatus: () => currentIssue.status,
+      });
+
+      const reopened = isClosed || isBlocked;
+      const reopenedFrom = reopened ? issue.status : null;
+      if (reopened) {
+        const updated = await svc.update(issue.id, { status: "todo" });
+        if (!updated) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        currentIssue = updated;
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: "todo",
+            reopened: true,
+            reopenedFrom,
+            source: "continue",
+            resumeIntent: true,
+            followUpRequested: true,
+            identifier: currentIssue.identifier,
+            _previous: { status: issue.status },
+          },
+        });
+        await revalidateActiveSourceRecoveryAfterCommittedWrite({
+          issue: currentIssue,
+          trigger: "issue_update",
+          actor,
+          statusChanged: true,
+          resumeRequested: true,
+          reopened: true,
+          blockedToTodoRecovery: isBlocked,
+        });
+      }
+
+      const wakeContext = {
+        issueId: currentIssue.id,
+        taskId: currentIssue.id,
+        ...(body.commentId ? { commentId: body.commentId, wakeCommentId: body.commentId } : {}),
+        source: "issue.continue",
+        wakeReason: "pm_continue",
+        resumeIntent: true,
+        followUpRequested: true,
+        ...(reopenedFrom ? { reopenedFrom } : {}),
+        ...(body.reason ? { continueReason: body.reason } : {}),
+      };
+      let wakeRunId: string | null = null;
+      let wakeError: string | null = null;
+      try {
+        const run = await heartbeat.wakeup(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "pm_continue",
+          payload: {
+            issueId: currentIssue.id,
+            ...(body.commentId ? { commentId: body.commentId } : {}),
+            mutation: "continue",
+            resumeIntent: true,
+            followUpRequested: true,
+            ...(reopenedFrom ? { reopenedFrom } : {}),
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: wakeContext,
+        });
+        wakeRunId = run?.id ?? null;
+      } catch (err) {
+        wakeError = err instanceof Error ? err.message : String(err);
+        logger.warn({ err, issueId: currentIssue.id }, "failed to enqueue continue wake");
+      }
+
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
+        action: "issue.continued",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          identifier: currentIssue.identifier,
+          assigneeAgentId: issue.assigneeAgentId,
+          wakeRunId,
+          status: currentIssue.status,
+          reopened,
+          reopenedFrom,
+          commentId: body.commentId ?? null,
+          reason: body.reason ?? null,
+          ...(wakeError ? { wakeError } : {}),
+        },
+      });
+      if (wakeError) {
+        res.status(503).json({ error: "The issue was updated, but its assignee could not be woken. Retry continue." });
+        return;
+      }
+      res.status(202).json({ runId: wakeRunId, status: currentIssue.status as IssueContinueResult["status"] } satisfies IssueContinueResult);
+    },
+  );
 
   router.post(
     "/issues/:id/comments",
