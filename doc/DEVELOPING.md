@@ -1134,6 +1134,15 @@ Run standalone checks without inherited provider credentials or endpoint
 overrides. Filesystem fixtures expect the normal `022` umask; keep private logs
 in a protected parent directory instead of imposing `077` on test processes.
 
+The stable test runner defaults to `/tmp` on Unix and the OS temporary directory
+on Windows. Set `PAPERCLIP_TEST_TMP_ROOT` to an existing writable absolute directory
+(for example `/var/tmp`) when that filesystem lacks space, inodes, or user quota.
+Each Vitest invocation receives a unique canonical directory containing its
+isolated Paperclip home and `TMPDIR`; symlink aliases are resolved. Keep the parent
+path short for Unix socket fixtures. Invalid settings fail without falling back.
+Check both free bytes and inodes before a full run; failed fixture directories may
+remain for diagnosis and must only be removed after their writers have stopped.
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable

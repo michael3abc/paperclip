@@ -392,7 +392,11 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
 async function runVitest(args, label, testShard = null, exactFiles = false) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
-  const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
+  const tempRootParent = process.env.PAPERCLIP_TEST_TMP_ROOT
+    ?? (process.platform === "win32" ? os.tmpdir() : "/tmp");
+  if (!path.isAbsolute(tempRootParent)) {
+    fail("PAPERCLIP_TEST_TMP_ROOT must be an absolute path to an existing writable directory");
+  }
   // Production workspace/security checks reject symlink aliases. In particular
   // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
   const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));

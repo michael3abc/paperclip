@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,59 @@ function dryRunJson(args, envOverrides = {}) {
 
 const SHARD_COUNT = 12;
 const SERIALIZED_SHARD_COUNT = 9;
+
+test("explicit temporary roots isolate invocations and canonicalize symlink parents", { skip: process.platform === "win32" }, (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "pr-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  const parent = path.join(root, "fixtures");
+  const alias = path.join(root, "alias");
+  mkdirSync(bin);
+  mkdirSync(parent);
+  symlinkSync(parent, alias);
+  writeFileSync(path.join(bin, "pnpm"), `#!/usr/bin/env node
+console.log("fixture-env:" + JSON.stringify(Object.fromEntries(
+  ["PAPERCLIP_HOME", "PAPERCLIP_CONFIG", "TMPDIR"].map(key => [key, process.env[key]])
+)));
+`, { mode: 0o755 });
+  const invoke = (tempRoot) => spawnSync(process.execPath,
+    [script, "--mode", "general", "--group", "general-server-native-runner"], {
+      cwd: repoRoot, encoding: "utf8",
+      env: workflowEnv({ PATH: `${bin}${path.delimiter}${process.env.PATH}`, PAPERCLIP_TEST_TMP_ROOT: tempRoot }),
+    });
+  const homes = [];
+  for (let index = 0; index < 2; index += 1) {
+    const result = invoke(alias);
+    assert.equal(result.status, 0, result.stderr);
+    const record = result.stdout.split("\n").find(line => line.startsWith("fixture-env:"));
+    assert.ok(record, "the runner must launch Vitest with isolated fixture paths");
+    const env = JSON.parse(record.slice("fixture-env:".length));
+    const fixture = path.dirname(env.PAPERCLIP_HOME);
+    assert.equal(path.dirname(fixture), realpathSync(parent));
+    assert.equal(env.PAPERCLIP_CONFIG, path.join(env.PAPERCLIP_HOME, "config.json"));
+    assert.equal(env.TMPDIR, path.join(fixture, "t"));
+    homes.push(env.PAPERCLIP_HOME);
+  }
+  assert.notEqual(homes[0], homes[1]);
+  for (const invalid of ["", "relative", path.join(root, "missing"), path.join(bin, "pnpm")]) {
+    const result = invoke(invalid);
+    assert.notEqual(result.status, 0, `invalid temporary root must fail: ${invalid}`);
+    assert.ok(!result.stdout.includes("fixture-env:"), "invalid roots must not launch tests or fall back");
+    assert.match(result.stderr, /absolute path|ENOENT|ENOTDIR/);
+  }
+});
+
+
+test("the serialized shards form a complete, non-overlapping partition", () => {
+  const shards = Array.from({ length: SERIALIZED_SHARD_COUNT }, (_, index) =>
+    dryRunJson(["--mode", "serialized", "--shard-index", String(index), "--shard-count", String(SERIALIZED_SHARD_COUNT)]),
+  );
+
+  const total = shards[0].serializedSuiteCount;
+  const selected = shards.flatMap((shard) => shard.selectedSerializedSuites);
+  assert.equal(selected.length, total, "every serialized suite must be selected exactly once");
+  assert.equal(new Set(selected).size, total, "serialized shards must not overlap");
+});
 
 test("the general-server shards form a complete, non-overlapping partition", () => {
   const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>
