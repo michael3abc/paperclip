@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import postgres from "postgres";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { inspectMigrations } from "./client.js";
 import { drainTestPostgresOwners, TestPostgresShutdownError } from "./test-postgres-owner.js";
 import {
@@ -373,31 +373,48 @@ describeWithPostgres("startEmbeddedPostgresTestDatabase template path", () => {
     expect(fs.statSync(templateDir).mtimeMs).toBeGreaterThan(Date.now() - 60 * 1000);
   });
 
-  it("rebuilds the template when it was pruned after this process resolved it", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {
-    delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
-    const scratch = useScratchTmpdir("paperclip-template-pruned-");
-    try {
-      resetTemplateState();
-      const first = await startEmbeddedPostgresTestDatabase("paperclip-template-pruned-copy-");
-      await first.cleanup();
-      expect(lastStartMode()).toBe("template");
-      const templateDir = path.join(templateRootDir(), computeEmbeddedPostgresTemplateKey());
-      expect(isUsableTemplate(templateDir)).toBe(true);
+  describe("pruned template recovery", () => {
+    let scratch: ReturnType<typeof useScratchTmpdir> | undefined;
+    let templateDir: string;
+    let inFlight = Promise.resolve();
 
-      // Another process prunes the template while this one still holds its path.
-      fs.rmSync(templateDir, { recursive: true, force: true });
-      const second = await startEmbeddedPostgresTestDatabase("paperclip-template-pruned-copy-");
-      await second.cleanup();
-      // This start fell back without retrying the missing path; the fallback
-      // forgot the stale path, so the next start rebuilt the template.
-      expect(lastStartMode()).toBe("fresh");
-      const third = await startEmbeddedPostgresTestDatabase("paperclip-template-pruned-copy-");
-      await third.cleanup();
-      expect(lastStartMode()).toBe("template");
-      expect(isUsableTemplate(templateDir)).toBe(true);
-    } finally {
-      scratch.restore();
-    }
+    beforeAll(() => {
+      inFlight = (async () => {
+        delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+        scratch = useScratchTmpdir("paperclip-template-pruned-");
+        resetTemplateState();
+        // Build and resolve the initial template during setup. The support
+        // probe already does this; a disposable copy adds no coverage here.
+        expect(await getEmbeddedPostgresTestSupport()).toEqual({ supported: true });
+        templateDir = path.join(templateRootDir(), computeEmbeddedPostgresTemplateKey());
+        expect(isUsableTemplate(templateDir)).toBe(true);
+      })();
+      return inFlight;
+    }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+    afterAll(async () => {
+      // Vitest deadlines do not cancel async work. Drain the operation before
+      // restoring TMPDIR so a late completion cannot remove the next fixture.
+      await inFlight.catch(() => undefined);
+      scratch?.restore();
+    }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+    it("rebuilds the template when it was pruned after this process resolved it", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, () => {
+      inFlight = (async () => {
+        // Another process prunes the template while this one still holds its path.
+        fs.rmSync(templateDir, { recursive: true, force: true });
+        const second = await startEmbeddedPostgresTestDatabase("paperclip-template-pruned-copy-");
+        await second.cleanup();
+        // This start fell back without retrying the missing path; the fallback
+        // forgot the stale path, so the next start rebuilt the template.
+        expect(lastStartMode()).toBe("fresh");
+        const third = await startEmbeddedPostgresTestDatabase("paperclip-template-pruned-copy-");
+        await third.cleanup();
+        expect(lastStartMode()).toBe("template");
+        expect(isUsableTemplate(templateDir)).toBe(true);
+      })();
+      return inFlight;
+    });
   });
 
   it("runs the fresh initdb path when PAPERCLIP_TEST_POSTGRES_TEMPLATE=0", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {

@@ -125,10 +125,19 @@ it.each([
     await fs.writeFile(path.join(parent, "late.js"), "must not stage");
     const runtime = await stage(snapshot);
     let stagedCount = 0;
+    const batch: string[] = [];
+    const checkBatch = async () => {
+      await Promise.all(batch.map(async name => {
+        expect(await fs.readFile(path.join(remoteParent, name), "utf8")).toBe("base");
+      }));
+      batch.length = 0;
+    };
     for await (const entry of await fs.opendir(remoteParent)) {
-      expect(await fs.readFile(path.join(remoteParent, entry.name), "utf8")).toBe("base");
+      batch.push(entry.name);
+      if (batch.length === 100) await checkBatch();
       stagedCount++;
     }
+    await checkBatch();
     expect(stagedCount).toBe(fileCount);
     for (const name of unusual) expect(await fs.readFile(path.join(remote, name), "utf8")).toBe(name);
     const manifestFile = isPathManifest(snapshot.overlayPaths) ? snapshot.overlayPaths.filePath : "";
