@@ -2801,6 +2801,39 @@ async function listIssueDependencyReadinessMap(
   return readinessMap;
 }
 
+/**
+ * True when the issue's dependency gate is held only by its own cancelled
+ * direct children and every direct child has settled (done or cancelled).
+ * A child that gives up is cancelled, and a cancelled blocker never resolves
+ * a dependent by itself, so this is the state in which the parent's
+ * assignee must decide what happens next.
+ */
+async function isDependencyHeldOnlyByCancelledChildren(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  readiness: IssueDependencyReadiness,
+) {
+  if (readiness.isDependencyReady || readiness.unresolvedBlockerIssueIds.length === 0) {
+    return false;
+  }
+  const children = await dbOrTx
+    .select({ id: issues.id, status: issues.status })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        eq(issues.parentId, readiness.issueId),
+      ),
+    );
+  if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {
+    return false;
+  }
+  const cancelledChildIds = new Set(
+    children.filter((child) => child.status === "cancelled").map((child) => child.id),
+  );
+  return readiness.unresolvedBlockerIssueIds.every((id) => cancelledChildIds.has(id));
+}
+
 async function listUnresolvedBlockerDetails(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -9466,6 +9499,13 @@ export function issueService(db: Db) {
 
     listBlockerAttentionBatch: async (companyId: string, issueRows: IssueBlockerAttentionInputNode[], dbOrTx: any = db) =>
       readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows),
+    isDependencyHeldOnlyByCancelledChildren: async (
+      companyId: string,
+      readiness: IssueDependencyReadiness,
+      dbOrTx: any = db,
+    ) => {
+      return isDependencyHeldOnlyByCancelledChildren(dbOrTx, companyId, readiness);
+    },
 
     listBlockerAttention: async (
       companyId: string,

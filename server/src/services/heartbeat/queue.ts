@@ -200,7 +200,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   Pick<HeartbeatRecoveryDependencies, "setRunStatus"> {
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   options: Pick<HeartbeatServiceOptions, "beforeChatControlRecoveryCheck">;
-  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness">;
+  issuesSvc: Pick<ReturnType<typeof issueService>,
+    "getDependencyReadiness" | "listDependencyReadiness" | "isDependencyHeldOnlyByCancelledChildren">;
   treeControlSvc: Pick<ReturnType<typeof issueTreeControlService>, "getActivePauseHoldGate">;
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
@@ -371,6 +372,10 @@ export async function claimDueTimerHeartbeatForAgent(
   return { wasFirstHeartbeat: !agent.lastHeartbeatAt };
 }
 
+
+function isChildrenCompletedWake(contextSnapshot: Record<string, unknown> | null | undefined) {
+  return readNonEmptyString(contextSnapshot?.wakeReason) === "issue_children_completed";
+}
 
 /** Queue admission and dispatch share the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
@@ -993,6 +998,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         !allowsIssueInteractionWake(
           context,
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+        ) &&
+        !(
+          readiness &&
+          isChildrenCompletedWake(context) &&
+          (await issuesSvc.isDependencyHeldOnlyByCancelledChildren(
+            run.companyId,
+            readiness,
+          ))
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -3696,8 +3709,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
             );
 
-          if (blockedInteractionWake) {
-            enrichedContextSnapshot.dependencyBlockedInteraction = true;
+          // A cancelled blocker never resolves its dependent, so a parent held
+          // only by its own cancelled children would otherwise never wake. Its
+          // children-completed wake runs so the assignee can decide what
+          // happens next; the state check makes a stray wake harmless.
+          const cancelledChildrenWake =
+            dependencyReadiness &&
+            !dependencyReadiness.isDependencyReady &&
+            !blockedInteractionWake &&
+            isChildrenCompletedWake(enrichedContextSnapshot) &&
+            (await issuesSvc.isDependencyHeldOnlyByCancelledChildren(
+              issue.companyId,
+              dependencyReadiness,
+              tx,
+            ));
+
+          if (blockedInteractionWake || cancelledChildrenWake) {
+            if (blockedInteractionWake) {
+              enrichedContextSnapshot.dependencyBlockedInteraction = true;
+            } else {
+              enrichedContextSnapshot.dependencyBlockedByCancelledChildren = true;
+            }
             enrichedContextSnapshot.unresolvedBlockerIssueIds =
               dependencyReadiness.unresolvedBlockerIssueIds;
             enrichedContextSnapshot.unresolvedBlockerCount =
@@ -3715,7 +3747,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             !activeExecutionRun &&
             dependencyReadiness &&
             !dependencyReadiness.isDependencyReady &&
-            !blockedInteractionWake
+            !blockedInteractionWake &&
+            !cancelledChildrenWake
           ) {
             if (caseRequest) waitForCaseAdmission("issue_dependencies_blocked", "Case handoff is waiting for task dependencies to resolve");
             await recordExecutionWait(tx as unknown as Db, {

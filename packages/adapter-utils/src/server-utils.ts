@@ -793,6 +793,7 @@ type PaperclipWakePayload = {
   // Technical English with brief decision context.
   simplifiedEnglishInteractions: boolean;
   dependencyBlockedInteraction: boolean;
+  dependencyBlockedByCancelledChildren: boolean;
   treeHoldInteraction: boolean;
   activeTreeHold: PaperclipWakeTreeHoldSummary | null;
   unresolvedBlockerIssueIds: string[];
@@ -1865,6 +1866,10 @@ export function normalizePaperclipWakePayload(
       payload.dependencyBlockedInteraction,
       false,
     ),
+    dependencyBlockedByCancelledChildren: asBoolean(
+      payload.dependencyBlockedByCancelledChildren,
+      false,
+    ),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
     activeTreeHold,
     unresolvedBlockerIssueIds,
@@ -1986,6 +1991,7 @@ function hasNormalizedPaperclipExternalChatContext(
   return !(
     normalized.recovery ||
     normalized.dependencyBlockedInteraction ||
+    normalized.dependencyBlockedByCancelledChildren ||
     normalized.treeHoldInteraction ||
     normalized.activeTreeHold ||
     normalized.unresolvedBlockerIssueIds.length > 0 ||
@@ -2068,6 +2074,7 @@ function isNormalizedPaperclipExternalChatQuestionResponseTurn(
   return !(
     normalized.recovery ||
     normalized.dependencyBlockedInteraction ||
+    normalized.dependencyBlockedByCancelledChildren ||
     normalized.treeHoldInteraction ||
     normalized.activeTreeHold ||
     normalized.unresolvedBlockerIssueIds.length > 0 ||
@@ -2659,11 +2666,18 @@ function renderPaperclipWakePromptBody(
       "- interaction language (experimental): write every user interaction you post (request_confirmation, ask_user_questions, suggest_tasks, checkbox prompts and options, and any other content rendered inside an interaction block) in ASD-STE100 Simplified Technical English. In each interaction, briefly tell the user what information they need to make the decision and what happens for each choice. This applies only to interaction content — write your thinking, comments, documents, and other responses in your usual style.",
     );
   }
-  if (normalized.dependencyBlockedInteraction) {
-    lines.push("- dependency-blocked interaction: yes");
-    lines.push(
-      "- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked",
-    );
+  if (normalized.dependencyBlockedInteraction || normalized.dependencyBlockedByCancelledChildren) {
+    if (normalized.dependencyBlockedInteraction) {
+      lines.push("- dependency-blocked interaction: yes");
+      lines.push(
+        "- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked",
+      );
+    } else {
+      lines.push("- blocked by cancelled children: yes");
+      lines.push(
+        "- execution scope: every child has settled, but cancelled children still block this issue and never resolve it by themselves; read why each was cancelled, then continue, replace or drop it (update the blockers to match) or escalate",
+      );
+    }
     if (normalized.unresolvedBlockerSummaries.length > 0) {
       const blockers = normalized.unresolvedBlockerSummaries
         .map(
