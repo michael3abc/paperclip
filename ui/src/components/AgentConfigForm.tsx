@@ -17,6 +17,7 @@ import { schemaFieldSection } from "../adapters/config-sections";
 import { hashKey, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
+  AgentProjectPmWorkspaceBinding,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionStatus,
   CodexAccountBindingClaim,
@@ -1612,7 +1613,37 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     );
   }
 
-  const workspaceField = !isDotRunner && !hideHostPaths && (
+  // A project PM binding (agentHome/projectId/workerRoot/...) has no `cwd`, so the
+  // fixed-path input would show it as empty and replace it on edit. Show it
+  // read-only instead; other runtime edits spread runtimeConfig and keep it.
+  const currentWorkspaceBinding = isCreate
+    ? {}
+    : asObject(asObject(overlay.runtime.runtimeConfig ?? runtimeConfig).workspaceBinding);
+  const projectPmBinding = currentWorkspaceBinding.mode === "project_pm"
+    ? currentWorkspaceBinding as Partial<AgentProjectPmWorkspaceBinding>
+    : null;
+  const projectPmBindingRows: Array<[string, string]> = projectPmBinding
+    ? [
+        ["Project", String(projectPmBinding.projectId ?? "")],
+        ["Agent home", projectPmBinding.agentHome ?? "Server default"],
+        ["Worker root", String(projectPmBinding.workerRoot ?? "")],
+        ["Worker isolation", projectPmBinding.workerIsolation ?? "shared"],
+        ["Worker slots", String(projectPmBinding.workerSlots ?? "")],
+        ["Inbox issue", projectPmBinding.inboxIssueId ?? "None"],
+      ]
+    : [];
+  const workspaceField = !isDotRunner && !hideHostPaths && (projectPmBinding ? (
+    <Field label="Workspace" hint="Project PM: PM turns run in the agent home; worker turns on the project's child issues run in the worker root. This form keeps the binding unchanged; edit it through the agent API.">
+      <div aria-label="Project PM workspace" className="space-y-1 rounded-md border border-border px-3 py-2 text-xs">
+        {projectPmBindingRows.map(([label, value]) => (
+          <div key={label} className="flex gap-3">
+            <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
+            <span className="min-w-0 break-all font-mono">{value}</span>
+          </div>
+        ))}
+      </div>
+    </Field>
+  ) : (
     <Field label="Workspace" hint="Use an existing absolute directory on the selected environment for every session. Conflicting project paths or isolation requirements fail explicitly; Paperclip does not create or clone this directory.">
       <DraftInput
         aria-label="Fixed working directory"
@@ -1631,7 +1662,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         placeholder="/absolute/path/to/project"
       />
     </Field>
-  );
+  ));
 
   return (
     <div className="space-y-6">
