@@ -130,3 +130,14 @@ Override with environment variables:
 ```sh
 PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 ```
+
+The stable test runner uses separate temporary homes. To move test fixtures from
+Unix `/tmp` to a filesystem with sufficient free space, inodes, and user quota:
+
+```sh
+PAPERCLIP_TEST_TMP_ROOT=/var/tmp pnpm test:run
+```
+
+The directory must already exist, be writable, and have an absolute, short path
+for Unix socket fixtures. Each invocation creates a unique canonical child;
+invalid settings fail without falling back to another filesystem.
