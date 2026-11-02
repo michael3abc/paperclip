@@ -181,7 +181,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const providerApiPlacement = resolveProviderApiPlacement(input);
   const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";
   const timeWorkspace = createHeartbeatPreparationTiming(run.id);
-  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
+  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig, input.task.context);
   const {
     issueRef,
     issueId,

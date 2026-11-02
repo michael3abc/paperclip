@@ -1112,8 +1112,11 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   executionTarget: unknown;
   environmentDriver?: string | null;
   leaseMetadata?: unknown;
+  /** The claim-time role of a project PM run; a PM turn runs in the agent home by design. */
+  projectPmRole?: "pm" | "worker" | null;
 }) {
   if (!GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)) return;
+  if (input.projectPmRole === "pm") return;
 
   const executionTargetKind =
     readNonEmptyString(
@@ -3488,7 +3491,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       .where(and(eq(projectWorkspaces.id, preferredProjectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId))) : [];
     const resolvedProjectId = selectedSource?.projectId ?? issueProjectId ?? contextProjectId;
     const forceTaskDirectory = workspaceSelection?.kind === "task_directory";
-    const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
+    const fixedBinding = readWorkspaceBinding(agent.runtimeConfig, context);
     if (fixedBinding && forceTaskDirectory) workspaceBindingConflict("selection_conflict", "The task explicitly requests a task directory, conflicting with the fixed working directory.");
     const useProjectWorkspace = fixedBinding !== null || opts?.useProjectWorkspace !== false;
     const workspaceProjectId = useProjectWorkspace && !forceTaskDirectory ? resolvedProjectId : null;
@@ -3523,12 +3526,17 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       const selected = preferredProjectWorkspaceId
         ? projectWorkspaceRows.find(row => row.id === preferredProjectWorkspaceId)
         : projectWorkspaceRows.find(row => row.isPrimary) ?? (projectWorkspaceRows.length === 1 ? projectWorkspaceRows[0] : null);
-      assertFixedProjectWorkspace(fixedBinding, selected ?? null, projectWorkspaceRows.length > 0 || Boolean(preferredProjectWorkspaceId));
+      // A project PM's cwd comes from its claim-time role: the agent home is not a
+      // project workspace, and the worker root was checked against the project's
+      // primary workspace when the binding was saved and when the run was claimed.
+      if (!fixedBinding.projectPm) {
+        assertFixedProjectWorkspace(fixedBinding, selected ?? null, projectWorkspaceRows.length > 0 || Boolean(preferredProjectWorkspaceId));
+      }
       if (opts?.executionEnvironmentDriver === "local") await validateFixedLocalDirectory(fixedBinding);
       else if (opts?.executionEnvironmentDriver !== "ssh" || opts.executionEnvironmentConfig?.workspaceMode !== "in_place" || opts.executionEnvironmentConfig.remoteWorkspacePath !== fixedBinding.cwd) {
         workspaceBindingConflict("environment_conflict", "The selected environment does not match the fixed working directory.");
       }
-      return { cwd: fixedBinding.cwd, source: "task_session", projectId: resolvedProjectId,
+      return { cwd: fixedBinding.cwd, source: "task_session", projectId: fixedBinding.projectPm?.projectId ?? resolvedProjectId,
         workspaceId: selected?.id ?? null, repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
         workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [], localPathOnlyWorkspace: true };
     }

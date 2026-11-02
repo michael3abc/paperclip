@@ -30,9 +30,45 @@ export interface AgentProjectAccess {
   canManage: boolean;
 }
 
+export interface AgentFixedWorkspaceBinding {
+  mode: "fixed";
+  cwd: string;
+}
+
+export type ProjectPmWorkerIsolation = "shared" | "worktree";
+
+export interface AgentProjectPmWorkspaceBinding {
+  mode: "project_pm";
+  /** Canonical agent home; the server fills it on write. */
+  agentHome?: string;
+  projectId: string;
+  workerRoot: string;
+  workerIsolation: ProjectPmWorkerIsolation;
+  workerSlots: number;
+  inboxIssueId?: string | null;
+}
+
+export type AgentWorkspaceBinding = AgentFixedWorkspaceBinding | AgentProjectPmWorkspaceBinding;
+
+export type ProjectPmRole = "pm" | "worker";
+
+/** Delivered to adapters as `context.paperclipPmWorkspace` and persisted in the run context snapshot. */
+export interface PaperclipPmWorkspaceContext {
+  version: 1;
+  role: ProjectPmRole;
+  agentHome: string;
+  projectId: string;
+  workerRoot: string;
+  workerIsolation: ProjectPmWorkerIsolation;
+  workerSlots: number;
+  cwd: string;
+  issueId: string | null;
+  inboxIssueId: string | null;
+}
+
 export type AgentRuntimeConfig = Record<string, unknown> & {
   aiConnection?: import("../ai-connection-router.js").AiRuntimeConnectionBinding;
-  workspaceBinding?: { mode: "fixed"; cwd: string };
+  workspaceBinding?: AgentWorkspaceBinding;
 };
 
 export type AgentInstructionsBundleMode = "managed" | "external";

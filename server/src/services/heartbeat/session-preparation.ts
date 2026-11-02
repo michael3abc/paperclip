@@ -157,7 +157,7 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
   const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
   const compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
   const issueId = issueRef?.id ?? readNonEmptyString(context.issueId);
-  const fixedWorkspaceBinding = readWorkspaceBinding(agent.runtimeConfig);
+  const fixedWorkspaceBinding = readWorkspaceBinding(agent.runtimeConfig, context);
   let fixedWorkspaceSessionCompatible = true;
   if (fixedWorkspaceBinding && taskSession && !taskSession.lastRunId) {
     workspaceBindingConflict("prior_session_unknown", "The saved session has no execution ownership record. Reconcile it before using a fixed working directory.");

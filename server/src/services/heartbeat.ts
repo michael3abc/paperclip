@@ -57,6 +57,7 @@ import {
 } from "./heartbeat/scheduling.js";
 import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectionEnabled } from "./execution-workspace-policy.js";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
+import { resolveProjectPmRunWorkspace, PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE } from "./agent-workspace-binding.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -2097,6 +2098,38 @@ export function heartbeatService(
       // Reviewed chat turns rebuild it from the current durable owner below.
       delete context[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY];
       delete context[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY];
+      // Paperclip is the authority for a project PM run's role and cwd. Drop any
+      // caller-supplied value and recompute it from the current issue state.
+      delete context.paperclipPmWorkspace;
+      const projectPmRun = await resolveProjectPmRunWorkspace(db, { agent, context });
+      if (projectPmRun.outcome === "out_of_bounds") {
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: projectPmRun.message,
+          errorCode: PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE,
+        });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date(), error: projectPmRun.message });
+        const rejectedRun = await getRun(run.id);
+        if (rejectedRun) {
+          await appendRunEvent(rejectedRun, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: projectPmRun.message,
+            payload: { errorCode: PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE, issueId: projectPmRun.issueId },
+          });
+          await releaseIssueExecutionAndPromote(rejectedRun, { suppressImmediateRecovery: true });
+        }
+        await finalizeAgentStatus(agent.id, "cancelled");
+        return;
+      }
+      const projectPmWorkspace = projectPmRun.outcome === "workspace" ? projectPmRun.workspace : null;
+      if (projectPmWorkspace) {
+        context.paperclipPmWorkspace = projectPmWorkspace;
+        await db.update(heartbeatRuns)
+          .set({ contextSnapshot: context, updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, run.id));
+      }
       const providerTraceRequested =
         parseObject(context.debug).providerTrace === "raw";
       if (providerTraceRequested) {
@@ -2200,6 +2233,9 @@ export function heartbeatService(
         issueId &&
         issueContext &&
         !isResolvedInteractionContinuationWakeContext(context) &&
+        // The PM inbox stays parked (backlog): checking it out would leave an
+        // in_progress issue behind every intake turn for recovery to re-wake.
+        projectPmWorkspace?.inboxIssueId !== issueId &&
         shouldAutoCheckoutIssueForWake({
           contextSnapshot: context,
           issueStatus: issueContext.status,
@@ -3250,6 +3286,7 @@ export function heartbeatService(
           executionTarget,
           environmentDriver: selectedEnvironment?.driver ?? "provider_api",
           leaseMetadata: activeEnvironmentLease?.lease.metadata ?? {},
+          projectPmRole: projectPmWorkspace?.role ?? null,
         }));
         const adapterEnv = Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
