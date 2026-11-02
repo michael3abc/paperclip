@@ -198,3 +198,44 @@ export async function authorizeInstructionCommit(
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   return bound;
 }
+
+/** The agent memory area: files under `memory/` of the bundle, never the entry file. */
+export const AGENT_MEMORY_DIRECTORY = "memory/";
+
+export function isAgentMemoryPath(relativePath: string, entryFile: string): boolean {
+  return relativePath.startsWith(AGENT_MEMORY_DIRECTORY) &&
+    relativePath.length > AGENT_MEMORY_DIRECTORY.length &&
+    relativePath !== entryFile;
+}
+
+/**
+ * A run may maintain the `memory/` files of its own managed bundle with its
+ * per-run credential. Only a missing configure grant is waived: run identity
+ * binding, membership, explicit change restrictions and low-trust boundaries
+ * still apply, and the entry file and other agents' files stay protected.
+ */
+export async function authorizeOwnAgentMemoryWrite(
+  db: Connection,
+  actor: AuthorizationActor,
+  target: { companyId: string; id: string; entryFile: string },
+  relativePath: string,
+) {
+  if (
+    actor.type !== "agent" ||
+    actor.agentId !== target.id ||
+    actor.companyId !== target.companyId ||
+    !actor.runId ||
+    !isAgentMemoryPath(relativePath, target.entryFile)
+  ) {
+    throw forbidden("Only an agent's own run may write its own memory/ files", { code: "AGENT_MEMORY_FORBIDDEN" });
+  }
+  const bound = await resolveInstructionActor(db, actor);
+  const decision = await authorizationService(db).decide({
+    actor: bound,
+    action: "agent_instructions:update",
+    resource: { type: "agent", companyId: target.companyId, agentId: target.id },
+    scope: { targetAgentId: target.id, requiresChangeGrant: true },
+  });
+  if (decision.allowed || decision.reason === "deny_no_grant") return bound;
+  throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+}

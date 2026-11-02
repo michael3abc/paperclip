@@ -8,7 +8,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, type DirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
-import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-instruction-authorization.js";
+import { authorizeInstructionCommit, authorizeInstructionRead, authorizeOwnAgentMemoryWrite } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -188,12 +188,14 @@ export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: st
 
 export function agentFileStore(db: Db) {
   db = fileStorageDb(db);
-  async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
+  async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean | { ownMemoryPath: string },
     fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>) {
     return db.transaction(async tx => {
       const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
       if (!agent) throw notFound("Agent not found");
-      const bound = write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
+      const bound = typeof write === "object"
+        ? await authorizeOwnAgentMemoryWrite(tx, actor, { companyId: agent.companyId, id: agent.id, entryFile: deriveBundleState(agent).entryFile }, write.ownMemoryPath)
+        : write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
       if (write) await invalidateAgentFileProjection(root);
       const result = await fn(tx, agent, root, bound);
@@ -225,8 +227,9 @@ export function agentFileStore(db: Db) {
     },
     read: (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) =>
       locked(companyId, agentId, actor, false, (_tx, _agent, root) => readAgentFile(root, instructionPath(relative))),
-    write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null }, actor: AuthorizationActor) =>
-      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
+    /** `ownMemory` authorizes an agent's own run to write its own `memory/` file (see authorizeOwnAgentMemoryWrite). */
+    write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null; ownMemory?: boolean }, actor: AuthorizationActor) =>
+      locked(input.companyId, input.agentId, actor, input.ownMemory ? { ownMemoryPath: agentFilePath(input.path) } : true, async (tx, agent, root, bound) => {
         const relative = agentFilePath(input.path);
         if (input.bytes) assertFileSize(input.bytes.length, relative);
         const previous = await inspectAgentFile(root, relative);
