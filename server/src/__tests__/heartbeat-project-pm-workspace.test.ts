@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
@@ -160,6 +160,51 @@ suite("project PM role and workspace at claim", () => {
       for (const release of gates.values()) release();
     }
   }, 90_000);
+
+  it("keeps every intake comment that coalesces into a queued PM inbox run at claim", async () => {
+    const pm = await seedPm();
+    const gates = new Map<string, () => void>();
+    execute.mockImplementation(async (input: any) => {
+      await new Promise<void>((resolve) => gates.set(input.runId, resolve));
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    try {
+      const topLevelId = randomUUID();
+      await db.insert(issues).values({ id: topLevelId, companyId: pm.companyId, projectId: pm.projectId, title: "Plan the release", status: "todo", assigneeAgentId: pm.agentId });
+      const started = () => new Set(execute.mock.calls.map(([input]) => input.runId as string));
+      const busy = (await heartbeat.wakeup(pm.agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: topLevelId } }))!.id;
+      await vi.waitFor(() => expect(started().has(busy)).toBe(true), { timeout: 15_000 });
+
+      const intake = async (dedupeId: string) => {
+        const commentId = randomUUID();
+        await db.insert(issueComments).values({ id: commentId, companyId: pm.companyId, issueId: pm.inboxIssueId, body: `ask ${dedupeId}` });
+        const pmIntake = { dedupeId, source: "console", sourceRef: null };
+        await heartbeat.wakeup(pm.agentId, {
+          source: "automation", triggerDetail: "system", reason: "pm_intake",
+          payload: { issueId: pm.inboxIssueId, commentId, mutation: "pm_intake", pmIntake },
+          contextSnapshot: { issueId: pm.inboxIssueId, taskId: pm.inboxIssueId, commentId, wakeCommentId: commentId, source: "pm.intake", wakeReason: "pm_intake", pmIntake },
+        });
+        return commentId;
+      };
+      const q1 = await intake("q1");
+      const q2 = await intake("q2");
+      const inboxRuns = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, pm.agentId)))
+        .filter((run) => (run.contextSnapshot as Record<string, any>).issueId === pm.inboxIssueId);
+      expect(inboxRuns.map((run) => run.status)).toEqual(["queued"]);
+      const coalesced = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, inboxRuns[0]!.id));
+      expect(coalesced.map((wake) => wake.status).sort()).toEqual(["coalesced", "queued"]);
+
+      gates.get(busy)!();
+      await vi.waitFor(() => expect(started().has(inboxRuns[0]!.id)).toBe(true), { timeout: 15_000 });
+      const claimed = (await heartbeat.getRun(inboxRuns[0]!.id))!.contextSnapshot as Record<string, any>;
+      expect({ ids: claimed.wakeCommentIds, latest: claimed.wakeCommentId }).toEqual({ ids: [q1, q2], latest: q2 });
+      const call = execute.mock.calls.find(([input]) => input.runId === inboxRuns[0]!.id)!;
+      expect(call[0].context.wakeCommentIds).toEqual([q1, q2]);
+    } finally {
+      execute.mockImplementation(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+      for (const release of gates.values()) release();
+    }
+  }, 60_000);
 
   it("cancels an out-of-project run once with project_pm_out_of_bounds and never starts the adapter", async () => {
     const pm = await seedPm();
