@@ -1,3 +1,4 @@
+import { readProjectPmBinding } from "../agent-workspace-binding.js";
 import { agents, heartbeatRuns, costEvents, issues, type Db } from "@paperclipai/db";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, compareCents } from "@paperclipai/shared";
 import { and, eq, gte, lt, notInArray, sql, isNull, inArray, type SQL } from "drizzle-orm";
@@ -42,6 +43,7 @@ export function heartbeatTimerPolicyIsWellFormed(agent: typeof agents.$inferSele
 export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
   const runtimeConfig = parseObject(agent.runtimeConfig);
   const heartbeat = parseObject(runtimeConfig.heartbeat);
+  const projectPmBinding = readProjectPmBinding(runtimeConfig);
 
   return {
     enabled: asBoolean(heartbeat.enabled, false),
@@ -49,7 +51,7 @@ export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
     maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
       ["openai_dot", "grok_bot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
-      ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      ? 1 : projectPmBinding ? 1 + projectPmBinding.workerSlots : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
     skipTimerWhenNoActionableWork: asBoolean(
       heartbeat.skipTimerWhenNoActionableWork ??
         heartbeat.requireActionableTimerWork ??

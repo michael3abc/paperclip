@@ -31,6 +31,8 @@ import {
   isInteractionResolutionWakePayload,
 } from "./run-preparation.js";
 import { resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
+import { loadProjectPmRoleCapacity, persistClaimedProjectPmWorkspace } from "./project-pm-capacity.js";
+import { readProjectPmBinding } from "../agent-workspace-binding.js";
 import {
   CHAT_COMPLETION_WAKE_REASON,
   isCompletedOnboardingHandoffWake,
@@ -2003,9 +2005,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      const projectPmBinding = readProjectPmBinding(parseObject(agent.runtimeConfig));
+      const projectPmCapacity = projectPmBinding
+        ? await loadProjectPmRoleCapacity(db, { agent, binding: projectPmBinding, queuedRuns })
+        : null;
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        // A project PM run whose role is full stays queued; runs of the other
+        // role behind it may still start. Out-of-bounds runs (no role) are
+        // claimed so executeRun cancels them terminally.
+        const projectPmRole = projectPmCapacity?.roleOf(queuedRun) ?? null;
+        if (projectPmCapacity && projectPmRole && !projectPmCapacity.hasRoom(projectPmRole)) continue;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
           claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
@@ -2020,6 +2031,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             "queued heartbeat run claim was rejected; leaving it queued for the next recovery pass",
           );
           continue;
+        }
+        if (claimed && projectPmCapacity && claimed.status === "running") {
+          if (projectPmRole) projectPmCapacity.take(projectPmRole);
+          claimed = await persistClaimedProjectPmWorkspace(
+            db,
+            claimed,
+            projectPmRole ? await projectPmCapacity.claimContext(claimed, projectPmRole) : null,
+          );
         }
         if (claimed) claimedRuns.push(claimed);
       }
@@ -2080,6 +2099,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const contextSnapshot: Record<string, unknown> = {
       ...(opts.contextSnapshot ?? {}),
     };
+    // Paperclip assigns a project PM run's role at claim; never adopt a caller's.
+    delete contextSnapshot.paperclipPmWorkspace;
     const reason = opts.reason ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an

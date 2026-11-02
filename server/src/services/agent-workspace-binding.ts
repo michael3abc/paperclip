@@ -355,6 +355,8 @@ export type ProjectPmRunWorkspace =
 export async function resolveProjectPmRunWorkspace(db: Db, input: {
   agent: { id: string; companyId: string; runtimeConfig: Record<string, unknown> | null | undefined };
   context: Record<string, unknown>;
+  /** The role the queue assigned at claim for this run's issue; it wins over the current issue state. */
+  claimedRole?: ProjectPmRole | null;
 }): Promise<ProjectPmRunWorkspace> {
   const raw = record(input.agent.runtimeConfig?.workspaceBinding);
   if (raw.mode !== "project_pm") return { outcome: "none" };
@@ -375,5 +377,6 @@ export async function resolveProjectPmRunWorkspace(db: Db, input: {
   }
   const decision = resolveProjectPmRole({ binding, agentId: input.agent.id, issue });
   if (decision.outcome === "out_of_bounds") return { outcome: "out_of_bounds", issueId, message: decision.message };
-  return { outcome: "workspace", workspace: buildPaperclipPmWorkspaceContext(binding, decision.role, issue?.id ?? null) };
+  const role = input.claimedRole ?? decision.role;
+  return { outcome: "workspace", workspace: buildPaperclipPmWorkspaceContext(binding, role, issue?.id ?? null) };
 }
