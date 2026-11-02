@@ -343,6 +343,9 @@ import {
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
+  // Project PM (PM v2)
+  continueIssueSchema,
+  createPmIntakeSchema,
 } from "@paperclipai/shared";
 import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema } from "@paperclipai/shared/aggregator-apps";
 import { composioAppsSyncSchema, composioAppsRefreshSchema, composioAppSetupSchema, composioAppAccountSchema } from "@paperclipai/shared/composio-app-setup";
@@ -4673,6 +4676,111 @@ registry.registerPath({
     body: jsonBody(addIssueCommentSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/continue",
+  tags: ["issues"],
+  summary: "Continue an issue with its assignee agent",
+  description:
+    "Reopens a done or cancelled issue to todo (a blocked issue without unresolved blockers also returns to todo) " +
+    "and wakes the assignee agent with reason pm_continue. Callable by the assignee agent's active run credential or a board user. " +
+    "Responds 202 with the wake run id (null when the wake was coalesced or skipped) and the issue status.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(continueIssueSchema),
+  },
+  responses: {
+    202: r.ok(z.object({ runId: z.string().nullable(), status: z.string() })),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+    429: r.tooManyRequests,
+    503: { description: "The issue was updated but the assignee could not be woken; retry" },
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{pmAgentId}/pm-intake",
+  tags: ["agents"],
+  summary: "Post an owner receipt into a project PM's inbox",
+  description:
+    "Adds one comment, deduplicated by dedupeId, to the PM's inbox issue and wakes the PM with reason pm_intake. " +
+    "Callable by a board user of the company or an agent in the PM's reportsTo chain. " +
+    "409 pm_inbox_missing when the PM has no inbox; 422 project_pm_inbox_invalid or pm_intake_marker_in_text.",
+  request: {
+    params: z.object({ pmAgentId: z.string() }),
+    body: jsonBody(createPmIntakeSchema),
+  },
+  responses: {
+    201: r.ok(z.object({
+      status: z.literal("created"),
+      commentId: z.string(),
+      issueId: z.string(),
+      runId: z.string().nullable(),
+      dedupeId: z.string(),
+    })),
+    200: r.ok(z.object({
+      status: z.literal("duplicate"),
+      commentId: z.string(),
+      issueId: z.string(),
+      dedupeId: z.string(),
+    })),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{pmAgentId}/pm-intake/{dedupeId}",
+  tags: ["agents"],
+  summary: "Look up an owner receipt in a project PM's inbox",
+  request: { params: z.object({ pmAgentId: z.string(), dedupeId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      status: z.literal("found"),
+      commentId: z.string(),
+      issueId: z.string(),
+      createdAt: z.string(),
+    })),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: { description: "Agent not found, or { status: \"not_found\" } when the receipt is absent" },
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/pm-workspaces",
+  tags: ["agents"],
+  summary: "List project PM agents and their workspace bindings",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.array(z.object({
+      agentId: z.string(),
+      agentName: z.string(),
+      status: z.string(),
+      projectId: z.string(),
+      projectName: z.string().nullable(),
+      agentHome: z.string(),
+      workerRoot: z.string(),
+      workerIsolation: z.enum(["shared", "worktree"]),
+      workerSlots: z.number().int(),
+      inboxIssueId: z.string().nullable(),
+    }))),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({
