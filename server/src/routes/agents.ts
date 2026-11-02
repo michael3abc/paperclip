@@ -92,7 +92,7 @@ import { validate } from "../middleware/validate.js";
 import { inheritNativeRunnerAdapterConfig } from "../services/native-runtime/native-agent-runtime-inheritance.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
-import { authorizeInstructionRead } from "../services/agent-instruction-authorization.js";
+import { authorizeInstructionRead, isAgentMemoryPath } from "../services/agent-instruction-authorization.js";
 import { instructionPath } from "../services/agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState } from "../services/agent-instructions.js";
 import {
@@ -4991,13 +4991,24 @@ export function agentRoutes(
       res.json(instructionFileDetail(receipt, receipt));
       return;
     }
-    await assertCanManageInstructionsPath(req, existing);
+    // An agent's own run may keep its `memory/` files without a configure
+    // grant; every other non-entry write still needs protected-change access.
+    const ownMemoryCandidate = req.actor.type === "agent" && req.actor.agentId === existing.id &&
+      Boolean(req.actor.runId) && agentInstructionsBundleMode(existing) === "managed" &&
+      isAgentMemoryPath(instructionPath(req.body.path), entryFile);
+    let ownMemory = false;
+    try {
+      await assertCanManageInstructionsPath(req, existing);
+    } catch (error) {
+      if (!ownMemoryCandidate || !(error instanceof HttpError) || error.status !== 403) throw error;
+      ownMemory = true;
+    }
     assertExternalInstructionsAdmin(req, existing);
 
     if (agentInstructionsBundleMode(existing) === "managed" && req.body.path !== "promptTemplate.legacy.md") {
       if (req.body.baseHash === undefined) throw unprocessable("Read the file and supply baseHash (null for a new file)");
       await agentFiles.write({ companyId: existing.companyId, agentId: existing.id, path: req.body.path,
-        bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash }, req.actor);
+        bytes: Buffer.from(req.body.content, "utf8"), baseHash: req.body.baseHash, ownMemory }, req.actor);
       res.json(await instructions.readFile(existing, req.body.path)); return;
     }
     const actor = getActorInfo(req);
