@@ -55,6 +55,15 @@ export function legacyExecutionNeedsReconciliation(
     return false;
   // A fresh model turn cannot repair or verify unrestored files.
   if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return true;
+  // The issue route stops the current provider before transferring ownership.
+  // Its server-owned mutation token and acknowledged stop are a handoff, not
+  // permission to replay the cancelled run. Unknown/forced stops stay held.
+  const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
+  if (run.status === "cancelled" && run.errorCode === "issue_reassigned"
+      && run.resultJson?.reassignmentStopConfirmed === true
+      && typeof run.resultJson.issueMutationStopId === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(run.resultJson.issueMutationStopId)
+      && cancellation?.state === "acknowledged" && cancellation.forced === false) return false;
   // A fresh conversation turn lets the agent decide what remains. The retry
   // scheduler, not an action-outcome hold, owns the automatic attempt limit.
   if (hasConversationContinuationPolicy(run.resultJson)) return false;
