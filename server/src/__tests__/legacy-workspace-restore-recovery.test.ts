@@ -45,6 +45,25 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
   } };
   const readLease = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0];
 
+  it.each(["confirmed", "requested", "forced", "missing_token", "ordinary_cancel", "remote"])(
+    "keeps the recovery hold unless an intentional reassignment is confirmed (%s)", async kind => {
+      const f = await seed({ local: kind !== "remote" });
+      const resultJson = {
+        reassignmentStopConfirmed: true,
+        ...(kind === "remote" ? { workspaceRestoreFailure: "restore_failed" } : {}),
+        ...(kind === "missing_token" ? {} : { issueMutationStopId: randomUUID() }),
+        executionCancellation: { state: kind === "requested" ? "requested" : "acknowledged", forced: kind === "forced" },
+      };
+      const stopped = await terminalizeLegacyExecution({ db, run: f.run, status: "cancelled", reconcileIfNeeded: true,
+        patch: { errorCode: kind === "ordinary_cancel" ? "cancelled" : "issue_reassigned", resultJson, finishedAt: new Date() },
+      });
+      expect(stopped?.status).toBe("cancelled");
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      expect(actions.length).toBe(kind === "confirmed" ? 0 : 1);
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, stopped!)).toBe(kind !== "confirmed");
+    },
+  );
+
   async function stopAndRetain(f: Awaited<ReturnType<typeof seed>>, retry = false) {
     let stopping = (await prepareSandboxStopAndRetain(db, f.lease))!;
     expect(stopping.status).toBe("pending_cleanup");

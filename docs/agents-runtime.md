@@ -17,6 +17,13 @@ Each heartbeat:
 4. Stores results (status, token usage, errors, logs)
 5. Updates the UI live
 
+An intentional issue reassignment stops the previous provider before changing
+the assignee. A legacy adapter's acknowledged, non-forced stop plus the issue
+route's confirmed reassignment receipt permits the handoff without an
+action-reconciliation hold. It never replays the cancelled run. Missing stop
+acknowledgements, forced stops, ordinary cancellations, and unrestored remote
+workspaces still require recovery evidence.
+
 ## 2. When an agent wakes up
 
 An agent can be woken up in four ways:
