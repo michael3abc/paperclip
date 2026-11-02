@@ -121,10 +121,21 @@ it("streams and stages all four real Git filename lanes above 32 MiB through the
   const runtime = await stage(snapshot);
   const remoteParent = path.join(remote, path.relative(repo, parent));
   let stagedCount = 0;
+  const batch: string[] = [];
+  const checkBatch = async () => {
+    await Promise.all(batch.map(async (name) => {
+      expect(await fs.readFile(path.join(remoteParent, name), "utf8")).toBe("base");
+    }));
+    batch.length = 0;
+  };
   for await (const entry of await fs.opendir(remoteParent)) {
-    expect(await fs.readFile(path.join(remoteParent, entry.name), "utf8")).toBe("base");
+    batch.push(entry.name);
+    // Check every staged file with bounded I/O instead of 40,000 sequential
+    // filesystem round trips. Keep the real Git workload and deadline intact.
+    if (batch.length === 100) await checkBatch();
     stagedCount++;
   }
+  await checkBatch();
   expect(stagedCount).toBe(40_000);
   for (const name of unusual) expect(await fs.readFile(path.join(remote, name), "utf8")).toBe(name);
   const manifestFile = isPathManifest(snapshot.overlayPaths) ? snapshot.overlayPaths.filePath : "";

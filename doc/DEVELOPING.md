@@ -540,6 +540,12 @@ clock fixed so TTL expiration does not depend on machine load.
 Fixtures that replace the host HTTPS broker must also coordinate app/HMR port
 claims across test processes. Keep each fixture's claim until its listeners
 have stopped, including restart intervals when the ports temporarily unbind.
+Prepare initial database templates in a bounded setup hook instead of charging
+their creation to a recovery assertion's deadline. Drain pending fixture work
+before restoring process-wide temporary-directory settings: a Vitest timeout
+does not cancel the underlying promise. Large real-filesystem fixtures should
+validate every file with bounded I/O batches while retaining their workload
+size, content assertions, and execution deadlines.
 
 Heartbeat fixtures must drain active execution promises before truncating their
 database; a terminal run row does not prove that final writes have completed.
