@@ -1356,9 +1356,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   })
                   .where(eq(heartbeatRuns.id, lockedRun.id));
               }
-              const authoritativeIds = queuedCommentIdsFromWakePayload(
-                wake.payload,
-              );
+              const primaryIds = queuedCommentIdsFromWakePayload(wake.payload);
+              // A comment wake that arrives while this run is still queued
+              // coalesces into it (issue_execution_same_name): the run context
+              // gains its comment id, but the primary wake's envelope does not.
+              // Each coalesced receipt keeps its own server-derived envelope,
+              // so the authoritative list is the primary envelope followed by
+              // those receipts in arrival order. Deleted comments still drop
+              // out through the live-comment gate below.
+              const coalescedIds = primaryIds.length === 0 ? [] : (await tx
+                .select({ payload: agentWakeupRequests.payload })
+                .from(agentWakeupRequests)
+                .where(
+                  and(
+                    eq(agentWakeupRequests.companyId, run.companyId),
+                    eq(agentWakeupRequests.agentId, run.agentId),
+                    eq(agentWakeupRequests.runId, lockedRun.id),
+                    eq(agentWakeupRequests.status, "coalesced"),
+                  ),
+                )
+                .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id)))
+                .flatMap((row) => queuedCommentIdsFromWakePayload(row.payload));
+              const authoritativeIds = [...new Set([...primaryIds, ...coalescedIds])];
               if (authoritativeIds.length === 0) {
                 // Legacy/direct comment wakes carry comment ids in their ordinary
                 // payload and context, not in the authoritative queued-message
