@@ -118,6 +118,10 @@ describe("heartbeat queue module boundary", () => {
     const agent = { adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot" }, runtimeConfig: { heartbeat: { maxConcurrentRuns: 20, maxDailyRuns: 3.8 } } } as unknown as typeof agents.$inferSelect;
     expect(queue.parseHeartbeatPolicy(agent)).toMatchObject({ maxConcurrentRuns: 1, maxDailyRuns: 3 });
     expect(queue.parseHeartbeatPolicy({ ...agent, adapterConfig: { provider: "codex" } })).toMatchObject({ maxConcurrentRuns: 20, maxDailyRuns: 3 });
+    const workspaceBinding = { mode: "project_pm", projectId: "11111111-1111-4111-8111-111111111111", workerRoot: "/srv/repo", workerSlots: 3 };
+    // A project PM runs one PM turn beside its worker slots; Dot stays single-turn.
+    expect(queue.parseHeartbeatPolicy({ ...agent, adapterConfig: { provider: "codex" }, runtimeConfig: { heartbeat: { maxConcurrentRuns: 20 }, workspaceBinding } })).toMatchObject({ maxConcurrentRuns: 4 });
+    expect(queue.parseHeartbeatPolicy({ ...agent, runtimeConfig: { workspaceBinding } })).toMatchObject({ maxConcurrentRuns: 1 });
     expect(database.access).not.toHaveBeenCalled();
   });
 });

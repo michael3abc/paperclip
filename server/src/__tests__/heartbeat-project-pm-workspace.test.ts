@@ -109,6 +109,58 @@ suite("project PM role and workspace at claim", () => {
     expect(timerRun.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, issueId: null });
   }, 60_000);
 
+  it("runs one PM turn beside up to workerSlots worker turns and keeps a full role queued", async () => {
+    const pm = await seedPm();
+    const gates = new Map<string, () => void>();
+    execute.mockImplementation(async (input: any) => {
+      await new Promise<void>((resolve) => gates.set(input.runId, resolve));
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    try {
+      const child = async (title: string) => {
+        const id = randomUUID();
+        await db.insert(issues).values({ id, companyId: pm.companyId, projectId: pm.projectId, parentId: pm.inboxIssueId, title, status: "todo", assigneeAgentId: pm.agentId });
+        return id;
+      };
+      const topLevelId = randomUUID();
+      await db.insert(issues).values({ id: topLevelId, companyId: pm.companyId, projectId: pm.projectId, title: "Plan the release", status: "todo", assigneeAgentId: pm.agentId });
+      const [c1, c2, c3] = [await child("One"), await child("Two"), await child("Three")];
+      const wake = async (issueId: string) => (await heartbeat.wakeup(pm.agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } }))!.id;
+      const status = async (runId: string) => (await heartbeat.getRun(runId))!.status;
+      const started = () => new Set(execute.mock.calls.map(([input]) => input.runId as string));
+
+      const pm1 = await wake(pm.inboxIssueId);
+      await vi.waitFor(() => expect(started().has(pm1)).toBe(true), { timeout: 15_000 });
+      // The second PM run is queued first, yet it must not block the workers behind it.
+      const pm2 = await wake(topLevelId);
+      const w1 = await wake(c1);
+      const w2 = await wake(c2);
+      const w3 = await wake(c3);
+      await vi.waitFor(() => expect([...started()].sort()).toEqual([pm1, w1, w2].sort()), { timeout: 15_000 });
+      expect(await status(pm2)).toBe("queued");
+      expect(await status(w3)).toBe("queued");
+      const running = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, pm.agentId));
+      const roles = running.filter((run) => run.status === "running")
+        .map((run) => (run.contextSnapshot as Record<string, any>).paperclipPmWorkspace?.role).sort();
+      expect(roles).toEqual(["pm", "worker", "worker"]);
+
+      gates.get(pm1)!();
+      await vi.waitFor(() => expect(started().has(pm2)).toBe(true), { timeout: 15_000 });
+      expect(await status(w3)).toBe("queued");
+      const pm2Run = await heartbeat.getRun(pm2);
+      expect((pm2Run!.contextSnapshot as Record<string, any>).paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, issueId: topLevelId });
+
+      gates.get(w1)!();
+      await vi.waitFor(() => expect(started().has(w3)).toBe(true), { timeout: 15_000 });
+      const w3Call = execute.mock.calls.find(([input]) => input.runId === w3)!;
+      expect(w3Call[0].context.paperclipPmWorkspace).toMatchObject({ role: "worker", cwd: pm.workerRoot, issueId: c3 });
+    } finally {
+      // Later executions use the default; gated ones (gates are set synchronously) are released.
+      execute.mockImplementation(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+      for (const release of gates.values()) release();
+    }
+  }, 90_000);
+
   it("cancels an out-of-project run once with project_pm_out_of_bounds and never starts the adapter", async () => {
     const pm = await seedPm();
     const outsideId = randomUUID();

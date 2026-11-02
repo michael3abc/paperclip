@@ -9,6 +9,8 @@ import {
   isInteractionResolutionWakePayload,
 } from "./run-preparation.js";
 import { resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
+import { loadProjectPmRoleCapacity, persistClaimedProjectPmWorkspace } from "./project-pm-capacity.js";
+import { readProjectPmBinding } from "../agent-workspace-binding.js";
 import {
   CHAT_COMPLETION_WAKE_REASON,
   isCompletedOnboardingHandoffWake,
@@ -391,6 +393,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const projectPmBinding = readProjectPmBinding(runtimeConfig);
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
@@ -398,9 +401,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
       // A Dot binding has one external turn. Competing assignments must retain
       // their queue position instead of claiming a second run that cannot bind.
+      // A project PM runs one PM turn beside up to `workerSlots` worker turns.
       maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
         parseObject(agent.adapterConfig).provider === "openai_dot"
-        ? 1 : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+        ? 1
+        : projectPmBinding
+          ? 1 + projectPmBinding.workerSlots
+          : normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
@@ -2009,9 +2016,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      const projectPmBinding = readProjectPmBinding(parseObject(agent.runtimeConfig));
+      const projectPmCapacity = projectPmBinding
+        ? await loadProjectPmRoleCapacity(db, { agent, binding: projectPmBinding, queuedRuns })
+        : null;
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        // A project PM run whose role is full stays queued; runs of the other
+        // role behind it may still start. Out-of-bounds runs (no role) are
+        // claimed so executeRun cancels them terminally.
+        const projectPmRole = projectPmCapacity?.roleOf(queuedRun) ?? null;
+        if (projectPmCapacity && projectPmRole && !projectPmCapacity.hasRoom(projectPmRole)) continue;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
           claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
@@ -2026,6 +2042,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             "queued heartbeat run claim was rejected; leaving it queued for the next recovery pass",
           );
           continue;
+        }
+        if (claimed && projectPmCapacity && claimed.status === "running") {
+          if (projectPmRole) projectPmCapacity.take(projectPmRole);
+          claimed = await persistClaimedProjectPmWorkspace(
+            db,
+            claimed,
+            projectPmRole ? await projectPmCapacity.claimContext(claimed, projectPmRole) : null,
+          );
         }
         if (claimed) claimedRuns.push(claimed);
       }
@@ -2086,6 +2110,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const contextSnapshot: Record<string, unknown> = {
       ...(opts.contextSnapshot ?? {}),
     };
+    // Paperclip assigns a project PM run's role at claim; never adopt a caller's.
+    delete contextSnapshot.paperclipPmWorkspace;
     const reason = opts.reason ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an

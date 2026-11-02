@@ -15,7 +15,7 @@ import {
 } from "./heartbeat/scheduling.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
-import { readWorkspaceBinding, fixedWorkspaceMatchesRun, fixedBindingOnlyRevision, workspaceBindingConflict, resolveProjectPmRunWorkspace, PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE } from "./agent-workspace-binding.js";
+import { readWorkspaceBinding, fixedWorkspaceMatchesRun, fixedBindingOnlyRevision, workspaceBindingConflict, resolveProjectPmRunWorkspace, readPaperclipPmWorkspaceContext, readProjectPmRunIssueId, PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE } from "./agent-workspace-binding.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -1958,6 +1958,8 @@ export function heartbeatService(
     let run = await getRun(runId);
     if (!run) return;
     if (run.status !== "queued" && run.status !== "running") return;
+    // The queue records a project PM run's role when it claims the run.
+    const claimedByQueue = run.status === "running";
 
     if (run.status === "queued") {
       const claimed = await claimQueuedRun(run);
@@ -2186,10 +2188,18 @@ export function heartbeatService(
       // Reviewed chat turns rebuild it from the current durable owner below.
       delete context[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY];
       delete context[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY];
-      // Paperclip is the authority for a project PM run's role and cwd. Drop any
-      // caller-supplied value and recompute it from the current issue state.
+      // Paperclip is the authority for a project PM run's role and cwd. Keep only
+      // the role the queue stored at claim (for the same issue); rebuild the rest
+      // from the current binding, and reject issues outside the project.
+      const claimedPmWorkspace = claimedByQueue ? readPaperclipPmWorkspaceContext(context.paperclipPmWorkspace) : null;
       delete context.paperclipPmWorkspace;
-      const projectPmRun = await resolveProjectPmRunWorkspace(db, { agent, context });
+      const projectPmRun = await resolveProjectPmRunWorkspace(db, {
+        agent,
+        context,
+        claimedRole: claimedPmWorkspace && claimedPmWorkspace.issueId === readProjectPmRunIssueId(context)
+          ? claimedPmWorkspace.role
+          : null,
+      });
       if (projectPmRun.outcome === "out_of_bounds") {
         await setRunStatus(run.id, "cancelled", {
           finishedAt: new Date(),
