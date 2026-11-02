@@ -278,6 +278,8 @@ Blocked issues should stay idle while blockers remain unresolved. Paperclip shou
 
 `cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
 
+One wake passes that gate. When every direct child of an issue is `done` or `cancelled`, Paperclip sends the parent's assignee an `issue_children_completed` wake. If the parent's only unresolved blockers are its own cancelled direct children, that wake runs instead of being skipped with `issue_dependencies_blocked`. Without it, a parent whose child gave up would never wake. Admission and claim both re-check the state, so a wake that arrives after a child was reopened still waits. The run context sets `dependencyBlockedByCancelledChildren` with the unresolved blockers. The assignee decides what happens next: continue, replace or drop the cancelled child (and update the blockers to match), or escalate. A cancelled blocker that is not a direct child still keeps the dependent idle.
+
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
 ### Child→Parent Reporting

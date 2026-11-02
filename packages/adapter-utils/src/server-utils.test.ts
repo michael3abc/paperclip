@@ -2816,6 +2816,36 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
   });
 
+  it("renders cancelled-children guidance for a children-completed wake", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_children_completed",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1703",
+        title: "Blocked parent",
+        status: "blocked",
+      },
+      dependencyBlockedByCancelledChildren: true,
+      unresolvedBlockerIssueIds: ["child-1"],
+      unresolvedBlockerSummaries: [
+        {
+          id: "child-1",
+          identifier: "PAP-1724",
+          title: "Child that gave up",
+          status: "cancelled",
+          priority: "medium",
+        },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("blocked by cancelled children: yes");
+    expect(prompt).toContain("continue, replace or drop it");
+    expect(prompt).toContain("PAP-1724 Child that gave up (cancelled)");
+    expect(prompt).not.toContain("dependency-blocked interaction: yes");
+    expect(prompt).not.toContain("respond or triage the human comment");
+  });
+
   it("renders loose review request instructions for execution handoffs", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "execution_review_requested",

@@ -29,6 +29,7 @@ function callbacks(db: Db) {
     issuesSvc: {
       getDependencyReadiness: vi.fn<HeartbeatQueueDependencies["issuesSvc"]["getDependencyReadiness"]>(),
       listDependencyReadiness: vi.fn(async () => new Map()),
+      isDependencyHeldOnlyByCancelledChildren: vi.fn(async () => false),
     },
     treeControlSvc: { getActivePauseHoldGate: vi.fn(async () => null) },
     budgets: { getInvocationBlock: vi.fn(async () => null) },
