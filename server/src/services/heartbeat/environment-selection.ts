@@ -236,7 +236,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       : selectedEnvironmentId
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
-  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
+  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig, context);
   if (fixedBinding) {
     assertFixedWorkspacePolicy({
       binding: fixedBinding, environment: selectedEnvironmentForConfig,

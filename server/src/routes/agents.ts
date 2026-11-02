@@ -25,6 +25,7 @@ import {
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
+import { readProjectPmBinding, resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
@@ -2110,17 +2111,34 @@ export function agentRoutes(
     return normalizedRuntimeConfig;
   }
 
+  /**
+   * Validate a `project_pm` binding against server state and store its canonical
+   * form: the agent home is always this agent's default workspace directory.
+   */
+  async function canonicalizeProjectPmRuntimeConfig(
+    companyId: string,
+    agentId: string,
+    runtimeConfig: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const binding = readProjectPmBinding(runtimeConfig);
+    if (!binding) return runtimeConfig;
+    const resolved = await resolveProjectPmBinding(db, { companyId, agentId, binding, validateInbox: true });
+    return { ...runtimeConfig, workspaceBinding: resolved };
+  }
+
   async function normalizeCreatedAgentRuntimeConfig(
     req: Request,
     companyId: string,
+    agentId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     runtimeConfig: unknown,
   ) {
-    const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
+    let normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
     if (req.actor.type === "agent" && normalized.workspaceBinding !== undefined) {
       throw forbidden("Only an operator can configure a fixed working directory.");
     }
+    normalized = await canonicalizeProjectPmRuntimeConfig(companyId, agentId, normalized);
     if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
     const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
@@ -4294,7 +4312,7 @@ export function agentRoutes(
       adapterType: hireInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, hireInput.adapterType, normalizedAdapterConfig, hireInput.runtimeConfig);
+    const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, hiredAgentId, hireInput.adapterType, normalizedAdapterConfig, hireInput.runtimeConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -4601,7 +4619,7 @@ export function agentRoutes(
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, createInput.adapterType, normalizedAdapterConfig, createInput.runtimeConfig);
+    const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -5215,6 +5233,9 @@ export function agentRoutes(
       requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
       if (req.actor.type === "agent" && !isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
         throw forbidden("Only an operator can change a fixed working directory.");
+      }
+      if (!isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
+        requestedRuntimeConfig = await canonicalizeProjectPmRuntimeConfig(existing.companyId, existing.id, requestedRuntimeConfig);
       }
     }
     const touchesAdapterConfiguration =

@@ -146,7 +146,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   const { run, agent, controllerLease, nativeRunnerPreparationSpans } = input;
-  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig);
+  const fixedBinding = readWorkspaceBinding(agent.runtimeConfig, input.task.context);
   const {
     issueRef,
     issueId,

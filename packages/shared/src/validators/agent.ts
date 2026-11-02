@@ -68,13 +68,43 @@ export const createAgentInstructionsBundleSchema = z.object({
   }),
 });
 
-export const agentWorkspaceBindingSchema = z.object({
-  mode: z.literal("fixed"),
-  cwd: z.string().trim().min(1).max(4096).refine(
+function absoluteWorkspacePathSchema(message: string) {
+  return z.string().trim().min(1).max(4096).refine(
     value => !/[\0\r\n]/.test(value) && /^(\/|[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+)/.test(value),
-    "Fixed working directory must be an absolute path",
-  ),
+    message,
+  );
+}
+
+export const PROJECT_PM_WORKER_ISOLATIONS = ["shared", "worktree"] as const;
+export const PROJECT_PM_MIN_WORKER_SLOTS = 1;
+export const PROJECT_PM_MAX_WORKER_SLOTS = 4;
+export const PROJECT_PM_DEFAULT_WORKER_SLOTS = 2;
+
+export const agentFixedWorkspaceBindingSchema = z.object({
+  mode: z.literal("fixed"),
+  cwd: absoluteWorkspacePathSchema("Fixed working directory must be an absolute path"),
 }).strict();
+
+/**
+ * A fixed project PM: PM turns run in the agent home with one shared session,
+ * worker turns (child issues assigned to the agent) run in the project root.
+ * `agentHome` may be omitted on write; the server fills the canonical value.
+ */
+export const agentProjectPmWorkspaceBindingSchema = z.object({
+  mode: z.literal("project_pm"),
+  agentHome: absoluteWorkspacePathSchema("PM agent home must be an absolute path").optional(),
+  projectId: z.string().guid(),
+  workerRoot: absoluteWorkspacePathSchema("PM worker root must be an absolute path"),
+  workerIsolation: z.enum(PROJECT_PM_WORKER_ISOLATIONS).default("shared"),
+  workerSlots: z.number().int().min(PROJECT_PM_MIN_WORKER_SLOTS).max(PROJECT_PM_MAX_WORKER_SLOTS)
+    .default(PROJECT_PM_DEFAULT_WORKER_SLOTS),
+  inboxIssueId: z.string().guid().nullable().optional(),
+}).strict();
+
+export const agentWorkspaceBindingSchema = z.discriminatedUnion("mode", [
+  agentFixedWorkspaceBindingSchema,
+  agentProjectPmWorkspaceBindingSchema,
+]);
 
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
