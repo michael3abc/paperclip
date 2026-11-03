@@ -3532,7 +3532,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       if (!fixedBinding.projectPm) {
         assertFixedProjectWorkspace(fixedBinding, selected ?? null, projectWorkspaceRows.length > 0 || Boolean(preferredProjectWorkspaceId));
       }
-      if (opts?.executionEnvironmentDriver === "local") await validateFixedLocalDirectory(fixedBinding);
+      if (opts?.executionEnvironmentDriver === "local") {
+        if (fixedBinding.projectPm?.workerHostId) {
+          if (agent.adapterType !== 'ccpocket_bridge') workspaceBindingConflict('environment_conflict', 'Remote PM workers require the CC Pocket adapter.');
+          if (fixedBinding.projectPm.role === 'pm') await validateFixedLocalDirectory(fixedBinding);
+        } else await validateFixedLocalDirectory(fixedBinding);
+      }
       else if (opts?.executionEnvironmentDriver !== "ssh" || opts.executionEnvironmentConfig?.workspaceMode !== "in_place" || opts.executionEnvironmentConfig.remoteWorkspacePath !== fixedBinding.cwd) {
         workspaceBindingConflict("environment_conflict", "The selected environment does not match the fixed working directory.");
       }

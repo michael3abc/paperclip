@@ -4774,6 +4774,7 @@ registry.registerPath({
       projectName: z.string().nullable(),
       agentHome: z.string(),
       workerRoot: z.string(),
+      workerHostId: z.string().optional(),
       workerIsolation: z.enum(["shared", "worktree"]),
       workerSlots: z.number().int(),
       inboxIssueId: z.string().nullable(),
