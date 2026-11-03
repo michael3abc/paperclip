@@ -99,6 +99,8 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("routine routes end-to-end", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let routineRoutes: typeof import("../routes/routines.js")["routineRoutes"];
+  let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
@@ -139,7 +141,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await tempDb?.cleanup();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -166,11 +168,14 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     });
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
     vi.clearAllMocks();
-  });
+    // Load the cold route graph after mocks/reset, outside request deadlines.
+    [{ routineRoutes }, { errorHandler }] = await Promise.all([
+      import("../routes/routines.js"),
+      import("../middleware/index.js"),
+    ]);
+  }, 60_000);
 
   async function createApp(actor: Record<string, unknown>) {
-    const { errorHandler } = await import("../middleware/index.js");
-    const { routineRoutes } = await import("../routes/routines.js");
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
