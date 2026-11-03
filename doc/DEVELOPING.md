@@ -540,6 +540,10 @@ clock fixed so TTL expiration does not depend on machine load.
 Fixtures that replace the host HTTPS broker must also coordinate app/HMR port
 claims across test processes. Keep each fixture's claim until its listeners
 have stopped, including restart intervals when the ports temporarily unbind.
+Fixtures that intentionally bind wildcard listeners must probe both IPv4 and
+dual-stack wildcard availability for the app/HMR pair. A loopback probe or a
+LISTEN-only socket inventory can miss a non-listening socket on another local
+address and turn the expected ownership rejection into an unrelated EADDRINUSE.
 Prepare initial database templates in a bounded setup hook instead of charging
 their creation to a recovery assertion's deadline. Drain pending fixture work
 before restoring process-wide temporary-directory settings: a Vitest timeout
