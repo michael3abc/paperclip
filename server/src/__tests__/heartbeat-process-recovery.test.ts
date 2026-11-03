@@ -12123,12 +12123,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
-  it("escalates non-retryable continuation failures immediately without enqueuing another retry", async () => {
+  it.each(["budget_blocked", "manual_takeover", "input_source_unknown", "session_busy", "bridge_update_required", "background_state_unknown", "stop_unconfirmed", "execution_uncertain"])("escalates non-retryable continuation failure %s without enqueuing another retry", async (code) => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
-        runErrorCode: "budget_blocked",
+        runErrorCode: code,
         runError: "Budget exceeded; refusing to dispatch.",
       });
     const heartbeat = heartbeatService(db);
@@ -12153,7 +12153,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("non-retryable failure");
-    expect(comments[0]?.body).toContain("`budget_blocked`");
+    expect(comments[0]?.body).toContain(code);
 
     const followupRuns = await selectRecoveryRunsByAgent(agentId);
     const continuationRetryRun = followupRuns.find((row) => {

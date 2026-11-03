@@ -3488,3 +3488,12 @@ response with no matching cancellation intent. A matching durable pending intent
 can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
+
+### CC Pocket ownership reconciliation
+
+Native-session pauses (manual takeover, unknown input source, incomplete history,
+busy/background work, missing Bridge evidence, uncertain dispatch or stop) are
+non-retryable continuation failures. Recovery records a visible source-scoped
+blocker without launching another run. An operator must reconcile the original
+session/receipt and explicitly resume; an absent ACK is never permission to resend.
+The adapter retains its current-run helper until a later admitted turn replaces it.

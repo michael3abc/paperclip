@@ -534,6 +534,11 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "project_access_denied",
+
+  // External native-session ownership must be reconciled before any new input.
+  "manual_takeover", "input_source_unknown", "history_incomplete", "session_busy",
+  "bridge_update_required", "background_state_unknown", "stop_unconfirmed",
+  "unresolved_run", "execution_uncertain", "binding_changed", "stale_run",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   "adapter_engine_unavailable",
