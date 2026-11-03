@@ -70,6 +70,17 @@ In agent runtime settings, configure heartbeat policy:
 
 ## 3.3 Working directory and execution limits
 
+The CC Pocket `project_pm` binding separates a local Agent home from its worker
+root. An operator may set `workerHostId` for a remote worker host while the PM
+continues locally. The project's primary workspace must be `remote_managed`
+with the exact `cwd` and matching `metadata.hostId`. The host ID is included in
+the claim context and cannot be substituted by an issue. Only `ccpocket_bridge`
+may execute these remote workers; it checks canonical paths and Bridge access
+on the configured host before starting or resuming the native session. Remote
+workers currently use shared isolation. This is a dispatch boundary, not an OS
+sandbox. Agent home, inbox, memory and existing worker/native identities remain
+independent of the remote project path.
+
 For a persistent project agent, set **Workspace** beside **Reports to** in Harness /
 Runtime → Agent identity, then save. On narrow screens Workspace appears below
 Reports to. The create form exposes the same Workspace field in its execution

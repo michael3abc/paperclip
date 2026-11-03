@@ -95,6 +95,7 @@ export const agentProjectPmWorkspaceBindingSchema = z.object({
   agentHome: absoluteWorkspacePathSchema("PM agent home must be an absolute path").optional(),
   projectId: z.string().guid(),
   workerRoot: absoluteWorkspacePathSchema("PM worker root must be an absolute path"),
+  workerHostId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).optional(),
   workerIsolation: z.enum(PROJECT_PM_WORKER_ISOLATIONS).default("shared"),
   workerSlots: z.number().int().min(PROJECT_PM_MIN_WORKER_SLOTS).max(PROJECT_PM_MAX_WORKER_SLOTS)
     .default(PROJECT_PM_DEFAULT_WORKER_SLOTS),

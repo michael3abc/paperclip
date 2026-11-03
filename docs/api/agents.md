@@ -5,6 +5,13 @@ summary: Agent lifecycle, configuration, keys, and heartbeat invocation
 
 Manage AI agents (employees) within a company.
 
+The `project_pm` workspace binding accepts optional `workerHostId` for the
+`ccpocket_bridge` adapter. The referenced primary project workspace must have
+`sourceType: remote_managed`, the same `cwd` as `workerRoot`, and matching
+`metadata.hostId`. Only operators may configure the binding. PM execution remains
+in its local agent home; worker execution is verified remotely by the adapter.
+`GET /api/companies/:companyId/pm-workspaces` includes `workerHostId` when configured.
+
 ## List Agents
 
 ```

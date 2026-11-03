@@ -92,6 +92,7 @@ export function readWorkspaceBinding(
   if (
     pmContext.projectId !== binding.projectId ||
     pmContext.workerRoot !== binding.workerRoot ||
+    pmContext.workerHostId !== binding.workerHostId ||
     (binding.agentHome !== undefined && pmContext.agentHome !== binding.agentHome) ||
     pmContext.cwd !== expectedCwd
   ) {
@@ -115,12 +116,14 @@ export function readPaperclipPmWorkspaceContext(value: unknown): PaperclipPmWork
   if (strings.some(key => typeof ctx[key] !== "string" || !(ctx[key] as string))) return null;
   if (ctx.workerIsolation !== "shared" && ctx.workerIsolation !== "worktree") return null;
   if (typeof ctx.workerSlots !== "number" || !Number.isInteger(ctx.workerSlots)) return null;
+  if (ctx.workerHostId !== undefined && (typeof ctx.workerHostId !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(ctx.workerHostId))) return null;
   return {
     version: 1,
     role: ctx.role,
     agentHome: ctx.agentHome as string,
     projectId: ctx.projectId as string,
     workerRoot: ctx.workerRoot as string,
+    ...(ctx.workerHostId ? { workerHostId: ctx.workerHostId as string } : {}),
     workerIsolation: ctx.workerIsolation,
     workerSlots: ctx.workerSlots,
     cwd: ctx.cwd as string,
@@ -186,6 +189,7 @@ export function buildPaperclipPmWorkspaceContext(
     agentHome: binding.agentHome,
     projectId: binding.projectId,
     workerRoot: binding.workerRoot,
+    ...(binding.workerHostId ? { workerHostId: binding.workerHostId } : {}),
     workerIsolation: binding.workerIsolation,
     workerSlots: binding.workerSlots,
     cwd: role === "worker" ? binding.workerRoot : binding.agentHome,
@@ -222,12 +226,16 @@ async function canonicalAgentHome(agentId: string): Promise<string> {
   return realpath(home);
 }
 
-async function primaryProjectWorkspaceRealpath(db: Db, companyId: string, projectId: string): Promise<string | null> {
-  const [workspace] = await db.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces)
+async function primaryProjectWorkspaceRealpath(db: Db, companyId: string, projectId: string, workerHostId?: string): Promise<string | null> {
+  const [workspace] = await db.select({ cwd: projectWorkspaces.cwd, sourceType: projectWorkspaces.sourceType, metadata: projectWorkspaces.metadata }).from(projectWorkspaces)
     .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId)))
     .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
     .limit(1);
   if (!workspace?.cwd || !path.isAbsolute(workspace.cwd)) return null;
+  if (workerHostId) {
+    if (workspace.sourceType !== 'remote_managed' || record(workspace.metadata).hostId !== workerHostId || path.posix.normalize(workspace.cwd) !== workspace.cwd) return null;
+    return workspace.cwd; // The adapter verifies existence/canonicalization on the registered remote host before dispatch.
+  }
   try {
     const resolved = await realpath(workspace.cwd);
     return (await stat(resolved)).isDirectory() ? resolved : null;
@@ -247,6 +255,9 @@ export async function resolveProjectPmBinding(db: Db, input: {
   validateInbox: boolean;
 }): Promise<ResolvedProjectPmWorkspaceBinding> {
   const { binding } = input;
+  if (binding.workerHostId && binding.workerIsolation !== "shared") {
+    projectPmConflict("invalid", "Remote PM workers require shared isolation.");
+  }
   const agentHome = await canonicalAgentHome(input.agentId).catch(() =>
     projectPmConflict("agent_home_unavailable", "The PM agent home could not be created."));
   if (binding.agentHome !== undefined && binding.agentHome !== agentHome) {
@@ -255,7 +266,7 @@ export async function resolveProjectPmBinding(db: Db, input: {
   const [project] = await db.select({ id: projects.id }).from(projects)
     .where(and(eq(projects.id, binding.projectId), eq(projects.companyId, input.companyId))).limit(1);
   if (!project) projectPmConflict("project_invalid", "The PM project does not exist in the agent's company.");
-  const workerRoot = await primaryProjectWorkspaceRealpath(db, input.companyId, binding.projectId);
+  const workerRoot = await primaryProjectWorkspaceRealpath(db, input.companyId, binding.projectId, binding.workerHostId);
   if (!workerRoot || workerRoot !== binding.workerRoot) {
     projectPmConflict("worker_root_mismatch", "The PM worker root must equal the canonical path of the project's primary workspace directory.");
   }
@@ -275,6 +286,7 @@ export async function resolveProjectPmBinding(db: Db, input: {
     agentHome,
     projectId: binding.projectId,
     workerRoot: binding.workerRoot,
+    ...(binding.workerHostId ? { workerHostId: binding.workerHostId } : {}),
     workerIsolation: binding.workerIsolation,
     workerSlots: binding.workerSlots,
     inboxIssueId,

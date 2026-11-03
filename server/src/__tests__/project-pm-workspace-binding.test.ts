@@ -78,6 +78,14 @@ describe("project_pm binding schema and role table", () => {
     expect(readProjectPmRunIssueId({})).toBeNull();
   });
 
+  it('binds a remote worker host into the claim context and refuses host substitution', () => {
+    const binding = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
+    const worker = buildPaperclipPmWorkspaceContext(binding, 'worker', randomUUID());
+    expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: worker })?.projectPm?.workerHostId).toBe('shopee-e');
+    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...worker, workerHostId: 'shopee-d' } })).toThrow(/does not match/);
+    expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...binding, workerHostId: '../host' } })).toThrow();
+  });
+
   it("projects the binding to the claim-time role cwd and rejects a missing or forged context", () => {
     const binding = { ...base, agentHome: "/home/pm", workerIsolation: "worktree" as const, workerSlots: 3, inboxIssueId: null };
     const runtimeConfig = { workspaceBinding: binding };
@@ -187,6 +195,19 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     expect(await reason({ inboxIssueId: randomUUID() })).toBe("project_pm_inbox_invalid");
   });
 
+  it('requires remote workspace metadata to match the explicitly bound worker host', async () => {
+    const s = await seed(), remoteRoot = '/remote-only/project';
+    const binding = { mode: 'project_pm' as const, projectId: s.project.id, workerRoot: remoteRoot, workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2 };
+    const resolve = () => resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding, validateInbox: true });
+    expect(await reasonOf(resolve())).toBe('project_pm_worker_root_mismatch');
+    await db.update(projectWorkspaces).set({ sourceType: 'remote_managed', cwd: remoteRoot, metadata: { hostId: 'shopee-e' }, remoteWorkspaceRef: 'shopee-e:' + remoteRoot }).where(eq(projectWorkspaces.projectId, s.project.id));
+    expect(await resolve()).toMatchObject(binding);
+    expect(await reasonOf(resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id,
+      binding: { ...binding, workerIsolation: 'worktree' }, validateInbox: true }))).toBe('project_pm_invalid');
+    await db.update(projectWorkspaces).set({ metadata: { hostId: 'shopee-d' } }).where(eq(projectWorkspaces.projectId, s.project.id));
+    expect(await reasonOf(resolve())).toBe('project_pm_worker_root_mismatch');
+  });
+
   it("resolves the role and cwd of each run from current issue state", async () => {
     const s = await seed();
     const agentHome = (await resolveProjectPmBinding(db, {
@@ -252,5 +273,18 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     });
     expect(created.status).toBe(422);
     expect(created.body.details).toMatchObject({ reason: "project_pm_agent_home_mismatch" });
+  });
+
+  it("rejects changing the adapter while a remote worker binding is retained", async () => {
+    const s = await seed(), app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: "local-board", source: "local_implicit" }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", runtimeConfig: { workspaceBinding: { mode: "project_pm",
+      projectId: s.project.id, workerRoot: "/remote/project", workerHostId: "shopee-e", workerIsolation: "shared", workerSlots: 2 } } }).where(eq(agents.id, s.agent.id));
+    const response = await request(app).patch(`/api/agents/${s.agent.id}`).send({ adapterType: "process", adapterConfig: { command: "true" } });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatch(/CC Pocket/);
+    expect((await db.select().from(agents).where(eq(agents.id, s.agent.id)))[0]!.adapterType).toBe("ccpocket_bridge");
   });
 });

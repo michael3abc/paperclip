@@ -2119,9 +2119,11 @@ export function agentRoutes(
     companyId: string,
     agentId: string,
     runtimeConfig: Record<string, unknown>,
+    adapterType: string,
   ): Promise<Record<string, unknown>> {
     const binding = readProjectPmBinding(runtimeConfig);
     if (!binding) return runtimeConfig;
+    if (binding.workerHostId && adapterType !== 'ccpocket_bridge') throw badRequest('Remote PM workers require the CC Pocket adapter.');
     const resolved = await resolveProjectPmBinding(db, { companyId, agentId, binding, validateInbox: true });
     return { ...runtimeConfig, workspaceBinding: resolved };
   }
@@ -2138,7 +2140,7 @@ export function agentRoutes(
     if (req.actor.type === "agent" && normalized.workspaceBinding !== undefined) {
       throw forbidden("Only an operator can configure a fixed working directory.");
     }
-    normalized = await canonicalizeProjectPmRuntimeConfig(companyId, agentId, normalized);
+    normalized = await canonicalizeProjectPmRuntimeConfig(companyId, agentId, normalized, adapterType);
     if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
     const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
     if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
@@ -5246,8 +5248,11 @@ export function agentRoutes(
         throw forbidden("Only an operator can change a fixed working directory.");
       }
       if (!isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
-        requestedRuntimeConfig = await canonicalizeProjectPmRuntimeConfig(existing.companyId, existing.id, requestedRuntimeConfig);
+        requestedRuntimeConfig = await canonicalizeProjectPmRuntimeConfig(existing.companyId, existing.id, requestedRuntimeConfig, nextAdapterType);
       }
+    }
+    if (readProjectPmBinding(requestedRuntimeConfig ?? existing.runtimeConfig)?.workerHostId && nextAdapterType !== "ccpocket_bridge") {
+      throw badRequest("Remote PM workers require the CC Pocket adapter.");
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
