@@ -1756,3 +1756,12 @@ use the same activity projection. Board-owned repairs stay actionable until a
 verified native retry actually starts. Once an explicit board retry is running,
 its live activity takes precedence over the prior owner and exhausted budget.
 Resolved and cancelled actions remain resolved.
+
+### CC Pocket ownership reconciliation
+
+Native-session pauses (manual takeover, unknown input source, incomplete history,
+busy/background work, missing Bridge evidence, uncertain dispatch or stop) are
+non-retryable continuation failures. Recovery records a visible source-scoped
+blocker without launching another run. An operator must reconcile the original
+session/receipt and explicitly resume; an absent ACK is never permission to resend.
+The adapter retains its current-run helper until a later admitted turn replaces it.
