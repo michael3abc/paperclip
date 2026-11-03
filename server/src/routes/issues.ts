@@ -18,6 +18,7 @@ import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { retryNativeWorkspaceExport } from "../services/native-runtime/native-workspace-export-retry.js";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
+import { readProjectPmBinding } from "../services/agent-workspace-binding.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
@@ -18096,11 +18097,25 @@ export function issueRoutes(
       if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
       if (!resolved.agent) throw notFound("Agent not found");
       const agent = resolved.agent;
+      const pmBinding = readProjectPmBinding(agent.runtimeConfig);
       const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
       if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
-      if (existing || method === "get") { res.json(existing); return; }
+      if (method === "post" && pmBinding && existing?.projectId && existing.projectId !== pmBinding.projectId) {
+        throw conflict("Chat belongs to a different project; reconcile the agent binding before sending work");
+      }
+      if (existing || method === "get") {
+        if (existing && method === "post" && pmBinding && !existing.projectId) {
+          const updated = await svc.update(existing.id, { projectId: pmBinding.projectId });
+          await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
+            action: "issue.updated", entityType: "issue", entityId: existing.id,
+            details: { projectId: pmBinding.projectId, source: "project_agent_chat" } });
+          res.json(updated); return;
+        }
+        res.json(existing); return;
+      }
       const issue = await svc.create(companyId, {
         title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        ...(pmBinding ? { projectId: pmBinding.projectId } : {}),
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });
