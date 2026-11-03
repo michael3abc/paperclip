@@ -27,6 +27,7 @@ import {
   issueThreadInteractions,
   issueRecoveryActions,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   recoveryPostgresSupport as support,
@@ -166,6 +167,30 @@ import {
       await expect(
         issueService(db).update(results[0].id, { assigneeAgentId: null }),
       ).rejects.toThrow(/conversation/i);
+    });
+    it("binds project agent Chat before dispatch, repairs only unbound opens, and keeps GET read-only", async () => {
+      const projectId = randomUUID(), pmId = randomUUID();
+      await db.insert(projects).values({ id: projectId, companyId, name: "PM Chat" });
+      await db.insert(agents).values({ id: pmId, companyId, name: "PM Chat", role: "engineer", status: "idle", adapterType: "process",
+        runtimeConfig: { workspaceBinding: { mode: "project_pm", projectId, agentHome: "/tmp/pm-chat", workerRoot: "/tmp/worker-chat", workerSlots: 2, workerIsolation: "shared" } } });
+      const app = express(); app.use(express.json());
+      app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+      app.use("/api", issueRoutes(db, { wakeup: async () => { throw new Error("Opening a Chat must not wake a provider"); } } as never));
+      app.use(errorHandler);
+      const route = '/api/companies/' + companyId + '/chats/' + pmId;
+      expect((await request(app).get(route)).body).toBeNull();
+      const created = await request(app).post(route);
+      expect(created.status, JSON.stringify(created.body)).toBe(200);
+      expect(created.body).toMatchObject({ projectId, conversationAgentId: pmId, conversationUserId: "local-board", parentId: null });
+      await db.update(issues).set({ projectId: null }).where(eq(issues.id, created.body.id));
+      expect((await request(app).get(route)).body.projectId).toBeNull();
+      const adopted = await request(app).post(route);
+      expect(adopted.body).toMatchObject({ id: created.body.id, projectId });
+      const foreignProjectId = randomUUID();
+      await db.insert(projects).values({ id: foreignProjectId, companyId, name: "Other project" });
+      await db.update(issues).set({ projectId: foreignProjectId }).where(eq(issues.id, created.body.id));
+      expect((await request(app).post(route)).status).toBe(409);
+      expect((await request(app).get(route)).body.projectId).toBe(foreignProjectId);
     });
     it("resolves through authenticated company routes, keeps opens read-only, and derives ownership", async () => {
       const appFor = (userId?: string, allowed = true) => {

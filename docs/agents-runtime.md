@@ -70,6 +70,11 @@ In agent runtime settings, configure heartbeat policy:
 
 ## 3.3 Working directory and execution limits
 
+Chat creation for a project agent binds the conversation to that same project
+before any message can dispatch. Opening an old unbound Chat with POST repairs
+only its missing project; GET is read-only and a conflicting project is rejected.
+This does not move the Agent home or change worker host/path constraints.
+
 The CC Pocket `project_pm` binding separates a local Agent home from its worker
 root. An operator may set `workerHostId` for a remote worker host while the PM
 continues locally. The project's primary workspace must be `remote_managed`
