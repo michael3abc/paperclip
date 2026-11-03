@@ -141,3 +141,8 @@ PAPERCLIP_TEST_TMP_ROOT=/var/tmp pnpm test:run
 The directory must already exist, be writable, and have an absolute, short path
 for Unix socket fixtures. Each invocation creates a unique canonical child;
 invalid settings fail without falling back to another filesystem.
+
+Runtime exposure fixtures probe both IPv4 and dual-stack wildcard availability
+for app/HMR port pairs before launching intentionally wildcard-bound guests.
+Loopback availability alone does not exclude sockets on other local addresses;
+an occupied pair must be skipped without stopping unrelated host processes.

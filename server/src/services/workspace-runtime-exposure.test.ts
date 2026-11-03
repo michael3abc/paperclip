@@ -234,29 +234,28 @@ function createBroker() {
 }
 
 /**
- * A real loopback bind probe, matching production's `isLoopbackPortAvailable`.
- *
- * The default used to be `async () => true`, which claimed every port in the
- * dedicated range was free. On a developer or canary host that already runs a
- * managed lane on `42000`, that lie made the suite allocate a port something
- * else was listening on — so the spawned guest could not bind, and every
- * assertion downstream failed for a reason that had nothing to do with the
- * behaviour under test. It also meant the suite exercised allocation against a
- * range it never actually checked (PAP-17419; PAP-17255 started this with
- * "make exposure fixture honor occupied ports").
+ * These fixtures deliberately launch IPv4 and dual-stack wildcard listeners
+ * to test their rejection. Probe both bind modes, not just production's
+ * loopback bind: a non-listening socket on another local address can leave
+ * 127.0.0.1 free while making a wildcard guest fail with EADDRINUSE before the
+ * ownership assertion. /proc listener facts alone cannot detect that socket.
  */
-async function isLoopbackPortFree(port: number): Promise<boolean> {
+async function isFixturePortFree(port: number): Promise<boolean> {
   const facts = await readListenerBindFacts(port);
   if (facts?.present) return false;
 
-  return await new Promise<boolean>((resolve) => {
-    const probe = net.createServer();
-    probe.unref();
-    probe.once("error", () => resolve(false));
-    probe.listen(port, "127.0.0.1", () => {
-      probe.close(() => resolve(true));
+  for (const host of ["0.0.0.0", undefined]) {
+    const available = await new Promise<boolean>((resolve) => {
+      const probe = net.createServer();
+      probe.unref();
+      probe.once("error", () => resolve(false));
+      probe.listen({ port, host }, () => {
+        probe.close(() => resolve(true));
+      });
     });
-  });
+    if (!available) return false;
+  }
+  return true;
 }
 
 /**
@@ -271,7 +270,7 @@ async function isLoopbackPortFree(port: number): Promise<boolean> {
  */
 async function findFreeExposureAppPort(startAt: number): Promise<number> {
   for (let appPort = startAt; appPort <= RUNTIME_EXPOSURE_APP_PORT_MAX; appPort += 1) {
-    if (await isLoopbackPortFree(appPort) && await isLoopbackPortFree(deriveViteHmrPort(appPort))) {
+    if (await isFixturePortFree(appPort) && await isFixturePortFree(deriveViteHmrPort(appPort))) {
       return appPort;
     }
   }
@@ -288,7 +287,7 @@ function installDeps(overrides: {
 }) {
   setWorkspaceRuntimeExposureDepsForTests({
     broker: overrides.broker,
-    isPortAvailable: overrides.isPortAvailable ?? isLoopbackPortFree,
+    isPortAvailable: overrides.isPortAvailable ?? isFixturePortFree,
     isBrokerAvailable: overrides.isBrokerAvailable ?? (async () => true),
     resolveHostname: overrides.resolveHostname ?? (async () => "runner.tail123.ts.net"),
     probeHealth: overrides.probeHealth ?? (async () => true),
@@ -371,7 +370,7 @@ describe("workspace runtime tailscale_https lifecycle", () => {
         ...broker,
         async reserve(runtimeId, listeners) {
           reservedPorts = listeners.map((listener) => listener.port);
-          for (const port of reservedPorts) expect(await isLoopbackPortFree(port)).toBe(true);
+          for (const port of reservedPorts) expect(await isFixturePortFree(port)).toBe(true);
           return broker.reserve(runtimeId, listeners);
         },
         async expose(...args) {
@@ -400,7 +399,7 @@ describe("workspace runtime tailscale_https lifecycle", () => {
       runtimeServiceId: runtime.id,
     });
     expect(calls).toEqual(["reserve", "expose", "remove"]);
-    for (const port of reservedPorts) expect(await isLoopbackPortFree(port)).toBe(true);
+    for (const port of reservedPorts) expect(await isFixturePortFree(port)).toBe(true);
   }, 35_000);
 
   it("fails closed and removes the mapping when external HTTPS validation fails", async () => {
@@ -795,7 +794,7 @@ describe.each([false, true])("guest exposure-port collision reporting (base pair
       broker: recordingBroker,
       isPortAvailable: (port) => basePairOccupied &&
         [RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort(RUNTIME_EXPOSURE_APP_PORT_MIN)].includes(port)
-        ? Promise.resolve(false) : isLoopbackPortFree(port),
+        ? Promise.resolve(false) : isFixturePortFree(port),
     });
 
     const logs: string[] = [];
@@ -840,7 +839,7 @@ describe.each([false, true])("guest exposure-port collision reporting (base pair
       broker: recordingBroker,
       isPortAvailable: (port) => basePairOccupied &&
         [RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort(RUNTIME_EXPOSURE_APP_PORT_MIN)].includes(port)
-        ? Promise.resolve(false) : isLoopbackPortFree(port),
+        ? Promise.resolve(false) : isFixturePortFree(port),
     });
 
     const logs: string[] = [];
@@ -885,7 +884,7 @@ describe.each([false, true])("guest exposure-port collision reporting (base pair
       broker: recordingBroker,
       isPortAvailable: (port) => basePairOccupied &&
         [RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort(RUNTIME_EXPOSURE_APP_PORT_MIN)].includes(port)
-        ? Promise.resolve(false) : isLoopbackPortFree(port),
+        ? Promise.resolve(false) : isFixturePortFree(port),
     });
 
     const logs: string[] = [];
