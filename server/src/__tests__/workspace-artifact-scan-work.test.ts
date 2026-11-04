@@ -59,7 +59,7 @@ describe("workspace artifact scan work", () => {
     await registerWorkspaceArtifactScanWork(c, owner, scan).ready;
     expect(scan.sweepRecentRuns).toHaveBeenCalledTimes(1);
     expect(scan.sweepRecentRuns).toHaveBeenLastCalledWith({
-      windowMs: WORKSPACE_ARTIFACT_SCAN_WINDOW_MS, rescanAfterMs: WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS,
+      windowMs: WORKSPACE_ARTIFACT_SCAN_WINDOW_MS, rescanAfterMs: WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS, discover: true,
     });
     expect(c.nextWakeAt()).toBeNull();
     await vi.advanceTimersByTimeAsync(60 * 60_000);
@@ -96,6 +96,50 @@ describe("workspace artifact scan work", () => {
     const settled = at.length;
     await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
     expect(at).toHaveLength(settled);
+  });
+
+  it("discovers terminal runs only at startup and after a hint; timer-only follow-ups rescan without discovery", async () => {
+    vi.useFakeTimers();
+    const owner = fakeOwner(); const c = coordinator(owner); const { state, scan } = sweeper();
+    await registerWorkspaceArtifactScanWork(c, owner, scan).ready;
+    const discovers = () => scan.sweepRecentRuns.mock.calls.map(([options]) => (options as { discover?: boolean }).discover);
+    expect(discovers()).toEqual([true]);
+
+    state.finishedAt = Date.now();
+    await runTransition(owner);
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_SPACING_MS);
+    expect(discovers()).toEqual([true, true]);
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_WINDOW_MS + WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS);
+    expect(state.finalScanned).toBe(true);
+    const followUps = discovers().slice(2);
+    expect(followUps.length).toBeGreaterThanOrEqual(9);
+    expect(followUps.every(discover => discover === false)).toBe(true);
+    expect(c.nextWakeAt()).toBeNull();
+  });
+
+  it("keeps discovery pending for a hint during a sweep and after a failed discovery", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    const owner = fakeOwner(); const c = coordinator(owner); const { state, scan } = sweeper();
+    await registerWorkspaceArtifactScanWork(c, owner, scan).ready;
+    state.finishedAt = Date.now();
+    const release: Array<() => void> = [];
+    scan.sweepRecentRuns.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => release.push(resolve));
+      return finalScanResult(state);
+    });
+    await runTransition(owner);
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_SPACING_MS);
+    expect(scan.sweepRecentRuns).toHaveBeenCalledTimes(2);
+    await runTransition(owner);
+    release.shift()!();
+    scan.sweepRecentRuns.mockImplementationOnce(async () => { throw new Error("database unavailable"); });
+    await vi.advanceTimersByTimeAsync(3 * WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS);
+    const discovers = scan.sweepRecentRuns.mock.calls.map(([options]) => (options as { discover?: boolean }).discover);
+    // Startup, the first hint, the hint that landed during sweep 2, then the retry of that failed discovery;
+    // only the follow-up after a successful discovery skips it.
+    expect(discovers.length).toBeGreaterThanOrEqual(5);
+    expect(discovers.slice(0, 5)).toEqual([true, true, true, true, false]);
   });
 
   it.each(["warm standby", "idle drain", "scheduler stopped"])("does not sweep during %s and resumes the retained wake afterwards", async () => {

@@ -17,6 +17,9 @@ export const WORKSPACE_ARTIFACT_SCAN_SPACING_MS = 15_000;
  * - Trigger: every run status write, including each terminal transition, notifies the execution-status topic
  *   after its outer commit. This worker observes that settled notification as a hint; the terminal rows in
  *   `heartbeat_runs` stay the source of truth. Startup reconstruction is the initial sweep of the window.
+ * - Discovery: only the startup sweep and the first sweep after a hint select terminal runs from the database
+ *   (a failed sweep keeps discovery pending). Timer-only follow-ups rescan runs already seen, which costs no
+ *   query unless a new file appeared, so an idle server stays quiet while a run's window is still open.
  * - Pending work: a run the scanner has seen that still awaits its final scan at the end of its window.
  * - Next deadline: one follow-up per minute, and the earliest pending final-scan deadline; once every seen run
  *   has had its final scan there is no deadline, so the worker is idle until the next run transition.
@@ -32,6 +35,9 @@ export function registerWorkspaceArtifactScanWork(
 ) {
   let stopped = false;
   let lastHintAt = Date.now();
+  // Hints are counted; a sweep discovers when a hint arrived since the last successful discovery. Startup counts
+  // as one, and a hint that lands during a sweep leaves discovery pending for the next one.
+  let hints = 1, discoveredHints = 0;
   // Earliest final-scan deadline reported by the last successful sweep. A failed sweep leaves the scanner's
   // pending runs unchanged, so it keeps this value and sets a bounded retry horizon instead.
   let nextFinalScanAt: number | null = null;
@@ -41,11 +47,14 @@ export function registerWorkspaceArtifactScanWork(
     minimumSpacingMs: WORKSPACE_ARTIFACT_SCAN_SPACING_MS,
     canRun: () => !stopped && canRun(),
     run: async () => {
+      const observedHints = hints;
       try {
         const result = await scan.sweepRecentRuns({
           windowMs: WORKSPACE_ARTIFACT_SCAN_WINDOW_MS,
           rescanAfterMs: WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS,
+          discover: observedHints !== discoveredHints,
         });
+        discoveredHints = observedHints;
         nextFinalScanAt = result.nextFinalScanAt;
         retryUntil = null;
       } catch (err) {
@@ -68,6 +77,7 @@ export function registerWorkspaceArtifactScanWork(
   const unsubscribe = subscribeDeliveryWork(owner, DELIVERY_QUEUES.executionStatus, () => {
     if (stopped) return;
     lastHintAt = Date.now();
+    hints++;
     worker.wake();
   });
   return {

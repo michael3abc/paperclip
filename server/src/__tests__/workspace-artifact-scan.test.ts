@@ -276,6 +276,39 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
     expect(await workspaceArtifactScanService(db, storage).scanIssue(missing.issueId)).toMatchObject({ cwd: null, created: 0, reason: "no_local_workspace" });
   });
 
+  it("rescans a known run without querying until a new file appears", async () => {
+    const { issueId } = await seed();
+    await fs.writeFile(path.join(root, "cover.png"), "png-bytes");
+    const service = workspaceArtifactScanService(db, storage);
+    const options = { windowMs: 600_000, rescanAfterMs: 0 };
+    expect(await service.sweepRecentRuns(options)).toMatchObject({ runs: 1, scanned: 1, created: 1 });
+    const spies = (["select", "insert", "update", "delete", "execute", "transaction"] as const).map(method => vi.spyOn(db, method));
+    const calls = () => spies.reduce((sum, spy) => sum + spy.mock.calls.length, 0);
+    try {
+      expect(await service.sweepRecentRuns({ ...options, discover: false })).toMatchObject({ runs: 0, scanned: 1, created: 0 });
+      expect(calls()).toBe(0);
+      await fs.writeFile(path.join(root, "late.png"), "late-png");
+      expect(await service.sweepRecentRuns({ ...options, discover: false })).toMatchObject({ runs: 0, scanned: 1, created: 1 });
+      expect(calls()).toBeGreaterThan(0);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(await attachmentNames(issueId)).toEqual(["cover.png", "late.png"]);
+  });
+
+  it("finishes a run whose workspace is not on this host after its first scan", async () => {
+    await seed({ archivedCwd: true });
+    const service = workspaceArtifactScanService(db, storage);
+    expect(await service.sweepRecentRuns({ windowMs: 600_000, rescanAfterMs: 0 })).toMatchObject({ runs: 1, scanned: 1, created: 0, nextFinalScanAt: null });
+    const select = vi.spyOn(db, "select");
+    try {
+      expect(await service.sweepRecentRuns({ windowMs: 600_000, rescanAfterMs: 0, discover: false })).toMatchObject({ runs: 0, scanned: 0, nextFinalScanAt: null });
+      expect(select).not.toHaveBeenCalled();
+    } finally {
+      select.mockRestore();
+    }
+  });
+
   it("wakes its own queue on a real terminal transition, follows up a late file, then goes idle after the window", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
     const errors: unknown[] = [];
