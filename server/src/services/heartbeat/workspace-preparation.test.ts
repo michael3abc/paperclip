@@ -1,14 +1,14 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access, rename, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile, access, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, nativeRunFinalizations, plugins, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -16,7 +16,7 @@ import { heartbeatService } from "../heartbeat.js";
 import { registerServerAdapter, getServerAdapter, type AdapterExecutionContext } from "../../adapters/index.js";
 import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
-import { executionWorkspaceService, toExecutionWorkspace } from "../execution-workspaces.js";
+import { executionWorkspaceService, readExecutionWorkspaceConfig, toExecutionWorkspace } from "../execution-workspaces.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { nativeWorkspaceSyncInternals, prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
@@ -36,7 +36,7 @@ import { buildProjectMentionHref, readRemoteWorkspaceAuthority } from "@papercli
 import { migrateRemoteWorkspace } from "../remote-workspace-migration.js";
 import { trace } from "@opentelemetry/api";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
-import { resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig } from "../execution-workspace-policy.js";
+import { resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy } from "../execution-workspace-policy.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
@@ -1710,7 +1710,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     });
   });
 
-  it.each([false, true])("closing, archiving and sweeping a persisted fixed project_primary row keeps its directory (projectless: %s)", async (projectless) => {
+  it.each([false, true])("closing, archiving and sweeping a persisted fixed project_primary row runs its hooks and keeps its directory (projectless: %s)", async (projectless) => {
     const { input, source, issue, run } = await fixture();
     input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
     if (projectless) {
@@ -1719,23 +1719,47 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       input.task.context = { issueId: issue.id };
     }
     const prepared = await prepareHeartbeatWorkspace(db, input);
-    const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, prepared.persistedExecutionWorkspace!.id));
+    const rowId = prepared.persistedExecutionWorkspace!.id;
+    const [persisted] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, rowId));
     // The fixed directory is operator-owned: never runtime-created and never a linked worktree or task directory.
-    expect(row).toMatchObject({ cwd: source, strategyType: "project_primary", providerType: "local_fs", providerRef: null,
+    expect(persisted).toMatchObject({ cwd: source, strategyType: "project_primary", providerType: "local_fs", providerRef: null,
       branchName: null, projectWorkspaceId: projectless ? null : issue.projectWorkspaceId, metadata: expect.objectContaining({ createdByRuntime: false }) });
+    // Benign operator hooks. Each records the directory it ran in to a marker outside the fixed directory.
+    const markers = await mkdtemp(join(home, "close-hooks-"));
+    const mark = (name: string) => `pwd -P > '${join(markers, name)}'`;
+    if (projectless) {
+      // Without a project the hooks come from the workspace's own config.
+      await db.update(executionWorkspaces).set({ metadata: { ...persisted!.metadata,
+        config: { cleanupCommand: mark("cleanup"), teardownCommand: mark("teardown") } } }).where(eq(executionWorkspaces.id, rowId));
+    } else {
+      await db.update(projectWorkspaces).set({ cleanupCommand: mark("cleanup") }).where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
+      await db.update(projects).set({ executionWorkspacePolicy: { workspaceStrategy: { type: "project_primary", teardownCommand: mark("teardown") } } })
+        .where(eq(projects.id, issue.projectId!));
+    }
+    const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, rowId));
     await writeFile(join(source, "operator-notes.txt"), "operator owned\n");
+    // Git maintains its own metadata, so the listing keeps `.git` itself but not its internals.
+    const contents = async () => (await readdir(source, { recursive: true }))
+      .filter(entry => !entry.startsWith(`.git${sep}`)).sort();
+    const before = await contents();
+    expect(before).toEqual([".git", "README.md", "operator-notes.txt"]);
     const intact = async () => {
+      expect(await contents()).toEqual(before);
       expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
       expect(await readFile(join(source, "operator-notes.txt"), "utf8")).toBe("operator owned\n");
     };
 
     const svc = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
     const plan = (await svc.getCloseReadiness(row!.id))!.plannedActions.map(action => action.kind);
+    // Close readiness tells the operator the hooks will run and that nothing will be removed.
+    expect(plan).toEqual(expect.arrayContaining(["cleanup_command", "teardown_command"]));
     expect(plan).not.toContain("remove_local_directory");
     expect(plan).not.toContain("git_worktree_remove");
-    // Shared destructive primitive behind the close route, the terminal reaper and preparation rollback.
-    const projectWorkspace = row!.projectWorkspaceId ? (await db.select().from(projectWorkspaces)
-      .where(eq(projectWorkspaces.id, row!.projectWorkspaceId)))[0] ?? null : null;
+    // The route's projection of the project workspace (routes/execution-workspaces.ts).
+    const projectWorkspace = row!.projectWorkspaceId ? (await db.select({ cwd: projectWorkspaces.cwd, cleanupCommand: projectWorkspaces.cleanupCommand })
+      .from(projectWorkspaces).where(and(eq(projectWorkspaces.id, row!.projectWorkspaceId), eq(projectWorkspaces.companyId, row!.companyId))))[0] ?? null
+      : null;
+    // The terminal reaper and preparation rollback call the shared destructive primitive without hooks.
     const cleanup = await cleanupExecutionWorkspaceArtifacts({ workspace: row!, projectWorkspace, runCleanupCommands: false });
     expect(cleanup).toMatchObject({ cleanedPath: source, cleaned: false });
     await intact();
@@ -1746,16 +1770,37 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ checked: 1, archived: 0, cleanupFailed: 0 });
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, row!.id)))[0]?.status).toBe("active");
     await intact();
+    expect(await readdir(markers)).toEqual([]);
 
-    // Close route sequence: archive under the lifecycle lock, then fenced destruction.
+    // Close route (routes/execution-workspaces.ts): resolve the hooks as the route does, archive under the
+    // lifecycle lock, then run fenced destruction with exactly the route's cleanup arguments.
+    const configForCleanup = readExecutionWorkspaceConfig(row!.metadata ?? null);
+    const projectPolicy = row!.projectId ? parseProjectExecutionWorkspacePolicy((await db.select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects).where(and(eq(projects.id, row!.projectId), eq(projects.companyId, row!.companyId))))[0]?.executionWorkspacePolicy)
+      : null;
     const archived = await svc.archiveWorkspaceUnderLifecycleLock({ id: row!.id, patch: { status: "archived" }, closedAt: new Date() });
     expect(archived).toMatchObject({ outcome: "archived", workspace: { status: "archived", cwd: source } });
     const fenced = await svc.fenceClosedWorkspaceDestruction({
       workspaceId: row!.id,
       capturedGeneration: (archived as { capturedGeneration: number }).capturedGeneration,
-      destroy: () => cleanupExecutionWorkspaceArtifacts({ workspace: row!, projectWorkspace, runCleanupCommands: false }),
+      destroy: () => cleanupExecutionWorkspaceArtifacts({
+        workspace: row!,
+        projectWorkspace,
+        teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+        cleanupCommand: configForCleanup?.cleanupCommand ?? null,
+        recorder: workspaceOperationService(db).createRecorder({ companyId: row!.companyId, executionWorkspaceId: row!.id }),
+      }),
     });
-    expect(fenced).toMatchObject({ skippedReopened: false, result: { cleanedPath: source, cleaned: false } });
+    expect(fenced).toMatchObject({ skippedReopened: false, result: { cleanedPath: source, cleaned: false, warnings: [] } });
+    // Both hooks ran inside the fixed directory, and the directory and everything in it survived.
+    const fixedDir = `${await realpath(source)}\n`;
+    expect(await readFile(join(markers, "cleanup"), "utf8")).toBe(fixedDir);
+    expect(await readFile(join(markers, "teardown"), "utf8")).toBe(fixedDir);
+    expect(await db.select({ phase: workspaceOperations.phase, command: workspaceOperations.command, status: workspaceOperations.status })
+      .from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, row!.id))).toEqual(expect.arrayContaining([
+      { phase: "workspace_teardown", command: mark("cleanup"), status: "succeeded" },
+      { phase: "workspace_teardown", command: mark("teardown"), status: "succeeded" },
+    ]));
     await intact();
 
     expect(await expireIsolatedTaskDirectory(db, row!, { dryRun: false, now: new Date(), notBefore: new Date(0) }))

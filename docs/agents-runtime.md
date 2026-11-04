@@ -114,6 +114,10 @@ execution logs remain in their existing runtime storage. See the
 transition rules. Removing the field restores the normal workspace policy and
 does not delete old workspace directories or records.
 
+Closing a workspace never removes the fixed directory or its contents, but the
+configured cleanup and teardown hooks still run in it on close. Do not configure
+destructive hooks for projects whose agents use a fixed workspace.
+
 A plain directory is valid for in-place work. A `git_worktree` policy requires a
 Git checkout; a verified plain directory reports a configuration conflict,
 including when Git discovery stops at a filesystem mount boundary.
