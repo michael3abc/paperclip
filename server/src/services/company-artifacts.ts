@@ -343,6 +343,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       const issueConditions: SQL[] = [
         isNull(issues.hiddenAt),
         isNull(issues.harnessKind),
+        // Archiving a project is how the UI "deletes" it; its artifacts must leave the list too.
+        // A subquery (not projects.archivedAt) because the work-product dedupe query does not join projects.
+        sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.archivedAt} is not null)`,
         ...(options.issueConditions ?? []),
       ];
       const artifacts: CompanyArtifact[] = [];

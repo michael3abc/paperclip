@@ -459,6 +459,24 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(result.artifacts.some((artifact) => artifact.issue.identifier === "OTH-1")).toBe(false);
   });
 
+  it("hides artifacts of archived projects from every source and shows them again after unarchive", async () => {
+    const { companyId, projectId } = await seedArtifacts();
+    const service = companyArtifactsService(db, createStorageService({ "notes.txt": Buffer.from("preview") }));
+    const visible = await service.list(companyId, { limit: 20 });
+    expect(new Set(visible.artifacts.map((artifact) => artifact.source))).toEqual(new Set(["document", "attachment", "work_product"]));
+
+    await db.update(projects).set({ archivedAt: new Date() }).where(eq(projects.id, projectId));
+    // Artifacts whose issue has no project are not project-scoped and stay listed.
+    const archived = await service.list(companyId, { limit: 20 });
+    expect(archived.artifacts.length).toBeGreaterThan(0);
+    expect(archived.artifacts.every((artifact) => artifact.project === null)).toBe(true);
+    expect((await service.list(companyId, { limit: 20, projectId })).artifacts).toEqual([]);
+
+    await db.update(projects).set({ archivedAt: null }).where(eq(projects.id, projectId));
+    expect((await service.list(companyId, { limit: 20 })).artifacts.map((artifact) => artifact.id).sort())
+      .toEqual(visible.artifacts.map((artifact) => artifact.id).sort());
+  });
+
   it("supports project, kind, search, and cursor filters", async () => {
     const { companyId, projectId } = await seedArtifacts();
     const storage = createStorageService({ "notes.txt": Buffer.from("Searchable notes preview") });
