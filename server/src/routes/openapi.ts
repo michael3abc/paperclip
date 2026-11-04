@@ -5069,6 +5069,21 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/artifacts/scan",
+  tags: ["issues"],
+  summary: "Discover local workspace media as issue attachments",
+  description: "Board-only scan of the issue's local workspace. Media files are bounded by the allow-list and size limit and deduplicated by SHA-256.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(z.object({ created: z.number(), skippedDuplicates: z.number(), candidates: z.number(), reason: z.string().nullable() })),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/labels",
   tags: ["issues"],

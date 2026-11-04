@@ -326,6 +326,17 @@ Content-Type: multipart/form-data
 GET /api/issues/{issueId}/attachments
 ```
 
+### Scan workspace artifacts
+
+```
+POST /api/issues/{issueId}/artifacts/scan
+```
+
+Board-only. Scans the issue's local workspace for supported media, applies the
+artifact size and extension limits, and skips attachments with an existing
+SHA-256 digest. Returns `{ created, skippedDuplicates, candidates, reason }`;
+`reason` is null when a workspace was scanned. Remote files are not fetched.
+
 ### Download
 
 ```
