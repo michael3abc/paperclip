@@ -125,10 +125,14 @@ export interface Config extends StorageConfig {
   announcementsFeedUrl: string;
 }
 
-function detectTailnetBindHost(): string | undefined {
-  const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
-  if (explicit) return explicit;
+// loadConfig() runs on hot paths (for example getStorageService() on every
+// run-log write). Probing the tailnet address there spawned `tailscale ip -4`
+// synchronously each time, blocking the event loop on hosts with tailscale
+// installed. The bind address is decided once at startup, so probe once per
+// process; the explicit env override is still honored on every call.
+let detectedTailnetBindHost: { value: string | undefined } | null = null;
 
+function probeTailnetBindHost(): string | undefined {
   try {
     const stdout = execFileSync("tailscale", ["ip", "-4"], {
       encoding: "utf8",
@@ -142,6 +146,13 @@ function detectTailnetBindHost(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function detectTailnetBindHost(): string | undefined {
+  const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
+  if (explicit) return explicit;
+  detectedTailnetBindHost ??= { value: probeTailnetBindHost() };
+  return detectedTailnetBindHost.value;
 }
 
 export function loadConfig(override?: PaperclipConfig | null): Config {
