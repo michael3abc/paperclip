@@ -108,6 +108,14 @@ Project-path, isolation, provisioning and environment conflicts fail with
 `workspace_validation_failed`; they never create a directory or fall back to an
 agent home. This uses the existing JSONB column and requires no schema migration.
 
+A fixed binding cannot replace a workspace that another policy owns. When the run
+would use a fresh isolated retry attempt, remote workspace storage, or a
+provider-owned placement such as the Cursor Cloud API, preparation fails closed
+with `workspace_validation_failed` and `resultJson.reason` set to
+`fixed_workspace_policy_conflict`. The check runs before any environment lease or
+execution workspace record is created and leaves the fixed directory untouched.
+Remove the binding or the conflicting policy to proceed.
+
 The binding applies to operator Agent Chat, projectless tasks and continuations.
 External chat and low-trust tasks retain their isolation requirements. Independent
 sessions may share the path; each retains its own run and process ownership.

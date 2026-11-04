@@ -105,7 +105,10 @@ settings. This sets the native session root working directory and stores `runtim
 Choose its host with `defaultEnvironmentId`. The existing directory is shared by
 that agent's chats, tasks and sessions without creating checkouts. Parallel
 sessions remain independent; coordinate file ownership in the project team.
-Project or isolation conflicts fail explicitly. Runtime state, credentials and
+Project or isolation conflicts fail explicitly. A fresh retry attempt, remote
+workspace storage or a provider-owned placement (Cursor Cloud API) also fails
+with `fixed_workspace_policy_conflict`; the fixed directory never replaces those
+workspaces. Runtime state, credentials and
 execution logs remain in their existing runtime storage. See the
 [API contract](api/agents#fixed-working-directory) for validation and session
 transition rules. Removing the field restores the normal workspace policy and

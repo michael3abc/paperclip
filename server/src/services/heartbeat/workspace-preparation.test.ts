@@ -1738,6 +1738,37 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await leases(input.run.id)).toEqual([]);
   });
 
+  it.each(["fresh", "remoteAuthority", "providerApiPlacement"] as const)(
+    "fails closed when a fixed binding meets a %s workspace, before acquiring a lease", async (kind) => {
+      const { input, source, run } = await fixture();
+      input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
+      if (kind === "fresh") {
+        input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: run.id, sourceRunId: run.id, retainedSourceIds: [] };
+      }
+      if (kind === "remoteAuthority") {
+        input.agent.adapterType = "paperclip_runner";
+        input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+          driver: "sandbox", config: { provider: "daytona" } };
+        input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled = true;
+        configureRemotePersistence();
+      }
+      if (kind === "providerApiPlacement") {
+        input.agent = { ...input.agent, adapterType: "paperclip_runner", adapterConfig: {
+          provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification",
+        } };
+      }
+      const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
+      const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+        code: "workspace_validation_failed", resultJson: { reason: "fixed_workspace_policy_conflict" },
+      });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await leases(input.run.id)).toEqual([]);
+      expect(await db.select().from(executionWorkspaces)).toEqual([]);
+      expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+    });
+
   it("preserves an incompatible old workspace instead of rewriting its binding", async () => {
     const { input, source } = await fixture(true);
     const old = await prepareHeartbeatWorkspace(db, input);
