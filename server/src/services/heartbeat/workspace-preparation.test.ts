@@ -1650,7 +1650,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(first.executionWorkspace.source).toBe("task_session");
     expect(first.persistedExecutionWorkspace).toMatchObject({ mode: "shared_workspace", strategyType: "project_primary",
       sourceIssueId: issue.id, projectId: null, projectWorkspaceId: null, repoUrl: null, metadata: { source: "task_session" } });
-    await mkdir(join(first.executionWorkspace.cwd, ".git", "info"), { recursive: true });
+    await execFile("git", ["-C", first.executionWorkspace.cwd, "init"]);
     await writeFile(join(first.executionWorkspace.cwd, ".git", "info", "exclude"), "/.paperclip-repositories/\n");
     await writeFile(join(first.executionWorkspace.cwd, "original-context.txt"), "Preserve the original task bytes\n");
     await db.update(issues).set({ executionRunId: input.run.id }).where(eq(issues.id, issue.id));
@@ -1699,12 +1699,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       conversationAgentId: input.agent.id, conversationUserId: "operator", conversationState: "active" as const,
     } : {}) }).where(eq(issues.id, issue.id));
     input.task.issueRef = { ...input.task.issueRef!, projectId: null, projectWorkspaceId: null };
-    input.task.executionProjectId = null;
     input.task.context = { issueId: issue.id };
     const result = await prepareHeartbeatWorkspace(db, input);
     expect(result.executionWorkspace.cwd).toBe(source);
     expect(result.executionWorkspace.worktreePath).toBeNull();
-    expect(result.persistedExecutionWorkspace).toBeNull();
+    expect(result.persistedExecutionWorkspace).toMatchObject({
+      cwd: source, projectId: null, projectWorkspaceId: null, sourceIssueId: issue.id,
+      strategyType: "project_primary",
+    });
   });
 
   it("admits independent sessions at the same fixed path with separate run leases", async () => {

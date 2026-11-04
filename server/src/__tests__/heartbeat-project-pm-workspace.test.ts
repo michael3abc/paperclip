@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
@@ -33,6 +33,7 @@ suite("project PM role and workspace at claim", () => {
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "vitest");
     database = await startEmbeddedPostgresTestDatabase("project-pm-heartbeat");
     db = createDb(database.connectionString);
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
     heartbeat = heartbeatService(db);
   }, 30_000);
 
@@ -55,6 +56,7 @@ suite("project PM role and workspace at claim", () => {
     await mkdir(workerRoot, { recursive: true });
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workerRoot });
     await db.insert(companies).values({ id: companyId, name: "PM company", issuePrefix: `M${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(projects).values({ id: projectId, companyId, name: "App", status: "in_progress" });
     await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Repo", sourceType: "local_path", cwd: workerRoot, isPrimary: true });
     await db.insert(agents).values({ id: agentId, companyId, name: "PM", role: "pm", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
@@ -71,9 +73,8 @@ suite("project PM role and workspace at claim", () => {
   async function runToEnd(agentId: string, contextSnapshot: Record<string, unknown>) {
     const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot });
     expect(run).not.toBeNull();
-    let latest: Awaited<ReturnType<typeof heartbeat.getRun>> = null;
     await vi.waitFor(async () => {
-      latest = await heartbeat.getRun(run!.id);
+      const latest = await heartbeat.getRun(run!.id);
       expect(["succeeded", "failed", "cancelled", "timed_out"]).toContain(latest?.status);
     }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);

@@ -435,9 +435,6 @@ describe("adapter device-login routes", () => {
           ? { plugin: { id: "plugin-daytona" }, driver: { supportsLoginPty: true } }
           : null,
     );
-    // Pay the cold transform cost inside setup, before a timed request can
-    // outlive its actor/mocks and accidentally run against the next test.
-    await loadRouteModules();
   });
 
   afterEach(async () => {

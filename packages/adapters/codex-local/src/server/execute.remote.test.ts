@@ -633,6 +633,8 @@ describe("codex remote execution", () => {
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
     await mkdir(workspaceDir, { recursive: true });
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(codexHomeDir);
 
     runChildProcess
       .mockResolvedValueOnce({
@@ -675,7 +677,7 @@ describe("codex remote execution", () => {
       config: {
         engine: "cli",
         command: "codex",
-        env: { OPENAI_API_KEY: "fixture-openai-key" },
+        env: { OPENAI_API_KEY: "fixture-openai-key", CODEX_HOME: codexHomeDir },
       },
       context: {
         ...createPromptContextFixture(),

@@ -1133,6 +1133,15 @@ size, content assertions, and execution deadlines.
 
 Heartbeat fixtures must drain active execution promises before truncating their
 database; a terminal run row does not prove that final writes have completed.
+Fixtures exercising project admission must seed both the responsible user's
+account and active company membership; do not bypass that authorization check.
+When invoking Vitest directly, give `PAPERCLIP_HOME` and `PAPERCLIP_CONFIG` a
+private temporary installation. Provider fixtures must also supply their own
+provider home through adapter configuration. Worktree provisioning fixtures
+must set a private `PAPERCLIP_WORKTREES_DIR`; service fixtures must stop their
+services before clearing those path overrides. Node tests importing TypeScript
+sources use `node --import ./server/node_modules/tsx/dist/loader.mjs --test` so
+the repository's `.js` import specifiers resolve to their TypeScript sources.
 Worker-exit cleanup restores owner permissions on directories inside its own
 temporary Paperclip home before removing immutable runtime-context bundles. It
 does not follow symlinks or change permissions in a developer's runtime.

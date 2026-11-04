@@ -518,6 +518,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
 
     expect(sharedRun).not.toBeNull();
     expect(overrideRun).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
     await vi.waitFor(async () => {
       const [latestShared, latestOverride] = await Promise.all([
         heartbeat.getRun(sharedRun!.id),

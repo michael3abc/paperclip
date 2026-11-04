@@ -132,6 +132,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .from(heartbeatRuns)
       .then((runs) => runs.map((run) => run.id));
     await Promise.all(runIds.map((runId) => heartbeat.waitForRunExecutionDrain(runId)));
+    await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -835,6 +836,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -888,10 +890,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         : []),
     ]);
     await db.insert(issueRelations).values([
-      { companyId, issueId: cancelledChildId, relatedIssueId: parentId, type: "blocks" },
-      { companyId, issueId: siblingId, relatedIssueId: parentId, type: "blocks" },
+      { companyId, issueId: cancelledChildId, relatedIssueId: parentId, type: "blocks" as const },
+      { companyId, issueId: siblingId, relatedIssueId: parentId, type: "blocks" as const },
       ...(input.externalBlockerStatus
-        ? [{ companyId, issueId: externalBlockerId, relatedIssueId: parentId, type: "blocks" }]
+        ? [{ companyId, issueId: externalBlockerId, relatedIssueId: parentId, type: "blocks" as const }]
         : []),
     ]);
     const childrenCompletedWake = {
@@ -932,14 +934,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const wake = await heartbeat.wakeup(seeded.agentId, seeded.childrenCompletedWake);
     expect(wake).not.toBeNull();
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, wake!.id))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+    await heartbeat.drainActiveRunExecutions();
     const run = await db
       .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
@@ -1011,14 +1006,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return runId;
     };
     const settledStatus = async (runId: string) => {
-      await waitForCondition(async () => {
-        const run = await db
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, runId))
-          .then((rows) => rows[0] ?? null);
-        return run?.status === "succeeded" || run?.status === "cancelled";
-      });
+      await heartbeat.drainActiveRunExecutions();
       return db
         .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
         .from(heartbeatRuns)
@@ -1453,6 +1441,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .where(eq(issues.id, blockedIssueId));
 
     await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
 
     await waitForCondition(async () => {
       const run = await db

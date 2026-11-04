@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
@@ -453,6 +453,15 @@ function createWorkspaceOperationRecorderDouble() {
   return { recorder, operations };
 }
 
+let runtimeFixtureHome: string;
+beforeEach(async () => {
+  runtimeFixtureHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-runtime-home-"));
+  process.env.PAPERCLIP_HOME = runtimeFixtureHome;
+  process.env.PAPERCLIP_CONFIG = path.join(runtimeFixtureHome, "config.json");
+  process.env.PAPERCLIP_INSTANCE_ID = "test";
+  process.env.PAPERCLIP_WORKTREES_DIR = path.join(runtimeFixtureHome, "worktrees");
+});
+
 afterEach(async () => {
   await Promise.all(
     Array.from(leasedRunIds).map(async (runId) => {
@@ -460,12 +469,13 @@ afterEach(async () => {
       leasedRunIds.delete(runId);
     }),
   );
+  await resetRuntimeServicesForTests();
+  await fs.rm(runtimeFixtureHome, { recursive: true, force: true });
   delete process.env.PAPERCLIP_CONFIG;
   delete process.env.PAPERCLIP_HOME;
   delete process.env.PAPERCLIP_INSTANCE_ID;
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
-  await resetRuntimeServicesForTests();
   // Registry reset does not clear the process-local allocation claims. A
   // failed-start fixture must not reserve another test's ephemeral port.
   resetRuntimeServicePortReservationsForTests();

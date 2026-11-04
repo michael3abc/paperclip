@@ -8,7 +8,9 @@ import {
   agentRuntimeState,
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   documentRevisions,
@@ -50,19 +52,26 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   beforeAll(async () => {
     if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(external ?? tempDb!.connectionString);
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
   }, 20_000);
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
+    await heartbeatService(db).drainActiveRunExecutions();
+    // Completion may schedule a future repair for the no-op process fixture.
+    // That timer is not active monitor work; teardown cancels it separately.
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const active = await db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
-        .where(sql`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`);
+        .where(sql`${heartbeatRuns.status} in ('queued', 'running')`);
       if (active.length === 0) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new Error("Timed out waiting for issue monitor heartbeat runs to settle");
+    const remaining = await db.select({ status: heartbeatRuns.status, retryOfRunId: heartbeatRuns.retryOfRunId,
+      scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.status} in ('queued', 'running')`);
+    throw new Error(`Timed out waiting for issue monitor heartbeat runs to settle: ${JSON.stringify(remaining)}`);
   }
 
   async function heartbeatSideEffectFingerprint() {
@@ -122,6 +131,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   }
 
@@ -180,6 +190,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
 
     await db.insert(agents).values({
       id: agentId,
