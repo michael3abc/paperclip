@@ -84,7 +84,9 @@ may execute these remote workers; it checks canonical paths and Bridge access
 on the configured host before starting or resuming the native session. Remote
 workers currently use shared isolation. This is a dispatch boundary, not an OS
 sandbox. Agent home, inbox, memory and existing worker/native identities remain
-independent of the remote project path.
+independent of the remote project path. Controller-local run setup, such as
+Git context discovery and GitHub launcher staging, runs from the local Agent
+home because the remote worker root does not exist on the controller.
 
 For a persistent project agent, set **Workspace** beside **Reports to** in Harness /
 Runtime → Agent identity, then save. On narrow screens Workspace appears below

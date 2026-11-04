@@ -22,6 +22,7 @@ import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import {
   buildPaperclipPmWorkspaceContext,
+  controllerLocalCwd,
   readProjectPmRunIssueId,
   readWorkspaceBinding,
   resolveProjectPmBinding,
@@ -84,6 +85,17 @@ describe("project_pm binding schema and role table", () => {
     expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: worker })?.projectPm?.workerHostId).toBe('shopee-e');
     expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...worker, workerHostId: 'shopee-d' } })).toThrow(/does not match/);
     expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...binding, workerHostId: '../host' } })).toThrow();
+  });
+
+  it('runs controller-local setup from the agent home when the worker root exists only on a remote host', () => {
+    const remote = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
+    const remoteWorker = readWorkspaceBinding({ workspaceBinding: remote }, { paperclipPmWorkspace: buildPaperclipPmWorkspaceContext(remote, 'worker', randomUUID()) });
+    expect(remoteWorker?.cwd).toBe('/projects/app');
+    expect(controllerLocalCwd(remoteWorker, remoteWorker!.cwd)).toBe('/home/pm');
+    const local = { ...remote, workerHostId: undefined };
+    const localWorker = readWorkspaceBinding({ workspaceBinding: local }, { paperclipPmWorkspace: buildPaperclipPmWorkspaceContext(local, 'worker', randomUUID()) });
+    expect(controllerLocalCwd(localWorker, localWorker!.cwd)).toBe('/projects/app');
+    expect(controllerLocalCwd(null, '/workspace')).toBe('/workspace');
   });
 
   it("projects the binding to the claim-time role cwd and rejects a missing or forged context", () => {
