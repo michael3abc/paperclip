@@ -44,8 +44,13 @@ export interface AgentProjectPmWorkspaceBinding {
   agentHome?: string;
   projectId: string;
   workerRoot: string;
-  /** Optional CC Pocket host for remote worker dispatch; the PM remains local. */
+  /** Optional CC Pocket host for remote worker dispatch. */
   workerHostId?: string;
+  /**
+   * Optional PM home on `workerHostId`. When set, PM turns run natively on that
+   * host in this directory; `agentHome` stays the local controller home.
+   */
+  pmHome?: string;
   workerIsolation: ProjectPmWorkerIsolation;
   workerSlots: number;
   inboxIssueId?: string | null;
@@ -63,6 +68,8 @@ export interface PaperclipPmWorkspaceContext {
   projectId: string;
   workerRoot: string;
   workerHostId?: string;
+  /** Present only when the PM runs natively on `workerHostId`. */
+  pmHome?: string;
   workerIsolation: ProjectPmWorkerIsolation;
   workerSlots: number;
   cwd: string;
@@ -80,6 +87,7 @@ export interface PmWorkspaceListing {
   agentHome: string;
   workerRoot: string;
   workerHostId?: string;
+  pmHome?: string;
   workerIsolation: ProjectPmWorkerIsolation;
   workerSlots: number;
   inboxIssueId: string | null;

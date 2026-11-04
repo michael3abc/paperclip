@@ -4419,6 +4419,22 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     expect(summary?.closest('[data-config-section="identity"]')).not.toBeNull();
   });
 
+  it("shows the worker host and native PM home of a remote project PM", async () => {
+    const binding = {
+      mode: "project_pm", agentHome: "/srv/paperclip/agents/pm", projectId: "8a3c3c1e-2b8f-4c35-9d0a-111111111111",
+      workerRoot: "/home/yoyo/app", workerHostId: "shopee-e", pmHome: "/home/yoyo/.local/state/pc/agents/pm/home",
+      workerIsolation: "shared", workerSlots: 2, inboxIssueId: null,
+    };
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "codex_local", runtimeConfig: { heartbeat: { enabled: false }, workspaceBinding: binding } as Agent["runtimeConfig"] },
+    );
+    roots.push(result.root);
+    const summary = result.container.querySelector('[aria-label="Project PM workspace"]');
+    expect(summary?.textContent).toContain("Worker hostshopee-e");
+    expect(summary?.textContent).toContain("PM home/home/yoyo/.local/state/pc/agents/pm/home");
+  });
+
   it("shows the host path and execution-engine fields when the policy is off", async () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],

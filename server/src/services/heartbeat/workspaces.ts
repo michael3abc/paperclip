@@ -3535,7 +3535,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       if (opts?.executionEnvironmentDriver === "local") {
         if (fixedBinding.projectPm?.workerHostId) {
           if (agent.adapterType !== 'ccpocket_bridge') workspaceBindingConflict('environment_conflict', 'Remote PM workers require the CC Pocket adapter.');
-          if (fixedBinding.projectPm.role === 'pm') await validateFixedLocalDirectory(fixedBinding);
+          // A native PM home exists only on the worker host; the adapter verifies it there.
+          if (fixedBinding.projectPm.role === 'pm' && !fixedBinding.projectPm.pmHome) await validateFixedLocalDirectory(fixedBinding);
         } else await validateFixedLocalDirectory(fixedBinding);
       }
       else if (opts?.executionEnvironmentDriver !== "ssh" || opts.executionEnvironmentConfig?.workspaceMode !== "in_place" || opts.executionEnvironmentConfig.remoteWorkspacePath !== fixedBinding.cwd) {

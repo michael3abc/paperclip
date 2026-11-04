@@ -67,8 +67,9 @@ export function workspaceBindingConflict(reason: string, message: string): never
 
 /**
  * The directory for controller-local setup (Git context discovery, launchers).
- * A remote-host PM binding's run cwd exists only on its registered host, so
- * controller probes use the agent's controller home instead.
+ * A remote-host PM binding's run cwd (the worker root, or the native PM home)
+ * exists only on its registered host, so controller probes use the agent's
+ * controller home instead.
  */
 export function controllerLocalCwd(binding: FixedWorkspaceBinding | null | undefined, cwd: string): string {
   return binding?.projectPm?.workerHostId ? binding.projectPm.agentHome : cwd;
@@ -97,11 +98,12 @@ export function readWorkspaceBinding(
     projectPmConflict("context_missing", "The project PM role was not resolved for this run.");
   }
   const binding = parsed.data;
-  const expectedCwd = pmContext.role === "worker" ? binding.workerRoot : (binding.agentHome ?? pmContext.agentHome);
+  const expectedCwd = pmContext.role === "worker" ? binding.workerRoot : (binding.pmHome ?? binding.agentHome ?? pmContext.agentHome);
   if (
     pmContext.projectId !== binding.projectId ||
     pmContext.workerRoot !== binding.workerRoot ||
     pmContext.workerHostId !== binding.workerHostId ||
+    pmContext.pmHome !== binding.pmHome ||
     (binding.agentHome !== undefined && pmContext.agentHome !== binding.agentHome) ||
     pmContext.cwd !== expectedCwd
   ) {
@@ -126,6 +128,7 @@ export function readPaperclipPmWorkspaceContext(value: unknown): PaperclipPmWork
   if (ctx.workerIsolation !== "shared" && ctx.workerIsolation !== "worktree") return null;
   if (typeof ctx.workerSlots !== "number" || !Number.isInteger(ctx.workerSlots)) return null;
   if (ctx.workerHostId !== undefined && (typeof ctx.workerHostId !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(ctx.workerHostId))) return null;
+  if (ctx.pmHome !== undefined && (typeof ctx.pmHome !== "string" || !ctx.pmHome.startsWith("/") || !ctx.workerHostId)) return null;
   return {
     version: 1,
     role: ctx.role,
@@ -133,6 +136,7 @@ export function readPaperclipPmWorkspaceContext(value: unknown): PaperclipPmWork
     projectId: ctx.projectId as string,
     workerRoot: ctx.workerRoot as string,
     ...(ctx.workerHostId ? { workerHostId: ctx.workerHostId as string } : {}),
+    ...(ctx.pmHome ? { pmHome: ctx.pmHome as string } : {}),
     workerIsolation: ctx.workerIsolation,
     workerSlots: ctx.workerSlots,
     cwd: ctx.cwd as string,
@@ -199,9 +203,10 @@ export function buildPaperclipPmWorkspaceContext(
     projectId: binding.projectId,
     workerRoot: binding.workerRoot,
     ...(binding.workerHostId ? { workerHostId: binding.workerHostId } : {}),
+    ...(binding.pmHome ? { pmHome: binding.pmHome } : {}),
     workerIsolation: binding.workerIsolation,
     workerSlots: binding.workerSlots,
-    cwd: role === "worker" ? binding.workerRoot : binding.agentHome,
+    cwd: role === "worker" ? binding.workerRoot : (binding.pmHome ?? binding.agentHome),
     issueId,
     inboxIssueId: binding.inboxIssueId,
   };
@@ -267,6 +272,11 @@ export async function resolveProjectPmBinding(db: Db, input: {
   if (binding.workerHostId && binding.workerIsolation !== "shared") {
     projectPmConflict("invalid", "Remote PM workers require shared isolation.");
   }
+  // The PM home lives on the worker host; the adapter creates and canonicalizes
+  // it there before the PM session starts, so the server only checks its shape.
+  if (binding.pmHome !== undefined && !binding.workerHostId) {
+    projectPmConflict("invalid", "A native PM home requires a worker host.");
+  }
   const agentHome = await canonicalAgentHome(input.agentId).catch(() =>
     projectPmConflict("agent_home_unavailable", "The PM agent home could not be created."));
   if (binding.agentHome !== undefined && binding.agentHome !== agentHome) {
@@ -296,6 +306,7 @@ export async function resolveProjectPmBinding(db: Db, input: {
     projectId: binding.projectId,
     workerRoot: binding.workerRoot,
     ...(binding.workerHostId ? { workerHostId: binding.workerHostId } : {}),
+    ...(binding.pmHome ? { pmHome: binding.pmHome } : {}),
     workerIsolation: binding.workerIsolation,
     workerSlots: binding.workerSlots,
     inboxIssueId,

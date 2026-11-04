@@ -1627,13 +1627,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ["Project", String(projectPmBinding.projectId ?? "")],
         ["Agent home", projectPmBinding.agentHome ?? "Server default"],
         ["Worker root", String(projectPmBinding.workerRoot ?? "")],
+        ...(projectPmBinding.workerHostId ? [["Worker host", projectPmBinding.workerHostId] as [string, string]] : []),
+        ...(projectPmBinding.pmHome ? [["PM home", projectPmBinding.pmHome] as [string, string]] : []),
         ["Worker isolation", projectPmBinding.workerIsolation ?? "shared"],
         ["Worker slots", String(projectPmBinding.workerSlots ?? "")],
         ["Inbox issue", projectPmBinding.inboxIssueId ?? "None"],
       ]
     : [];
   const workspaceField = !isDotRunner && !hideHostPaths && (projectPmBinding ? (
-    <Field label="Workspace" hint="Project PM: PM turns run in the agent home; worker turns on the project's child issues run in the worker root. This form keeps the binding unchanged; edit it through the agent API.">
+    <Field label="Workspace" hint="Project PM: PM turns run in the agent home, or natively in the PM home on the worker host; worker turns on the project's child issues run in the worker root. This form keeps the binding unchanged; edit it through the agent API.">
       <div aria-label="Project PM workspace" className="space-y-1 rounded-md border border-border px-3 py-2 text-xs">
         {projectPmBindingRows.map(([label, value]) => (
           <div key={label} className="flex gap-3">
