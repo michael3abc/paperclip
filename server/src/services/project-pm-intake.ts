@@ -155,6 +155,7 @@ export async function listPmWorkspaces(db: Db, companyId: string): Promise<PmWor
     agentHome: binding.agentHome ?? resolveDefaultAgentWorkspaceDir(row.id),
     workerRoot: binding.workerRoot,
     ...(binding.workerHostId ? { workerHostId: binding.workerHostId } : {}),
+    ...(binding.pmHome ? { pmHome: binding.pmHome } : {}),
     workerIsolation: binding.workerIsolation,
     workerSlots: binding.workerSlots,
     inboxIssueId: binding.inboxIssueId ?? null,

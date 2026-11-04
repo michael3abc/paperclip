@@ -75,6 +75,15 @@ function absoluteWorkspacePathSchema(message: string) {
   );
 }
 
+/** A canonical POSIX absolute path on a remote host: no empty, `.` or `..` segments and no trailing slash. */
+function remotePosixPathSchema(message: string) {
+  return z.string().max(4096).refine(
+    value => !/[\0\r\n]/.test(value) && value.startsWith("/") && value.length > 1
+      && value.slice(1).split("/").every(part => part !== "" && part !== "." && part !== ".."),
+    message,
+  );
+}
+
 export const PROJECT_PM_WORKER_ISOLATIONS = ["shared", "worktree"] as const;
 export const PROJECT_PM_MIN_WORKER_SLOTS = 1;
 export const PROJECT_PM_MAX_WORKER_SLOTS = 4;
@@ -86,8 +95,9 @@ export const agentFixedWorkspaceBindingSchema = z.object({
 }).strict();
 
 /**
- * A fixed project PM: PM turns run in the agent home with one shared session,
- * worker turns (child issues assigned to the agent) run in the project root.
+ * A fixed project PM: PM turns run in the agent home (or `pmHome` on the
+ * worker host) with one shared session, worker turns (child issues assigned to
+ * the agent) run in the project root.
  * `agentHome` may be omitted on write; the server fills the canonical value.
  */
 export const agentProjectPmWorkspaceBindingSchema = z.object({
@@ -96,6 +106,8 @@ export const agentProjectPmWorkspaceBindingSchema = z.object({
   projectId: z.string().guid(),
   workerRoot: absoluteWorkspacePathSchema("PM worker root must be an absolute path"),
   workerHostId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).optional(),
+  /** PM home on `workerHostId`; requires it (checked when the binding is resolved). */
+  pmHome: remotePosixPathSchema("PM home must be a canonical absolute POSIX path").optional(),
   workerIsolation: z.enum(PROJECT_PM_WORKER_ISOLATIONS).default("shared"),
   workerSlots: z.number().int().min(PROJECT_PM_MIN_WORKER_SLOTS).max(PROJECT_PM_MAX_WORKER_SLOTS)
     .default(PROJECT_PM_DEFAULT_WORKER_SLOTS),

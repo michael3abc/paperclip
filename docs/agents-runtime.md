@@ -88,6 +88,16 @@ independent of the remote project path. Controller-local run setup, such as
 Git context discovery and GitHub launcher staging, runs from the local Agent
 home because the remote worker root does not exist on the controller.
 
+With a worker host, an operator may also set `pmHome`, a canonical absolute
+POSIX directory on that host. PM turns then run natively in `pmHome` on the
+worker host; `agentHome` stays the local controller home and still owns
+controller-local setup. The server checks only the path's shape and that
+`workerHostId` is set. The `ccpocket_bridge` adapter creates the directory
+under its remote state root, verifies its owner and canonical path, and fails a
+PM turn whose selected model is on another host. Memory and instructions stay
+in Paperclip and reach the PM through the run-scoped API. Changing `pmHome`
+changes the run-config fingerprint.
+
 For a persistent project agent, set **Workspace** beside **Reports to** in Harness /
 Runtime → Agent identity, then save. On narrow screens Workspace appears below
 Reports to. The create form exposes the same Workspace field in its execution

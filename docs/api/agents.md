@@ -10,7 +10,11 @@ The `project_pm` workspace binding accepts optional `workerHostId` for the
 `sourceType: remote_managed`, the same `cwd` as `workerRoot`, and matching
 `metadata.hostId`. Only operators may configure the binding. PM execution remains
 in its local agent home; worker execution is verified remotely by the adapter.
-`GET /api/companies/:companyId/pm-workspaces` includes `workerHostId` when configured.
+Optional `pmHome` (a canonical absolute POSIX path, only with `workerHostId`)
+moves PM execution to that directory on the worker host; `agentHome` stays the
+local controller home.
+`GET /api/companies/:companyId/pm-workspaces` includes `workerHostId` and
+`pmHome` when configured.
 
 ## List Agents
 

@@ -23,6 +23,7 @@ import { agentRoutes } from "../routes/agents.js";
 import {
   buildPaperclipPmWorkspaceContext,
   controllerLocalCwd,
+  readPaperclipPmWorkspaceContext,
   readProjectPmRunIssueId,
   readWorkspaceBinding,
   resolveProjectPmBinding,
@@ -85,6 +86,26 @@ describe("project_pm binding schema and role table", () => {
     expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: worker })?.projectPm?.workerHostId).toBe('shopee-e');
     expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...worker, workerHostId: 'shopee-d' } })).toThrow(/does not match/);
     expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...binding, workerHostId: '../host' } })).toThrow();
+  });
+
+  it('runs a native PM in its home on the worker host and keeps controller setup local', () => {
+    const pmHome = '/home/yoyo/.local/state/paperclip-ccpocket/agents/a1/home';
+    const binding = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', pmHome, workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
+    const pm = buildPaperclipPmWorkspaceContext(binding, 'pm', null);
+    expect(pm).toMatchObject({ role: 'pm', cwd: pmHome, pmHome, agentHome: '/home/pm', workerHostId: 'shopee-e' });
+    expect(buildPaperclipPmWorkspaceContext(binding, 'worker', randomUUID())).toMatchObject({ cwd: '/projects/app', pmHome });
+    expect(readPaperclipPmWorkspaceContext(pm)).toEqual(pm);
+    const fixed = readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: pm });
+    expect(fixed?.cwd).toBe(pmHome);
+    expect(controllerLocalCwd(fixed, fixed!.cwd)).toBe('/home/pm');
+    // The run context and the stored binding must agree on the PM home.
+    const { pmHome: _dropped, ...withoutHome } = binding;
+    expect(() => readWorkspaceBinding({ workspaceBinding: withoutHome }, { paperclipPmWorkspace: pm })).toThrow(/does not match/);
+    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...pm, cwd: '/home/pm' } })).toThrow(/does not match/);
+    expect(readPaperclipPmWorkspaceContext({ ...pm, workerHostId: undefined })).toBeNull();
+    for (const bad of ['relative/home', '/home/yoyo/', '/home//yoyo', '/home/./yoyo', '/home/yoyo/..', '/']) {
+      expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...binding, pmHome: bad } })).toThrow();
+    }
   });
 
   it('runs controller-local setup from the agent home when the worker root exists only on a remote host', () => {
@@ -218,6 +239,15 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
       binding: { ...binding, workerIsolation: 'worktree' }, validateInbox: true }))).toBe('project_pm_invalid');
     await db.update(projectWorkspaces).set({ metadata: { hostId: 'shopee-d' } }).where(eq(projectWorkspaces.projectId, s.project.id));
     expect(await reasonOf(resolve())).toBe('project_pm_worker_root_mismatch');
+  });
+
+  it('accepts a native PM home only together with its worker host', async () => {
+    const s = await seed(), remoteRoot = '/remote-only/project', pmHome = '/home/yoyo/.local/state/paperclip-ccpocket/agents/x/home';
+    await db.update(projectWorkspaces).set({ sourceType: 'remote_managed', cwd: remoteRoot, metadata: { hostId: 'shopee-e' }, remoteWorkspaceRef: 'shopee-e:' + remoteRoot }).where(eq(projectWorkspaces.projectId, s.project.id));
+    const binding = { mode: 'project_pm' as const, projectId: s.project.id, workerRoot: remoteRoot, workerHostId: 'shopee-e', pmHome, workerIsolation: 'shared' as const, workerSlots: 2 };
+    expect(await resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding, validateInbox: true })).toMatchObject({ pmHome, workerHostId: 'shopee-e' });
+    const { workerHostId: _host, ...local } = binding;
+    expect(await reasonOf(resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding: local, validateInbox: true }))).toBe('project_pm_invalid');
   });
 
   it("resolves the role and cwd of each run from current issue state", async () => {

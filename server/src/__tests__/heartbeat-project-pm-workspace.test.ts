@@ -109,6 +109,26 @@ suite("project PM role and workspace at claim", () => {
     expect(timerRun.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, issueId: null });
   }, 60_000);
 
+  it("delivers a native PM turn in its home on the worker host without probing that path locally", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID();
+    const workerRoot = "/remote-only/" + companyId + "/repo", pmHome = "/remote-only/" + companyId + "/pm-home";
+    await db.insert(companies).values({ id: companyId, name: "Remote PM company", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Remote app", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Repo", sourceType: "remote_managed", cwd: workerRoot,
+      metadata: { hostId: "shopee-e" }, remoteWorkspaceRef: "shopee-e:" + workerRoot, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "PM", role: "pm", status: "idle", adapterType: "ccpocket_bridge", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    const binding = await resolveProjectPmBinding(db, {
+      companyId, agentId, validateInbox: false,
+      binding: { mode: "project_pm", projectId, workerRoot, workerHostId: "shopee-e", pmHome, workerIsolation: "shared", workerSlots: 2 },
+    });
+    await db.update(agents).set({ runtimeConfig: { workspaceBinding: binding } }).where(eq(agents.id, agentId));
+    const pmRun = await runToEnd(agentId, {});
+    expect({ status: pmRun.run.status, error: pmRun.run.error }).toEqual({ status: "succeeded", error: null });
+    const context = pmRun.calls[0]![0].context;
+    expect(context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pmHome, pmHome, workerHostId: "shopee-e", agentHome: binding.agentHome });
+    expect(context.paperclipWorkspace.cwd).toBe(pmHome);
+  }, 60_000);
+
   it("runs one PM turn beside up to workerSlots worker turns and keeps a full role queued", async () => {
     const pm = await seedPm();
     const gates = new Map<string, () => void>();
