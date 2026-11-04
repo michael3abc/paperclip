@@ -181,6 +181,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveLocalR
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { workspaceArtifactScanService } from "./services/workspace-artifact-scan.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -1226,6 +1227,7 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  const workspaceArtifactScan = workspaceArtifactScanService(db, storageService);
   const skillSourceSync = skillSourceSyncService(db as any);
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
     duty: "backups",
@@ -1320,7 +1322,13 @@ async function startServerWithDatabaseTeardown(
         await acknowledgeNativeStartupCleanup(db, scope);
       },
     }), next: executionSchedule.finalization },
-    { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
+    { queue: DELIVERY_QUEUES.executionStatus, run: async () => {
+      const result = await deliverExecutionStatuses(db);
+      // The existing durable status notifications and startup reconstruction
+      // trigger artifact discovery; settled history must not keep an idle poll alive.
+      await workspaceArtifactScan.sweepRecentRuns({ windowMs: 10 * 60_000 });
+      return result;
+    }, next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
       { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },

@@ -264,3 +264,15 @@ be retried. Workspace files continue to use the existing workspace file viewer.
 
 Storybook: **Tasks / Text file tabs** covers opening from Artifacts, Markdown,
 plain text, empty files, oversized files, missing attachments, and a narrow panel.
+
+### Local workspace media discovery
+
+Completed runs also discover local media through the execution-status worker at
+startup and after committed status changes. The scan considers runs finished in
+the last ten minutes, retains SHA-256 attachment deduplication, and shares the
+existing worker's drain, retry and shutdown lifecycle. Settled history schedules
+no recurring scan. Board users can explicitly request
+`POST /api/issues/:id/artifacts/scan` for files outside that recovery window.
+The media allow-list, 50 MiB per-file bound, hidden/build-directory exclusions
+and symlink checks also apply to explicit scans. Remote worker directories are
+not fetched by this local scan.
