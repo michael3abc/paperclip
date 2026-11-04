@@ -1970,6 +1970,14 @@ export class DurablePrpControlPlane {
     #eventBatchTimer: ReturnType<typeof setTimeout> | null = null;
     #eventBatchConnection: AuthorityConnection | null = null;
     #eventBatchWrites = new Set<Promise<void>>();
+    // Connection-driven paths (frames, events) join this staged write before their next
+    // authority transaction. Synchronous external authority methods (rotateRunIdentity's
+    // warm-transition rebind, prepareWarmTransitionAdoption, issueWarmTransitionBootstrapTicket,
+    // stageRunAttachment) deliberately do not: awaiting would make their public sync
+    // signatures async and split check-then-commit. Their DurableCoreStore.commit invalidates
+    // the staged batch instead; it is never published or ACKed, and its still-current owner is
+    // closed so the runner replays it (reconnect churn, not loss). Pinned in
+    // test/durable-flow-control.test.mjs.
     #eventBatchWritesByConnection = new Map<AuthorityConnection, Promise<void>>();
     #queuedFrames = 0;
     #queuedBytes = 0;

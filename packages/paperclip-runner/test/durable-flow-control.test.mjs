@@ -20,6 +20,7 @@ function instrument(source) {
     .replace('fsyncSync(descriptor);\n        closeSync(descriptor);', 'fsyncSync(descriptor); globalThis.runnerTestFault?.("file_fsync");\n        closeSync(descriptor);')
     .replace('renameSync(temporary, path);', 'renameSync(temporary, path); globalThis.runnerTestFault?.("rename");')
     .replace('syncParentDirectory(path);', 'syncParentDirectory(path); globalThis.runnerTestFault?.("directory_fsync");')
+    .replace('await withStagedPrivateWrite(', 'await globalThis.runnerTestBeforeStagedWrite?.(); await withStagedPrivateWrite(')
     .replace('export class DurablePrpControlPlane {', `export class DurablePrpControlPlane {
       testConnection() {
         const connection = { lease: { protocolVersion: 3, leaseId: 'lease' }, connectionId: 'conn', terminalLifecycleCommandId: null, replayOnly: false,
@@ -31,6 +32,7 @@ function instrument(source) {
       testEvent(connection, envelope) { return this.#event(connection, envelope); }
       testResult(connection, result) { this.#commandResult(connection, { payload: result }); }
       async testDrain() { while (this.#connectionProcessing.size) await Promise.allSettled([...this.#connectionProcessing.values()]); }
+      async testBatchWrites() { while (this.#eventBatchWrites.size) await Promise.allSettled([...this.#eventBatchWrites]); }
       testQueueBudget() { return { frames: this.#queuedFrames, bytes: this.#queuedBytes }; }
     `)
     + '\nexport { DurableCoreStore, RawWebSocketWireConnection, canonicalDigest };\n';
@@ -284,6 +286,52 @@ test('epoch rotation flushes old batch and delayed old callback cannot contamina
   assert.equal(new Store(stateDirectory, nextIdentity).state.identity.runId, 'run_next');
   await core.stop();
 });
+
+// Pins the m1 contract: synchronous external authority methods (rotateRunIdentity's warm-transition
+// rebind, prepareWarmTransitionAdoption, issueWarmTransitionBootstrapTicket, stageRunAttachment) do not
+// await an in-flight staged presentation batch. Their DurableCoreStore.commit invalidates it: the batch
+// is neither published nor ACKed, the authority snapshot is durable, and the owner is closed to replay.
+for (const [name, authorityCommit] of [
+  ['stageRunAttachment', core => core.stageRunAttachment(
+    { ...identity, runId: 'run_target', turnId: 'turn_target', itemId: 'item_target' },
+    { provider: { instructions: 'target instructions' } })],
+  ['DurableCoreStore.commit', core => core.store.commit({ ...structuredClone(core.store.state), malformedFrames: 7 })],
+]) {
+  test(`${name} during an in-flight presentation batch invalidates it without ACK; the owner replays it`, async () => {
+    const { core, conn, stateDirectory } = fixture();
+    let entered, release;
+    const staged = new Promise(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    globalThis.runnerTestBeforeStagedWrite = async () => { entered(); await held; };
+    try {
+      await core.testEvent(conn, event(1));
+      await staged; // the 10 ms presentation timer has staged the batch and is now writing it
+      authorityCommit(core);
+      release();
+      await core.testBatchWrites();
+    } finally { delete globalThis.runnerTestBeforeStagedWrite; release(); }
+    const authority = structuredClone(core.store.state);
+    assert.equal(conn.sent.filter(e => e.kind === 'ack').length, 0, 'an invalidated batch is never ACKed');
+    assert.equal(authority.ackedSourceSeq, 0);
+    assert.equal(authority.committedEvents.length, 0);
+    assert.equal(core.activeRunnerConnectionCount(), 0, 'the owner is closed so the runner replays the batch');
+    const durable = new Store(stateDirectory, identity).state;
+    assert.equal(durable.ackedSourceSeq, 0, 'the stale staged snapshot never overwrote the authority commit');
+    assert.deepEqual(durable, JSON.parse(JSON.stringify(authority)));
+    assert.deepEqual(fs.readdirSync(stateDirectory).filter(file => file.endsWith('.tmp')), []);
+
+    const next = core.testConnection();
+    await core.testEvent(next, event(1));
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(core.store.state.ackedSourceSeq, 1, 'the replayed event commits on top of the authority snapshot');
+    assert.equal(next.sent.filter(e => e.kind === 'ack').at(-1).payload.ackedSourceSeq, 1);
+    const replayed = new Store(stateDirectory, identity).state;
+    assert.equal(replayed.committedEvents[0].envelope.payload.payload.text, '字1');
+    assert.deepEqual(replayed.stagedRunAttachment, authority.stagedRunAttachment);
+    assert.equal(replayed.malformedFrames, authority.malformedFrames);
+    await core.stop();
+  });
+}
 
 test('finish result preceding start command ACK waits in durable command order', async () => {
   const { core, conn } = fixture(async () => ({ ok: true }));
