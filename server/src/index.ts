@@ -115,6 +115,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runt
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { workspaceArtifactScanService } from "./services/workspace-artifact-scan.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -1206,6 +1207,18 @@ async function startServerWithDatabaseTeardown(
   const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
   executionControlInterval.unref?.();
   sweepExecutionControl();
+  // Media a finished run left in its local workspace becomes an issue attachment so the Artifacts page shows it.
+  // The sweep is idempotent (sha256 de-duplication), so overlapping windows and restarts are harmless.
+  const workspaceArtifactScan = workspaceArtifactScanService(db, storageService);
+  let workspaceArtifactSweepInFlight = false;
+  const workspaceArtifactScanInterval = setInterval(() => {
+    if (workspaceArtifactSweepInFlight || isWarmStandby() || isIdleTaskDrainActive()) return;
+    workspaceArtifactSweepInFlight = true;
+    void workspaceArtifactScan.sweepRecentRuns({ windowMs: 10 * 60_000 })
+      .catch((err) => logger.warn({ err }, "workspace artifact sweep failed"))
+      .finally(() => { workspaceArtifactSweepInFlight = false; });
+  }, 60_000);
+  workspaceArtifactScanInterval.unref?.();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
     heartbeatSchedulerInterval = setInterval(() => {
       if (!isWarmStandby() && !isIdleTaskDrainActive()) callback();
@@ -1971,6 +1984,7 @@ async function startServerWithDatabaseTeardown(
     unsubscribeChatCompletions();
     await deliveryWork.stop();
     clearInterval(executionControlInterval);
+    clearInterval(workspaceArtifactScanInterval);
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;

@@ -299,6 +299,7 @@ import {
   readAcceptedPlanConfirmationTarget,
   type IssuePostCommitAction,
 } from "../services/issues.js";
+import { workspaceArtifactScanService } from "../services/workspace-artifact-scan.js";
 import {
   authorizationDeniedDetails,
   issueReadSqlCondition,
@@ -19485,6 +19486,16 @@ export function issueRoutes(
       res.status(201).json(result.vote);
     },
   );
+
+  // Board-only: pull media produced in the issue's local workspace into its attachments (de-duplicated by sha256).
+  router.post("/issues/:id/artifacts/scan", async (req, res) => {
+    assertBoard(req);
+    const issueId = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, issueId), "Issue not found");
+    if (!issue) return;
+    const result = await workspaceArtifactScanService(db, storage).scanIssue(issueId);
+    res.json({ created: result.created, skippedDuplicates: result.skippedDuplicates, candidates: result.candidates, reason: result.reason ?? null });
+  });
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
