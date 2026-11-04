@@ -22,6 +22,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
+import { admitProjectPmRun } from "./heartbeat/project-pm-run.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
@@ -57,7 +58,7 @@ import {
 } from "./heartbeat/scheduling.js";
 import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectionEnabled } from "./execution-workspace-policy.js";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
-import { readWorkspaceBinding, controllerLocalCwd, resolveProjectPmRunWorkspace, readPaperclipPmWorkspaceContext, readProjectPmRunIssueId, PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE } from "./agent-workspace-binding.js";
+import { readWorkspaceBinding, controllerLocalCwd } from "./agent-workspace-binding.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -2100,46 +2101,14 @@ export function heartbeatService(
       // Reviewed chat turns rebuild it from the current durable owner below.
       delete context[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY];
       delete context[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY];
-      // Paperclip is the authority for a project PM run's role and cwd. Keep only
-      // the role the queue stored at claim (for the same issue); rebuild the rest
-      // from the current binding, and reject issues outside the project.
-      const claimedPmWorkspace = claimedByQueue ? readPaperclipPmWorkspaceContext(context.paperclipPmWorkspace) : null;
-      delete context.paperclipPmWorkspace;
-      const projectPmRun = await resolveProjectPmRunWorkspace(db, {
-        agent,
-        context,
-        claimedRole: claimedPmWorkspace && claimedPmWorkspace.issueId === readProjectPmRunIssueId(context)
-          ? claimedPmWorkspace.role
-          : null,
+      const projectPmAdmission = await admitProjectPmRun(db, { run, agent, context, claimedByQueue }, {
+        setRunStatus, setWakeupStatus, getRun, appendRunEvent, releaseIssueExecutionAndPromote,
       });
-      if (projectPmRun.outcome === "out_of_bounds") {
-        await setRunStatus(run.id, "cancelled", {
-          finishedAt: new Date(),
-          error: projectPmRun.message,
-          errorCode: PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE,
-        });
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date(), error: projectPmRun.message });
-        const rejectedRun = await getRun(run.id);
-        if (rejectedRun) {
-          await appendRunEvent(rejectedRun, {
-            eventType: "lifecycle",
-            stream: "system",
-            level: "warn",
-            message: projectPmRun.message,
-            payload: { errorCode: PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE, issueId: projectPmRun.issueId },
-          });
-          await releaseIssueExecutionAndPromote(rejectedRun, { suppressImmediateRecovery: true });
-        }
+      if (projectPmAdmission.outcome === "cancelled") {
         await finalizeAgentStatus(agent.id, "cancelled");
         return;
       }
-      const projectPmWorkspace = projectPmRun.outcome === "workspace" ? projectPmRun.workspace : null;
-      if (projectPmWorkspace) {
-        context.paperclipPmWorkspace = projectPmWorkspace;
-        await db.update(heartbeatRuns)
-          .set({ contextSnapshot: context, updatedAt: new Date() })
-          .where(eq(heartbeatRuns.id, run.id));
-      }
+      const projectPmWorkspace = projectPmAdmission.workspace;
       const providerTraceRequested =
         parseObject(context.debug).providerTrace === "raw";
       if (providerTraceRequested) {
