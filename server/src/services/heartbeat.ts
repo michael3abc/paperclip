@@ -15,7 +15,7 @@ import {
 } from "./heartbeat/scheduling.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
-import { readWorkspaceBinding, fixedWorkspaceMatchesRun, fixedBindingOnlyRevision, workspaceBindingConflict, resolveProjectPmRunWorkspace, readPaperclipPmWorkspaceContext, readProjectPmRunIssueId, PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE } from "./agent-workspace-binding.js";
+import { readWorkspaceBinding, controllerLocalCwd, fixedWorkspaceMatchesRun, fixedBindingOnlyRevision, workspaceBindingConflict, resolveProjectPmRunWorkspace, readPaperclipPmWorkspaceContext, readProjectPmRunIssueId, PROJECT_PM_OUT_OF_BOUNDS_ERROR_CODE } from "./agent-workspace-binding.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -3725,9 +3725,11 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
+      const controllerCwd = controllerLocalCwd(fixedWorkspaceBinding, executionWorkspace.cwd);
+      if (controllerCwd !== executionWorkspace.cwd) await fs.mkdir(controllerCwd, { recursive: true });
       const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
         target: executionTarget,
-        cwd: executionWorkspace.cwd,
+        cwd: controllerCwd,
         env: Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
             (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -3750,7 +3752,7 @@ export function heartbeatService(
           agentId: agent.id,
           runId: run.id,
           target: executionTarget,
-          cwd: executionWorkspace.cwd,
+          cwd: controllerCwd,
           env: gitExecutionEnv,
           brokerUrl: configuredPaperclipApiBaseUrl() ?? "",
           createBrokerToken: () => createRuntimeToolsToken({

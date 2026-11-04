@@ -66,6 +66,15 @@ export function workspaceBindingConflict(reason: string, message: string): never
 }
 
 /**
+ * The directory for controller-local setup (Git context discovery, launchers).
+ * A remote-host PM binding's run cwd exists only on its registered host, so
+ * controller probes use the agent's controller home instead.
+ */
+export function controllerLocalCwd(binding: FixedWorkspaceBinding | null | undefined, cwd: string): string {
+  return binding?.projectPm?.workerHostId ? binding.projectPm.agentHome : cwd;
+}
+
+/**
  * Read the binding that governs this run's working directory. A `project_pm`
  * binding needs the run context: its cwd is the role cwd recorded in
  * `context.paperclipPmWorkspace` at claim, never a caller-chosen path.
