@@ -31,6 +31,7 @@ import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js"
 import { createSystemRecovery } from "../system-recovery-state.js";
 import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js";
 import { cleanupExecutionWorkspaceArtifacts } from "../workspace-runtime.js";
+import { expireIsolatedTaskDirectory } from "../isolated-task-directory-retention.js";
 import { buildProjectMentionHref, readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { migrateRemoteWorkspace } from "../remote-workspace-migration.js";
 import { trace } from "@opentelemetry/api";
@@ -1707,6 +1708,59 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       cwd: source, projectId: null, projectWorkspaceId: null, sourceIssueId: issue.id,
       strategyType: "project_primary",
     });
+  });
+
+  it.each([false, true])("closing, archiving and sweeping a persisted fixed project_primary row keeps its directory (projectless: %s)", async (projectless) => {
+    const { input, source, issue, run } = await fixture();
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
+    if (projectless) {
+      await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+      input.task.issueRef = { ...input.task.issueRef!, projectId: null, projectWorkspaceId: null };
+      input.task.context = { issueId: issue.id };
+    }
+    const prepared = await prepareHeartbeatWorkspace(db, input);
+    const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, prepared.persistedExecutionWorkspace!.id));
+    // The fixed directory is operator-owned: never runtime-created and never a linked worktree or task directory.
+    expect(row).toMatchObject({ cwd: source, strategyType: "project_primary", providerType: "local_fs", providerRef: null,
+      branchName: null, projectWorkspaceId: projectless ? null : issue.projectWorkspaceId, metadata: expect.objectContaining({ createdByRuntime: false }) });
+    await writeFile(join(source, "operator-notes.txt"), "operator owned\n");
+    const intact = async () => {
+      expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+      expect(await readFile(join(source, "operator-notes.txt"), "utf8")).toBe("operator owned\n");
+    };
+
+    const svc = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
+    const plan = (await svc.getCloseReadiness(row!.id))!.plannedActions.map(action => action.kind);
+    expect(plan).not.toContain("remove_local_directory");
+    expect(plan).not.toContain("git_worktree_remove");
+    // Shared destructive primitive behind the close route, the terminal reaper and preparation rollback.
+    const projectWorkspace = row!.projectWorkspaceId ? (await db.select().from(projectWorkspaces)
+      .where(eq(projectWorkspaces.id, row!.projectWorkspaceId)))[0] ?? null : null;
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({ workspace: row!, projectWorkspace, runCleanupCommands: false });
+    expect(cleanup).toMatchObject({ cleanedPath: source, cleaned: false });
+    await intact();
+
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(issues).set({ status: "done", completedAt: new Date(Date.now() - 86_400_000) }).where(eq(issues.id, issue.id));
+    // The terminal reaper inspects the fixed row but never archives or cleans it.
+    expect(await svc.sweepTerminalWorkspaces()).toMatchObject({ checked: 1, archived: 0, cleanupFailed: 0 });
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, row!.id)))[0]?.status).toBe("active");
+    await intact();
+
+    // Close route sequence: archive under the lifecycle lock, then fenced destruction.
+    const archived = await svc.archiveWorkspaceUnderLifecycleLock({ id: row!.id, patch: { status: "archived" }, closedAt: new Date() });
+    expect(archived).toMatchObject({ outcome: "archived", workspace: { status: "archived", cwd: source } });
+    const fenced = await svc.fenceClosedWorkspaceDestruction({
+      workspaceId: row!.id,
+      capturedGeneration: (archived as { capturedGeneration: number }).capturedGeneration,
+      destroy: () => cleanupExecutionWorkspaceArtifacts({ workspace: row!, projectWorkspace, runCleanupCommands: false }),
+    });
+    expect(fenced).toMatchObject({ skippedReopened: false, result: { cleanedPath: source, cleaned: false } });
+    await intact();
+
+    expect(await expireIsolatedTaskDirectory(db, row!, { dryRun: false, now: new Date(), notBefore: new Date(0) }))
+      .toMatchObject({ expired: false, skipReason: "not_task_directory" });
+    await intact();
   });
 
   it("admits independent sessions at the same fixed path with separate run leases", async () => {
