@@ -2952,8 +2952,13 @@ export class DurablePrpControlPlane {
       return;
     }
     const kind = envelope.kind;
-        if (kind !== "event")
-            this.#flushEventBatch();
+    if (kind !== "event") {
+      // A timer can have started this peer's staged batch between wire frames.
+      // Its next authority transaction must not invalidate those admitted events.
+      const pendingBatch = this.#eventBatchWritesByConnection.get(connection);
+      if (pendingBatch) await pendingBatch;
+      this.#flushEventBatch();
+    }
     if (connection.secureChannel === null && kind === "auth_hello") {
       this.#authHello(connection, envelope);
       return;
@@ -4176,6 +4181,11 @@ export class DurablePrpControlPlane {
       }
       return;
     }
+    // The presentation timer may flush the preceding prefix while the caller's
+    // durable callback is pending. Join that write before staging another batch
+    // or committing a lifecycle suffix on this same owner.
+    const precedingBatch = this.#eventBatchWritesByConnection.get(connection);
+    if (precedingBatch) await precedingBatch;
     if (this.#eventOwner !== connection || this.#identity !== identity) return;
     // Another authenticated connection can replace this one while its commit
     // is in flight. Once that exact owner has faulted, even a prior successful

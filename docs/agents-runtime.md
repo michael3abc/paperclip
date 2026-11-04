@@ -146,6 +146,9 @@ Native runner ingress bounds queued frames and bytes across connections. A
 replacement authenticated owner can progress while an old commit waits; the old
 owner cannot publish after replacement. File-backed presentation batches use
 staged asynchronous writes and are acknowledged only after durable publication.
+The same connection joins any timer-started batch before its next authority
+transaction or post-callback commit, so those operations cannot invalidate an
+admitted prefix. Other connections can still authenticate independently.
 Checkpoint-backed runs retain the upstream sparse checkpoint policy. Shutdown
 drains both admitted connection work and pending batch writes before retirement.
 
