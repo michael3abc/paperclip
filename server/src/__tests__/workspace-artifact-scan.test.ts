@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   assets,
@@ -18,6 +18,10 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { collectWorkspaceMedia, workspaceArtifactScanService } from "../services/workspace-artifact-scan.js";
+import { registerWorkspaceArtifactScanWork, WORKSPACE_ARTIFACT_SCAN_WINDOW_MS } from "../services/workspace-artifact-scan-work.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import type { StorageService } from "../storage/types.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -105,7 +109,7 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
   });
   afterAll(async () => { await tempDb?.cleanup(); });
 
-  async function seed(options: { archivedCwd?: boolean } = {}) {
+  async function seed(options: { archivedCwd?: boolean; running?: boolean } = {}) {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "scan-ws-"));
     const companyId = randomUUID(), agentId = randomUUID(), projectId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PAP", requireBoardApprovalForNewAgents: false });
@@ -114,7 +118,8 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
     await db.insert(projectWorkspaces).values({ companyId, projectId, name: "main", sourceType: "local_path", cwd: options.archivedCwd ? path.join(root, "missing") : root, isPrimary: true });
     await db.insert(issues).values({ id: issueId, companyId, projectId, identifier: "PAP-1", title: "Make the reel", status: "in_progress", priority: "medium" });
     const startedAt = new Date(Date.now() - 60_000);
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", startedAt, finishedAt: new Date(), contextSnapshot: { issueId } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: options.running ? "running" : "succeeded", runtimeMode: "legacy",
+      startedAt, finishedAt: options.running ? null : new Date(), contextSnapshot: { issueId } });
     return { companyId, agentId, issueId, runId };
   }
 
@@ -148,8 +153,8 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
     const { issueId } = await seed();
     await fs.writeFile(path.join(root, "cover.png"), "png-bytes");
     const service = workspaceArtifactScanService(db, storage);
-    expect(await service.sweepRecentRuns({ windowMs: 600_000 })).toEqual({ runs: 1, created: 1 });
-    expect(await service.sweepRecentRuns({ windowMs: 600_000 })).toEqual({ runs: 1, created: 0 });
+    expect(await service.sweepRecentRuns({ windowMs: 600_000 })).toMatchObject({ runs: 1, scanned: 1, created: 1 });
+    expect(await service.sweepRecentRuns({ windowMs: 600_000 })).toMatchObject({ runs: 1, scanned: 0, created: 0 });
     expect(await db.select().from(issueAttachments).where(eq(issueAttachments.issueId, issueId))).toHaveLength(1);
 
     await fs.rm(root, { recursive: true, force: true });
@@ -157,5 +162,46 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
     await db.delete(issues); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(agents); await db.delete(companies);
     const missing = await seed({ archivedCwd: true });
     expect(await workspaceArtifactScanService(db, storage).scanIssue(missing.issueId)).toMatchObject({ cwd: null, created: 0, reason: "no_local_workspace" });
+  });
+
+  it("wakes its own queue on a real terminal transition, follows up a late file, then goes idle after the window", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => { errors.push(error); } });
+    const putFile = vi.spyOn(storage, "putFile");
+    try {
+      const { issueId, runId } = await seed({ running: true });
+      const attachments = () => db.select().from(issueAttachments).where(eq(issueAttachments.issueId, issueId));
+      const service = workspaceArtifactScanService(db, storage);
+      const sweep = vi.spyOn(service, "sweepRecentRuns");
+      await registerWorkspaceArtifactScanWork(coordinator, db, service).ready;
+      expect(sweep).toHaveBeenCalledTimes(1);
+      expect(coordinator.nextWakeAt()).toBeNull();
+
+      await fs.mkdir(path.join(root, "out"));
+      await fs.writeFile(path.join(root, "out/reel.mp4"), "video-bytes");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await terminalizeLegacyExecution({ db, run: run!, status: "succeeded", patch: { finishedAt: new Date() } });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(async () => expect(await attachments()).toHaveLength(1), { timeout: 5_000 });
+
+      await fs.writeFile(path.join(root, "out/cover.png"), "late-png");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(async () => expect(await attachments()).toHaveLength(2), { timeout: 5_000 });
+
+      await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_WINDOW_MS);
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5_000 });
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const settledSweeps = sweep.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+      expect(sweep).toHaveBeenCalledTimes(settledSweeps);
+      // Follow-ups read only file versions they have not handled yet.
+      expect(putFile).toHaveBeenCalledTimes(2);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop();
+      putFile.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

@@ -182,6 +182,7 @@ import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { workspaceArtifactScanService } from "./services/workspace-artifact-scan.js";
+import { registerWorkspaceArtifactScanWork } from "./services/workspace-artifact-scan-work.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -1322,19 +1323,19 @@ async function startServerWithDatabaseTeardown(
         await acknowledgeNativeStartupCleanup(db, scope);
       },
     }), next: executionSchedule.finalization },
-    { queue: DELIVERY_QUEUES.executionStatus, run: async () => {
-      const result = await deliverExecutionStatuses(db);
-      // The existing durable status notifications and startup reconstruction
-      // trigger artifact discovery; settled history must not keep an idle poll alive.
-      await workspaceArtifactScan.sweepRecentRuns({ windowMs: 10 * 60_000 });
-      return result;
-    }, next: executionSchedule.status },
+    { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
       { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement },
       { queue: DELIVERY_QUEUES.executionContinuation, run: () => deliverReconciledExecutions(db, heartbeat.wakeup), next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
+  // Artifact discovery has its own queue: run transitions wake it, and its bounded
+  // follow-up ends with the window after the newest terminal run.
+  const workspaceArtifactScanWork = registerWorkspaceArtifactScanWork(deliveryWork, db, workspaceArtifactScan,
+    () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+  trackHeartbeatSchedulerWork(workspaceArtifactScanWork.ready);
+  server.on("close", workspaceArtifactScanWork.stop);
 
   const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,

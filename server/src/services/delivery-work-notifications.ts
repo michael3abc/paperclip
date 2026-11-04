@@ -57,6 +57,7 @@ export const DELIVERY_QUEUES = {
   executionReplacement: "execution-replacement",
   executionContinuation: "execution-continuation",
   executionStatus: "execution-status",
+  workspaceArtifactScan: "workspace-artifact-scan",
   executionDisposition: "execution-disposition",
   environmentCleanup: "environment-cleanup",
   approvalQueueSeeding: "approval-queue-seeding",

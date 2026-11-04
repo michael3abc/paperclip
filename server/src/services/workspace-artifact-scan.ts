@@ -46,6 +46,7 @@ const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", "target", 
 
 export interface WorkspaceScanFile { absolutePath: string; relativePath: string; size: number; mtimeMs: number; contentType: string }
 export interface WorkspaceScanResult { cwd: string | null; created: number; skippedDuplicates: number; candidates: number; reason?: string }
+export interface WorkspaceSweepResult { runs: number; scanned: number; created: number; latestFinishedAt: number | null }
 
 /**
  * Collect media files under `root` modified at or after `sinceMs`. Symlinks are never followed or listed, hidden
@@ -94,7 +95,9 @@ async function readRegularFile(file: WorkspaceScanFile): Promise<Buffer | null> 
 
 export function workspaceArtifactScanService(db: Db, storage: StorageService) {
   const issuesSvc = issueService(db);
-  const scannedRuns = new Map<string, number>();
+  // Per-run memo: when the run was last scanned and which file versions were already handled, so a follow-up
+  // rescan only reads files that are new or changed since then.
+  const scannedRuns = new Map<string, { scannedAt: number; files: Set<string> }>();
 
   /** Execution workspace first, then the issue's project workspace, then the project's primary one. Local paths only. */
   async function resolveWorkspaceCwd(issue: { id: string; projectId: string | null; projectWorkspaceId: string | null; executionWorkspaceId: string | null }) {
@@ -121,7 +124,11 @@ export function workspaceArtifactScanService(db: Db, storage: StorageService) {
     return null;
   }
 
-  async function scanIssue(issueId: string, options: { sinceMs?: number | null; agentId?: string | null; runId?: string | null } = {}): Promise<WorkspaceScanResult> {
+  async function scanIssue(issueId: string, options: {
+    sinceMs?: number | null; agentId?: string | null; runId?: string | null;
+    /** File versions (path, size, mtime) already handled; skipped without reading and updated in place. */
+    seenFiles?: Set<string>;
+  } = {}): Promise<WorkspaceScanResult> {
     const [issue] = await db.select({
       id: issues.id, companyId: issues.companyId, projectId: issues.projectId,
       projectWorkspaceId: issues.projectWorkspaceId, executionWorkspaceId: issues.executionWorkspaceId,
@@ -138,11 +145,14 @@ export function workspaceArtifactScanService(db: Db, storage: StorageService) {
 
     let created = 0, skippedDuplicates = 0;
     for (const file of files) {
+      const signature = `${file.relativePath}\0${file.size}\0${file.mtimeMs}`;
+      if (options.seenFiles?.has(signature)) { skippedDuplicates++; continue; }
       const body = await readRegularFile(file);
       if (!body) continue;
       const stored = await storage.putFile({ companyId: issue.companyId, namespace: `issues/${issue.id}`, originalFilename: path.basename(file.relativePath), contentType: file.contentType, body });
       if (known.has(stored.sha256)) {
         skippedDuplicates++;
+        options.seenFiles?.add(signature);
         await storage.deleteObject(issue.companyId, stored.objectKey).catch(() => undefined);
         continue;
       }
@@ -153,6 +163,7 @@ export function workspaceArtifactScanService(db: Db, storage: StorageService) {
           createdByAgentId: options.agentId ?? null, createdByRunId: options.runId ?? null,
         });
         known.add(stored.sha256);
+        options.seenFiles?.add(signature);
         created++;
       } catch (err) {
         await storage.deleteObject(issue.companyId, stored.objectKey).catch(() => undefined);
@@ -163,32 +174,40 @@ export function workspaceArtifactScanService(db: Db, storage: StorageService) {
   }
 
   /** Scan one finished run: only files modified since the run started are considered. */
-  async function scanRun(runId: string): Promise<WorkspaceScanResult> {
+  async function scanRun(runId: string, options: { seenFiles?: Set<string> } = {}): Promise<WorkspaceScanResult> {
     const [run] = await db.select({
       id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
       issueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
     if (!run?.issueId) return { cwd: null, created: 0, skippedDuplicates: 0, candidates: 0, reason: "run_without_issue" };
     const since = (run.startedAt ?? run.createdAt).getTime();
-    return scanIssue(run.issueId, { sinceMs: since, agentId: run.agentId, runId: run.id });
+    return scanIssue(run.issueId, { sinceMs: since, agentId: run.agentId, runId: run.id, seenFiles: options.seenFiles });
   }
 
-  /** Idempotent sweep (attachments are de-duplicated by sha256), so a restart or an overlapping window is harmless. */
-  async function sweepRecentRuns(options: { windowMs: number; limit?: number }) {
+  /**
+   * Idempotent sweep (attachments are de-duplicated by sha256), so a restart or an overlapping window is harmless.
+   * Each run is scanned once unless `rescanAfterMs` is given; then a run still inside the window is rescanned once
+   * that much time has passed, reading only file versions it has not handled yet (late outputs).
+   * `latestFinishedAt` is the newest terminal run inside the window, or null when the window is empty.
+   */
+  async function sweepRecentRuns(options: { windowMs: number; limit?: number; rescanAfterMs?: number }): Promise<WorkspaceSweepResult> {
     const now = Date.now();
-    for (const [id, at] of scannedRuns) if (now - at > options.windowMs * 2) scannedRuns.delete(id);
-    const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    for (const [id, memo] of scannedRuns) if (now - memo.scannedAt > options.windowMs * 2) scannedRuns.delete(id);
+    const rows = await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
       .where(and(inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]), isNotNull(heartbeatRuns.finishedAt),
         gte(heartbeatRuns.finishedAt, new Date(now - options.windowMs))))
       .orderBy(desc(heartbeatRuns.finishedAt)).limit(options.limit ?? 50);
-    let created = 0;
+    let created = 0, scanned = 0;
     for (const row of rows) {
-      if (scannedRuns.has(row.id)) continue;
-      scannedRuns.set(row.id, now);
-      try { created += (await scanRun(row.id)).created; }
+      const memo = scannedRuns.get(row.id);
+      if (memo && (options.rescanAfterMs == null || now - memo.scannedAt < options.rescanAfterMs)) continue;
+      const files = memo?.files ?? new Set<string>();
+      scannedRuns.set(row.id, { scannedAt: now, files });
+      scanned++;
+      try { created += (await scanRun(row.id, { seenFiles: files })).created; }
       catch (err) { logger.warn({ err, runId: row.id }, "workspace artifact scan failed for run"); }
     }
-    return { runs: rows.length, created };
+    return { runs: rows.length, scanned, created, latestFinishedAt: rows[0]?.finishedAt?.getTime() ?? null };
   }
 
   return { scanIssue, scanRun, sweepRecentRuns };
