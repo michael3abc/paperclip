@@ -35,13 +35,20 @@ function fakeOwner() {
 function runTransition(owner: ReturnType<typeof fakeOwner>) {
   return owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionStatus));
 }
-/** Emulates the durable window predicate: the newest terminal run counts only while inside the window. */
+/**
+ * Emulates the scanner's final-scan bookkeeping for one run: once a sweep has seen it, the run awaits its final
+ * scan until a sweep at or after the end of its window. The real scanner is exercised in workspace-artifact-scan.test.ts.
+ */
+function finalScanResult(state: { finishedAt: number | null; finalScanned: boolean }): WorkspaceSweepResult {
+  if (state.finishedAt === null || state.finalScanned) return { runs: 0, scanned: 0, created: 0, nextFinalScanAt: null };
+  const deadline = state.finishedAt + WORKSPACE_ARTIFACT_SCAN_WINDOW_MS;
+  if (Date.now() < deadline) return { runs: 1, scanned: 1, created: 0, nextFinalScanAt: deadline };
+  state.finalScanned = true;
+  return { runs: 0, scanned: 1, created: 0, nextFinalScanAt: null };
+}
 function sweeper() {
-  const state = { finishedAt: null as number | null };
-  const sweepRecentRuns = vi.fn(async (_options: { windowMs: number; rescanAfterMs?: number }): Promise<WorkspaceSweepResult> => {
-    const inWindow = state.finishedAt !== null && Date.now() - state.finishedAt <= WORKSPACE_ARTIFACT_SCAN_WINDOW_MS;
-    return { runs: inWindow ? 1 : 0, scanned: inWindow ? 1 : 0, created: 0, latestFinishedAt: inWindow ? state.finishedAt : null };
-  });
+  const state = { finishedAt: null as number | null, finalScanned: false };
+  const sweepRecentRuns = vi.fn(async (_options: { windowMs: number; rescanAfterMs?: number }) => finalScanResult(state));
   return { state, scan: { sweepRecentRuns } };
 }
 
@@ -64,7 +71,7 @@ describe("workspace artifact scan work", () => {
     expect(scan.sweepRecentRuns).toHaveBeenCalledTimes(2);
   });
 
-  it("follows up once per minute until the window after the newest terminal run closes, then goes fully idle", async () => {
+  it("follows up once per minute until the run's final scan at the end of its window, then goes fully idle", async () => {
     vi.useFakeTimers();
     const owner = fakeOwner(); const c = coordinator(owner); const { state, scan } = sweeper();
     await registerWorkspaceArtifactScanWork(c, owner, scan).ready;
@@ -75,15 +82,16 @@ describe("workspace artifact scan work", () => {
     const at: number[] = [];
     scan.sweepRecentRuns.mockImplementation(async () => {
       at.push(Date.now());
-      const inWindow = Date.now() - finishedAt <= WORKSPACE_ARTIFACT_SCAN_WINDOW_MS;
-      return { runs: inWindow ? 1 : 0, scanned: 0, created: 0, latestFinishedAt: inWindow ? finishedAt : null };
+      return finalScanResult(state);
     });
     await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_WINDOW_MS + WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS);
-    // Roughly one sweep per minute for the ten-minute window, never past it plus one spacing interval.
+    // Roughly one sweep per minute for the ten-minute window, ending with the final scan at the window's end.
     expect(at.length).toBeGreaterThanOrEqual(10);
     expect(at.length).toBeLessThanOrEqual(12);
     for (let i = 1; i < at.length; i++) expect(at[i]! - at[i - 1]!).toBeGreaterThanOrEqual(WORKSPACE_ARTIFACT_SCAN_SPACING_MS);
+    expect(Math.max(...at)).toBeGreaterThanOrEqual(finishedAt + WORKSPACE_ARTIFACT_SCAN_WINDOW_MS);
     expect(Math.max(...at)).toBeLessThanOrEqual(finishedAt + WORKSPACE_ARTIFACT_SCAN_WINDOW_MS + WORKSPACE_ARTIFACT_SCAN_SPACING_MS);
+    expect(state.finalScanned).toBe(true);
     expect(c.nextWakeAt()).toBeNull();
     const settled = at.length;
     await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
@@ -119,7 +127,8 @@ describe("workspace artifact scan work", () => {
       active++; maxActive = Math.max(maxActive, active);
       await new Promise<void>(resolve => release.push(resolve));
       active--;
-      return { runs: 0, scanned: 0, created: 0, latestFinishedAt: state.finishedAt };
+      return { runs: 0, scanned: 0, created: 0,
+        nextFinalScanAt: state.finishedAt === null ? null : state.finishedAt + WORKSPACE_ARTIFACT_SCAN_WINDOW_MS };
     });
     const work = registerWorkspaceArtifactScanWork(c, owner, scan);
     await vi.advanceTimersByTimeAsync(1);
@@ -163,6 +172,39 @@ describe("workspace artifact scan work", () => {
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(sweep).toHaveBeenCalledTimes(failedSweeps);
     expect(deliver).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["recovers after the deadline and runs the final scan", true],
+    ["keeps failing and stops retrying one window after the final-scan deadline", false],
+  ])("keeps a pending final scan through failed sweeps: %s", async (_name, recovers) => {
+    vi.useFakeTimers();
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    const owner = fakeOwner(); const c = coordinator(owner); const { state, scan } = sweeper();
+    await registerWorkspaceArtifactScanWork(c, owner, scan).ready;
+    state.finishedAt = Date.now();
+    await runTransition(owner);
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_SPACING_MS);
+    const deadline = state.finishedAt + WORKSPACE_ARTIFACT_SCAN_WINDOW_MS;
+    expect(c.nextWakeAt()).not.toBeNull();
+
+    const at: number[] = [];
+    scan.sweepRecentRuns.mockImplementation(async () => {
+      at.push(Date.now());
+      if (!recovers || Date.now() < deadline + 2 * WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS) throw new Error("database unavailable");
+      return finalScanResult(state);
+    });
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_WINDOW_MS + 3 * WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS);
+    expect(Math.max(...at)).toBeGreaterThanOrEqual(deadline + 2 * WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS);
+    expect(state.finalScanned).toBe(recovers);
+    if (recovers) expect(c.nextWakeAt()).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ARTIFACT_SCAN_WINDOW_MS);
+    expect(c.nextWakeAt()).toBeNull();
+    expect(Math.max(...at)).toBeLessThanOrEqual(deadline + WORKSPACE_ARTIFACT_SCAN_WINDOW_MS);
+    const settled = at.length;
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(at).toHaveLength(settled);
   });
 
   it("stops its execution-status observer on stop", async () => {

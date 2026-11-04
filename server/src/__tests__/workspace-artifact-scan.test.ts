@@ -18,7 +18,11 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { collectWorkspaceMedia, workspaceArtifactScanService } from "../services/workspace-artifact-scan.js";
-import { registerWorkspaceArtifactScanWork, WORKSPACE_ARTIFACT_SCAN_WINDOW_MS } from "../services/workspace-artifact-scan-work.js";
+import {
+  registerWorkspaceArtifactScanWork,
+  WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS,
+  WORKSPACE_ARTIFACT_SCAN_WINDOW_MS,
+} from "../services/workspace-artifact-scan-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -26,6 +30,10 @@ import type { StorageService } from "../storage/types.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+// Captured before any test fakes timers: settling real database and file I/O must not move the fake clock.
+const realSetTimeout = globalThis.setTimeout;
+const realSetInterval = globalThis.setInterval;
+const realClearInterval = globalThis.clearInterval;
 
 describe("collectWorkspaceMedia", () => {
   let root: string;
@@ -92,7 +100,9 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-scan-");
-    db = createDb(tempDb.connectionString);
+    // No idle timeout: on a fake clock an idle close would leave the next query waiting for a reconnect backoff
+    // timer that only the fake clock can fire.
+    db = createDb(tempDb.connectionString, { idleTimeoutSeconds: 0 });
   }, 20_000);
   afterEach(async () => {
     stored.clear();
@@ -121,6 +131,108 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: options.running ? "running" : "succeeded", runtimeMode: "legacy",
       startedAt, finishedAt: options.running ? null : new Date(), contextSnapshot: { issueId } });
     return { companyId, agentId, issueId, runId };
+  }
+
+  /** A second project, primary workspace, issue and running run in the same company, rooted in `cwd`. */
+  async function seedSecondRun(first: { companyId: string; agentId: string }, cwd: string) {
+    const projectId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: first.companyId, name: "Decks", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({ companyId: first.companyId, projectId, name: "main", sourceType: "local_path", cwd, isPrimary: true });
+    await db.insert(issues).values({ id: issueId, companyId: first.companyId, projectId, identifier: "PAP-2", title: "Make the deck", status: "in_progress", priority: "medium" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: first.companyId, agentId: first.agentId, status: "running", runtimeMode: "legacy",
+      startedAt: new Date(Date.now() - 60_000), contextSnapshot: { issueId } });
+    return { issueId, runId };
+  }
+
+  async function attachmentNames(issueId: string) {
+    const rows = await db.select({ name: assets.originalFilename }).from(issueAttachments)
+      .innerJoin(assets, eq(assets.id, issueAttachments.assetId)).where(eq(issueAttachments.issueId, issueId));
+    return rows.map(row => row.name).sort();
+  }
+
+  /**
+   * The real scanner and worker on a fully fake clock. Each scheduled sweep fires exactly when its timer is due
+   * and settles its real database and file I/O before the clock moves again, so sweep times are deterministic.
+   * Call before seeding, so run timestamps and file mtimes share the fake clock.
+   */
+  function finalScanClock() {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => { errors.push(error); } });
+    const putFile = vi.spyOn(storage, "putFile");
+    const service = workspaceArtifactScanService(db, storage);
+    const sweptAt: number[] = [];
+    let worker: ReturnType<typeof registerWorkspaceArtifactScanWork> | null = null;
+    // postgres.js opens pool connections from zero-delay timers. Fire timers that are already due, without
+    // moving the clock, whenever the test is not advancing it.
+    let advancing = false;
+    const pump = realSetInterval(() => { if (!advancing && vi.isFakeTimers()) vi.advanceTimersByTime(0); }, 2);
+    async function advance(ms: number) {
+      advancing = true;
+      try { await vi.advanceTimersByTimeAsync(ms); } finally { advancing = false; }
+    }
+    async function settle() {
+      for (let i = 0; idleWorkSnapshot().active > 0; i++) {
+        if (i > 2_000) throw new Error("artifact sweep did not settle");
+        await new Promise(resolve => realSetTimeout(resolve, 5));
+      }
+    }
+    return {
+      coordinator, errors, putFile, sweptAt, settle, advance,
+      async register() {
+        worker = registerWorkspaceArtifactScanWork(coordinator, db, {
+          sweepRecentRuns: options => { sweptAt.push(Date.now()); return service.sweepRecentRuns(options); },
+        });
+        await worker.ready;
+        await settle();
+      },
+      /** Fire every sweep due up to `target`, each at its own deadline, then leave the clock at `target`. */
+      async runUntil(target: number) {
+        for (let i = 0; i < 200; i++) {
+          await settle();
+          const at = coordinator.nextWakeAt();
+          if (at === null || at > target) {
+            await advance(Math.max(0, target - Date.now()));
+            return settle();
+          }
+          await advance(Math.max(0, at - Date.now()));
+        }
+        throw new Error("artifact sweep did not reach its target time");
+      },
+      async writeArtifact(dir: string, name: string, body: string) {
+        const file = path.join(dir, name);
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, body);
+        await fs.utimes(file, new Date(), new Date());
+      },
+      /** Terminalize through the production path; the finish is stamped a moment before the transition commits. */
+      async finishRun(runId: string) {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        const finishedAt = new Date(Date.now() - 1_000);
+        await terminalizeLegacyExecution({ db, run: run!, status: "succeeded", patch: { finishedAt } });
+        return finishedAt.getTime();
+      },
+      /** (d) With no final scan pending the worker reports no deadline and stays idle without a new transition. */
+      async expectIdle() {
+        await settle();
+        expect(coordinator.nextWakeAt()).toBeNull();
+        const sweeps = sweptAt.length;
+        await advance(30 * 60_000);
+        await settle();
+        expect(sweptAt).toHaveLength(sweeps);
+        expect(errors).toEqual([]);
+      },
+      async stop() {
+        try {
+          await worker?.stop();
+          await coordinator.stop();
+        } finally {
+          putFile.mockRestore();
+          realClearInterval(pump);
+          vi.useRealTimers();
+        }
+      },
+    };
   }
 
   it("registers files produced during a run as attachments plus work products, and a rescan adds nothing", async () => {
@@ -203,5 +315,89 @@ describeEmbeddedPostgres("workspaceArtifactScanService", () => {
       putFile.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  describe("final scan at the end of each run's window", () => {
+    const WINDOW = WORKSPACE_ARTIFACT_SCAN_WINDOW_MS;
+    // A failed test must not leave the database cleanup hooks on a fake clock.
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("discovers a file written ten seconds before the window closes, then goes idle", async () => {
+      const clock = finalScanClock();
+      try {
+        const { issueId, runId } = await seed({ running: true });
+        await clock.register();
+        await clock.writeArtifact(root, "out/reel.mp4", "video-bytes");
+        const finishedAt = await clock.finishRun(runId);
+        await clock.runUntil(finishedAt + WINDOW - 10_000);
+        await clock.writeArtifact(root, "out/late.png", "late-png");
+        await clock.runUntil(finishedAt + WINDOW + 30_000);
+
+        expect(await attachmentNames(issueId)).toEqual(["late.png", "reel.mp4"]);
+        expect(Math.max(...clock.sweptAt)).toBeGreaterThanOrEqual(finishedAt + WINDOW);
+        // The final scan reads only file versions no earlier scan of the run handled.
+        expect(clock.putFile).toHaveBeenCalledTimes(2);
+        await clock.expectIdle();
+      } finally {
+        await clock.stop();
+      }
+    });
+
+    it("gives each of two runs finished five minutes apart its own final scan", async () => {
+      const clock = finalScanClock();
+      const otherRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scan-ws-b-"));
+      try {
+        const first = await seed({ running: true });
+        const second = await seedSecondRun(first, otherRoot);
+        await clock.register();
+        const firstFinishedAt = await clock.finishRun(first.runId);
+        await clock.runUntil(firstFinishedAt + 5 * 60_000 + 1_000);
+        const secondFinishedAt = await clock.finishRun(second.runId);
+        expect(secondFinishedAt - firstFinishedAt).toBe(5 * 60_000);
+
+        await clock.runUntil(firstFinishedAt + WINDOW - 10_000);
+        await clock.writeArtifact(root, "out/first-late.png", "first");
+        await clock.runUntil(secondFinishedAt + WINDOW - 10_000);
+        await clock.writeArtifact(otherRoot, "out/second-late.png", "second");
+        await clock.runUntil(secondFinishedAt + WINDOW + 30_000);
+
+        expect(await attachmentNames(first.issueId)).toEqual(["first-late.png"]);
+        expect(await attachmentNames(second.issueId)).toEqual(["second-late.png"]);
+        expect(clock.sweptAt.some(at => at >= firstFinishedAt + WINDOW && at < secondFinishedAt + WINDOW)).toBe(true);
+        expect(Math.max(...clock.sweptAt)).toBeGreaterThanOrEqual(secondFinishedAt + WINDOW);
+        await clock.expectIdle();
+      } finally {
+        await clock.stop();
+        await fs.rm(otherRoot, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ["more than a follow-up", WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS + 30_000],
+      ["past the scanner's memo retention", 2 * WORKSPACE_ARTIFACT_SCAN_WINDOW_MS + WORKSPACE_ARTIFACT_SCAN_FOLLOW_UP_MS],
+    ])("still runs the final scan when its timer fires %s late", async (_label, lateBy) => {
+      const clock = finalScanClock();
+      try {
+        const { issueId, runId } = await seed({ running: true });
+        await clock.register();
+        const finishedAt = await clock.finishRun(runId);
+        await clock.runUntil(finishedAt + WINDOW - 10_000);
+        await clock.writeArtifact(root, "out/late.png", "late-png");
+        expect(clock.coordinator.nextWakeAt()).toBe(finishedAt + WINDOW);
+
+        // A suspended host: the wall clock jumps while the armed timer keeps its remaining delay, so it fires
+        // `lateBy` past the final-scan deadline, when the run is already outside the sweep's SQL window.
+        const remaining = finishedAt + WINDOW - Date.now();
+        vi.setSystemTime(Date.now() + lateBy);
+        await clock.advance(remaining);
+        await clock.settle();
+
+        expect(clock.sweptAt.at(-1)).toBe(finishedAt + WINDOW + lateBy);
+        expect(await attachmentNames(issueId)).toEqual(["late.png"]);
+        await clock.expectIdle();
+      } finally {
+        await clock.stop();
+      }
+    });
   });
 });

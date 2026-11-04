@@ -1331,7 +1331,7 @@ async function startServerWithDatabaseTeardown(
     ] : []),
   ], () => !heartbeatSchedulerStopped);
   // Artifact discovery has its own queue: run transitions wake it, and its bounded
-  // follow-up ends with the window after the newest terminal run.
+  // follow-up ends once every swept run has had its final scan at the end of its window.
   const workspaceArtifactScanWork = registerWorkspaceArtifactScanWork(deliveryWork, db, workspaceArtifactScan,
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   trackHeartbeatSchedulerWork(workspaceArtifactScanWork.ready);

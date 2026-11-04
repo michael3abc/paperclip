@@ -46,7 +46,11 @@ const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", "target", 
 
 export interface WorkspaceScanFile { absolutePath: string; relativePath: string; size: number; mtimeMs: number; contentType: string }
 export interface WorkspaceScanResult { cwd: string | null; created: number; skippedDuplicates: number; candidates: number; reason?: string }
-export interface WorkspaceSweepResult { runs: number; scanned: number; created: number; latestFinishedAt: number | null }
+export interface WorkspaceSweepResult {
+  runs: number; scanned: number; created: number;
+  /** Earliest `finishedAt + windowMs` of a swept run still awaiting its final scan, or null when none is pending. */
+  nextFinalScanAt: number | null;
+}
 
 /**
  * Collect media files under `root` modified at or after `sinceMs`. Symlinks are never followed or listed, hidden
@@ -95,9 +99,10 @@ async function readRegularFile(file: WorkspaceScanFile): Promise<Buffer | null> 
 
 export function workspaceArtifactScanService(db: Db, storage: StorageService) {
   const issuesSvc = issueService(db);
-  // Per-run memo: when the run was last scanned and which file versions were already handled, so a follow-up
-  // rescan only reads files that are new or changed since then.
-  const scannedRuns = new Map<string, { scannedAt: number; files: Set<string> }>();
+  // Per-run memo for every run a sweep has seen: when it finished and was last scanned, which file versions were
+  // already handled (so a rescan only reads files that are new or changed), and whether its final scan has run.
+  // A run awaiting its final scan stays here after it leaves the SQL window, so a late timer cannot drop it.
+  const sweptRuns = new Map<string, { finishedAt: number; scannedAt: number | null; files: Set<string>; final: boolean }>();
 
   /** Execution workspace first, then the issue's project workspace, then the project's primary one. Local paths only. */
   async function resolveWorkspaceCwd(issue: { id: string; projectId: string | null; projectWorkspaceId: string | null; executionWorkspaceId: string | null }) {
@@ -186,28 +191,45 @@ export function workspaceArtifactScanService(db: Db, storage: StorageService) {
 
   /**
    * Idempotent sweep (attachments are de-duplicated by sha256), so a restart or an overlapping window is harmless.
-   * Each run is scanned once unless `rescanAfterMs` is given; then a run still inside the window is rescanned once
-   * that much time has passed, reading only file versions it has not handled yet (late outputs).
-   * `latestFinishedAt` is the newest terminal run inside the window, or null when the window is empty.
+   * A run inside the window is scanned once unless `rescanAfterMs` is given; then it is rescanned once that much
+   * time has passed. Every run a sweep has seen also gets one final scan from the first sweep at or after
+   * `finishedAt + windowMs`: it ignores the rescan throttle and is found by run id, so it still happens when the
+   * run has left the window because the sweep came late. Rescans and the final scan read only unseen file versions.
    */
   async function sweepRecentRuns(options: { windowMs: number; limit?: number; rescanAfterMs?: number }): Promise<WorkspaceSweepResult> {
     const now = Date.now();
-    for (const [id, memo] of scannedRuns) if (now - memo.scannedAt > options.windowMs * 2) scannedRuns.delete(id);
+    // Forget runs well past their window once their final scan is done; a pending final scan is never forgotten.
+    for (const [id, memo] of sweptRuns) if (memo.final && now - memo.finishedAt > options.windowMs * 2) sweptRuns.delete(id);
     const rows = await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
       .where(and(inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]), isNotNull(heartbeatRuns.finishedAt),
         gte(heartbeatRuns.finishedAt, new Date(now - options.windowMs))))
       .orderBy(desc(heartbeatRuns.finishedAt)).limit(options.limit ?? 50);
-    let created = 0, scanned = 0;
+    const inWindow = new Set<string>();
     for (const row of rows) {
-      const memo = scannedRuns.get(row.id);
-      if (memo && (options.rescanAfterMs == null || now - memo.scannedAt < options.rescanAfterMs)) continue;
-      const files = memo?.files ?? new Set<string>();
-      scannedRuns.set(row.id, { scannedAt: now, files });
-      scanned++;
-      try { created += (await scanRun(row.id, { seenFiles: files })).created; }
-      catch (err) { logger.warn({ err, runId: row.id }, "workspace artifact scan failed for run"); }
+      inWindow.add(row.id);
+      if (!sweptRuns.has(row.id)) {
+        sweptRuns.set(row.id, { finishedAt: row.finishedAt?.getTime() ?? now, scannedAt: null, files: new Set(), final: false });
+      }
     }
-    return { runs: rows.length, scanned, created, latestFinishedAt: rows[0]?.finishedAt?.getTime() ?? null };
+    let created = 0, scanned = 0;
+    for (const [runId, memo] of sweptRuns) {
+      if (memo.final) continue;
+      const final = now >= memo.finishedAt + options.windowMs;
+      const rescanDue = inWindow.has(runId) && (memo.scannedAt === null
+        || (options.rescanAfterMs != null && now - memo.scannedAt >= options.rescanAfterMs));
+      if (!final && !rescanDue) continue;
+      // A failed final scan is logged and not retried, so a broken workspace cannot keep the worker awake.
+      memo.scannedAt = now;
+      memo.final = final;
+      scanned++;
+      try { created += (await scanRun(runId, { seenFiles: memo.files })).created; }
+      catch (err) { logger.warn({ err, runId }, "workspace artifact scan failed for run"); }
+    }
+    let nextFinalScanAt: number | null = null;
+    for (const memo of sweptRuns.values()) {
+      if (!memo.final) nextFinalScanAt = Math.min(nextFinalScanAt ?? Infinity, memo.finishedAt + options.windowMs);
+    }
+    return { runs: rows.length, scanned, created, nextFinalScanAt };
   }
 
   return { scanIssue, scanRun, sweepRecentRuns };
