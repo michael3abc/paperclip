@@ -11,8 +11,8 @@ import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 type FixtureAgent = { id: string; name: string; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
-  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; updatedAt?: string }>,
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), liveRuns: vi.fn(), openWork: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
+  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string }>,
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId,
@@ -21,6 +21,8 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () =>
 }) }));
 vi.mock("@/api/resourceMemberships", () => ({ resourceMembershipsApi: { listMine: fixture.listMemberships } }));
 vi.mock("@/api/agentChats", () => ({ agentChatsApi: { ensure: fixture.ensureChat } }));
+vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: fixture.liveRuns } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.openWork } }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
@@ -52,6 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
   fixture.chats = []; fixture.agents = []; fixture.agentsState = {};
   fixture.listMemberships.mockResolvedValue({ agentMemberships: {}, projectMemberships: {} });
+  fixture.liveRuns.mockResolvedValue([]); fixture.openWork.mockResolvedValue([]);
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -200,6 +203,81 @@ describe("Coordinator agents section", () => {
     expect(byLabel("Zed").className).not.toContain("bg-sidebar-accent text-sidebar-accent-foreground");
     expect(byLabel("Zed").querySelector('[aria-label="1 unread chat"]')).not.toBeNull();
     expect(byLabel("amy").querySelector('[data-slot="badge"]')).toBeNull();
+  });
+
+  describe("working outline", () => {
+    const WORKING_RING = "ring-(--dashboard-run-accent)";
+    const byLabel = (label: string) => rows().find(row => row.textContent?.startsWith(label))!;
+    const workingLabels = () => rows().filter(row => row.className.includes(WORKING_RING)).map(row => row.textContent!.replace(/working$/, ""));
+
+    it("outlines no one when nothing is running", async () => {
+      fixture.agents = roster;
+      await renderSidebar();
+      expect(workingLabels()).toEqual([]);
+      expect(section()?.textContent).not.toContain("working");
+    });
+
+    it("outlines an agent with a live run and labels it for assistive tech", async () => {
+      fixture.agents = roster;
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-zed" }]);
+      await renderSidebar();
+      expect(workingLabels()).toEqual(["Zed"]);
+      expect(byLabel("Zed").querySelector(".sr-only")?.textContent).toBe("working");
+      expect(byLabel("amy").querySelector(".sr-only")).toBeNull();
+    });
+
+    it("outlines the agents above a running sub-task, not only its assignee", async () => {
+      fixture.agents = roster;
+      fixture.openWork.mockResolvedValue([
+        { id: "req", status: "blocked", assigneeAgentId: "a-amy", parentId: null },
+        { id: "child", status: "in_progress", assigneeAgentId: "a-zed", parentId: "req" },
+        { id: "idle", status: "todo", assigneeAgentId: "a-ceo", parentId: null },
+      ]);
+      await renderSidebar();
+      expect(workingLabels().sort()).toEqual(["Zed", "amy"]);
+      expect(fixture.openWork).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", status: expect.stringContaining("in_progress") }));
+    });
+
+    it("does not treat an open chat conversation as running work", async () => {
+      fixture.agents = roster;
+      fixture.chats = [{ id: "chat-amy", isUnreadForMe: false, conversationAgentId: "a-amy", conversationState: "waiting" }];
+      fixture.openWork.mockResolvedValue([{ id: "chat-amy", status: "in_progress", assigneeAgentId: "a-amy", parentId: null }]);
+      await renderSidebar();
+      expect(workingLabels()).toEqual([]);
+    });
+
+    it("outlines an agent that is answering its chat right now", async () => {
+      fixture.agents = roster;
+      fixture.chats = [{ id: "chat-amy", isUnreadForMe: false, conversationAgentId: "a-amy", conversationState: "active" }];
+      await renderSidebar();
+      expect(workingLabels()).toEqual(["amy"]);
+    });
+
+    it("keeps the unread badge and the open-chat highlight on a working row", async () => {
+      fixture.agents = roster;
+      fixture.pathname = "/COO/chats/zed";
+      fixture.chats = [{ id: "chat-zed", isUnreadForMe: true, conversationAgentId: "a-zed" }];
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-zed" }]);
+      await renderSidebar();
+      const zed = byLabel("Zed");
+      expect(zed.className).toContain(WORKING_RING);
+      expect(zed.className).toContain("bg-sidebar-accent text-sidebar-accent-foreground");
+      expect(zed.querySelector('[aria-label="1 unread chat"]')).not.toBeNull();
+    });
+
+    it("says so, with a retry, when activity cannot be loaded", async () => {
+      fixture.agents = roster;
+      fixture.openWork.mockRejectedValue(new Error("boom"));
+      await renderSidebar();
+      const alert = section()?.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain("Couldn’t load agent activity");
+      expect(rows().length).toBeGreaterThan(0);
+      fixture.openWork.mockResolvedValue([{ id: "t", status: "in_progress", assigneeAgentId: "a-zed", parentId: null }]);
+      await act(async () => alert!.querySelector("button")!.click());
+      await flush();
+      expect(section()?.querySelector('[role="alert"]')).toBeNull();
+      expect(workingLabels()).toEqual(["Zed"]);
+    });
   });
 
   it("shows a retryable error instead of an empty section when agents fail to load", async () => {
