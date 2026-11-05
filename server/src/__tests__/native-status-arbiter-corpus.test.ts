@@ -90,7 +90,7 @@ import * as activityLog from "../services/activity-log.js";
 import { dismissObsoleteNativePolicyReviews, registerObsoletePolicyReviewWork } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 type Fixture = {
@@ -441,7 +441,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         status: "idle",
       },
     ]);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
