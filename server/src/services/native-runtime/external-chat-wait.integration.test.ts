@@ -55,7 +55,7 @@ import type {
   PrpTerminalState,
 } from "../../vendor/paperclip-runner/index.js";
 
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { finalizeNativeRun, recoverCommittedNativeReviewResponse } from "./native-run-finalizer.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } from "../agent-lifecycle.js";
@@ -118,7 +118,7 @@ describe("native external-chat response wait", () => {
       "native-external-chat-wait-",
     );
     db = createDb(temporary.connectionString);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
     await temporary?.cleanup();

@@ -30,7 +30,7 @@ import { nativeStatusReassessmentWork } from "../services/native-runtime/native-
 import { dismissAutomaticCompletionReviews } from "../services/native-runtime/automatic-completion-reviews.js";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 describe("native reassessment worker lifecycle", () => {
@@ -50,7 +50,7 @@ describe("native reassessment worker lifecycle", () => {
     db = createDb(external ?? temporary!.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Reassessment lifecycle", issuePrefix: `RS${randomUUID().slice(0, 8)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Reassessment agent", adapterType: "codex_local", status: "idle" });
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
     await rm(logRoot, { recursive: true, force: true });
