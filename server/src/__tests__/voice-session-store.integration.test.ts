@@ -22,7 +22,7 @@ import { documentService } from "../services/documents.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../services/connector-runtime.js";
 import { VOICE_RESULT_NOTIFICATION } from "@paperclipai/shared";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { applyPendingMigrations, chatActions, instanceUserRoles, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
@@ -38,6 +38,7 @@ import type { SpekoToolEnvelope } from "../services/voice/speko-protocol.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 import { liveVoiceExecutionGuidance } from "../services/voice/voice-execution-guidance.js";
+import { LIVE_VOICE_STATES } from "../services/voice/voice-session-recovery.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
@@ -1717,6 +1718,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await expect(db.transaction(tx => f.store.authorizePrincipal(tx, f.companyId, f.endpointId, `voice:${f.call.sessionId}`))).rejects.toMatchObject({status: 403});
     } finally { await chat.shutdown(); }
   });
+  /** `reconcile` is instance-wide. Earlier tests leave hundreds of live calls and 24-hour report
+   * obligations for their own companies, so an unscoped pass costs seconds per prior test.
+   * Retire them before reconciling so the pass only does this test's work. */
+  async function retireOtherCompaniesVoiceWork(companyId: string) {
+    const other = ne(chatVoiceSessions.companyId, companyId);
+    await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date(0) }).where(and(other, inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES])));
+    await db.update(chatVoiceSessions).set({ endedAt: new Date(0) }).where(other);
+  }
   it("retains both spoken sides once on the public call task and preserves quarantine", async () => {
     const f = await inboundFixture(true), now = new Date().toISOString();
     await f.tool("submit_request", {text: "Help draft an inquiry"});
@@ -1726,6 +1735,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     ], costMicroUsd: "120000", durationSeconds: 60, providerUpdatedAt: new Date()} as never);
     const ended = f.sign({type: "call.report", session_id: f.event.session_id, organization_id: f.event.organization_id});
     await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+    await retireOtherCompaniesVoiceWork(f.companyId);
     await f.service.reconcile(1000);
     const docs = documentService(db), key = `voice-transcript-${f.call.sessionId}`;
     const first = await docs.getIssueDocumentByKey(f.call.intakeIssueId!, key);
@@ -2050,6 +2060,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     await db.update(chatVoiceSessions).set({ updatedAt: new Date(Date.now() - 60_000) }).where(eq(chatVoiceSessions.id, started.session.id));
     f.transport.inspectSession.mockResolvedValue({ status: "ended", endedAt: new Date().toISOString() });
+    await retireOtherCompaniesVoiceWork(f.companyId);
     await f.service.reconcile(1000);
     const [row] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, started.session.id));
     expect(row.state).toBe("ended");

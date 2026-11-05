@@ -272,9 +272,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("pages saved sessions and drains healthy work while one provider fails", async () => {
     const failed = await session();
     for (let index = 0; index < 104; index++) await session();
-    let broken = true;
+    let broken = true; const failures: number[] = [];
     inspect.mockImplementation(async row => {
-      if (row.id === failed.id && broken) throw new Error("one provider unavailable");
+      if (row.id === failed.id && broken) { failures.push(Date.now()); throw new Error("one provider unavailable"); }
       return { endedAt: true };
     });
     await start();
@@ -283,8 +283,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const rows = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.companyId, companyId));
       expect(rows.filter(row => row.state === "ended")).toHaveLength(104);
     }, { timeout: 5000 });
-    expect(inspect.mock.calls.filter(([row]) => row.id === failed.id)).toHaveLength(1);
-    expect(errors).toHaveLength(1);
+    // Each poll advances the fake clock 1 s, so a slow drain can outlast the failed row's
+    // 30 s exponential retry backoff. Pin that backoff instead of the number of polls.
+    expect(failures.length).toBeGreaterThanOrEqual(1);
+    for (let index = 1; index < failures.length; index++) {
+      expect(failures[index] - failures[index - 1]).toBeGreaterThanOrEqual(Math.min(300_000, 30_000 * 2 ** (index - 1)));
+    }
+    expect(inspect.mock.calls.filter(([row]) => row.id === failed.id)).toHaveLength(failures.length);
+    await vi.waitFor(() => expect(errors).toHaveLength(failures.length), { interval: 0 });
     broken = false; await settled(); errors.length = 0; await quiet();
   });
   it("includes another company in the first batch despite a large older backlog", async () => {
