@@ -164,6 +164,8 @@ describe("Coordinator agents section", () => {
     fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", updatedAt: "2026-11-05T01:00:00Z" }];
     await renderSidebar();
     expect(section()?.textContent).toContain("Agents");
+    // Each row carries that agent's own avatar rather than a generic role icon.
+    expect(rows().every(row => row.querySelector('[data-slot="agent-avatar"] img') !== null)).toBe(true);
     expect(rows().map(row => [row.textContent, row.getAttribute("href")])).toEqual([
       ["amy", "/chats/amy"], ["Space Name", `/chats/${encodeURIComponent("space name")}`], ["Zed", "/chats/zed"],
     ]);

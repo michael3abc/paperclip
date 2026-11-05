@@ -14,7 +14,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
 import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
-import { AgentIcon } from "./AgentIconPicker";
+import { AgentAvatar } from "./AgentAvatar";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection } from "./SidebarSection";
@@ -172,7 +172,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
             ? <p role="status" className="px-4 py-1.5 text-xs text-muted-foreground">Loading agents…</p>
             : agentRows.map(({ agent, unread }) => <SidebarNavItem className="design-sidebar-item" key={agent.id}
               to={`/chats/${encodeURIComponent(agentRouteRef(agent))}`} label={agent.name}
-              iconNode={<AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />}
+              iconNode={<AgentAvatar agent={agent} size={20} />}
               active={activeChatRef !== undefined && (activeChatRef === agent.id || activeChatRef === encodeURIComponent(agentRouteRef(agent)))}
               badge={unread ? 1 : undefined} badgeLabel="unread chat" />)}
       </SidebarSection></div>}
