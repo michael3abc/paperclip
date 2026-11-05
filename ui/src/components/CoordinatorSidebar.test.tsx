@@ -10,7 +10,7 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } fro
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-type FixtureAgent = { id: string; name: string; urlKey?: string; icon?: string | null; status: string };
+type FixtureAgent = { id: string; name: string; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
   chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; updatedAt?: string }>,
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
@@ -154,6 +154,8 @@ describe("Coordinator agents section", () => {
     { id: "a-old", name: "Retired", urlKey: "retired", status: "terminated" },
     { id: "a-left", name: "Left", urlKey: "left", status: "idle" },
     { id: "a-sp", name: "Space Name", urlKey: "space name", status: "idle" },
+    { id: "a-svc", name: "Delivery", urlKey: "delivery", status: "idle", adapterType: "process" },
+    { id: "a-ceo", name: "momo", urlKey: "momo", status: "idle", adapterType: "paperclip_runner" },
   ];
   const section = () => container.querySelector('.design-sidebar-agents');
   const rows = () => [...section()?.querySelectorAll("a") ?? []];
@@ -167,7 +169,7 @@ describe("Coordinator agents section", () => {
     // Each row carries that agent's own avatar rather than a generic role icon.
     expect(rows().every(row => row.querySelector('[data-slot="agent-avatar"] img') !== null)).toBe(true);
     expect(rows().map(row => [row.textContent, row.getAttribute("href")])).toEqual([
-      ["amy", "/chats/amy"], ["Space Name", `/chats/${encodeURIComponent("space name")}`], ["Zed", "/chats/zed"],
+      ["amy", "/chats/amy"], ["momo", "/chats/momo"], ["Space Name", `/chats/${encodeURIComponent("space name")}`], ["Zed", "/chats/zed"],
     ]);
     const more = container.querySelector('button[aria-label="More workspace pages"]')!;
     const recents = container.querySelector('[aria-label="Recents"]')!;
@@ -179,6 +181,8 @@ describe("Coordinator agents section", () => {
     fixture.agents = roster;
     await renderSidebar();
     expect(rows().map(row => row.textContent)).not.toContain("Retired");
+    // Command-only service agents are not chat partners; the CEO runner agent still is.
+    expect(rows().map(row => row.textContent)).not.toContain("Delivery");
     await act(async () => rows()[0]!.click());
     expect(fixture.ensureChat).not.toHaveBeenCalled();
   });

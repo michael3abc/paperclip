@@ -96,7 +96,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
     return (agents.data ?? [])
-      .filter(agent => agent.status !== "terminated"
+      // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
+      .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
         && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
       .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
       .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id) }));
