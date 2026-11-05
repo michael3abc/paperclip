@@ -220,6 +220,8 @@ vi.mock("@mdxeditor/editor", async () => {
   };
 });
 
+vi.mock("../lib/list-line-break", () => ({ listLineBreakPlugin: () => ({}) }));
+
 vi.mock("../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
 }));

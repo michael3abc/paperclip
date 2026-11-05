@@ -48,6 +48,7 @@ import {
 import { Boxes, CalendarClock, Flag, Hash, User, X } from "lucide-react";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
+import { listLineBreakPlugin } from "../lib/list-line-break";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
 import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
@@ -1003,9 +1004,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
       markdownShortcutPlugin(),
     ];
+    // Enter submits here, so Shift+Enter is the newline and must continue lists.
+    if (submitOnEnter) all.push(listLineBreakPlugin());
     all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     return all;
-  }, [hasImageUpload]);
+  }, [hasImageUpload, submitOnEnter]);
 
   useEffect(() => {
     if (editorValue !== latestValueRef.current) {
