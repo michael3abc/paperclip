@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import request from "supertest";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -245,6 +245,18 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent routes adapter validation", () => {
+  // The first createApp() pays the cold transform of the whole agent-route module graph.
+  // On a loaded host that took ~30 s, past the 15 s test timeout, so whichever test ran
+  // first failed. Pay it once here, under its own budget. vi.resetModules() in beforeEach
+  // drops module instances, not the transform cache, so each test still gets fresh state.
+  beforeAll(async () => {
+    registerModuleMocks();
+    await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+  }, 120_000);
+
   beforeEach(async () => {
     vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", undefined);
     vi.resetModules();
