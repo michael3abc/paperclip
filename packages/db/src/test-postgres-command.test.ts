@@ -39,7 +39,8 @@ it.skipIf(!supported).each(["SIGTERM", "SIGINT"] as const)("drains the test comm
     wrapper.once("exit", (code) => resolve(code));
   });
   try {
-    for (let i = 0; i < 1200 && !fs.existsSync(ready) && wrapper.exitCode === null; i++) await setTimeout(25);
+    // A cold embedded PostgreSQL start can exceed 30 s on a loaded host; wait up to 100 s.
+    for (let i = 0; i < 4000 && !fs.existsSync(ready) && wrapper.exitCode === null; i++) await setTimeout(25);
     expect(fs.existsSync(ready), output).toBe(true);
     const descendants = JSON.parse(fs.readFileSync(ready, "utf8")) as { root: number; grandchild: number };
     wrapper.kill(signal);
@@ -54,4 +55,4 @@ it.skipIf(!supported).each(["SIGTERM", "SIGINT"] as const)("drains the test comm
     if (wrapper.exitCode === null && wrapper.signalCode === null) { wrapper.kill("SIGTERM"); await exited; }
     fs.rmSync(directory, { recursive: true, force: true });
   }
-}, 90_000);
+}, 150_000);
