@@ -11,6 +11,7 @@ import {
 } from "react";
 import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { cn } from "../lib/utils";
+import { continueListOnNewline, type ListContinuationEdit } from "../lib/list-continuation";
 
 /**
  * Shared chat composer (PAP-95a / PAP-96).
@@ -138,6 +139,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
+  // Caret to restore after a list-continuation edit that went through `onChange` (see applyListEdit).
+  const pendingCaretRef = useRef<{ caret: number; value: string } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
   const canAttach = typeof onAttachFiles === "function";
@@ -158,13 +161,57 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
   }, [value, singleLine]);
 
+  // Runs after the controlled value reaches the DOM, so the caret lands after the new list marker.
+  useLayoutEffect(() => {
+    const pending = pendingCaretRef.current;
+    const el = textareaRef.current;
+    if (!pending || !el || el.value !== pending.value) return;
+    pendingCaretRef.current = null;
+    el.setSelectionRange(pending.caret, pending.caret);
+  }, [value]);
+
   function handleChange(evt: ChangeEvent<HTMLTextAreaElement>) {
     const next = singleLine ? evt.target.value.replace(/\r?\n/g, " ") : evt.target.value;
     onChange(next);
   }
 
+  function applyListEdit(el: HTMLTextAreaElement, edit: ListContinuationEdit) {
+    el.setSelectionRange(edit.from, edit.to);
+    // execCommand keeps the browser's undo stack and fires `input`, so `handleChange` runs as for typing.
+    if (typeof document.execCommand === "function") {
+      const applied =
+        edit.insert === "" ? document.execCommand("delete") : document.execCommand("insertText", false, edit.insert);
+      if (applied) return;
+    }
+    // No execCommand (jsdom) or it refused: same text through the controlled value instead.
+    const next = el.value.slice(0, edit.from) + edit.insert + el.value.slice(edit.to);
+    pendingCaretRef.current = { caret: edit.caret, value: next };
+    onChange(next);
+  }
+
   function handleKeyDown(evt: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (evt.key !== "Enter") return;
+
+    // A keypress that would insert a plain newline continues a Markdown list instead.
+    // Skipped during IME composition: that Enter confirms the candidate, not a line break.
+    const insertsNewline =
+      !evt.metaKey &&
+      !evt.ctrlKey &&
+      !evt.altKey &&
+      (submitKey === "mod-enter" || evt.shiftKey);
+    const composing = evt.nativeEvent.isComposing || evt.keyCode === 229;
+    if (insertsNewline && !composing && !singleLine) {
+      const el = evt.currentTarget;
+      if (el.selectionStart === el.selectionEnd) {
+        const edit = continueListOnNewline(el.value, el.selectionStart);
+        if (edit) {
+          evt.preventDefault();
+          applyListEdit(el, edit);
+          return;
+        }
+      }
+    }
+
     const wantsSubmit =
       submitKey === "mod-enter"
         ? evt.metaKey || evt.ctrlKey

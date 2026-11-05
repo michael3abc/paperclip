@@ -137,6 +137,120 @@ describe("ChatComposer", () => {
     act(() => root.unmount());
   });
 
+  describe("list continuation on newline", () => {
+    function pressEnter(init: KeyboardEventInit) {
+      const evt = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+      act(() => {
+        input().dispatchEvent(evt);
+      });
+      return evt;
+    }
+    function typeWithCaretAtEnd(text: string) {
+      act(() => {
+        typeInput(input(), text);
+      });
+      input().setSelectionRange(text.length, text.length);
+    }
+
+    it('submitKey="enter": Shift+Enter on "1. …" inserts "2. " and does not submit', () => {
+      const onSubmit = vi.fn();
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness onSubmit={onSubmit} submitKey="enter" />);
+      });
+      typeWithCaretAtEnd("1. 資料庫存了完整卡號");
+      const evt = pressEnter({ shiftKey: true });
+      expect(evt.defaultPrevented).toBe(true);
+      expect(input().value).toBe("1. 資料庫存了完整卡號\n2. ");
+      expect(input().selectionStart).toBe(input().value.length);
+      expect(input().selectionEnd).toBe(input().value.length);
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      // Keeps counting on the next press.
+      typeWithCaretAtEnd(`${input().value}在我本地`);
+      pressEnter({ shiftKey: true });
+      expect(input().value).toBe("1. 資料庫存了完整卡號\n2. 在我本地\n3. ");
+      act(() => root.unmount());
+    });
+
+    it('submitKey="enter": plain Enter on a list line still submits', () => {
+      const onSubmit = vi.fn();
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness onSubmit={onSubmit} submitKey="enter" />);
+      });
+      typeWithCaretAtEnd("1. a");
+      pressEnter({});
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(input().value).toBe("1. a");
+      act(() => root.unmount());
+    });
+
+    it('submitKey="mod-enter": Enter continues the list, Cmd+Enter still submits', () => {
+      const onSubmit = vi.fn();
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness onSubmit={onSubmit} submitKey="mod-enter" />);
+      });
+      typeWithCaretAtEnd("- a");
+      pressEnter({});
+      expect(input().value).toBe("- a\n- ");
+      expect(onSubmit).not.toHaveBeenCalled();
+      pressEnter({ metaKey: true });
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(input().value).toBe("- a\n- ");
+      act(() => root.unmount());
+    });
+
+    it("Shift+Enter on an empty item removes the marker instead of numbering on", () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness submitKey="enter" />);
+      });
+      typeWithCaretAtEnd("1. a\n2. ");
+      pressEnter({ shiftKey: true });
+      expect(input().value).toBe("1. a\n");
+      expect(input().selectionStart).toBe(5);
+      act(() => root.unmount());
+    });
+
+    it("leaves non-list lines to the browser's plain newline", () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness submitKey="enter" />);
+      });
+      typeWithCaretAtEnd("just text");
+      const evt = pressEnter({ shiftKey: true });
+      expect(evt.defaultPrevented).toBe(false);
+      expect(input().value).toBe("just text");
+      act(() => root.unmount());
+    });
+
+    it("does not intercept Enter during IME composition", () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness submitKey="enter" />);
+      });
+      typeWithCaretAtEnd("1. a");
+      const evt = pressEnter({ shiftKey: true, isComposing: true });
+      expect(evt.defaultPrevented).toBe(false);
+      expect(input().value).toBe("1. a");
+      act(() => root.unmount());
+    });
+
+    it("does not continue lists in singleLine mode", () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<Harness singleLine submitKey="enter" />);
+      });
+      typeWithCaretAtEnd("1. a");
+      const evt = pressEnter({ shiftKey: true });
+      expect(evt.defaultPrevented).toBe(false);
+      expect(input().value).toBe("1. a");
+      act(() => root.unmount());
+    });
+  });
+
   it("singleLine strips newlines from input", () => {
     const onChange = vi.fn();
     const root = createRoot(container);
