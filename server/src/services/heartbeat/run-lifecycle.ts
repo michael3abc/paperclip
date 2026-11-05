@@ -160,6 +160,7 @@ import {
   readContinuationAttempt,
 } from "../recovery/index.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
+import { isPluginManagedIssueLifecycle } from "../recovery/successful-run-handoff.js";
 import { deriveCommentId } from "../../modules/run-dispatch/index.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -2049,12 +2050,16 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         identifier: issues.identifier,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        originKind: issues.originKind,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.status !== "in_review" || !issue.assigneeAgentId)
       return;
+    // Plugin-managed issues own their review lifecycle (the plugin wakes the
+    // assignee itself); core review-path recovery must not add wakes.
+    if (isPluginManagedIssueLifecycle(issue)) return;
 
     const reviewAttention = await issuesSvc
       .listReviewAttention(issue.companyId, [issue])

@@ -347,6 +347,37 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     ]);
   }, 10_000);
 
+  it("does not add review-path recovery wakes for plugin-managed issues", async () => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    await db
+      .update(issues)
+      .set({ status: "in_review", originKind: "plugin:ccpocket:session", updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned", skipIssueComment: true },
+      requestedByActorType: "system",
+      requestedByActorId: "issue_assignment",
+    });
+
+    expect(run).not.toBeNull();
+    const terminalStatus = await waitForCompletedRun(run!.id, agentId);
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+    expect(terminalStatus).toBe("succeeded");
+
+    const runs = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .orderBy(heartbeatRuns.createdAt);
+    expect(runs.map((entry) => entry.contextSnapshot?.wakeReason)).toEqual(["issue_assigned"]);
+  }, 10_000);
+
   it("recognizes explicit restore-in-progress suppression", () => {
     expect(resolveHeartbeatSchedulingSuppression({
       PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "true",
