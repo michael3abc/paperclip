@@ -7,12 +7,14 @@ import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
+import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
 import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
+import { AgentIcon } from "./AgentIconPicker";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection } from "./SidebarSection";
@@ -87,6 +89,21 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     if (!project) return;
     setProjectVisits(previous => ({ scope, entries: { ...(previous.scope === scope ? previous.entries : {}), [project.id]: Date.now() } }));
   }, [location.pathname, projects, scope]);
+  const agentMemberships = useResourceMemberships(companyId);
+  // Same eligibility as the classic Agents section: terminated agents and agents
+  // the person has left are omitted. A stable alphabetical order keeps the list
+  // predictable; Recents already carries the recency ordering.
+  const agentRows = useMemo(() => {
+    const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
+    return (agents.data ?? [])
+      .filter(agent => agent.status !== "terminated"
+        && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
+      .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id) }));
+  }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess]);
+  const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
+  const agentsFailed = agents.isError;
+  const agentsLoading = agents.isPending && agents.fetchStatus === "fetching";
   const recents = useMemo(() => {
     const roster = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
     const taskRows = recentTasks.map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
@@ -148,6 +165,17 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         </div>)}
       </section>}
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
+      {!rail && (agentRows.length > 0 || agentsFailed || agentsLoading) && <div className="design-sidebar-agents"><SidebarSection label="Agents">
+        {agentsFailed && !agentRows.length
+          ? <p role="alert" className="px-4 py-1.5 text-xs text-destructive">Couldn’t load agents. <button type="button" className="underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { void agents.refetch(); }}>Retry</button></p>
+          : agentsLoading && !agentRows.length
+            ? <p role="status" className="px-4 py-1.5 text-xs text-muted-foreground">Loading agents…</p>
+            : agentRows.map(({ agent, unread }) => <SidebarNavItem className="design-sidebar-item" key={agent.id}
+              to={`/chats/${encodeURIComponent(agentRouteRef(agent))}`} label={agent.name}
+              iconNode={<AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0" />}
+              active={activeChatRef !== undefined && (activeChatRef === agent.id || activeChatRef === encodeURIComponent(agentRouteRef(agent)))}
+              badge={unread ? 1 : undefined} badgeLabel="unread chat" />)}
+      </SidebarSection></div>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label="Recents" tabIndex={0}>
         {recents.map(item => item.kind === "task"

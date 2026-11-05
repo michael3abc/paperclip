@@ -10,10 +10,17 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } fro
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer", chats: [] as Array<{ isUnreadForMe: boolean }> }));
+type FixtureAgent = { id: string; name: string; urlKey?: string; icon?: string | null; status: string };
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
+  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; updatedAt?: string }>,
+  agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
-  companyId: "company", userId: fixture.userId, agents: { data: [] }, chats: { data: fixture.chats }, session: { isSuccess: true },
+  companyId: "company", userId: fixture.userId,
+  agents: { data: fixture.agentsState.isError || fixture.agentsState.isPending ? undefined : fixture.agents, refetch: fixture.refetchAgents, ...fixture.agentsState },
+  chats: { data: fixture.chats }, session: { isSuccess: true },
 }) }));
+vi.mock("@/api/resourceMemberships", () => ({ resourceMembershipsApi: { listMine: fixture.listMemberships } }));
+vi.mock("@/api/agentChats", () => ({ agentChatsApi: { ensure: fixture.ensureChat } }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
@@ -43,7 +50,8 @@ function summary(items: AttentionItem[]) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
-  fixture.chats = [];
+  fixture.chats = []; fixture.agents = []; fixture.agentsState = {};
+  fixture.listMemberships.mockResolvedValue({ agentMemberships: {}, projectMemberships: {} });
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -138,6 +146,80 @@ async function renderSidebar() {
   await flush();
 }
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
+
+describe("Coordinator agents section", () => {
+  const roster: FixtureAgent[] = [
+    { id: "a-zed", name: "Zed", urlKey: "zed", icon: "bot", status: "idle" },
+    { id: "a-amy", name: "amy", urlKey: "amy", icon: "bot", status: "running" },
+    { id: "a-old", name: "Retired", urlKey: "retired", status: "terminated" },
+    { id: "a-left", name: "Left", urlKey: "left", status: "idle" },
+    { id: "a-sp", name: "Space Name", urlKey: "space name", status: "idle" },
+  ];
+  const section = () => container.querySelector('.design-sidebar-agents');
+  const rows = () => [...section()?.querySelectorAll("a") ?? []];
+
+  it("lists chat-eligible agents between More and Recents, alphabetically, linking to each agent's chat", async () => {
+    fixture.agents = roster;
+    fixture.listMemberships.mockResolvedValue({ agentMemberships: { "a-left": "left" }, projectMemberships: {} });
+    fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", updatedAt: "2026-11-05T01:00:00Z" }];
+    await renderSidebar();
+    expect(section()?.textContent).toContain("Agents");
+    expect(rows().map(row => [row.textContent, row.getAttribute("href")])).toEqual([
+      ["amy", "/chats/amy"], ["Space Name", `/chats/${encodeURIComponent("space name")}`], ["Zed", "/chats/zed"],
+    ]);
+    const more = container.querySelector('button[aria-label="More workspace pages"]')!;
+    const recents = container.querySelector('[aria-label="Recents"]')!;
+    expect(more.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(recents.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_PRECEDING).not.toBe(0);
+  });
+
+  it("keeps terminated agents out and does not create a chat when a row is opened", async () => {
+    fixture.agents = roster;
+    await renderSidebar();
+    expect(rows().map(row => row.textContent)).not.toContain("Retired");
+    await act(async () => rows()[0]!.click());
+    expect(fixture.ensureChat).not.toHaveBeenCalled();
+  });
+
+  it("marks the open chat and flags unread conversations per agent", async () => {
+    fixture.agents = roster;
+    fixture.pathname = "/COO/chats/amy";
+    fixture.chats = [
+      { id: "chat-amy", isUnreadForMe: false, conversationAgentId: "a-amy" },
+      { id: "chat-zed", isUnreadForMe: true, conversationAgentId: "a-zed" },
+    ];
+    await renderSidebar();
+    const byLabel = (label: string) => rows().find(row => row.textContent?.startsWith(label))!;
+    expect(byLabel("amy").className).toContain("bg-sidebar-accent text-sidebar-accent-foreground");
+    expect(byLabel("Zed").className).not.toContain("bg-sidebar-accent text-sidebar-accent-foreground");
+    expect(byLabel("Zed").querySelector('[aria-label="1 unread chat"]')).not.toBeNull();
+    expect(byLabel("amy").querySelector('[data-slot="badge"]')).toBeNull();
+  });
+
+  it("shows a retryable error instead of an empty section when agents fail to load", async () => {
+    fixture.agentsState = { isError: true };
+    await renderSidebar();
+    const alert = section()?.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Couldn’t load agents");
+    await act(async () => alert!.querySelector("button")!.click());
+    expect(fixture.refetchAgents).toHaveBeenCalledOnce();
+  });
+
+  it("shows loading while the first agents read is in flight", async () => {
+    fixture.agentsState = { isPending: true, fetchStatus: "fetching" };
+    await renderSidebar();
+    expect(section()?.querySelector('[role="status"]')?.textContent).toContain("Loading agents");
+  });
+
+  it("renders nothing without agents and is hidden in the collapsed rail", async () => {
+    await renderSidebar();
+    expect(section()).toBeNull();
+    fixture.agents = roster;
+    fixture.collapsed = true;
+    await renderSidebar();
+    expect(section()).toBeNull();
+  });
+});
 
 describe("Coordinator Needs You badge", () => {
   it("counts every canonical outstanding decision even when none arrived today", async () => {
