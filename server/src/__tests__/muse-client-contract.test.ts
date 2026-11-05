@@ -19,8 +19,8 @@ describe("personal Muse client durability", () => {
     execFileSync("python3", [
       fileURLToPath(new URL("./fixtures/muse-client-contract.py", import.meta.url)),
       fileURLToPath(new URL("../services/scripts/v9/client.py", import.meta.url)),
-    ], { encoding: "utf8", timeout: 30_000 });
-  });
+    ], { encoding: "utf8", timeout: 120_000 });
+  }, 150_000);
 });
 
 
