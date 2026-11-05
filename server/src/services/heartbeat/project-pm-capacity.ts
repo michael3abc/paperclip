@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { PaperclipPmWorkspaceContext, ProjectPmRole } from "@paperclipai/shared";
 import {
-  buildPaperclipPmWorkspaceContext,
+  buildProjectPmRoleContext,
   readPaperclipPmWorkspaceContext,
   readProjectPmRunIssueId,
   resolveProjectPmBinding,
@@ -104,7 +104,14 @@ export async function loadProjectPmRoleCapacity(db: Db, input: {
       }).catch(() => null);
       const binding_ = await resolved;
       if (!binding_) return null;
-      return buildPaperclipPmWorkspaceContext(binding_, role, readProjectPmRunIssueId(snapshot(run)));
+      const issueId = readProjectPmRunIssueId(snapshot(run));
+      // A cross-project worker root that cannot be resolved now is left to executeRun, which reports it.
+      return buildProjectPmRoleContext(db, {
+        companyId: agent.companyId,
+        binding: binding_,
+        role,
+        issue: issueId ? facts.get(issueId) ?? null : null,
+      }).catch(() => null);
     },
   };
 }

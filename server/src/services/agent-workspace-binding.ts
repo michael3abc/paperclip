@@ -98,10 +98,14 @@ export function readWorkspaceBinding(
     projectPmConflict("context_missing", "The project PM role was not resolved for this run.");
   }
   const binding = parsed.data;
-  const expectedCwd = pmContext.role === "worker" ? binding.workerRoot : (binding.pmHome ?? binding.agentHome ?? pmContext.agentHome);
+  // A whitelisted PM's worker runs in the issue project's workspace, which the
+  // server resolved at claim; the context then names that project and root.
+  const crossProjectWorker = binding.allowCrossProject === true && pmContext.role === "worker";
+  const expectedCwd = pmContext.role === "worker"
+    ? (crossProjectWorker ? pmContext.workerRoot : binding.workerRoot)
+    : (binding.pmHome ?? binding.agentHome ?? pmContext.agentHome);
   if (
-    pmContext.projectId !== binding.projectId ||
-    pmContext.workerRoot !== binding.workerRoot ||
+    (!crossProjectWorker && (pmContext.projectId !== binding.projectId || pmContext.workerRoot !== binding.workerRoot)) ||
     pmContext.workerHostId !== binding.workerHostId ||
     pmContext.pmHome !== binding.pmHome ||
     (binding.agentHome !== undefined && pmContext.agentHome !== binding.agentHome) ||
@@ -172,16 +176,20 @@ export type ProjectPmRoleDecision =
 /**
  * The authoritative role table: no issue or a top-level project issue is a PM
  * turn; a child issue assigned to the agent is a worker turn; a child issue
- * assigned to someone else is a PM turn; anything outside the project is rejected.
+ * assigned to someone else is a PM turn; anything outside the project is
+ * rejected, unless the binding whitelists `allowCrossProject` (then any issue
+ * that belongs to some project is accepted; project-less issues stay rejected
+ * because a worker would have no workspace).
  */
 export function resolveProjectPmRole(input: {
-  binding: Pick<ProjectPmWorkspaceBinding, "projectId">;
+  binding: Pick<ProjectPmWorkspaceBinding, "projectId" | "allowCrossProject">;
   agentId: string;
   issue: ProjectPmIssueFacts | null;
 }): ProjectPmRoleDecision {
   const issue = input.issue;
   if (!issue) return { outcome: "role", role: "pm" };
-  if (issue.projectId !== input.binding.projectId) {
+  const crossProjectAllowed = input.binding.allowCrossProject === true && issue.projectId !== null;
+  if (issue.projectId !== input.binding.projectId && !crossProjectAllowed) {
     return {
       outcome: "out_of_bounds",
       message: `Issue ${issue.id} is outside the PM agent's project; project PM agents only work on issues of project ${input.binding.projectId}.`,
@@ -310,7 +318,33 @@ export async function resolveProjectPmBinding(db: Db, input: {
     workerIsolation: binding.workerIsolation,
     workerSlots: binding.workerSlots,
     inboxIssueId,
+    ...(binding.allowCrossProject ? { allowCrossProject: true } : {}),
   };
+}
+
+/**
+ * The claim-time context for one role. A whitelisted PM's worker on an issue of
+ * another project runs in that project's primary workspace (resolved and
+ * checked like the home project's worker root); every other case is the plain
+ * binding context.
+ */
+export async function buildProjectPmRoleContext(db: Db, input: {
+  companyId: string;
+  binding: ResolvedProjectPmWorkspaceBinding;
+  role: ProjectPmRole;
+  issue: ProjectPmIssueFacts | null;
+}): Promise<PaperclipPmWorkspaceContext> {
+  const { binding, role, issue } = input;
+  const context = buildPaperclipPmWorkspaceContext(binding, role, issue?.id ?? null);
+  if (role !== "worker" || !issue?.projectId || issue.projectId === binding.projectId) return context;
+  if (!binding.allowCrossProject) {
+    projectPmConflict("out_of_bounds", "The PM binding does not allow issues of other projects.");
+  }
+  const workerRoot = await primaryProjectWorkspaceRealpath(db, input.companyId, issue.projectId, binding.workerHostId);
+  if (!workerRoot) {
+    projectPmConflict("worker_root_mismatch", `Project ${issue.projectId} has no usable primary workspace directory for a cross-project worker.`);
+  }
+  return { ...context, projectId: issue.projectId, workerRoot, cwd: workerRoot };
 }
 
 /** Durable source evidence, independent of caller-provided wake or conversation flags. */
@@ -410,5 +444,5 @@ export async function resolveProjectPmRunWorkspace(db: Db, input: {
   const decision = resolveProjectPmRole({ binding, agentId: input.agent.id, issue });
   if (decision.outcome === "out_of_bounds") return { outcome: "out_of_bounds", issueId, message: decision.message };
   const role = input.claimedRole ?? decision.role;
-  return { outcome: "workspace", workspace: buildPaperclipPmWorkspaceContext(binding, role, issue?.id ?? null) };
+  return { outcome: "workspace", workspace: await buildProjectPmRoleContext(db, { companyId: input.agent.companyId, binding, role, issue }) };
 }

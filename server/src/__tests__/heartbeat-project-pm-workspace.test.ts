@@ -50,7 +50,7 @@ suite("project PM role and workspace at claim", () => {
     execute.mockClear();
   });
 
-  async function seedPm() {
+  async function seedPm(options: { allowCrossProject?: boolean } = {}) {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID();
     const workerRoot = path.join(root, companyId, "repo");
     await mkdir(workerRoot, { recursive: true });
@@ -64,10 +64,21 @@ suite("project PM role and workspace at claim", () => {
     await db.insert(issues).values({ id: inboxIssueId, companyId, projectId, title: "PM inbox", status: "backlog", assigneeAgentId: agentId });
     const binding = await resolveProjectPmBinding(db, {
       companyId, agentId, validateInbox: true,
-      binding: { mode: "project_pm", projectId, workerRoot, workerIsolation: "shared", workerSlots: 2, inboxIssueId },
+      binding: { mode: "project_pm", projectId, workerRoot, workerIsolation: "shared", workerSlots: 2, inboxIssueId, ...(options.allowCrossProject ? { allowCrossProject: true } : {}) },
     });
     await db.update(agents).set({ runtimeConfig: { workspaceBinding: binding } }).where(eq(agents.id, agentId));
     return { companyId, projectId, agentId, workerRoot, inboxIssueId, agentHome: binding.agentHome };
+  }
+
+  /** A second project of the same company with its own primary workspace directory. */
+  async function seedOtherProject(companyId: string) {
+    const otherProjectId = randomUUID();
+    const otherRoot = path.join(root, companyId, "other-repo");
+    await mkdir(otherRoot, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: otherRoot });
+    await db.insert(projects).values({ id: otherProjectId, companyId, name: "Other", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId: otherProjectId, name: "Other repo", sourceType: "local_path", cwd: otherRoot, isPrimary: true });
+    return { otherProjectId, otherRoot };
   }
 
   async function runToEnd(agentId: string, contextSnapshot: Record<string, unknown>) {
@@ -238,4 +249,44 @@ suite("project PM role and workspace at claim", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, pm.agentId));
     expect(runs.filter((run) => run.status === "queued" || run.status === "running")).toHaveLength(0);
   }, 30_000);
+
+  it("lets a whitelisted PM take another project's issues and runs its worker in that project's workspace", async () => {
+    const pm = await seedPm({ allowCrossProject: true });
+    const { otherProjectId, otherRoot } = await seedOtherProject(pm.companyId);
+    const topId = randomUUID(), childId = randomUUID();
+    await db.insert(issues).values({ id: topId, companyId: pm.companyId, projectId: otherProjectId, title: "Other top", status: "todo", assigneeAgentId: pm.agentId });
+    await db.insert(issues).values({ id: childId, companyId: pm.companyId, projectId: otherProjectId, parentId: topId, title: "Other child", status: "todo", assigneeAgentId: pm.agentId });
+
+    const workerRun = await runToEnd(pm.agentId, { issueId: childId });
+    expect({ status: workerRun.run.status, error: workerRun.run.error }).toEqual({ status: "succeeded", error: null });
+    const workerContext = workerRun.calls[0]![0].context;
+    expect(workerContext.paperclipPmWorkspace).toMatchObject({ role: "worker", projectId: otherProjectId, workerRoot: otherRoot, cwd: otherRoot, issueId: childId });
+    expect(workerContext.paperclipWorkspace.cwd).toBe(otherRoot);
+    expect(workerContext.paperclipWorkspace.cwd).not.toBe(pm.workerRoot);
+
+    // A top-level issue of another project is a PM turn that stays in the agent home.
+    const pmRun = await runToEnd(pm.agentId, { issueId: topId });
+    expect({ status: pmRun.run.status, error: pmRun.run.error }).toEqual({ status: "succeeded", error: null });
+    expect(pmRun.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, issueId: topId });
+
+    // The whitelist does not cover issues that belong to no project: a worker there has no workspace.
+    const orphanId = randomUUID();
+    await db.insert(issues).values({ id: orphanId, companyId: pm.companyId, projectId: null, title: "No project", status: "todo", assigneeAgentId: pm.agentId });
+    const orphan = await runToEnd(pm.agentId, { issueId: orphanId });
+    expect({ status: orphan.run.status, errorCode: orphan.run.errorCode }).toEqual({ status: "cancelled", errorCode: "project_pm_out_of_bounds" });
+    expect(orphan.calls).toHaveLength(0);
+  }, 60_000);
+
+  it("still cancels another project's issue for a PM without the whitelist flag", async () => {
+    const pm = await seedPm();
+    const { otherProjectId } = await seedOtherProject(pm.companyId);
+    const topId = randomUUID(), childId = randomUUID();
+    await db.insert(issues).values({ id: topId, companyId: pm.companyId, projectId: otherProjectId, title: "Other top", status: "todo", assigneeAgentId: pm.agentId });
+    await db.insert(issues).values({ id: childId, companyId: pm.companyId, projectId: otherProjectId, parentId: topId, title: "Other child", status: "todo", assigneeAgentId: pm.agentId });
+    for (const issueId of [topId, childId]) {
+      const rejected = await runToEnd(pm.agentId, { issueId });
+      expect({ status: rejected.run.status, errorCode: rejected.run.errorCode }).toEqual({ status: "cancelled", errorCode: "project_pm_out_of_bounds" });
+      expect(rejected.calls).toHaveLength(0);
+    }
+  }, 60_000);
 });

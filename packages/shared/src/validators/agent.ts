@@ -113,6 +113,7 @@ export const agentProjectPmWorkspaceBindingSchema = z.object({
   workerSlots: z.number().int().min(PROJECT_PM_MIN_WORKER_SLOTS).max(PROJECT_PM_MAX_WORKER_SLOTS)
     .default(PROJECT_PM_DEFAULT_WORKER_SLOTS),
   inboxIssueId: z.string().guid().nullable().optional(),
+  allowCrossProject: z.boolean().optional(),
 }).strict();
 
 export const agentWorkspaceBindingSchema = z.discriminatedUnion("mode", [

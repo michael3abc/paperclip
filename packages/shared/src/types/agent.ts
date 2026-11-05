@@ -54,6 +54,12 @@ export interface AgentProjectPmWorkspaceBinding {
   workerIsolation: ProjectPmWorkerIsolation;
   workerSlots: number;
   inboxIssueId?: string | null;
+  /**
+   * Whitelist flag for a general PM: it may take issues of any project in its
+   * company, and its workers run in the issue project's primary workspace.
+   * Operator-only: agents cannot write `workspaceBinding`.
+   */
+  allowCrossProject?: boolean;
 }
 
 export type AgentWorkspaceBinding = AgentFixedWorkspaceBinding | AgentProjectPmWorkspaceBinding;

@@ -71,6 +71,40 @@ describe("project_pm binding schema and role table", () => {
     expect(resolveProjectPmRole({ binding, agentId, issue: issue({ projectId: null, parentId: randomUUID() }) }).outcome).toBe("out_of_bounds");
   });
 
+  it("accepts other projects' issues only for an allowCrossProject binding", () => {
+    const agentId = randomUUID();
+    const strict = { projectId: PROJECT_ID };
+    const open = { projectId: PROJECT_ID, allowCrossProject: true };
+    const other = (patch: Partial<{ projectId: string | null; parentId: string | null }> = {}) =>
+      ({ id: randomUUID(), projectId: randomUUID(), parentId: null, assigneeAgentId: agentId, ...patch });
+    expect(resolveProjectPmRole({ binding: strict, agentId, issue: other() }).outcome).toBe("out_of_bounds");
+    expect(resolveProjectPmRole({ binding: { ...strict, allowCrossProject: false }, agentId, issue: other() }).outcome).toBe("out_of_bounds");
+    expect(resolveProjectPmRole({ binding: open, agentId, issue: other() })).toEqual({ outcome: "role", role: "pm" });
+    expect(resolveProjectPmRole({ binding: open, agentId, issue: other({ parentId: randomUUID() }) })).toEqual({ outcome: "role", role: "worker" });
+    // Issues without a project have no workspace for a worker, so they stay rejected.
+    expect(resolveProjectPmRole({ binding: open, agentId, issue: other({ projectId: null }) }).outcome).toBe("out_of_bounds");
+  });
+
+  it("parses allowCrossProject as an optional boolean and rejects other values", () => {
+    expect(agentRuntimeConfigSchema.parse({ workspaceBinding: { ...base, allowCrossProject: true } }).workspaceBinding)
+      .toMatchObject({ allowCrossProject: true });
+    expect(agentRuntimeConfigSchema.parse({ workspaceBinding: base }).workspaceBinding).not.toHaveProperty("allowCrossProject");
+    expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...base, allowCrossProject: "yes" } })).toThrow();
+  });
+
+  it("accepts a whitelisted PM's cross-project worker context but never for a non-whitelisted binding or the PM role", () => {
+    const binding = { ...base, agentHome: "/home/pm", workerIsolation: "shared" as const, workerSlots: 2, inboxIssueId: null, allowCrossProject: true };
+    const otherProject = randomUUID();
+    const worker = { ...buildPaperclipPmWorkspaceContext(binding, "worker", randomUUID()), projectId: otherProject, workerRoot: "/projects/other", cwd: "/projects/other" };
+    expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: worker })?.cwd).toBe("/projects/other");
+    // The cwd of a cross-project worker must be the root the context names.
+    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...worker, cwd: "/elsewhere" } })).toThrow(/does not match/);
+    const { allowCrossProject: _flag, ...strict } = binding;
+    expect(() => readWorkspaceBinding({ workspaceBinding: strict }, { paperclipPmWorkspace: worker })).toThrow(/does not match/);
+    const pm = { ...buildPaperclipPmWorkspaceContext(binding, "pm", null), projectId: otherProject };
+    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: pm })).toThrow(/does not match/);
+  });
+
   it("reads the run issue from the context issue, wake issue or a UUID task id", () => {
     const id = randomUUID();
     expect(readProjectPmRunIssueId({ issueId: id, taskId: randomUUID() })).toBe(id);
@@ -315,6 +349,44 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     });
     expect(created.status).toBe(422);
     expect(created.body.details).toMatchObject({ reason: "project_pm_agent_home_mismatch" });
+  });
+
+  it("lets only an operator set allowCrossProject and keeps it through canonicalization", async () => {
+    const s = await seed();
+    const appFor = (actor: Express.Request["actor"]) => {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", agentRoutes(db));
+      app.use(errorHandler);
+      return app;
+    };
+    const binding = { mode: "project_pm", projectId: s.project.id, workerRoot: s.root };
+    const storedBinding = async () =>
+      (await db.select().from(agents).where(eq(agents.id, s.agent.id)))[0]!.runtimeConfig.workspaceBinding as Record<string, unknown>;
+
+    const operator = appFor({ type: "board", userId: "local-board", source: "local_implicit" });
+    expect((await request(operator).patch(`/api/agents/${s.agent.id}`).send({ runtimeConfig: { workspaceBinding: binding } })).status).toBe(200);
+    expect(await storedBinding()).not.toHaveProperty("allowCrossProject");
+
+    // The PM agent itself cannot whitelist itself, with or without other changes.
+    const self = appFor({ type: "agent", agentId: s.agent.id, companyId: s.companyId, source: "agent_jwt" } as Express.Request["actor"]);
+    const denied = await request(self).patch(`/api/agents/${s.agent.id}`)
+      .send({ runtimeConfig: { workspaceBinding: { ...(await storedBinding()), allowCrossProject: true } } });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error).toMatch(/Only an operator can change a fixed working directory/);
+    expect(await storedBinding()).not.toHaveProperty("allowCrossProject");
+
+    const enabled = await request(operator).patch(`/api/agents/${s.agent.id}`)
+      .send({ runtimeConfig: { workspaceBinding: { ...binding, allowCrossProject: true } } });
+    expect(enabled.status).toBe(200);
+    expect(await storedBinding()).toMatchObject({ projectId: s.project.id, workerRoot: s.root, allowCrossProject: true });
+
+    // An agent cannot clear it either.
+    const cleared = await request(self).patch(`/api/agents/${s.agent.id}`)
+      .send({ runtimeConfig: { workspaceBinding: { ...(await storedBinding()), allowCrossProject: false } } });
+    expect(cleared.status).toBe(403);
+    expect(await storedBinding()).toMatchObject({ allowCrossProject: true });
   });
 
   it("rejects changing the adapter while a remote worker binding is retained", async () => {
