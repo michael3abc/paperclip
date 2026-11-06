@@ -8,11 +8,13 @@ import { CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
+import { PrimaryAgentPresentationProvider } from "./primary-agent/PrimaryAgentPresentation";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-type FixtureAgent = { id: string; name: string; role: "ceo" | "pm" | "engineer"; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
+type FixtureAgent = { id: string; name: string; role: "ceo" | "pm" | "engineer" | "general"; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), liveRuns: vi.fn(), openWork: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
   chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string }>,
+  primaryAgentId: null as string | null, primaryCompanyId: "company",
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId,
@@ -53,6 +55,7 @@ let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues";
   fixture.chats = []; fixture.agents = []; fixture.agentsState = {};
+  fixture.primaryAgentId = null; fixture.primaryCompanyId = "company";
   fixture.listMemberships.mockResolvedValue({ agentMemberships: {}, projectMemberships: {} });
   fixture.liveRuns.mockResolvedValue([]); fixture.openWork.mockResolvedValue([]);
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
@@ -145,7 +148,9 @@ describe("Coordinator pinned pages", () => {
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
 async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); }
 async function renderSidebar() {
-  await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><CoordinatorSidebar /></TooltipProvider></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={client}><PrimaryAgentPresentationProvider value={{
+    companyId: fixture.primaryCompanyId, primaryAgentId: fixture.primaryAgentId, primaryAgent: null, onChange: () => {},
+  }}><TooltipProvider><CoordinatorSidebar /></TooltipProvider></PrimaryAgentPresentationProvider></QueryClientProvider>));
   await flush();
 }
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
@@ -164,7 +169,7 @@ describe("Coordinator agents section", () => {
   const section = () => container.querySelector('.design-sidebar-agents');
   const rows = () => [...section()?.querySelectorAll("a") ?? []];
 
-  it("lists only CEO and PM roles between More and Recents, including paused PMs, with no worker expansion", async () => {
+  it("lists CEO and PM roles between More and Recents, including paused PMs, with no worker expansion", async () => {
     fixture.agents = roster;
     fixture.listMemberships.mockResolvedValue({ agentMemberships: { "a-left": "left" }, projectMemberships: {} });
     fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", updatedAt: "2026-11-05T01:00:00Z" }];
@@ -181,6 +186,35 @@ describe("Coordinator agents section", () => {
     const recents = container.querySelector('[aria-label="Recents"]')!;
     expect(more.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(recents.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_PRECEDING).not.toBe(0);
+  });
+
+  it("keeps a general-role primary agent visible without exposing other general agents or workers", async () => {
+    fixture.agents = [
+      ...roster.map(agent => agent.id === "a-ceo" ? { ...agent, role: "general" as const } : agent),
+      { id: "a-helper", name: "Other general agent", role: "general", status: "idle" },
+    ];
+    fixture.primaryAgentId = "a-ceo";
+    await renderSidebar();
+    expect(rows().map(row => row.textContent)).toContain("momo");
+    expect(section()?.textContent).not.toContain("Other general agent");
+    expect(section()?.textContent).not.toContain("worker");
+    expect(section()?.querySelector('[aria-expanded]')).toBeNull();
+
+    fixture.primaryCompanyId = "another-company";
+    await renderSidebar();
+    expect(rows().map(row => row.textContent)).not.toContain("momo");
+    fixture.primaryCompanyId = "company";
+    fixture.primaryAgentId = null;
+    await renderSidebar();
+    expect(rows().map(row => row.textContent)).not.toContain("momo");
+  });
+
+  it.each(["terminated", "process", "left"])("does not bypass the %s visibility restriction for a primary agent", async restriction => {
+    fixture.agents = [{ id: "a-primary", name: "Primary", role: "general", status: restriction === "terminated" ? "terminated" : "idle", adapterType: restriction === "process" ? "process" : "paperclip_runner" }];
+    fixture.primaryAgentId = "a-primary";
+    if (restriction === "left") fixture.listMemberships.mockResolvedValue({ agentMemberships: { "a-primary": "left" }, projectMemberships: {} });
+    await renderSidebar();
+    expect(rows()).toHaveLength(0);
   });
 
   it("keeps terminated agents out and does not create a chat when a row is opened", async () => {

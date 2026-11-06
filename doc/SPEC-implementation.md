@@ -2875,8 +2875,9 @@ artifacts, permissions, or runs. Local-trusted development uses the existing sha
 `local-board` identity, explicitly identified in Settings. Anonymous and agent actors
 cannot read or update this personal choice.
 
-The Coordinator sidebar's Agents section lists only agents with role `ceo` or
-`pm`, alphabetically, excluding terminated agents, process service accounts and
+The Coordinator sidebar's Agents section lists the person's company-scoped
+primary agent (regardless of role) alongside agents with role `ceo` or `pm`,
+alphabetically, excluding terminated agents, process service accounts and
 agents the person has left. Paused PMs remain visible. There is no worker expansion
 control. Worker tasks still contribute to the parent PM's working indicator;
 this presentation filter does not change agent records, dispatch or task access.

@@ -27,6 +27,7 @@ import { Flyout, FlyoutContent, FlyoutTrigger, FlyoutAppearanceProvider } from "
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { StatusIcon } from "./StatusIcon";
+import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 
 const moreDestinations = [
   { label: "Search", to: "/search", icon: Search },
@@ -82,6 +83,7 @@ async function listOpenWork(companyId: string): Promise<AgentActivityIssue[]> {
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
+  const primaryAgentId = usePrimaryAgentPresentation(companyId)?.primaryAgentId;
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -124,18 +126,18 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     return ids;
   }, [openWork.data, liveRuns.data, chats.data]);
   const activityFailed = liveRuns.isError || openWork.isError;
-  // Keep the navigation focused on the CEO and project PMs. Worker activity
+  // Keep the navigation focused on the person's primary agent, CEO and PMs. Worker activity
   // still contributes to their parent task's working indicator above.
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
     return (agents.data ?? [])
       // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
       .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
-        && (agent.role === "ceo" || agent.role === "pm")
+        && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm")
         && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
       .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
       .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), working: workingAgentIds.has(agent.id) }));
-  }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess, workingAgentIds]);
+  }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId, workingAgentIds]);
   const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
   const agentsFailed = agents.isError;
   const agentsLoading = agents.isPending && agents.fetchStatus === "fetching";
