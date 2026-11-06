@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { isPendingExecutionReviewForAgent } from "./issue-execution-policy.js";
 
 /**
  * The binding every workspace call site consumes. A `project_pm` binding is
@@ -167,6 +168,8 @@ export type ProjectPmIssueFacts = {
   projectId: string | null;
   parentId: string | null;
   assigneeAgentId: string | null;
+  status?: string;
+  executionState?: unknown;
 };
 
 export type ProjectPmRoleDecision =
@@ -195,7 +198,7 @@ export function resolveProjectPmRole(input: {
       message: `Issue ${issue.id} is outside the PM agent's project; project PM agents only work on issues of project ${input.binding.projectId}.`,
     };
   }
-  if (issue.parentId && issue.assigneeAgentId === input.agentId) return { outcome: "role", role: "worker" };
+  if (issue.parentId && issue.assigneeAgentId === input.agentId && !isPendingExecutionReviewForAgent(issue, input.agentId)) return { outcome: "role", role: "worker" };
   return { outcome: "role", role: "pm" };
 }
 
@@ -238,6 +241,8 @@ export async function loadProjectPmIssueFacts(db: Db, companyId: string, issueId
     projectId: issues.projectId,
     parentId: issues.parentId,
     assigneeAgentId: issues.assigneeAgentId,
+    status: issues.status,
+    executionState: issues.executionState,
   }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
   return issue ?? "missing";
 }

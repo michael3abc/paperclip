@@ -65,6 +65,8 @@ export async function loadProjectPmRoleCapacity(db: Db, input: {
         projectId: issues.projectId,
         parentId: issues.parentId,
         assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+        executionState: issues.executionState,
       })
       .from(issues)
       .where(and(eq(issues.companyId, agent.companyId), inArray(issues.id, issueIds)));

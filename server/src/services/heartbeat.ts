@@ -439,6 +439,7 @@ import {
 
 import {
   parseIssueExecutionState,
+  isPendingExecutionReviewForAgent,
 } from "./issue-execution-policy.js";
 import {
   issueTreeControlService,
@@ -2270,7 +2271,7 @@ export function heartbeatService(
       }
       const wakeCommentId = deriveCommentId(context, null);
       let issueAssigneeOverrides =
-        issueContext && issueContext.assigneeAgentId === agent.id
+        issueContext && issueContext.assigneeAgentId === agent.id && !isPendingExecutionReviewForAgent(issueContext, agent.id)
           ? parseIssueAssigneeAdapterOverrides(
               issueContext.assigneeAdapterOverrides,
             )

@@ -419,6 +419,15 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+/** Stage assignment grants review work, not the original worker's runtime. */
+export function isPendingExecutionReviewForAgent(issue: { status?: string; executionState?: unknown }, agentId: string): boolean {
+  if (issue.status !== "in_review") return false;
+  const state = parseIssueExecutionState(issue.executionState);
+  return state?.status === "pending"
+    && state.currentParticipant?.type === "agent"
+    && state.currentParticipant.agentId === agentId;
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };

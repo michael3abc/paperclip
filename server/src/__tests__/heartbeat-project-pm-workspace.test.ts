@@ -10,6 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { heartbeatService } from "../services/heartbeat.ts";
 import { resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
 vi.mock("../adapters/index.js", () => ({
@@ -119,6 +120,33 @@ suite("project PM role and workspace at claim", () => {
 
     const timerRun = await runToEnd(pm.agentId, {});
     expect(timerRun.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, issueId: null });
+  }, 60_000);
+
+  it.each(["review", "approval"] as const)("keeps a %s stage in the PM home and restores worker overrides after revision", async (type) => {
+    const pm = await seedPm();
+    const workerId = randomUUID(), childId = randomUUID();
+    await db.update(agents).set({ adapterConfig: { cwd: pm.agentHome, model: "pm-model", modelReasoningEffort: "high" } }).where(eq(agents.id, pm.agentId));
+    await db.insert(agents).values({ id: workerId, companyId: pm.companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: { model: "default-worker-model" } });
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ type, participants: [{ type: "agent", agentId: pm.agentId }] }] })!;
+    const overrides = { useProjectWorkspace: true, adapterConfig: { cwd: pm.workerRoot, model: "task-worker-model", modelReasoningEffort: "xhigh" } };
+    const transition = applyIssueExecutionPolicyTransition({ issue: { status: "in_progress", assigneeAgentId: workerId }, policy,
+      requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: workerId }, commentBody: "Deliver the tested result" });
+    await db.insert(issues).values({ id: childId, companyId: pm.companyId, projectId: pm.projectId, parentId: pm.inboxIssueId,
+      title: "Review the worker result", assigneeAgentId: workerId, status: "in_progress", executionPolicy: { ...policy },
+      assigneeAdapterOverrides: overrides, ...transition.patch });
+    const review = await runToEnd(pm.agentId, { issueId: childId });
+    expect({ status: review.run.status, error: review.run.error }).toEqual({ status: "succeeded", error: null });
+    expect(review.calls).toHaveLength(1);
+    expect(review.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome });
+    expect(review.calls[0]![0].config).toMatchObject({ cwd: pm.agentHome, model: "pm-model", modelReasoningEffort: "high" });
+    const [reviewed] = await db.select().from(issues).where(eq(issues.id, childId));
+    expect(reviewed!.assigneeAdapterOverrides).toEqual(overrides);
+    const revision = applyIssueExecutionPolicyTransition({ issue: reviewed!, policy, requestedStatus: "in_progress",
+      requestedAssigneePatch: {}, actor: { agentId: pm.agentId }, commentBody: "Revise the missing evidence" });
+    await db.update(issues).set(revision.patch).where(eq(issues.id, childId));
+    const work = await runToEnd(workerId, { issueId: childId });
+    expect({ status: work.run.status, error: work.run.error }).toEqual({ status: "succeeded", error: null });
+    expect(work.calls[0]![0].config).toMatchObject({ cwd: pm.workerRoot, model: "task-worker-model", modelReasoningEffort: "xhigh" });
   }, 60_000);
 
   it("delivers a native PM turn in its home on the worker host without probing that path locally", async () => {

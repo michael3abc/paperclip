@@ -70,6 +70,14 @@ In agent runtime settings, configure heartbeat policy:
 
 ## 3.3 Working directory and execution limits
 
+Native PMs can delegate child issues to fixed `claude_local` or `codex_local`
+worker agents, with one run per worker and task-specific model/effort overrides.
+An execution-policy review or approval assigned to the PM uses the PM's home,
+model and PM capacity slot. Worker overrides remain stored on the child and
+apply again when the PM requests changes and returns it to the original worker.
+Parents wait on child dependencies and resume through native completion wakes.
+This workflow does not require CC Pocket long sessions or delivery tools.
+
 Chat creation for a project agent binds the conversation to that same project
 before any message can dispatch. Opening an old unbound Chat with POST repairs
 only its missing project; GET is read-only and a conflicting project is rejected.

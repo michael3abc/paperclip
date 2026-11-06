@@ -5,6 +5,11 @@ summary: Agent lifecycle, configuration, keys, and heartbeat invocation
 
 Manage AI agents (employees) within a company.
 
+For a `project_pm` binding, a pending execution-policy review or approval is a
+PM turn even when the child is assigned to that PM. It uses the PM home and
+configuration; child `assigneeAdapterOverrides` are reserved for worker turns
+and survive a request for changes.
+
 The `project_pm` workspace binding accepts optional `workerHostId` for the
 `ccpocket_bridge` adapter. The referenced primary project workspace must have
 `sourceType: remote_managed`, the same `cwd` as `workerRoot`, and matching
