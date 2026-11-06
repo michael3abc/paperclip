@@ -1,11 +1,53 @@
 import { isUndispatchedCredentialWait } from "@paperclipai/adapter-utils/ssh-in-place";
 import { readProcessStartedAt } from "./hot-restart.js";
-import { runUsedConversationAdapter } from "./conversation-continuation.js";
+import { claimedAdapterType, runUsedConversationAdapter } from "./conversation-continuation.js";
 import { and, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
+
+/** Recognize the historical PM bounds rejection, never a generic terminal run. */
+async function isHistoricalProjectPmRejection(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+  if (run.status !== "cancelled" || run.runtimeMode !== "legacy" || run.executionStage !== "settled"
+    || run.errorCode !== "project_pm_out_of_bounds" || !run.startedAt || !run.finishedAt
+    || run.finishedAt < run.startedAt || !run.issueId || run.contextSnapshot?.issueId !== run.issueId
+    || !run.controllerBootId || run.controllerBootId === legacyControllerBootId
+    || claimedAdapterType(run) !== "claude_local"
+    || Object.keys(run.runnerProfileJson ?? {}).some(key => key !== "adapterDispatch")
+    || Object.keys(run.resultJson ?? {}).some(key => key !== "cancellation")
+    || run.lastOutputSeq !== 0 || run.logCompressed || run.nextEventSeq !== 4
+    || [run.processPid, run.processGroupId, run.processStartedAt, run.controllerLeaseExpiresAt,
+      run.sessionIdBefore, run.sessionIdAfter, run.externalRunId, run.runtimeModeResolvedAt,
+      run.runtimeModeResolverVersion, run.runtimeModeReason, run.runnerInstanceId,
+      run.nativeIssueId, run.nativeSessionId, run.nativePhase, run.nativePhaseUpdatedAt,
+      run.driverKind, run.driverVersion, run.completionContractId, run.completionContractSha256,
+      run.logStore, run.logRef, run.logBytes, run.logSha256, run.stdoutExcerpt, run.stderrExcerpt,
+      run.lastOutputAt, run.lastOutputStream, run.lastOutputBytes, run.usageJson,
+      run.exitCode, run.signal, run.executionControlDeadlineAt].some(value => value !== null)) return false;
+
+  // Bound the read and accept only the complete server-owned rejection trace.
+  // Any provider/source/dispatch event, missing event, or extra event keeps Stop pending.
+  const events = await db.select().from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+  )).orderBy(heartbeatRunEvents.seq).limit(4);
+  if (events.length !== 3 || events.some((event, index) => event.agentId !== run.agentId
+    || event.seq !== index + 1 || event.eventType !== "lifecycle" || event.stream !== "system"
+    || [event.sourceEventId, event.sourceInstanceId, event.sourceSeq, event.sourcePayloadSha256,
+      event.protocolSchemaVersion].some(value => value !== null))) return false;
+  const [rejection, recovery, measurement] = events;
+  return rejection!.level === "warn" && rejection!.message === run.error
+    && rejection!.payload?.errorCode === run.errorCode && rejection!.payload?.issueId === run.issueId
+    && Object.keys(rejection!.payload).length === 2
+    && recovery!.level === "warn" && recovery!.payload?.cause === "legacy_execution_requires_reconciliation"
+    && recovery!.payload?.replay === "blocked" && recovery!.payload?.automaticRecovery === "preserve_without_replay_v1"
+    && typeof recovery!.payload?.recoveryActionId === "string" && Object.keys(recovery!.payload).length === 4
+    && measurement!.level === "info" && measurement!.message === "task.run.measured"
+    && measurement!.payload?.phase === "task.run.measured" && measurement!.payload?.outcome === "cancelled"
+    && measurement!.payload?.durableSettlement === true && typeof measurement!.payload?.durationMs === "number"
+    && Object.keys(measurement!.payload).length === 4;
+}
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], scope?: { runIds: string[] }) {
@@ -73,6 +115,8 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], sco
     if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId &&
         (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged" &&
         !(run.executionStage === "settled" && !await runUsedConversationAdapter(db, run)) &&
+        !(!runLeases.length && !coordinators.some(row => row.runId === run.id)
+          && await isHistoricalProjectPmRejection(db, run)) &&
         !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
   }
   // Release an expired owner only after its cancelled execution has stop proof.

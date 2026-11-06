@@ -322,6 +322,17 @@ Account-identity checks continue to reject incompatible execution; preserving
 cleanup obligations does not authorize a new provider turn or repair historical
 state that was already overwritten.
 
+Agent Stop also recognizes the historical `claude_local` project-PM bounds
+rejection before provider dispatch. This narrow proof requires a settled,
+cancelled `project_pm_out_of_bounds` run from a different controller boot, no
+controller lease, process, session, runtime, output, environment lease or
+finalizer, and the complete three-event server trace: the matching issue-bound
+rejection, no-replay recovery notice, and durable cancelled-run measurement.
+Any source, provider, dispatch or additional event retains the stop hold. The
+recognizer does not modify the old run, fabricate a provider acknowledgement,
+resolve task recovery or replay work. An already-requested agent Resume may
+finish through the existing lifecycle worker once this proof satisfies Stop.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.
