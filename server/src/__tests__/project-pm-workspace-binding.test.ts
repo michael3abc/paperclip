@@ -42,12 +42,12 @@ describe("project_pm binding schema and role table", () => {
 
   it("parses project_pm with defaults and keeps fixed unchanged", () => {
     expect(agentRuntimeConfigSchema.parse({ workspaceBinding: base }).workspaceBinding).toEqual({
-      ...base, workerIsolation: "shared", workerSlots: 2,
+      ...base, workerIsolation: "shared", workerSlots: 0,
     });
     expect(agentRuntimeConfigSchema.parse({ workspaceBinding: { mode: "fixed", cwd: "/projects/app" } }).workspaceBinding)
       .toEqual({ mode: "fixed", cwd: "/projects/app" });
     for (const value of [
-      { ...base, workerSlots: 0 }, { ...base, workerSlots: 5 }, { ...base, workerSlots: 1.5 },
+      { ...base, workerSlots: -1 }, { ...base, workerSlots: 5 }, { ...base, workerSlots: 1.5 },
       { ...base, workerRoot: "relative" }, { ...base, projectId: "not-a-uuid" }, { ...base, agentHome: "relative" },
       { ...base, workerIsolation: "clone" }, { ...base, extra: true }, { ...base, inboxIssueId: "x" },
     ]) {
@@ -57,7 +57,7 @@ describe("project_pm binding schema and role table", () => {
 
   it("resolves each row of the role table", () => {
     const agentId = randomUUID();
-    const binding = { projectId: PROJECT_ID };
+    const binding = { projectId: PROJECT_ID, workerSlots: 2 };
     const issue = (patch: Partial<{ projectId: string | null; parentId: string | null; assigneeAgentId: string | null }>) =>
       ({ id: randomUUID(), projectId: PROJECT_ID, parentId: null, assigneeAgentId: agentId, ...patch });
     expect(resolveProjectPmRole({ binding, agentId, issue: null })).toEqual({ outcome: "role", role: "pm" });
@@ -73,8 +73,8 @@ describe("project_pm binding schema and role table", () => {
 
   it("accepts other projects' issues only for an allowCrossProject binding", () => {
     const agentId = randomUUID();
-    const strict = { projectId: PROJECT_ID };
-    const open = { projectId: PROJECT_ID, allowCrossProject: true };
+    const strict = { projectId: PROJECT_ID, workerSlots: 2 };
+    const open = { projectId: PROJECT_ID, workerSlots: 2, allowCrossProject: true };
     const other = (patch: Partial<{ projectId: string | null; parentId: string | null }> = {}) =>
       ({ id: randomUUID(), projectId: randomUUID(), parentId: null, assigneeAgentId: agentId, ...patch });
     expect(resolveProjectPmRole({ binding: strict, agentId, issue: other() }).outcome).toBe("out_of_bounds");
@@ -83,6 +83,19 @@ describe("project_pm binding schema and role table", () => {
     expect(resolveProjectPmRole({ binding: open, agentId, issue: other({ parentId: randomUUID() }) })).toEqual({ outcome: "role", role: "worker" });
     // Issues without a project have no workspace for a worker, so they stay rejected.
     expect(resolveProjectPmRole({ binding: open, agentId, issue: other({ projectId: null }) }).outcome).toBe("out_of_bounds");
+  });
+
+  it("prohibits implementation and stale worker contexts with zero worker slots", () => {
+    const agentId = randomUUID();
+    const binding = { ...base, agentHome: "/home/pm", workerIsolation: "shared" as const, workerSlots: 0, inboxIssueId: null };
+    const child = { id: randomUUID(), projectId: PROJECT_ID, parentId: randomUUID(), assigneeAgentId: agentId };
+    expect(resolveProjectPmRole({ binding, agentId, issue: child })).toMatchObject({ outcome: "out_of_bounds", message: expect.stringContaining("separate worker") });
+    expect(resolveProjectPmRole({ binding, agentId, issue: { ...child, parentId: null } })).toEqual({ outcome: "role", role: "pm" });
+    expect(resolveProjectPmRole({ binding, agentId, issue: { ...child, assigneeAgentId: randomUUID() } })).toEqual({ outcome: "role", role: "pm" });
+    const oldContext = buildPaperclipPmWorkspaceContext({ ...binding, workerSlots: 1 }, "worker", child.id);
+    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: oldContext })).toThrow(/separate worker/);
+    const pmContext = buildPaperclipPmWorkspaceContext(binding, "pm", null);
+    expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: pmContext })?.cwd).toBe(binding.agentHome);
   });
 
   it("parses allowCrossProject as an optional boolean and rejects other values", () => {
@@ -334,7 +347,7 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     const [stored] = await db.select().from(agents).where(eq(agents.id, s.agent.id));
     expect(stored!.runtimeConfig.workspaceBinding).toEqual({
       ...binding, agentHome: path.join(tmpRoot, "home", "instances", "vitest", "workspaces", s.agent.id),
-      workerIsolation: "shared", workerSlots: 2, inboxIssueId: null,
+      workerIsolation: "shared", workerSlots: 0, inboxIssueId: null,
     });
 
     const inbox = await s.issue({ assigneeAgentId: null });
@@ -371,6 +384,10 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
 
     // The PM agent itself cannot whitelist itself, with or without other changes.
     const self = appFor({ type: "agent", agentId: s.agent.id, companyId: s.companyId, source: "agent_jwt" } as Express.Request["actor"]);
+    const worktreePolicy = await request(self).patch(`/api/agents/${s.agent.id}`)
+      .send({ runtimeConfig: { workspaceBinding: await storedBinding(), requireTaskWorktree: true } });
+    expect(worktreePolicy.status).toBe(403);
+    expect(worktreePolicy.body.error).toMatch(/Only an operator can change the task worktree requirement/);
     const denied = await request(self).patch(`/api/agents/${s.agent.id}`)
       .send({ runtimeConfig: { workspaceBinding: { ...(await storedBinding()), allowCrossProject: true } } });
     expect(denied.status).toBe(403);

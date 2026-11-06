@@ -324,6 +324,24 @@ Invariants:
 - no cycles in reporting tree
 - `terminated` agents cannot be resumed
 
+Project PM workspace bindings default to `workerSlots: 0`: one coordination/review
+run, no implementation runs. A child assigned directly to that PM outside its
+execution-policy review/approval stage is rejected before adapter execution.
+Previously claimed worker roles cannot bypass a current zero-slot policy. Positive
+slots (1–4) must be explicitly configured to allow a dual-purpose agent.
+
+Worker agent identity is company-scoped, not project-scoped. Projects may share one
+`claude_local` and one `codex_local` agent, with independent concurrency limits
+(for example 20 each). Each issue retains its project, parent, reviewer, model/effort
+overrides, task session and execution workspace. Concurrent implementation tasks
+use separate Git worktrees; revision resumes the same task/session/worktree.
+Missing Git source or unavailable models must fail explicitly. Never change a
+shared worker's global model/cwd for one task or inherit worker overrides in PM review.
+`runtimeConfig.requireTaskWorktree=true` makes that worker reject non-task,
+project-less and non-isolated/Git execution configurations before preparing its
+workspace. Project policy supplies an isolated Git worktree with issue overrides
+disabled; unavailable sources do not fall back to the agent home.
+
 Agent configuration also has a versioned YAML representation in the Advanced
 tab, including instruction text, skills, tools, channels, permissions, secrets,
 API key operations, and revision restore. Resource saves use their owning APIs

@@ -106,6 +106,17 @@ work records. Optional conversation guidance must retain the same action permiss
 The Coordinator sidebar's Agents section is limited to `ceo` and `pm` roles;
 do not add a worker expansion control or change dispatch to implement this filter.
 
+Project PMs can be restricted to coordination and review with
+`runtimeConfig.workspaceBinding.workerSlots=0` (the default for new bindings).
+Reject implementation children assigned to such a PM before adapter dispatch,
+including stale worker-role contexts; preserve execution-policy reviews in the PM
+home with the PM's own model. A shared Claude or Codex worker may serve multiple
+projects: use issue-scoped model settings, task sessions and isolated Git worktrees,
+and route review to the issuing project's PM. Never resume an Owner replanning
+hold when changing this topology or reuse another task's session/worktree.
+Shared native workers set `runtimeConfig.requireTaskWorktree=true`; reject missing
+project tasks and shared-directory overrides before workspace preparation.
+
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
 - `packages/db` schema and exports

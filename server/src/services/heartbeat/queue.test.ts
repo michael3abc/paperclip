@@ -81,6 +81,9 @@ describe("heartbeat queue module boundary", () => {
     // A project PM runs one PM turn beside its worker slots; Dot stays single-turn.
     expect(queue.parseHeartbeatPolicy({ ...agent, adapterConfig: { provider: "codex" }, runtimeConfig: { heartbeat: { maxConcurrentRuns: 20 }, workspaceBinding } })).toMatchObject({ maxConcurrentRuns: 4 });
     expect(queue.parseHeartbeatPolicy({ ...agent, runtimeConfig: { workspaceBinding } })).toMatchObject({ maxConcurrentRuns: 1 });
+    expect(queue.parseHeartbeatPolicy({ ...agent, adapterType: "claude_local", runtimeConfig: {
+      heartbeat: { maxConcurrentRuns: 20 }, workspaceBinding: { ...workspaceBinding, workerSlots: 0 },
+    } })).toMatchObject({ maxConcurrentRuns: 1 });
     expect(database.access).not.toHaveBeenCalled();
   });
 });

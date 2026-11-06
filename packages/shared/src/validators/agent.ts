@@ -86,9 +86,9 @@ function remotePosixPathSchema(message: string) {
 }
 
 export const PROJECT_PM_WORKER_ISOLATIONS = ["shared", "worktree"] as const;
-export const PROJECT_PM_MIN_WORKER_SLOTS = 1;
+export const PROJECT_PM_MIN_WORKER_SLOTS = 0;
 export const PROJECT_PM_MAX_WORKER_SLOTS = 4;
-export const PROJECT_PM_DEFAULT_WORKER_SLOTS = 2;
+export const PROJECT_PM_DEFAULT_WORKER_SLOTS = 0;
 
 export const agentFixedWorkspaceBindingSchema = z.object({
   mode: z.literal("fixed"),
@@ -97,8 +97,8 @@ export const agentFixedWorkspaceBindingSchema = z.object({
 
 /**
  * A fixed project PM: PM turns run in the agent home (or `pmHome` on the
- * worker host) with one shared session, worker turns (child issues assigned to
- * the agent) run in the project root.
+ * worker host) with one shared session. Zero worker slots restrict the agent to
+ * coordination and review; positive slots explicitly permit child execution.
  * `agentHome` may be omitted on write; the server fills the canonical value.
  */
 export const agentProjectPmWorkspaceBindingSchema = z.object({
@@ -138,6 +138,8 @@ export type CreatePmIntake = z.infer<typeof createPmIntakeSchema>;
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
   workspaceBinding: agentWorkspaceBindingSchema.optional(),
+  /** Shared workers must execute a project task in its isolated Git worktree. */
+  requireTaskWorktree: z.boolean().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

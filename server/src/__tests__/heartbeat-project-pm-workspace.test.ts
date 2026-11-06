@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { eq } from "drizzle-orm";
-import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,7 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
 vi.mock("../adapters/index.js", () => ({
@@ -51,7 +52,7 @@ suite("project PM role and workspace at claim", () => {
     execute.mockClear();
   });
 
-  async function seedPm(options: { allowCrossProject?: boolean } = {}) {
+  async function seedPm(options: { allowCrossProject?: boolean; workerSlots?: number } = {}) {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID();
     const workerRoot = path.join(root, companyId, "repo");
     await mkdir(workerRoot, { recursive: true });
@@ -65,7 +66,7 @@ suite("project PM role and workspace at claim", () => {
     await db.insert(issues).values({ id: inboxIssueId, companyId, projectId, title: "PM inbox", status: "backlog", assigneeAgentId: agentId });
     const binding = await resolveProjectPmBinding(db, {
       companyId, agentId, validateInbox: true,
-      binding: { mode: "project_pm", projectId, workerRoot, workerIsolation: "shared", workerSlots: 2, inboxIssueId, ...(options.allowCrossProject ? { allowCrossProject: true } : {}) },
+      binding: { mode: "project_pm", projectId, workerRoot, workerIsolation: "shared", workerSlots: options.workerSlots ?? 2, inboxIssueId, ...(options.allowCrossProject ? { allowCrossProject: true } : {}) },
     });
     await db.update(agents).set({ runtimeConfig: { workspaceBinding: binding } }).where(eq(agents.id, agentId));
     return { companyId, projectId, agentId, workerRoot, inboxIssueId, agentHome: binding.agentHome };
@@ -87,7 +88,7 @@ suite("project PM role and workspace at claim", () => {
     expect(run).not.toBeNull();
     await vi.waitFor(async () => {
       const latest = await heartbeat.getRun(run!.id);
-      expect(["succeeded", "failed", "cancelled", "timed_out"]).toContain(latest?.status);
+      expect(["succeeded", "failed", "cancelled", "timed_out"], JSON.stringify({ status: latest?.status, error: latest?.error, errorCode: latest?.errorCode, retryReason: latest?.scheduledRetryReason, retryAt: latest?.scheduledRetryAt, context: latest?.contextSnapshot, result: latest?.resultJson })).toContain(latest?.status);
     }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     return { run: (await heartbeat.getRun(run!.id))!, calls: execute.mock.calls.filter(([input]) => input.runId === run!.id) };
@@ -122,8 +123,91 @@ suite("project PM role and workspace at claim", () => {
     expect(timerRun.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, issueId: null });
   }, 60_000);
 
+  it("rejects a coordinator-only PM's assigned child before calling the adapter", async () => {
+    const pm = await seedPm({ workerSlots: 0 });
+    const childId = randomUUID();
+    await db.insert(issues).values({ id: childId, companyId: pm.companyId, projectId: pm.projectId,
+      parentId: pm.inboxIssueId, title: "Implementation belongs to a separate worker", status: "todo", assigneeAgentId: pm.agentId });
+    const rejected = await runToEnd(pm.agentId, { issueId: childId });
+    expect(rejected.run).toMatchObject({ status: "cancelled", errorCode: "project_pm_out_of_bounds" });
+    expect(rejected.run.error).toContain("separate worker");
+    expect(rejected.calls).toHaveLength(0);
+    const planning = await runToEnd(pm.agentId, { issueId: pm.inboxIssueId });
+    expect(planning.run.status).toBe("succeeded");
+    expect(planning.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, workerSlots: 0 });
+  }, 60_000);
+
+  it("runs one shared worker across projects in separate task worktrees with task-specific models", async () => {
+    const pm = await seedPm({ workerSlots: 0 });
+    const other = await seedOtherProject(pm.companyId);
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    for (const [projectId, cwd] of [[pm.projectId, pm.workerRoot], [other.otherProjectId, other.otherRoot]]) {
+      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "Seed"], { cwd });
+      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace", allowIssueOverride: false,
+        workspaceStrategy: { type: "git_worktree", baseRef: "main", worktreeParentDir: path.join(root, "task-worktrees", projectId!) } } }).where(eq(projects.id, projectId!));
+    }
+    const planning = await runToEnd(pm.agentId, { issueId: pm.inboxIssueId });
+    expect(planning.run.status).toBe("succeeded");
+    expect(planning.calls[0]![0].context.paperclipWorkspace.cwd).toBe(pm.agentHome);
+    const workerId = randomUUID();
+    await db.insert(agents).values({ id: workerId, companyId: pm.companyId, name: "Shared worker", role: "engineer", status: "idle",
+      adapterType: "codex_local", adapterConfig: { model: "default-model" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 20 }, requireTaskWorktree: true } });
+    const taskIds = [randomUUID(), randomUUID(), randomUUID()];
+    const sessionIds = new Map(taskIds.map(id => [id, randomUUID()]));
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent", agentId: pm.agentId }] }] })!;
+    for (const [i, id] of taskIds.entries()) await db.insert(issues).values({ id, companyId: pm.companyId,
+      projectId: i === 2 ? other.otherProjectId : pm.projectId, parentId: i === 2 ? null : pm.inboxIssueId,
+      title: `Independent task ${i}`, status: "todo", assigneeAgentId: workerId,
+      executionPolicy: { ...policy },
+      assigneeAdapterOverrides: { adapterConfig: { model: `task-model-${i}`, modelReasoningEffort: "high" } } });
+    async function deliver(input: any) {
+      const [issue] = await db.select().from(issues).where(eq(issues.id, input.context.issueId));
+      const delivery = applyIssueExecutionPolicyTransition({ issue: issue!, policy, requestedStatus: "done",
+        requestedAssigneePatch: {}, actor: { agentId: workerId }, commentBody: "Worktree output ready for PM review" });
+      await db.update(issues).set(delivery.patch).where(eq(issues.id, issue!.id));
+      return { exitCode: 0, signal: null, timedOut: false, sessionId: sessionIds.get(issue!.id)! };
+    }
+    const gates = new Map<string, () => void>();
+    execute.mockImplementation(async (input: any) => {
+      await writeFile(path.join(input.context.paperclipWorkspace.cwd, "task-output.txt"), input.config.model);
+      await new Promise<void>(resolve => gates.set(input.runId, resolve));
+      return deliver(input);
+    });
+    try {
+      const runs = [];
+      for (const id of taskIds) runs.push((await heartbeat.wakeup(workerId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: id } }))!);
+      await vi.waitFor(() => expect(gates.size).toBe(3), { timeout: 25_000 });
+      const calls = runs.map(run => execute.mock.calls.find(([input]) => input.runId === run.id)![0]);
+      expect(new Set(calls.map(input => input.context.paperclipWorkspace.cwd)).size).toBe(3);
+      for (const [i, input] of calls.entries()) {
+        expect(input.config.model).toBe(`task-model-${i}`);
+        const cwd = input.context.paperclipWorkspace.cwd;
+        expect(await readFile(path.join(cwd, "task-output.txt"), "utf8")).toBe(`task-model-${i}`);
+        expect(cwd).not.toBe(pm.workerRoot);
+        expect(cwd).not.toBe(other.otherRoot);
+        expect(execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, encoding: "utf8" }).trim()).toBe("true");
+      }
+      for (const release of gates.values()) release();
+      execute.mockImplementation(deliver);
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const [submitted] = await db.select().from(issues).where(eq(issues.id, taskIds[0]!));
+      const returned = applyIssueExecutionPolicyTransition({ issue: submitted!, policy, requestedStatus: "in_progress",
+        requestedAssigneePatch: {}, actor: { agentId: pm.agentId }, commentBody: "Revise the same output" });
+      await db.update(issues).set(returned.patch).where(eq(issues.id, taskIds[0]!));
+      const revision = await runToEnd(workerId, { issueId: taskIds[0] });
+      expect(revision.run.status).toBe("succeeded");
+      expect(revision.calls[0]![0].context.paperclipWorkspace.cwd).toBe(calls[0].context.paperclipWorkspace.cwd);
+      expect(revision.calls[0]![0].config.model).toBe("task-model-0");
+      expect(revision.calls[0]![0].runtime.sessionId).toBe(sessionIds.get(taskIds[0]!));
+    } finally {
+      execute.mockImplementation(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+      for (const release of gates.values()) release();
+    }
+  }, 60_000);
+
   it.each(["review", "approval"] as const)("keeps a %s stage in the PM home and restores worker overrides after revision", async (type) => {
-    const pm = await seedPm();
+    const pm = await seedPm({ workerSlots: 0 });
     const workerId = randomUUID(), childId = randomUUID();
     await db.update(agents).set({ adapterConfig: { cwd: pm.agentHome, model: "pm-model", modelReasoningEffort: "high" } }).where(eq(agents.id, pm.agentId));
     await db.insert(agents).values({ id: workerId, companyId: pm.companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: { model: "default-worker-model" } });

@@ -127,6 +127,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
+  it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("refuses a shared worker without a task worktree: %s", async kind => {
+    const { input } = await fixture(true);
+    input.agent.runtimeConfig = { requireTaskWorktree: true };
+    if (kind === "no_task") input.task.issueId = null;
+    if (kind === "no_project") input.task.issueRef!.projectId = null;
+    if (kind === "shared_mode") input.policy.effectiveExecutionWorkspaceMode = "shared_workspace";
+    if (kind === "shared_strategy") input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/requires a project task with an isolated Git worktree/);
+  });
+
   it.each([false, true])("places Cursor Cloud in its provider API without a Computer under managed-only policy (ephemeral: %s)", async ephemeral => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));
     const { input, source, issue, run } = await fixture();

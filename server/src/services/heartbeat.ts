@@ -2477,7 +2477,9 @@ export function heartbeatService(
       const parsedProjectExecutionWorkspacePolicy = workspacePolicyContext?.hasWorkspace
         ? await effectiveProjectWorkspacePolicy(db, agent.companyId, workspacePolicyContext.executionWorkspacePolicy, workspacePolicyContext.hasGitSource)
         : parseProjectExecutionWorkspacePolicy(workspacePolicyContext?.executionWorkspacePolicy);
-      const projectExecutionWorkspacePolicy =
+      // A PM coordinates/reviews in its own home; task/project workspace policy
+      // belongs to the implementation worker, including when review reassigns it.
+      const projectExecutionWorkspacePolicy = projectPmWorkspace?.role === "pm" ? null :
         applyDefaultIsolatedExecutionWorkspacePolicy({
           projectPolicy: gateProjectExecutionWorkspacePolicy(
             parsedProjectExecutionWorkspacePolicy,
@@ -2489,7 +2491,7 @@ export function heartbeatService(
           hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
         });
       const runtimeWorkspaceSelectionEnabled = !externalProvider && (freshWorkspace?.mode === "fresh_isolated_workspace" || taskWorkspaceRuntimeSelectionEnabled({ legacyUiEnabled: isolatedWorkspacesEnabled || Boolean(projectExecutionWorkspacePolicy?.storageProviderPluginId), hasTypedSelection: Boolean(taskWorkspaceIntentRow?.intent), hasBinding: Boolean(issueContext?.executionWorkspaceId) }));
-      const parsedIssueExecutionWorkspaceSettings =
+      const parsedIssueExecutionWorkspaceSettings = projectPmWorkspace?.role === "pm" ? null :
         parseIssueExecutionWorkspaceSettings(
           issueContext?.executionWorkspaceSettings,
         );

@@ -89,7 +89,7 @@ export function readWorkspaceBinding(
   const parsed = agentWorkspaceBindingSchema.safeParse(runtimeConfig.workspaceBinding);
   if (!parsed.success) {
     if (record(runtimeConfig.workspaceBinding).mode === "project_pm") {
-      projectPmConflict("invalid", "The project PM binding is invalid. Reconfigure it with an absolute worker root, a project and 1-4 worker slots.");
+      projectPmConflict("invalid", "The project PM binding is invalid. Reconfigure it with an absolute worker root, a project and 0-4 worker slots.");
     }
     workspaceBindingConflict("invalid", "Fixed working directory must be an absolute path with mode=fixed.");
   }
@@ -99,6 +99,9 @@ export function readWorkspaceBinding(
     projectPmConflict("context_missing", "The project PM role was not resolved for this run.");
   }
   const binding = parsed.data;
+  if (binding.workerSlots === 0 && pmContext.role === "worker") {
+    projectPmConflict("worker_disabled", "This PM only coordinates and reviews. Assign implementation to a separate worker agent.");
+  }
   // A whitelisted PM's worker runs in the issue project's workspace, which the
   // server resolved at claim; the context then names that project and root.
   const crossProjectWorker = binding.allowCrossProject === true && pmContext.role === "worker";
@@ -185,7 +188,7 @@ export type ProjectPmRoleDecision =
  * because a worker would have no workspace).
  */
 export function resolveProjectPmRole(input: {
-  binding: Pick<ProjectPmWorkspaceBinding, "projectId" | "allowCrossProject">;
+  binding: Pick<ProjectPmWorkspaceBinding, "projectId" | "allowCrossProject" | "workerSlots">;
   agentId: string;
   issue: ProjectPmIssueFacts | null;
 }): ProjectPmRoleDecision {
@@ -198,7 +201,13 @@ export function resolveProjectPmRole(input: {
       message: `Issue ${issue.id} is outside the PM agent's project; project PM agents only work on issues of project ${input.binding.projectId}.`,
     };
   }
-  if (issue.parentId && issue.assigneeAgentId === input.agentId && !isPendingExecutionReviewForAgent(issue, input.agentId)) return { outcome: "role", role: "worker" };
+  if (issue.parentId && issue.assigneeAgentId === input.agentId && !isPendingExecutionReviewForAgent(issue, input.agentId)) {
+    if (input.binding.workerSlots === 0) return {
+      outcome: "out_of_bounds",
+      message: "This PM only coordinates and reviews. Assign implementation to a separate worker agent.",
+    };
+    return { outcome: "role", role: "worker" };
+  }
   return { outcome: "role", role: "pm" };
 }
 
@@ -433,7 +442,7 @@ export async function resolveProjectPmRunWorkspace(db: Db, input: {
   if (raw.mode !== "project_pm") return { outcome: "none" };
   const parsed = agentProjectPmWorkspaceBindingSchema.safeParse(raw);
   if (!parsed.success) {
-    projectPmConflict("invalid", "The project PM binding is invalid. Reconfigure it with an absolute worker root, a project and 1-4 worker slots.");
+    projectPmConflict("invalid", "The project PM binding is invalid. Reconfigure it with an absolute worker root, a project and 0-4 worker slots.");
   }
   const binding = await resolveProjectPmBinding(db, {
     companyId: input.agent.companyId,
@@ -449,5 +458,9 @@ export async function resolveProjectPmRunWorkspace(db: Db, input: {
   const decision = resolveProjectPmRole({ binding, agentId: input.agent.id, issue });
   if (decision.outcome === "out_of_bounds") return { outcome: "out_of_bounds", issueId, message: decision.message };
   const role = input.claimedRole ?? decision.role;
+  if (role === "worker" && binding.workerSlots === 0) return {
+    outcome: "out_of_bounds", issueId,
+    message: "This PM only coordinates and reviews. A previously claimed worker role is no longer permitted.",
+  };
   return { outcome: "workspace", workspace: await buildProjectPmRoleContext(db, { companyId: input.agent.companyId, binding, role, issue }) };
 }

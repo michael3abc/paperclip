@@ -209,6 +209,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     resolvedInstanceSettings,
   } = input.environment;
   const { mergedConfig, configSnapshot, secretManifest } = input.config;
+  if (agent.runtimeConfig?.requireTaskWorktree === true && (
+    !issueId || !issueRef?.projectId || fixedBinding || !runtimeWorkspaceSelectionEnabled ||
+    effectiveExecutionWorkspaceMode !== "isolated_workspace" ||
+    resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "git_worktree"
+  )) {
+    throw new WorkspaceValidationFailure(
+      "This shared worker requires a project task with an isolated Git worktree. Select the task's repository; shared directories and agent-home execution are not allowed.",
+      { reason: "shared_worker_requires_task_worktree" },
+    );
+  }
   const {
     requestedShouldReuseExisting,
     existingExecutionWorkspace,
@@ -219,6 +229,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     isDotRun,
     runOptions,
   } = input.reuse;
+  if (agent.runtimeConfig?.requireTaskWorktree === true && reusableExistingExecutionWorkspace &&
+      reusableExistingExecutionWorkspace.sourceIssueId !== issueId) {
+    throw new WorkspaceValidationFailure("A shared worker must reuse only this task's own worktree.",
+      { reason: "shared_worker_worktree_owner_mismatch" });
+  }
   // An ordinary clean task directory already has a new per-attempt identity.
   // It is not a repository source and must not pass through Git copy admission.
   const controllerOnly = isDotRun || providerApiPlacement !== null;
@@ -858,6 +873,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         }),
     },
   ));
+  if (agent.runtimeConfig?.requireTaskWorktree === true && (
+    executionWorkspace.strategy !== "git_worktree" || !executionWorkspace.worktreePath ||
+    executionWorkspace.cwd === executionWorkspaceBase.baseCwd
+  )) {
+    throw new WorkspaceValidationFailure("The shared worker did not obtain an isolated Git worktree; execution is refused.",
+      { reason: "shared_worker_worktree_not_realized" });
+  }
   if (!remoteAuthority && input.task.freshWorkspace?.mode === "fresh_isolated_workspace" && issueId) {
     const recoveredFiles = providerFresh ? providerFresh.recoverySnapshots.map(snapshot => ({
       operationId: snapshot.operationId, sourceRunId: snapshot.sourceRunId,

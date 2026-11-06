@@ -52,6 +52,7 @@ export interface AgentProjectPmWorkspaceBinding {
    */
   pmHome?: string;
   workerIsolation: ProjectPmWorkerIsolation;
+  /** Zero prohibits implementation runs; PM coordination/review still has one slot. */
   workerSlots: number;
   inboxIssueId?: string | null;
   /**
