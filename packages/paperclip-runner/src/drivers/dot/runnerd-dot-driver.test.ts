@@ -236,6 +236,10 @@ it.each(["local", "local pending finish", "custom local directory", "external la
       expect(options.recoverSemanticToolInput).toBeUndefined();
       await vi.waitFor(() => expect(settlements.get(finish.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
       expect(recoveredCompletion).toHaveBeenCalledOnce();
+      // The accepted completion tells the Dot what ends its turn; a chat reply does not.
+      expect(settlements.get(finish.requestId)).toMatchObject({
+        result: { accepted: true, feedback: expect.stringContaining("call paperclip_dot_finish") },
+      });
       expect(firstCompletion).toHaveBeenCalledOnce();
     }
     await send!(call);
