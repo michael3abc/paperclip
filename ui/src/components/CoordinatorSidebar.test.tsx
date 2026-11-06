@@ -10,7 +10,7 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } fro
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-type FixtureAgent = { id: string; name: string; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
+type FixtureAgent = { id: string; name: string; role: "ceo" | "pm" | "engineer"; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), liveRuns: vi.fn(), openWork: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
   chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string }>,
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
@@ -152,18 +152,19 @@ const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
 describe("Coordinator agents section", () => {
   const roster: FixtureAgent[] = [
-    { id: "a-zed", name: "Zed", urlKey: "zed", icon: "bot", status: "idle" },
-    { id: "a-amy", name: "amy", urlKey: "amy", icon: "bot", status: "running" },
-    { id: "a-old", name: "Retired", urlKey: "retired", status: "terminated" },
-    { id: "a-left", name: "Left", urlKey: "left", status: "idle" },
-    { id: "a-sp", name: "Space Name", urlKey: "space name", status: "idle" },
-    { id: "a-svc", name: "Delivery", urlKey: "delivery", status: "idle", adapterType: "process" },
-    { id: "a-ceo", name: "momo", urlKey: "momo", status: "idle", adapterType: "paperclip_runner" },
+    { id: "a-zed", name: "Zed", role: "pm", urlKey: "zed", icon: "bot", status: "idle" },
+    { id: "a-amy", name: "amy", role: "pm", urlKey: "amy", icon: "bot", status: "running" },
+    { id: "a-old", name: "Retired", role: "ceo", urlKey: "retired", status: "terminated" },
+    { id: "a-left", name: "Left", role: "pm", urlKey: "left", status: "idle" },
+    { id: "a-sp", name: "Space Name", role: "pm", urlKey: "space name", status: "paused" },
+    { id: "a-svc", name: "Delivery", role: "ceo", urlKey: "delivery", status: "idle", adapterType: "process" },
+    { id: "a-ceo", name: "momo", role: "ceo", urlKey: "momo", status: "idle", adapterType: "paperclip_runner" },
+    { id: "a-worker", name: "PM coding worker", role: "engineer", urlKey: "worker", status: "running" },
   ];
   const section = () => container.querySelector('.design-sidebar-agents');
   const rows = () => [...section()?.querySelectorAll("a") ?? []];
 
-  it("lists chat-eligible agents between More and Recents, alphabetically, linking to each agent's chat", async () => {
+  it("lists only CEO and PM roles between More and Recents, including paused PMs, with no worker expansion", async () => {
     fixture.agents = roster;
     fixture.listMemberships.mockResolvedValue({ agentMemberships: { "a-left": "left" }, projectMemberships: {} });
     fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", updatedAt: "2026-11-05T01:00:00Z" }];
@@ -174,6 +175,8 @@ describe("Coordinator agents section", () => {
     expect(rows().map(row => [row.textContent, row.getAttribute("href")])).toEqual([
       ["amy", "/chats/amy"], ["momo", "/chats/momo"], ["Space Name", `/chats/${encodeURIComponent("space name")}`], ["Zed", "/chats/zed"],
     ]);
+    expect(section()?.textContent).not.toContain("worker");
+    expect(section()?.querySelector('[aria-expanded]')).toBeNull();
     const more = container.querySelector('button[aria-label="More workspace pages"]')!;
     const recents = container.querySelector('[aria-label="Recents"]')!;
     expect(more.compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
@@ -226,15 +229,15 @@ describe("Coordinator agents section", () => {
       expect(byLabel("amy").querySelector(".sr-only")).toBeNull();
     });
 
-    it("outlines the agents above a running sub-task, not only its assignee", async () => {
+    it("outlines the PM above a running worker sub-task while keeping the worker hidden", async () => {
       fixture.agents = roster;
       fixture.openWork.mockResolvedValue([
         { id: "req", status: "blocked", assigneeAgentId: "a-amy", parentId: null },
-        { id: "child", status: "in_progress", assigneeAgentId: "a-zed", parentId: "req" },
+        { id: "child", status: "in_progress", assigneeAgentId: "a-worker", parentId: "req" },
         { id: "idle", status: "todo", assigneeAgentId: "a-ceo", parentId: null },
       ]);
       await renderSidebar();
-      expect(workingLabels().sort()).toEqual(["Zed", "amy"]);
+      expect(workingLabels()).toEqual(["amy"]);
       expect(fixture.openWork).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", status: expect.stringContaining("in_progress") }));
     });
 

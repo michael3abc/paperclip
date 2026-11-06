@@ -124,14 +124,14 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     return ids;
   }, [openWork.data, liveRuns.data, chats.data]);
   const activityFailed = liveRuns.isError || openWork.isError;
-  // Same eligibility as the classic Agents section: terminated agents and agents
-  // the person has left are omitted. A stable alphabetical order keeps the list
-  // predictable; Recents already carries the recency ordering.
+  // Keep the navigation focused on the CEO and project PMs. Worker activity
+  // still contributes to their parent task's working indicator above.
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
     return (agents.data ?? [])
       // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
       .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
+        && (agent.role === "ceo" || agent.role === "pm")
         && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
       .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
       .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), working: workingAgentIds.has(agent.id) }));

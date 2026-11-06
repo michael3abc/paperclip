@@ -2857,6 +2857,12 @@ artifacts, permissions, or runs. Local-trusted development uses the existing sha
 `local-board` identity, explicitly identified in Settings. Anonymous and agent actors
 cannot read or update this personal choice.
 
+The Coordinator sidebar's Agents section lists only agents with role `ceo` or
+`pm`, alphabetically, excluding terminated agents, process service accounts and
+agents the person has left. Paused PMs remain visible. There is no worker expansion
+control. Worker tasks still contribute to the parent PM's working indicator;
+this presentation filter does not change agent records, dispatch or task access.
+
 `GET /api/workspace-preferences/me` reads only the caller's choice.
 `PUT /api/companies/{companyId}/workspace-preferences/me` updates it with authorized
 company audit context; active viewers may update their own presentation. The preference

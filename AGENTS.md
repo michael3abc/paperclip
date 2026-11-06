@@ -103,6 +103,8 @@ Personal workspace presentation preferences are also instance-wide by user, with
 validated company membership supplying audit context. They never grant execution
 authority, change company capabilities or agent configuration, or rewrite canonical
 work records. Optional conversation guidance must retain the same action permissions.
+The Coordinator sidebar's Agents section is limited to `ceo` and `pm` roles;
+do not add a worker expansion control or change dispatch to implement this filter.
 
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
