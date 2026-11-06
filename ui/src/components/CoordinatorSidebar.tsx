@@ -135,7 +135,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
         && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm")
         && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
-      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
+      .sort((left, right) => Number(right.id === primaryAgentId) - Number(left.id === primaryAgentId)
+        || left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
       .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), working: workingAgentIds.has(agent.id) }));
   }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId, workingAgentIds]);
   const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];

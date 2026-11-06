@@ -195,7 +195,7 @@ describe("Coordinator agents section", () => {
     ];
     fixture.primaryAgentId = "a-ceo";
     await renderSidebar();
-    expect(rows().map(row => row.textContent)).toContain("momo");
+    expect(rows().map(row => row.textContent)).toEqual(["momo", "amy", "Left", "Space Name", "Zed"]);
     expect(section()?.textContent).not.toContain("Other general agent");
     expect(section()?.textContent).not.toContain("worker");
     expect(section()?.querySelector('[aria-expanded]')).toBeNull();

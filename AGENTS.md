@@ -106,6 +106,7 @@ work records. Optional conversation guidance must retain the same action permiss
 The Coordinator sidebar's Agents section includes the person's company-scoped
 primary agent alongside `ceo` and `pm` roles; preserve lifecycle, service-account
 and membership visibility restrictions regardless of primary selection.
+Pin the primary agent first and sort the remaining agents alphabetically.
 Do not add a worker expansion control or change dispatch to implement this filter.
 
 Project PMs can be restricted to coordination and review with
