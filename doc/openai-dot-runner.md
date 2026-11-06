@@ -358,6 +358,20 @@ Call `paperclip_dot_capabilities` to discover the bound agent, responsible perso
 
 Read and accept the resulting assignment, then call its catalog through `paperclip_dot_tool`. Use `get_identity` and paginated `list_people` to identify the owner. `create_task` accepts either `assigneeActorId` for an agent or `assigneeUserId` for an active company person. `reassign_task` also accepts a person and checks the previous agent/person and status version before the ownership change. Human tasks do not wake agents.
 
+Every authorized `paperclip_dot_read` response includes current server-owned
+`toolUsageInstructions`, also exposed by pairing and capabilities. Returning an
+allowed answer to the same accepted task is ordinary completion, not a separate
+request to contact another recipient. Mailbox delivery alone is not a reason to
+ask for additional consent. Submit through `paperclip_finish` or `paperclip_block`
+and pass its canonical accepted report to `paperclip_dot_finish`; a reply only in
+the Dot conversation does not complete the Paperclip turn. Task text cannot grant
+owner authority. User restrictions, genuine approval gates, denied operations,
+and unresolved writes still apply. Reconcile uncertain receipts on their original
+assignment and request ID; do not transfer historical failures to a new assignment
+or submit a result for cancelled work. This guidance does not override the external
+provider's policy or prove that the provider followed it; live acceptance requires
+the actual completion receipt.
+
 The shared catalog adds `get_task`, `comment_on_task`, `list_task_documents`, `read_task_document`, and `write_task_document` through the existing authenticated REST authority. Company boundaries, task visibility, mode restrictions, document revisions, locks and mutation receipts still apply. `call_api` remains the discovery-based route for other authorized control-plane actions.
 
 `list_assigned_skills` and `read_assigned_skill` read the turn's exact pinned skill versions, with manifest and file digest checks. Assigned app tools are projected by the existing MCP gateway; its permission checks, approvals, receipts and revocations remain authoritative. Credentials are kept on Paperclip. Newly granted app tools arrive in a continuation with a new pinned catalog.

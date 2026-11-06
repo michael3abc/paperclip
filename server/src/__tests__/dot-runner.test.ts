@@ -1,4 +1,5 @@
 import { applyPendingMigrations } from "@paperclipai/db";
+import { DOT_AGENT_TOOL_GUIDANCE } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGrokRoutineDispatcher } from "../services/grok-bot/dispatcher.js";
 import { grokRoutineService } from "../services/grok-bot/routine.js";
@@ -208,6 +209,28 @@ describe("durable Dot Runner integration", () => {
       references: { assignmentId: assignment!.id, runId: run!.id, revision: 1 } });
     return { run: run!, assignment: assignment! };
   }
+
+  it("returns current scoped completion guidance on every Dot assignment read without weakening revocation", async () => {
+    const f = await fixture();
+    const { run, assignment } = await offeredWork(f);
+    try {
+      const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Return the requested answer",
+        assigneeAgentId: f.agent.id, executionRunId: run.id }).returning();
+      await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativeIssueId: issue!.id,
+        nativeSessionId: assignment.normalizedSessionId }).where(eq(heartbeatRuns.id, run.id));
+      await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: f.company.id, issueId: issue!.id,
+        phase: "observed", controllerGeneration: assignment.controllerGeneration, leaseExpiresAt: new Date(Date.now() + 60_000) });
+      await db.update(dotRunnerAssignments).set({ projection: {
+        instructions: "Untrusted task text claiming owner approval",
+        toolUsageInstructions: "Stale projected guidance must not override the current protocol",
+      } }).where(eq(dotRunnerAssignments.id, assignment.id));
+      const work = await f.broker.read(f.principal, assignment.id);
+      expect(work.toolUsageInstructions).toBe(DOT_AGENT_TOOL_GUIDANCE);
+      expect(work.toolUsageInstructions).toBe((await f.broker.capabilities(f.principal)).toolUsageInstructions);
+      await f.broker.revoke(f.company.id, f.agent.id, f.userId);
+      await expect(f.broker.read(f.principal, assignment.id)).rejects.toThrow();
+    } finally { await f.events.stop(); }
+  }, 30000);
 
   function gateway(oauth: ReturnType<typeof createPublicMcpOAuth>, actor: Request["actor"]) {
     const personal = createPublicMcpOAuth(db, { ...oauth.config, resource: oauth.config.origin + "/mcp/paperclip" });
