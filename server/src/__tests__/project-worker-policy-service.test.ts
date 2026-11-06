@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, issues, projects } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, issues, projects } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
@@ -60,7 +60,10 @@ suite("project worker policy on task adapter overrides", () => {
 
   async function seed(workerPolicy: unknown) {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Policy co", issuePrefix: `W${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    const ownerUserId = `owner-${randomUUID()}`;
+    await db.insert(companies).values({ id: companyId, name: "Policy co", issuePrefix: `W${companyId.slice(0, 6)}`, defaultResponsibleUserId: ownerUserId });
+    await db.insert(authUsers).values({ id: ownerUserId, name: "Owner", email: `${ownerUserId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: ownerUserId, membershipRole: "owner", status: "active" });
     await db.insert(projects).values({ id: projectId, companyId, name: "App", status: "in_progress", workerPolicy: workerPolicy as any });
     await db.insert(agents).values({ id: agentId, companyId, name: "PM", role: "pm", status: "idle", adapterType: "codex_local", adapterConfig: { model: "agent-own-model" }, runtimeConfig: {}, permissions: {} });
     return { companyId, projectId, agentId };
