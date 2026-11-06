@@ -2341,30 +2341,21 @@ export function heartbeatService(
         ? taskProjectContext : await loadProjectContext(executionProjectId);
       // Defence in depth: overrides written before the project listed its
       // workers, or by a path that skipped write-time validation, must not
-      // choose a model the project does not allow. Strip instead of failing so
-      // the run still happens on the agent's own configuration.
+      // choose a model the project does not allow or silently substitute one.
       if (issueAssigneeOverrides?.adapterConfig) {
         const workerResolution = resolveWorkerOverrides(
           parseProjectWorkerPolicy(taskProjectContext?.workerPolicy),
           issueAssigneeOverrides.adapterConfig,
         );
+        if (workerResolution.violations.length > 0) {
+          throw new Error(`project_worker_policy_violation: ${workerResolution.violations.map(v => v.message).join("; ")}`);
+        }
         if (workerResolution.changed) {
           const enforcedAdapterConfig =
             workerResolution.adapterConfig &&
             Object.keys(workerResolution.adapterConfig).length > 0
               ? workerResolution.adapterConfig
               : null;
-          if (workerResolution.violations.length > 0) {
-            logger.warn(
-              {
-                runId: run.id,
-                issueId: issueContext?.id ?? null,
-                projectId: taskProjectContext?.id ?? null,
-                violations: workerResolution.violations,
-              },
-              "Stripped task adapter overrides that violate the project worker list",
-            );
-          }
           issueAssigneeOverrides = {
             ...issueAssigneeOverrides,
             adapterConfig: enforcedAdapterConfig,

@@ -12,13 +12,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Reads a stored policy. An unparseable value is treated as "no policy" so a
- * bad row can never block runs; the write path validates with the same schema.
+ * Reads a stored policy. Invalid stored data fails explicitly so it cannot
+ * disable model restrictions; the write path validates with the same schema.
  */
 export function parseProjectWorkerPolicy(raw: unknown): ProjectWorkerPolicy | null {
   if (raw === null || raw === undefined) return null;
   const parsed = projectWorkerPolicySchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) throw new Error("project_worker_policy_invalid: stored policy does not match the schema");
+  return parsed.data;
 }
 
 export interface ProjectWorkerOverrideViolation {

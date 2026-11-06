@@ -63,6 +63,15 @@ GET /api/projects/{projectId}
 
 Returns project details including workspaces.
 
+Projects can set `workerPolicy` to `{ "mode": "enforce", "workers": [...] }`.
+Each worker entry has a stable `id` and an `adapterConfig` containing allowed
+model, effort and provider settings. A task selects an entry through
+`assigneeAdapterOverrides.adapterConfig.worker`, or supplies settings matching
+one entry. Invalid overrides are rejected on write. Legacy invalid overrides
+fail the run before adapter execution; they never select the agent's default
+model instead. An invalid stored policy also fails explicitly. `null` or mode
+`off` leaves task overrides unrestricted.
+
 ### Create Project
 
 ```

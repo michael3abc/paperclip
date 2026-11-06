@@ -44,8 +44,8 @@ describe("projectWorkerPolicySchema", () => {
     ).toBe(false);
   });
 
-  it("treats an unparseable stored value as no policy", () => {
-    expect(parseProjectWorkerPolicy({ mode: "enforce", workers: "nope" })).toBeNull();
+  it("rejects an unparseable stored value instead of bypassing the policy", () => {
+    expect(() => parseProjectWorkerPolicy({ mode: "enforce", workers: "nope" })).toThrow("project_worker_policy_invalid");
     expect(parseProjectWorkerPolicy(null)).toBeNull();
   });
 });

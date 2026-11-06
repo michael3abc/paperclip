@@ -110,11 +110,10 @@ suite("project worker policy on task adapter overrides", () => {
     }, { timeout: 15_000 });
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     const calls = execute.mock.calls.filter(([input]) => input.runId === run!.id);
-    expect(calls).toHaveLength(1);
-    return calls[0]![0];
+    return { calls, run: (await heartbeat.getRun(run!.id))! };
   }
 
-  it("strips unlisted legacy overrides at run time and keeps listed ones", async () => {
+  it("fails unlisted legacy overrides before adapter execution and keeps listed ones", async () => {
     const { companyId, projectId, agentId } = await seed(enforcePolicy);
     const insert = async (overrides: unknown) => {
       const id = randomUUID();
@@ -122,11 +121,14 @@ suite("project worker policy on task adapter overrides", () => {
       return id;
     };
     const rejected = await runIssue(agentId, await insert({ adapterConfig: { model: "compass-fable5", effort: "low" } }));
-    expect(rejected.config.model).toBe("agent-own-model");
-    expect(rejected.config.effort).toBeUndefined();
+    expect(rejected.calls).toHaveLength(0);
+    expect(rejected.run.status).toBe("failed");
+    expect(rejected.run.error).toContain("project_worker_policy_violation");
 
     const listed = await runIssue(agentId, await insert({ adapterConfig: { worker: "sonnet" } }));
-    expect(listed.config.model).toBe("compass-sonnet5.5");
-    expect(listed.config.worker).toBeUndefined();
+    expect(listed.run.status).toBe("succeeded");
+    expect(listed.calls).toHaveLength(1);
+    expect(listed.calls[0]![0].config.model).toBe("compass-sonnet5.5");
+    expect(listed.calls[0]![0].config.worker).toBeUndefined();
   }, 60_000);
 });
