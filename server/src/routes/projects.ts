@@ -386,6 +386,7 @@ export function projectRoutes(db: Db) {
     const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
     const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
     if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
+    if (projectData.workerPolicy !== undefined && projectData.workerPolicy !== null) assertBoard(req);
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
@@ -504,6 +505,8 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const body = { ...req.body };
+    // The worker list limits what agents may choose, so agents must not edit it.
+    if (body.workerPolicy !== undefined) assertBoard(req);
     if (body.visibility !== undefined) {
       if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
     }

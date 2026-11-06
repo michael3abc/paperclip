@@ -405,6 +405,8 @@ export {
   projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
+  projectWorkerPolicySchema,
+  projectWorkerPolicyEntrySchema,
   addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,

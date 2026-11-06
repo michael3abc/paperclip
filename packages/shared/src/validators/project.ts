@@ -3,6 +3,10 @@ import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
+import {
+  PROJECT_WORKER_POLICY_GUARDED_KEYS,
+  PROJECT_WORKER_POLICY_MODES,
+} from "../types/project.js";
 
 export const projectDiscoverySchema = z.object({
   limit: z.number().int().min(1).max(50).default(50),
@@ -106,6 +110,50 @@ export const updateProjectWorkspaceSchema = z.object({
 
 export type UpdateProjectWorkspace = z.infer<typeof updateProjectWorkspaceSchema>;
 
+const workerConfigValueSchema = z.string().trim().min(1).max(200);
+
+export const projectWorkerPolicyEntrySchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, "Worker id must be a lowercase slug"),
+    label: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().min(1).max(500).optional(),
+    adapterConfig: z
+      .object(
+        Object.fromEntries(
+          PROJECT_WORKER_POLICY_GUARDED_KEYS.filter((key) => key !== "worker").map((key) => [
+            key,
+            workerConfigValueSchema.optional(),
+          ]),
+        ) as Record<
+          Exclude<(typeof PROJECT_WORKER_POLICY_GUARDED_KEYS)[number], "worker">,
+          z.ZodOptional<typeof workerConfigValueSchema>
+        >,
+      )
+      .strict()
+      .refine((value) => Object.keys(value).length > 0, "A worker must set at least one adapterConfig key"),
+  })
+  .strict();
+
+export const projectWorkerPolicySchema = z
+  .object({
+    mode: z.enum(PROJECT_WORKER_POLICY_MODES),
+    workers: z.array(projectWorkerPolicyEntrySchema).max(50),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>();
+    value.workers.forEach((worker, index) => {
+      if (seen.has(worker.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate worker id "${worker.id}"`,
+          path: ["workers", index, "id"],
+        });
+      }
+      seen.add(worker.id);
+    });
+  });
+
 const projectFields = {
   /** @deprecated Use goalIds instead */
   goalId: z.string().guid().optional().nullable(),
@@ -120,6 +168,7 @@ const projectFields = {
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
+  workerPolicy: projectWorkerPolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 

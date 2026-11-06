@@ -360,6 +360,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 
 import { logger } from "../middleware/logger.js";
+import { parseProjectWorkerPolicy, resolveWorkerOverrides } from "./project-worker-policy.js";
 import { publishLiveEvent } from "./live-events.js";
 
 import {
@@ -2300,6 +2301,7 @@ export function heartbeatService(
             .select({
               id: projects.id,
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
+              workerPolicy: projects.workerPolicy,
               hasWorkspace: exists(
                 db.select({ id: projectWorkspaces.id })
                   .from(projectWorkspaces)
@@ -2336,6 +2338,38 @@ export function heartbeatService(
       }
       const workspaceProjectContext = externalProvider ? null : executionProjectId === taskProjectId
         ? taskProjectContext : await loadProjectContext(executionProjectId);
+      // Defence in depth: overrides written before the project listed its
+      // workers, or by a path that skipped write-time validation, must not
+      // choose a model the project does not allow. Strip instead of failing so
+      // the run still happens on the agent's own configuration.
+      if (issueAssigneeOverrides?.adapterConfig) {
+        const workerResolution = resolveWorkerOverrides(
+          parseProjectWorkerPolicy(taskProjectContext?.workerPolicy),
+          issueAssigneeOverrides.adapterConfig,
+        );
+        if (workerResolution.changed) {
+          const enforcedAdapterConfig =
+            workerResolution.adapterConfig &&
+            Object.keys(workerResolution.adapterConfig).length > 0
+              ? workerResolution.adapterConfig
+              : null;
+          if (workerResolution.violations.length > 0) {
+            logger.warn(
+              {
+                runId: run.id,
+                issueId: issueContext?.id ?? null,
+                projectId: taskProjectContext?.id ?? null,
+                violations: workerResolution.violations,
+              },
+              "Stripped task adapter overrides that violate the project worker list",
+            );
+          }
+          issueAssigneeOverrides = {
+            ...issueAssigneeOverrides,
+            adapterConfig: enforcedAdapterConfig,
+          };
+        }
+      }
       const acceptedPlanContinuationWake = issueContext && !isConversation(issueContext)
         ? readNonEmptyString(context.workspaceRefreshReason) ===
             "accepted_plan_confirmation" ||

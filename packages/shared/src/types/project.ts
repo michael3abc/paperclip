@@ -116,6 +116,43 @@ export interface ProjectWorkspaceProviderConfiguration {
   error: string | null;
 }
 
+export const PROJECT_WORKER_POLICY_MODES = ["off", "enforce"] as const;
+export type ProjectWorkerPolicyMode = (typeof PROJECT_WORKER_POLICY_MODES)[number];
+
+/**
+ * Adapter config keys that decide which model/engine a task runs on. Task-level
+ * `assigneeAdapterOverrides.adapterConfig` may only set these through a worker
+ * the project lists, and `worker` selects a listed entry by id.
+ */
+export const PROJECT_WORKER_POLICY_GUARDED_KEYS = [
+  "worker",
+  "model",
+  "effort",
+  "modelReasoningEffort",
+  "reasoningEffort",
+  "variant",
+  "provider",
+  "acpxAgent",
+] as const;
+
+export type ProjectWorkerAdapterConfig = Partial<
+  Record<Exclude<(typeof PROJECT_WORKER_POLICY_GUARDED_KEYS)[number], "worker">, string>
+>;
+
+export interface ProjectWorkerPolicyEntry {
+  /** Stable slug that tasks use as `adapterConfig.worker`. */
+  id: string;
+  label?: string;
+  description?: string;
+  adapterConfig: ProjectWorkerAdapterConfig;
+}
+
+export interface ProjectWorkerPolicy {
+  /** `off` keeps today's behaviour; `enforce` limits task model overrides to `workers`. */
+  mode: ProjectWorkerPolicyMode;
+  workers: ProjectWorkerPolicyEntry[];
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -142,6 +179,8 @@ export interface Project {
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   workspaceProvider?: ProjectWorkspaceProviderConfiguration;
+  /** Omitted by older servers/fixtures; clients must treat omission as no policy. */
+  workerPolicy?: ProjectWorkerPolicy | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;

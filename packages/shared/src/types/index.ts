@@ -387,8 +387,16 @@ export type {
   ProjectGoalRef,
   ProjectManagedByPlugin,
   ProjectVisibility,
+  ProjectWorkerAdapterConfig,
+  ProjectWorkerPolicy,
+  ProjectWorkerPolicyEntry,
+  ProjectWorkerPolicyMode,
   ProjectWorkspace,
   ProjectWorkspaceProviderConfiguration,
+} from "./project.js";
+export {
+  PROJECT_WORKER_POLICY_GUARDED_KEYS,
+  PROJECT_WORKER_POLICY_MODES,
 } from "./project.js";
 export type {
   CompanySearchCountType,

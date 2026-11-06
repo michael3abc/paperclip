@@ -160,6 +160,10 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import {
+  parseProjectWorkerPolicy,
+  resolveWorkerOverrides,
+} from "./project-worker-policy.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -429,6 +433,34 @@ function assertExplicitPinnedWorktreeIssueRunnable(input: {
       workspaceWorktreeRequiresProjectDetails(),
     );
   }
+}
+
+/**
+ * Enforces a project's worker list on a task's adapter override at write time.
+ * Returns the overrides to store (a `worker` id is expanded to its config).
+ * `null`/absent overrides, projects without a policy and policy mode `off`
+ * pass through untouched.
+ */
+function applyProjectWorkerPolicyToOverrides(
+  rawPolicy: unknown,
+  overrides: unknown,
+): unknown {
+  if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) {
+    return overrides;
+  }
+  const record = overrides as Record<string, unknown>;
+  const resolution = resolveWorkerOverrides(
+    parseProjectWorkerPolicy(rawPolicy),
+    record.adapterConfig as Record<string, unknown> | null | undefined,
+  );
+  if (resolution.violations.length > 0) {
+    throw unprocessable(
+      "assigneeAdapterOverrides violates the project's worker list",
+      { violations: resolution.violations },
+    );
+  }
+  if (!resolution.changed) return overrides;
+  return { ...record, adapterConfig: resolution.adapterConfig };
 }
 
 function readStringFromRecord(record: unknown, key: string) {
@@ -10679,11 +10711,17 @@ export function issueService(db: Db) {
 
         if (issueData.projectId) {
           const selectedProject = await tx
-            .select({ visibility: projects.visibility })
+            .select({ visibility: projects.visibility, workerPolicy: projects.workerPolicy })
             .from(projects)
             .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
             .then((rows) => rows[0] ?? null);
           if (!selectedProject) throw notFound("Project not found");
+          if (issueData.assigneeAdapterOverrides) {
+            issueData.assigneeAdapterOverrides = applyProjectWorkerPolicyToOverrides(
+              selectedProject.workerPolicy,
+              issueData.assigneeAdapterOverrides,
+            ) as typeof issueData.assigneeAdapterOverrides;
+          }
           if (selectedProject.visibility === "private") {
             visibility = "private";
             if (!privacyRootIssueId) {
@@ -11444,6 +11482,30 @@ export function issueService(db: Db) {
             nextExecutionWorkspacePreference ?? null,
           executionWorkspaceSettings: issueData.executionWorkspaceSettings,
         });
+      }
+
+      const projectChangedForOverrides =
+        issueData.projectId !== undefined &&
+        issueData.projectId !== existing.projectId;
+      const overridesToCheck =
+        issueData.assigneeAdapterOverrides !== undefined
+          ? issueData.assigneeAdapterOverrides
+          : projectChangedForOverrides
+            ? existing.assigneeAdapterOverrides
+            : null;
+      if (overridesToCheck && nextProjectId) {
+        const overridePolicyProject = await dbOrTx
+          .select({ workerPolicy: projects.workerPolicy })
+          .from(projects)
+          .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
+          .then((rows: Array<{ workerPolicy: unknown }>) => rows[0] ?? null);
+        const enforcedOverrides = applyProjectWorkerPolicyToOverrides(
+          overridePolicyProject?.workerPolicy,
+          overridesToCheck,
+        ) as typeof issueData.assigneeAdapterOverrides;
+        if (enforcedOverrides !== overridesToCheck) {
+          patch.assigneeAdapterOverrides = enforcedOverrides;
+        }
       }
 
       applyStatusSideEffects(issueData.status, patch);

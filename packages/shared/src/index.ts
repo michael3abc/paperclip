@@ -955,6 +955,10 @@ export type {
   ProjectGoalRef,
   ProjectManagedByPlugin,
   ProjectVisibility,
+  ProjectWorkerAdapterConfig,
+  ProjectWorkerPolicy,
+  ProjectWorkerPolicyEntry,
+  ProjectWorkerPolicyMode,
   ProjectWorkspace,
   ProjectWorkspaceProviderConfiguration,
   CompanySearchCountType,
@@ -1644,6 +1648,10 @@ export type {
 export { WORKSPACE_READINESS_STATES, WORKSPACE_SOURCE_VERIFICATION_REASONS,
   type WorkspaceSourceVerificationFailure, type WorkspaceSourceInspection } from "./types/index.js";
 export {
+  PROJECT_WORKER_POLICY_GUARDED_KEYS,
+  PROJECT_WORKER_POLICY_MODES,
+} from "./types/index.js";
+export {
   COMPANY_SEARCH_EXTRACT_KINDS,
   COMPANY_SEARCH_EXTRACT_SCOPES,
   COMPANY_SEARCH_SCOPES,
@@ -1949,6 +1957,8 @@ export {
   projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
+  projectWorkerPolicySchema,
+  projectWorkerPolicyEntrySchema,
   addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
