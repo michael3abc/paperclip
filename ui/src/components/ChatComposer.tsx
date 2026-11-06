@@ -176,14 +176,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   }
 
   function applyListEdit(el: HTMLTextAreaElement, edit: ListContinuationEdit) {
-    el.setSelectionRange(edit.from, edit.to);
-    // execCommand keeps the browser's undo stack and fires `input`, so `handleChange` runs as for typing.
-    if (typeof document.execCommand === "function") {
-      const applied =
-        edit.insert === "" ? document.execCommand("delete") : document.execCommand("insertText", false, edit.insert);
-      if (applied) return;
-    }
-    // No execCommand (jsdom) or it refused: same text through the controlled value instead.
+    // Goes through the controlled value: the browser's text-command API is off limits in UI sources (see clipboard-usage.test.ts).
+    // The effect above restores the caret once React has written the new value.
     const next = el.value.slice(0, edit.from) + edit.insert + el.value.slice(edit.to);
     pendingCaretRef.current = { caret: edit.caret, value: next };
     onChange(next);
