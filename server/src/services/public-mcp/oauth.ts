@@ -33,6 +33,17 @@ export class PublicMcpDisabledError extends McpOAuthError {
 }
 const invalidGrant = () => new McpOAuthError("invalid_grant", "Authorization is expired, revoked, or invalid.");
 
+/**
+ * Dot refresh requests may echo either the scope they originally asked for or the scope in the
+ * token response. `offline_access` only controls refresh-token issuance, not authority, so it is
+ * ignored when comparing; any other difference still has to be a reconnect.
+ */
+function sameDotRefreshScope(requested: unknown, granted: readonly string[]) {
+  if (typeof requested !== "string") return false;
+  const authority = (scopes: readonly string[]) => scopes.filter(scope => scope && scope !== "offline_access").sort().join(" ");
+  return authority(requested.split(" ")) === authority(granted);
+}
+
 export function publicMcpConfig(env: NodeJS.ProcessEnv = process.env, authPublicBaseUrl?: string) {
   const origin = env.PAPERCLIP_PUBLIC_URL ?? authPublicBaseUrl;
   if (!origin) return null;
@@ -154,7 +165,11 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
 
   async function issueTokens(tx: Db, grant: typeof mcpOauthGrants.$inferSelect) {
     const access = secret("pcmcp_at_");
-    const refresh = grant.scopes.includes("offline_access") ? secret("pcmcp_rt_") : null;
+    // ChatGPT only requests the scope advertised in the 401 challenge, and a client that omits
+    // offline_access would otherwise get a 15-minute access token it can never renew. Dot agent
+    // grants therefore always receive a rotating refresh token.
+    const refreshable = grant.scopes.includes("offline_access") || (dotAgentConnection && grant.purpose === "agent");
+    const refresh = refreshable ? secret("pcmcp_rt_") : null;
     await tx.insert(mcpOauthTokens).values([
       { grantId: grant.id, tokenHash: hashMcpSecret(access), kind: "access", expiresAt: new Date(Date.now() + accessLifetime) },
       ...(refresh ? [{ grantId: grant.id, tokenHash: hashMcpSecret(refresh), kind: "refresh" as const,
@@ -263,6 +278,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if ((input.allowWrites || input.allowConfiguration) && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Viewer access is read-only.", 403);
     const scopes = request.scopes.filter(s => (s !== "paperclip:write" || input.allowWrites)
       && (s !== "paperclip:configure" || input.allowConfiguration === true));
+    // Dot agent grants are always refreshable (see issueTokens); record that on the grant so the
+    // token response `scope` and later refresh requests agree with what was issued.
+    if (dotAgentConnection && !scopes.includes("offline_access")) scopes.push("offline_access");
     const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes, purpose: agentConnection ? "agent" : "personal" }).returning();
     await tx.insert(activityLog).values({ companyId: grant!.companyId, actorType: "user", actorId: actor.userId,
       action: "mcp.connection_authorized", entityType: "mcp_connection", entityId: grant!.id, details: { clientId: grant!.clientId, scopes } });
@@ -674,7 +692,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
           // Access tokens still expire, refresh still rotates, and replay still revokes.
           if (token.expiresAt ? token.expiresAt <= new Date() : !dotAgentConnection || grant.purpose !== "agent") return null;
           await actorForGrant(grant, tx as unknown as Db);
-          if (input.scope !== undefined && input.scope !== grant.scopes.join(" ")) {
+          if (input.scope !== undefined && !(dotAgentConnection ? sameDotRefreshScope(input.scope, grant.scopes) : input.scope === grant.scopes.join(" "))) {
             throw new McpOAuthError("invalid_scope", "Refresh cannot change the consented scopes; reconnect instead.");
           }
           await tx.update(mcpOauthTokens).set({ usedAt: new Date() }).where(eq(mcpOauthTokens.id, token.id));

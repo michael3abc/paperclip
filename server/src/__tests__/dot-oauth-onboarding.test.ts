@@ -147,6 +147,81 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     await f.oauth.revokeToken(next.access_token, f.client.client_id);
     await expect(f.oauth.token({ grant_type: "refresh_token", client_id: f.client.client_id, resource: config.resource, refresh_token: next.refresh_token })).rejects.toThrow();
   });
+  it.each([
+    ["requests only the advertised scope", { scope: "paperclip:agent" }],
+    ["omits the scope", { scope: undefined }],
+  ])("keeps a Dot connection renewable when the client %s", async (_name, extra) => {
+    const f = await fixture();
+    const consent = await f.oauth.consentDotPairing(await f.begin(extra), f.pairing.pairingCode);
+    const tokens = await f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id,
+      redirect_uri: callback, resource: config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
+    expect(tokens.refresh_token).toEqual(expect.any(String));
+    expect(tokens.scope).toBe("paperclip:agent offline_access");
+    expect((await f.oauth.authenticate(tokens.access_token)).grant.scopes).toEqual(["paperclip:agent", "offline_access"]);
+    const [stored] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(tokens.refresh_token!)));
+    expect(stored).toMatchObject({ kind: "refresh", expiresAt: null, usedAt: null });
+
+    const refresh = (refresh_token: string | undefined, scope?: string) => f.oauth.token({ grant_type: "refresh_token",
+      client_id: f.client.client_id, resource: config.resource, refresh_token, ...(scope === undefined ? {} : { scope }) });
+    // The client may echo what it originally asked for, what the response said, or nothing.
+    const first = await refresh(tokens.refresh_token, "paperclip:agent");
+    expect(first.refresh_token).toEqual(expect.any(String));
+    expect(first.refresh_token).not.toBe(tokens.refresh_token);
+    const second = await refresh(first.refresh_token, "paperclip:agent offline_access");
+    const third = await refresh(second.refresh_token);
+    expect((await f.oauth.authenticate(third.access_token)).actor).toMatchObject({ type: "agent", agentId: f.agent.id });
+    // Authority still cannot change on refresh, and the rejected attempt does not spend the token.
+    for (const scope of ["paperclip:agent paperclip:read", "offline_access", ""]) {
+      await expect(refresh(third.refresh_token, scope)).rejects.toThrow("Refresh cannot change the consented scopes");
+    }
+    const fourth = await refresh(third.refresh_token);
+    expect(fourth.refresh_token).toEqual(expect.any(String));
+  });
+  it("still issues a refresh token for a Dot grant that was recorded without offline_access", async () => {
+    const f = await fixture();
+    const consent = await f.oauth.consentDotPairing(await f.begin({ scope: "paperclip:agent" }), f.pairing.pairingCode);
+    // Simulate a grant approved by an earlier server version, before the scope was recorded.
+    await db.update(mcpOauthGrants).set({ scopes: ["paperclip:agent"] }).where(eq(mcpOauthGrants.userId, f.userId));
+    const tokens = await f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id,
+      redirect_uri: callback, resource: config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
+    expect(tokens.refresh_token).toEqual(expect.any(String));
+    const next = await f.oauth.token({ grant_type: "refresh_token", client_id: f.client.client_id, resource: config.resource,
+      refresh_token: tokens.refresh_token, scope: "paperclip:agent" });
+    expect((await f.oauth.authenticate(next.access_token)).actor).toMatchObject({ type: "agent", agentId: f.agent.id });
+  });
+  it("does not make personal assistant grants refreshable unless they ask for offline_access", async () => {
+    const f = await fixture();
+    const resource = config.origin + "/mcp/paperclip";
+    const personal = createPublicMcpOAuth(db, { ...config, resource });
+    const client = await personal.register({ client_name: "Personal", redirect_uris: [callback], grant_types: ["authorization_code", "refresh_token"] }, randomUUID());
+    const id = (await personal.authorize({ ...f.input, client_id: client.client_id, resource, scope: "paperclip:read" })).split("/").at(-1)!;
+    const consent = await personal.consent(id, { type: "board", source: "session", userId: f.userId }, { decision: "approve", companyId: f.company.id, allowWrites: false });
+    const tokens = await personal.token({ grant_type: "authorization_code", client_id: client.client_id,
+      redirect_uri: callback, resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
+    expect(tokens.refresh_token).toBeUndefined();
+    expect(tokens.scope).toBe("paperclip:read");
+  });
+  it("asks Dot clients for offline_access in the 401 challenge and leaves the personal challenge alone", async () => {
+    const f = await fixture();
+    const personal = createPublicMcpOAuth(db, { ...config, resource: config.origin + "/mcp/paperclip" });
+    const mount = (oauth: typeof f.oauth) => {
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.actor = { type: "none" }; next(); });
+      app.use(publicMcpIngressRoutes(oauth, vi.fn()));
+      return app;
+    };
+    const dotApp = mount(f.oauth);
+    const dot = await request(dotApp).post("/mcp/runner").send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(dot.status).toBe(401);
+    expect(dot.headers["www-authenticate"]).toBe(`Bearer resource_metadata="${config.origin}/.well-known/oauth-protected-resource/mcp/runner", scope="paperclip:agent offline_access", error="invalid_token"`);
+    // The challenge must never ask for a scope the resource does not advertise.
+    const advertised = (await request(dotApp).get("/.well-known/oauth-protected-resource/mcp/runner")).body.scopes_supported;
+    for (const scope of "paperclip:agent offline_access".split(" ")) expect(advertised).toContain(scope);
+
+    const legacy = await request(mount(personal)).post("/mcp/paperclip").send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(legacy.status).toBe(401);
+    expect(legacy.headers["www-authenticate"]).toBe(`Bearer resource_metadata="${config.origin}/.well-known/oauth-protected-resource/mcp/paperclip", scope="paperclip:read paperclip:write paperclip:configure", error="invalid_token"`);
+  });
   it("pins browser ingress without changing the issuer, resource or token endpoint", async () => {
     const browserOrigin = "https://paperclip-browser.example:10000";
     const f = await fixture(browserOrigin);

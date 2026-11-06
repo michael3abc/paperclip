@@ -881,7 +881,10 @@ describe("durable Dot Runner integration", () => {
     expect(redirect.searchParams.get("iss")).toBe(issuer.body.issuer);
     const tokens = await oauth.token({ grant_type: "authorization_code", client_id: clientId, redirect_uri: redirectUri,
       resource: oauth.config.resource, code: redirect.searchParams.get("code"), code_verifier: verifier });
-    expect((await oauth.authenticate(tokens.access_token)).grant).toMatchObject({ purpose: "agent", agentId: null, scopes: ["paperclip:agent"] });
+    // The authorize request above carries no scope, as ChatGPT sends only the challenged scope.
+    // Dot grants still record offline_access and return a refresh token so the connection renews.
+    expect((await oauth.authenticate(tokens.access_token)).grant).toMatchObject({ purpose: "agent", agentId: null, scopes: ["paperclip:agent", "offline_access"] });
+    expect(tokens).toMatchObject({ scope: "paperclip:agent offline_access", refresh_token: expect.any(String) });
     await expect(personal.authenticate(tokens.access_token)).rejects.toThrow();
     await expect(oauth.authorize({ ...input, scope: "paperclip:read" })).rejects.toMatchObject({ code: "invalid_scope" });
     await f.events.unsubscribe(f.principal, f.subscription);
