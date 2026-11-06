@@ -4,10 +4,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { HarnessRuntimeRequest, HarnessRuntimeRequestHandoff, HarnessRuntimeRequestResolution, HarnessDriver, HarnessDriverDescriptor, HarnessSession, OpenHarnessSessionInput, PersistedHarnessSession } from "../../contracts/harness-driver.js";
 import type { NativeExecutionInputV6, NativeExecutionInputV8 } from "../../contracts/native-execution.js";
-import type { ExternalProviderPort } from "../../contracts/external-provider.js";
+import { externalOperationRejection, type ExternalProviderPort } from "../../contracts/external-provider.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
-import { DurablePrpControlPlane, spawnRunner, type RunnerProcessHandle, type DurablePrpControlPlaneOptions } from "../../control-plane/durable-prp-control-plane.js";
+import { DurablePrpControlPlane, SemanticToolNotDispatchedError, spawnRunner, type RunnerProcessHandle, type DurablePrpControlPlaneOptions } from "../../control-plane/durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import { authorizedToolSetForProvider, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, type CapabilityRunnerdCodexTransportOptions } from "../../live/runnerd-codex-transport.js";
 import { codexSemanticToolSpecs } from "../codex/codex-driver-values.js";
@@ -156,6 +156,7 @@ class RunnerdExternalSession implements HarnessSession {
   #detachPort: (() => Promise<void>) | null = null;
   #closed = false;
   #failure: Error | null = null;
+  #runnerExited = false;
   #resolvingRequests = new Set<string>();
   readonly handoffRuntimeRequest?: NonNullable<HarnessSession["handoffRuntimeRequest"]>;
   constructor(readonly options: RunnerdExternalDriverOptions, readonly codec: ExternalProviderCodec) {
@@ -188,6 +189,7 @@ class RunnerdExternalSession implements HarnessSession {
     const binary = o.runnerBinary ?? defaultCapabilityRunnerdBinary();
     const artifact = o.runnerArtifact ?? readRunnerdArtifactBinding(binary);
     const handleSemanticInput: NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]> = async call => {
+      if (this.#failure) throw new SemanticToolNotDispatchedError();
       if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
         let completionInput: unknown;
         try {
@@ -217,6 +219,10 @@ class RunnerdExternalSession implements HarnessSession {
       expectedRunnerVersion: artifact.version, expectedRunnerDigest: artifact.digest,
       connectionLeaseTtlMs: Math.min(7_200_000, Math.max(60_000, o.execution.provider.binding.expiresAtUnixMs - Date.now())),
       onProtocolIntegrityError: error => { this.#failure = error; this.#wake(); },
+      onSemanticResultFailure: failure => {
+        this.#failure ??= new Error(`${this.codec.commandPrefix}_semantic_result_unresolved: ${failure.stage}/${failure.code}`);
+        this.#wake();
+      },
       onCommittedEvent: async event => {
         if (event.eventType === "external_provider.dispatch_requested") await o.port.dispatch(event);
         if (event.eventType === "external_provider.operation_settled") await o.port.settle(event);
@@ -258,6 +264,7 @@ class RunnerdExternalSession implements HarnessSession {
       if (pid && !o.runnerProcessLauncher) await o.onSpawn?.({ pid, processGroupId: this.#process.processGroupId ?? null,
         startedAt: this.#process.startedAt ?? new Date().toISOString() });
       void this.#process.completion.then(result => {
+        this.#runnerExited = true;
         if (this.#closed) return;
         // Rust exits after the authenticated shutdown receipt is committed and
         // ACKed. That exit can precede the SDK's next command poll.
@@ -267,6 +274,7 @@ class RunnerdExternalSession implements HarnessSession {
         this.#failure ??= new Error(`${externalRunnerExitMessage(result, this.codec.commandPrefix)} ${runnerDisconnectDiagnostic(core)}`);
         this.#wake();
       }, () => {
+        this.#runnerExited = true;
         if (this.#closed || core.getCommand(`${this.codec.commandPrefix}_shutdown`)?.status === "completed") return;
         this.#failure ??= new Error(`${this.codec.commandPrefix}_runner_process_exited_recovery_required: ${runnerDisconnectDiagnostic(core)}`);
         this.#wake();
@@ -301,18 +309,25 @@ class RunnerdExternalSession implements HarnessSession {
 
   async #command(type: string, payload: Record<string, unknown>, id: string) {
     if (!this.#core || this.#closed) throw new Error("dot_runner_unavailable");
+    // A failed tool must stop business commands, while still allowing this
+    // exact Runner to be fenced, snapshotted and shut down for reconciliation.
+    const cleanup = ["run.cancel", "session.snapshot", "session.close", "runner.shutdown"].includes(type);
+    if (this.#failure && (!cleanup || this.#runnerExited)) throw this.#failure;
     this.#core.queueCommand(type, payload, id, true);
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
-      if (this.#failure) throw this.#failure;
       const command = this.#core.getCommand(id);
       if (command?.status === "completed") return (command.result?.result ?? {}) as Record<string, unknown>;
       if (command && ["failed", "rejected"].includes(command.status)) {
         const error = new Error("dot_runner_operation_rejected");
-        Object.assign(error, { dotOperationRejected: true });
+        const result = command.result?.result;
+        const reason = result && typeof result === "object" && "message" in result ? result.message : undefined;
+        Object.assign(error, { dotOperationRejected: true,
+          externalRejectionReason: externalOperationRejection(reason).code ? reason : undefined });
         throw error;
       }
       if (command?.status === "indeterminate") throw new Error("dot_runner_operation_unknown_reconcile_required");
+      if (this.#failure && (!cleanup || this.#runnerExited)) throw this.#failure;
       await new Promise(r => setTimeout(r, 20));
     }
     throw new Error("dot_runner_command_pending_reconcile_with_same_request_id");
@@ -396,9 +411,17 @@ class RunnerdExternalSession implements HarnessSession {
   async close(input: { reason: string; force?: boolean }) {
     if (this.#closed) return;
     if (input.force) await this.interrupt();
-    await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`);
+    let closeError: unknown;
+    try { await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`); }
+    catch (error) {
+      if (!input.force) throw error;
+      closeError = error;
+    }
+    // A fenced session may retain uncertain tools. Stop the local bridge while
+    // preserving that checkpoint; this does not assert external work stopped.
     await this.#command("runner.shutdown", {}, `${this.codec.commandPrefix}_shutdown`);
     await this.detachControllerForRestart();
+    if (closeError) throw closeError;
   }
 }
 

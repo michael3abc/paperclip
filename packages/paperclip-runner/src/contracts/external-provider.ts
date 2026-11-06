@@ -43,3 +43,20 @@ export interface ExternalProviderPort {
 export function externalOperationDigest(action: ExternalProviderOperation["action"], input: Record<string, unknown>): string {
   return digestPaperclipSemanticContent({ action, input });
 }
+
+/** Only fixed protocol reasons cross the broker boundary; never raw Runner diagnostics. */
+export function externalOperationRejection(reason: unknown): { status: "rejected"; code?: string; message: string } {
+  if (reason === "Dot completion requires settled tool calls" || reason === "Dot cannot finish with unsettled tool calls") {
+    return { status: "rejected", code: "unsettled_tool_calls",
+      message: "Reconcile pending tool operations with their original request IDs before submitting completion." };
+  }
+  if (reason === "Dot completion was already accepted") {
+    return { status: "rejected", code: "completion_already_accepted",
+      message: "The completion report was accepted. Submit the same accepted report with the external finish operation." };
+  }
+  if (reason === "Dot completion is pending") {
+    return { status: "rejected", code: "completion_pending",
+      message: "Reconcile the completion tool's original request ID before issuing another tool operation." };
+  }
+  return { status: "rejected", message: "Runner rejected this operation; inspect the assignment and arguments before proceeding." };
+}

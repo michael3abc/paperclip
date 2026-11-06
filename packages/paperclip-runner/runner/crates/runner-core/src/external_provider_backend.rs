@@ -589,10 +589,23 @@ impl ExternalCommandExecutor {
                 if state.completion.is_some() {
                     return Err(invalid("Dot completion was already accepted"));
                 }
+                if state.tools.pending_calls().any(|call| {
+                    matches!(
+                        call.operation_id.as_str(),
+                        "paperclip_finish" | "paperclip_block"
+                    )
+                }) {
+                    return Err(invalid("Dot completion is pending"));
+                }
                 let tool = op.input["name"]
                     .as_str()
                     .ok_or_else(|| invalid("Dot tool name is missing"))?;
                 let args = op.input["arguments"].clone();
+                if matches!(tool, "paperclip_finish" | "paperclip_block")
+                    && state.tools.pending_calls().next().is_some()
+                {
+                    return Err(invalid("Dot completion requires settled tool calls"));
+                }
                 if matches!(tool, "paperclip_finish" | "paperclip_block")
                     && state.runtime_inputs.values().any(|input| !input.consumed)
                 {
@@ -1119,7 +1132,7 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
         let now = crate::durable::current_unix_ms().unwrap();
-        let tools = ["save_report", "paperclip_finish"]
+        let tools = ["save_report", "paperclip_finish", "paperclip_block"]
             .into_iter()
             .map(|name| AuthorizedTool {
                 operation_id: name.into(),
@@ -1342,6 +1355,69 @@ mod tests {
             json!({"callId":"write-1","operationId":"save_report","result":{},"isError":false}),
         );
         assert_eq!(call(&mut e, "session.close", json!({}))["status"], "closed");
+    }
+    #[test]
+    fn completion_cannot_freeze_a_turn_with_an_unsettled_tool() {
+        for completion_tool in ["paperclip_finish", "paperclip_block"] {
+            let dir = TestDirectory::new();
+            let mut e = prepared(dir.path());
+            accept(&mut e);
+            call(
+                &mut e,
+                "external_provider.operation",
+                operation(
+                    "read-1",
+                    "tool",
+                    json!({"name":"save_report","arguments":{}}),
+                ),
+            );
+            let completion = operation(
+                "completion-1",
+                "tool",
+                json!({"name":completion_tool,"arguments":{}}),
+            );
+            let error = e
+                .execute(&command("external_provider.operation", completion.clone()))
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("completion requires settled tool calls"));
+            assert!(e.state.as_ref().unwrap().completion.is_none());
+            assert_eq!(e.state.as_ref().unwrap().tools.pending_calls().count(), 1);
+            // A definite failure still settles the original call, after which
+            // completion can be submitted without replacing the assignment.
+            call(
+                &mut e,
+                "semantic_tool.result",
+                json!({"callId":"read-1","operationId":"save_report",
+                    "result":{"outcome":"failed"},"isError":true}),
+            );
+            assert_eq!(
+                call(&mut e, "external_provider.operation", completion)["status"],
+                "pending"
+            );
+            // Completion admission also fences later calls until its result;
+            // otherwise a new tool could race with acceptance and strand finish.
+            let next = operation(
+                "read-2",
+                "tool",
+                json!({"name":"save_report","arguments":{}}),
+            );
+            let error = e
+                .execute(&command("external_provider.operation", next.clone()))
+                .unwrap_err();
+            assert!(error.to_string().contains("completion is pending"));
+            call(
+                &mut e,
+                "semantic_tool.result",
+                json!({"callId":"completion-1","operationId":completion_tool,
+                    "result":{"outcome":"failed"},"isError":true}),
+            );
+            assert_eq!(
+                call(&mut e, "external_provider.operation", next)["status"],
+                "pending"
+            );
+        }
     }
     #[test]
     fn finishing_requires_the_accepted_completion_tool_and_exact_contract() {

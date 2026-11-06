@@ -274,6 +274,29 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(ordinary.definitions()).toEqual(truncatedChat.definitions());
   });
 
+  it("settles external read failures without granting wake scope or hiding uncertain writes", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId, runId, dotRuntime: true,
+    });
+    await expect(authority.execute({ tool: READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
+      callId: "external-reader-without-wake", arguments: {} })).resolves.toMatchObject({
+      outcome: "failed", code: "paperclip_runner_tool_not_advertised",
+      message: expect.stringContaining("get_task_history"),
+    });
+    await expect(authority.recover({ tool: READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
+      callId: "external-reader-without-wake", arguments: {} })).resolves.toMatchObject({
+      isError: true, result: { outcome: "failed", code: "paperclip_runner_tool_not_advertised" },
+    });
+    const result = await authority.execute({ tool: "get_agent", callId: "external-invalid-read",
+      arguments: { agentId: "private-invalid-id-must-not-leak" } });
+    expect(result).toMatchObject({ outcome: "failed", code: "paperclip_runner_read_failed" });
+    expect(JSON.stringify(result)).not.toContain("private-invalid-id-must-not-leak");
+    await expect(authority.execute({ tool: "write_document", callId: "external-invalid-write",
+      arguments: {} })).rejects.toThrow();
+    expect(await authority.execute({ tool: "get_task_context", callId: "external-still-usable", arguments: {} }))
+      .toMatchObject({ activeTask: { id: issueId } });
+  });
+
   it("reads current tool authority without transferring saved profiles or output", async () => {
     const binding = { companyId, agentId, issueId, runId };
     const authority = new PaperclipRunnerToolAuthority(db, binding);

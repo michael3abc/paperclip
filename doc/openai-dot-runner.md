@@ -140,6 +140,19 @@ normal admission with `paperclip_dot_tasks` and `paperclip_dot_request_work`.
 The completion tool returns its canonical accepted report. The final turn can
 repeat either that canonical report or the exact original accepted arguments;
 the Runner persists and emits the canonical report. Changed reports are rejected.
+Completion admission rejects outstanding tools before accepting a report; while
+that admission is pending, new tool calls are rejected. A rejected completion
+does not lock the turn. Reconcile existing operations by their original request
+IDs before submitting completion. The broker exposes fixed rejection codes such
+as `unsettled_tool_calls` and `completion_pending`, never raw Runner diagnostics.
+
+Server-classified read failures return bounded error receipts, including a
+`read_current_wake_comments` call from an ordinary chat without a truncated
+external-chat binding. That call grants no additional read authority; ordinary
+chat history remains available through `get_task_history`. Unexpected mutation
+exceptions and result-persistence failures immediately fail the owning turn for
+reconciliation instead of waiting for its execution timeout. They retain the
+unresolved operation and do not authorize a retry or a replacement assignment.
 Work requests use a durable admission receipt keyed by binding, generation and
 request ID. Retries read that receipt, even after a task finishes, and cannot
 enqueue another run or move the same request to another task. A Dot runs one
@@ -162,6 +175,10 @@ tools; those narrow inbox reads leave its task cursor unchanged.
 - Cancel, pause, reassignment and revocation fence Paperclip authority. They do
   not confirm that Dot stopped all external activity. A fence acknowledgement
   records receipt only.
+- Forced close fences the assignment and shuts down the local Runner even if
+  session close rejects unsettled work. It preserves the failed close and original
+  checkpoint for reconciliation; local process exit does not prove external work
+  stopped or that an unknown effect rolled back.
 - Controller recovery restores the same bridge and assignment. A missing or
   invalid advertised checkpoint requires reconciliation. Automatic bounded
   retries do not create replacement Dot assignments. A tool effect still in

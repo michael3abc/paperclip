@@ -256,6 +256,90 @@ it.each(["local", "local pending finish", "custom local directory", "external la
   }
 }, 45000);
 
+it.each(["read failure", "pending tool", "uncertain write", "oversized result"] as const)(
+  "settles or fences a real Dot bridge after %s without replaying work", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "dot-settlement-"));
+    await writeFile(join(root, "AGENTS.md"), "Use only synthetic tools.");
+    const input = execution(root);
+    let send!: (operation: ExternalProviderOperation) => Promise<void>;
+    let handle!: controlPlane.RunnerProcessHandle;
+    let settleRead!: (result: unknown) => void;
+    const pending = new Promise(resolve => { settleRead = resolve; });
+    const settlements = new Map<string, any>();
+    const handler = vi.fn(async () => {
+      if (mode === "uncertain write") throw new Error("private-effect-may-have-committed");
+      if (mode === "oversized result") return { privateContent: "x".repeat(600_000) };
+      if (mode === "pending tool") return pending;
+      return { outcome: "failed", code: "paperclip_runner_tool_not_advertised" };
+    });
+    const spawn = controlPlane.spawnRunner;
+    const spy = vi.spyOn(controlPlane, "spawnRunner").mockImplementation(options => (handle = spawn(options)));
+    const options: RunnerdDotDriverOptions = {
+      execution: input, stateDirectory: join(root, "state"), runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
+      identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
+        normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
+      dynamicTools: [{ name: "synthetic_tool", description: "Synthetic test only", inputSchema: { type: "object", properties: {} } }],
+      dynamicToolHandler: handler,
+      port: { dispatch: async () => {}, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
+        attach: async fn => { send = fn; return async () => {}; } },
+    };
+    const operation = (action: ExternalProviderOperation["action"], args: Record<string, unknown>): ExternalProviderOperation => ({
+      requestId: randomUUID(), bindingId: input.provider.binding.bindingId, bindingGeneration: 1, runId: input.binding.runId,
+      normalizedSessionId: input.session.normalizedSessionId!, turnId: options.identity.turnId, assignmentRevision: 1,
+      action, input: args, digest: externalOperationDigest(action, args),
+    });
+    let session: Awaited<ReturnType<RunnerdDotDriver["openSession"]>> | undefined;
+    try {
+      session = await new RunnerdDotDriver(options).openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+      await session.startTurn({ message: { role: "user", text: "Exercise the synthetic tool." } });
+      await send(operation("accept", {}));
+      const result = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Handled the tool outcome",
+        completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [] };
+      const tool = operation("tool", { name: "synthetic_tool", arguments: {} });
+      // Consume failures concurrently, before the control-plane callback can fire.
+      const terminal = (async () => { try { for await (const _ of session!.events()) {} return null; } catch (error) { return error as Error; } })();
+      await send(tool).catch(error => {
+        if (!["uncertain write", "oversized result"].includes(mode)) throw error;
+        expect(String(error)).toContain("dot_semantic_result_unresolved");
+      });
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+      if (mode === "uncertain write" || mode === "oversized result") {
+        const failure = await terminal;
+        expect(failure?.message).toContain("dot_semantic_result_unresolved");
+        expect(failure?.message).not.toContain("private");
+        expect(settlements.has(tool.requestId)).toBe(false);
+        await expect(session.close({ reason: "Failure reconciliation", force: true })).rejects.toThrow("dot_runner_operation_rejected");
+        expect((await handle.completion).code).toBe(0);
+        const checkpoint = JSON.parse(await readFile(join(root, "state/runner/dot-provider-state.json"), "utf8"));
+        expect(checkpoint.lifecycle).toBe("fenced");
+        expect(checkpoint.tools.pending[tool.requestId]).toBeDefined();
+      } else {
+        if (mode === "pending tool") {
+          await expect(send(operation("tool", { name: "paperclip_finish", arguments: result })))
+            .rejects.toMatchObject({ externalRejectionReason: "Dot completion requires settled tool calls" });
+          settleRead({ outcome: "failed" });
+        }
+        await vi.waitFor(() => expect(settlements.get(tool.requestId)).toMatchObject({ status: "completed", isError: true }));
+        const completion = operation("tool", { name: "paperclip_finish", arguments: result });
+        await send(completion);
+        await vi.waitFor(() => expect(settlements.get(completion.requestId)).toMatchObject({ status: "completed", isError: false }));
+        await send(operation("finish", { result }));
+        expect(await terminal).toBeNull();
+        await session.close({ reason: "Synthetic turn completed" });
+        expect((await handle.completion).code).toBe(0);
+      }
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      spy.mockRestore();
+      await session?.detachControllerForRestart?.();
+      if (handle?.child.exitCode == null) handle?.child.kill("SIGTERM");
+      await handle?.completion;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45000,
+);
+
 it("rejects a mismatched Grok driver before any provider state is attached", async () => {
   const input = execution("/synthetic/pinned-instructions", "grok_bot");
   expect(() => parseNativeExecutionInput({ ...input, session: { ...input.session, driverKind: "openai_dot_mcp" } })).toThrow();

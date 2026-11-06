@@ -995,6 +995,11 @@ describe("durable Dot Runner integration", () => {
         expect((work.tools as Array<{ operationId: string }>).some(tool => tool.operationId === "register_deliverable")).toBe(provider === "openai_dot");
         expect(await f.broker.operation(f.principal, assignment!.id, randomUUID(), "tool", { name: "write_document", arguments: {} })).toMatchObject({ status: "rejected" });
         await f.broker.operation(f.principal, assignment!.id, randomUUID(), "accept", {});
+        const wakeReadId = randomUUID();
+        await f.broker.operation(f.principal, assignment!.id, wakeReadId, "tool", { name: "read_current_wake_comments", arguments: {} });
+        await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, wakeReadId))
+          .toMatchObject({ status: "completed", isError: true,
+            result: { outcome: "failed", code: "paperclip_runner_tool_not_advertised" } }), { timeout: 10000 });
         expect(JSON.stringify(work)).not.toContain("fixture-gateway-secret");
         let uploadedDeliverableId: string | undefined;
         if (provider === "grok_bot") {

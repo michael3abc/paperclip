@@ -500,7 +500,8 @@ export class PaperclipRunnerToolAuthority {
 
   async #recoverRead(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     try {
-      return { result: await this.execute(call) };
+      const result = await this.execute(call);
+      return { result, ...(record(result).outcome === "failed" ? { isError: true } : {}) };
     } catch (error) {
       // A known read failure is a tool outcome, not a failed transport. Keep
       // authorization, uncertain effects, and unexpected storage errors fatal.
@@ -543,6 +544,26 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    // External runners need a terminal receipt for definite read failures.
+    // Use the server-owned recovery classification, never client annotations:
+    // an exception from a mutation can still mean that its effect committed.
+    if ((this.binding.dotRuntime || this.binding.museRuntime) && RECOVERABLE_READ_OPERATIONS.has(call.tool)) {
+      try { return await this.#execute(call); }
+      catch (error) {
+        const unavailable = error instanceof Error && error.message === "paperclip_runner_tool_not_advertised";
+        return {
+          outcome: "failed",
+          code: unavailable ? "paperclip_runner_tool_not_advertised" : "paperclip_runner_read_failed",
+          message: unavailable && call.tool === READ_CURRENT_WAKE_COMMENTS_TOOL_NAME
+            ? "This turn has no truncated external-chat comments to read. Use get_task_history for ordinary task or chat history."
+            : "The requested read failed or is not authorized for this run. Check the current task and tool scope before continuing.",
+        };
+      }
+    }
+    return this.#execute(call);
+  }
+
+  async #execute(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
     if ((call.tool === "handoff_case" || call.tool === "create_case") && !this.binding.nativeReview) {
       if (this.binding.workMode && this.binding.workMode !== "standard") throw forbidden("Case tools require standard work mode");
       const create = call.tool === "create_case" ? createNativeCaseSchema.parse(call.arguments) : null;

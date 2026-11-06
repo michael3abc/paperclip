@@ -9,7 +9,7 @@ import { agents, companies, issues, authUsers, companyMemberships, heartbeatRuns
 import { issueReadSqlCondition } from "../../services/authorization.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "../../services/native-runtime/native-review-participant.js";
 import { conflict, forbidden } from "../../errors.js";
-import { externalOperationDigest, digestPaperclipSemanticContent, parsePaperclipQuestionSet, type ExternalProviderOperation, type ExternalProviderPort, type DotBindingSnapshot } from "../../vendor/paperclip-runner/index.js";
+import { externalOperationDigest, externalOperationRejection, digestPaperclipSemanticContent, parsePaperclipQuestionSet, type ExternalProviderOperation, type ExternalProviderPort, type DotBindingSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { consumeDotHistoryReceipt } from "../../services/dot-assignment-follow-up.js";
 import { grokRoutineService, lockGrokRoutineAcceptance } from "../../services/grok-bot/routine.js";
 import { authorizeExternalBotOperator } from "../../services/external-bot-authority.js";
@@ -111,7 +111,8 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
     } catch(error) {
       const rejected=error&&typeof error==="object"&&("dotOperationRejected" in error||"externalOperationRejected" in error);
       if(rejected) {
-        const reject = (writer: Database) => writer.execute(sql`update ${operationTable} set status='rejected',outcome=${JSON.stringify({status:"rejected",message:"Runner rejected this operation; inspect the assignment and arguments before proceeding."})}::jsonb,updated_at=now() where id=${row.id}::uuid and status=${provider==="muse"?"dispatched":"reserved"}`);
+        const outcome = externalOperationRejection("externalRejectionReason" in error ? error.externalRejectionReason : undefined);
+        const reject = (writer: Database) => writer.execute(sql`update ${operationTable} set status='rejected',outcome=${JSON.stringify(outcome)}::jsonb,updated_at=now() where id=${row.id}::uuid and status=${provider==="muse"?"dispatched":"reserved"}`);
         if (provider === "muse") await db.transaction(async tx => {
           await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
           await reject(tx);

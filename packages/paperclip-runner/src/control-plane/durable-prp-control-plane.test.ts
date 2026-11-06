@@ -3703,8 +3703,9 @@ describe("DurablePrpControlPlane", () => {
   it("reports an oversized semantic result without exposing its content or redispatching", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-result-limit-"));
     const handler = vi.fn(async () => ({ result: { privateContent: "x".repeat(600_000) } }));
+    const onFailure = vi.fn();
     const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
-      expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler });
+      expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler, onSemanticResultFailure: onFailure });
     try {
       await core.start();
       const client = (await authenticate(core, core.issueBootstrapTicket()))!;
@@ -3717,6 +3718,8 @@ describe("DurablePrpControlPlane", () => {
       expect(core.semanticToolResultsSettled()).toBe(false);
       expect(JSON.stringify(core.semanticToolSettlementDiagnostics())).not.toContain("privateContent");
       expect(handler).toHaveBeenCalledOnce();
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith({ callId: "call-1", operationId: "get_task_context",
+        stage: "persist_result", code: "command_payload_too_large" });
       client.socket.destroy();
     } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
   });

@@ -286,6 +286,13 @@ export interface DurablePrpControlPlaneOptions {
   }) => Promise<{ readonly result: unknown; readonly isError?: boolean }>;
   /** Persist the canonical event before the runner receives its cumulative ACK. */
   onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  /** Notify the owner of an unresolved effect/result without exposing tool contents. */
+  onSemanticResultFailure?: (failure: {
+    readonly callId: string;
+    readonly operationId: string;
+    readonly stage: "persist_result" | "dispatch";
+    readonly code: string;
+  }) => void;
   recoverSemanticToolInput?: (
     input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0],
   ) => Promise<{ readonly result: unknown; readonly isError?: boolean } | null>;
@@ -2007,6 +2014,7 @@ export class DurablePrpControlPlane {
   #semanticInputMode: "dispatch" | "retain_only";
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
+  #onSemanticResultFailure?: DurablePrpControlPlaneOptions["onSemanticResultFailure"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
@@ -2062,6 +2070,7 @@ export class DurablePrpControlPlane {
     this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#onSemanticResultFailure = options.onSemanticResultFailure;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
@@ -4300,9 +4309,11 @@ export class DurablePrpControlPlane {
           const code = error instanceof CommandJournalLimitError ? error.code
             : typeof storageCode === "string" && ["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EIO", "EROFS"].includes(storageCode)
               ? storageCode : stage === "dispatch" ? "dispatcher_rejected" : "result_persistence_failed";
-          this.#semanticResultFailures.push({ callId: call.callId, operationId: call.operationId, stage, code });
+          const failure = { callId: call.callId, operationId: call.operationId, stage, code };
+          this.#semanticResultFailures.push(failure);
           this.#semanticResultFailures = this.#semanticResultFailures.slice(-20);
           this.disconnectActiveRunner();
+          this.#onSemanticResultFailure?.(failure);
         };
         const queueResult = (result: unknown, isError: boolean): void => {
           if (this.#semanticCallbacksRetired) return;
