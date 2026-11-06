@@ -45,12 +45,23 @@ export interface ExternalProviderCodec {
   checkpointSchema: string;
   commandPrefix: "dot" | "muse";
   completionGuidance: string;
+  /**
+   * The provider's turn ends only when it calls its finish tool. A chat reply
+   * does not end it, so the accepted-completion feedback must say so.
+   */
+  finishRequiresToolCall?: boolean;
   runtimeRequestResolution: boolean;
+}
+
+export function externalCompletionFeedback(codec: ExternalProviderCodec, feedback?: string): string {
+  const accepted = feedback ?? "Completion accepted; finish the external turn.";
+  if (!codec.finishRequiresToolCall) return accepted;
+  return `${accepted} This does not end the external turn. Now call ${codec.completionGuidance} with exactly the same structured result. Paperclip does not finish the turn or post your reply until that call succeeds, so do not answer only in chat.`;
 }
 export const DOT_EXTERNAL_CODEC: ExternalProviderCodec = {
   provider: "openai_dot", driverKind: "openai_dot_mcp", displayName: "OpenAI Dot", revision: "dot-mcp-v1",
   checkpointFile: "dot-provider-state.json", checkpointSchema: "paperclip.runner.dot-provider-state.v1", commandPrefix: "dot",
-  completionGuidance: "paperclip_dot_finish", runtimeRequestResolution: false,
+  completionGuidance: "paperclip_dot_finish", finishRequiresToolCall: true, runtimeRequestResolution: false,
 };
 export const GROK_EXTERNAL_CODEC: ExternalProviderCodec = {
   provider: "grok_bot", driverKind: "grok_bot_mcp", displayName: "Grok Bot", revision: "grok-bot-mcp-v1",
@@ -192,7 +203,7 @@ class RunnerdExternalSession implements HarnessSession {
         if (!result.ok || (call.operationId === "paperclip_block") !== (result.ok && result.result.reportedWorkDisposition === "blocked")) {
           return { result: { error: "Invalid completion report. Use the admitted completion contract and the correct completion tool." }, isError: true };
         }
-        try { return { result: { accepted: true, completionReport: result.result, feedback: await o.completionFeedback?.(result.result) ?? "Completion accepted; finish the external turn." } }; }
+        try { return { result: { accepted: true, completionReport: result.result, feedback: externalCompletionFeedback(this.codec, await o.completionFeedback?.(result.result)) } }; }
         catch (error) { return { result: { error: error instanceof Error ? error.message : "Completion rejected" }, isError: true }; }
       }
       if (!o.dynamicToolHandler) throw new Error("dot_semantic_authority_unavailable");
