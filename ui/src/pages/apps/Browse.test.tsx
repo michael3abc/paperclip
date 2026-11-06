@@ -673,6 +673,28 @@ describe("Connectors landing page", () => {
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=arcade&targetToolkit=hubspot");
   });
 
+  it("keeps the setup page after choosing Composio from the provider chooser", async () => {
+    aggregatorCatalogMock.push(indexedApp("Twitter", ["composio", "arcade"]));
+    window.history.replaceState({}, "", "/apps");
+    // A real router changes the URL synchronously; closing the chooser must not undo that navigation.
+    navigateMock.mockImplementation((to: string, options?: { replace?: boolean }) => {
+      window.history[options?.replace ? "replaceState" : "pushState"]({}, "", to);
+    });
+    try {
+      await renderBrowse();
+      await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Twitter"]')!.click());
+      const dialog = document.querySelector('[role="dialog"]')!;
+      await act(() => Array.from(dialog.querySelectorAll("button")).find((button) => button.textContent?.includes("Composio"))!.click());
+      expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=composio&targetToolkit=twitter");
+      expect(navigateMock).not.toHaveBeenCalledWith("/apps", { replace: true });
+      expect(window.location.pathname + window.location.search).toBe("/apps/connect?source=composio&targetToolkit=twitter");
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+    } finally {
+      navigateMock.mockReset();
+      window.history.replaceState({}, "", "/");
+    }
+  });
+
   it.each(["composio", "arcade"] as const)("skips provider selection and opens setup for a sole %s provider", async (provider) => {
     const app = indexedApp("Circleback", [provider]);
     app.routes[0].toolkit = "circle_back";

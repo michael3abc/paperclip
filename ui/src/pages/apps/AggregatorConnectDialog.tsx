@@ -16,6 +16,7 @@ export function aggregatorAppConnectHref(route: AggregatorAppRoute, connection?:
   return `/apps/connect?${params}`;
 }
 
+// Close before navigating: closing a `?source=composio` return URL replaces the route, which would undo a navigation made first.
 export function AggregatorConnectDialog({ app, connections, initialProvider, onClose, onNavigate }: {
   app: AggregatorAppCatalogEntry;
   connections: Partial<Record<AggregatorAppRoute["provider"], ToolConnection[]>>;
@@ -33,7 +34,7 @@ export function AggregatorConnectDialog({ app, connections, initialProvider, onC
   const provider = selected ? remoteMcpProviders[selected.provider] : null;
   function choose(route: AggregatorAppRoute) {
     const accounts = connections[route.provider] ?? [];
-    if (accounts.length === 0) { onNavigate(aggregatorAppConnectHref(route)); onClose(); }
+    if (accounts.length === 0) { onClose(); onNavigate(aggregatorAppConnectHref(route)); }
     else setSelected(route);
   }
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -64,14 +65,14 @@ export function AggregatorConnectDialog({ app, connections, initialProvider, onC
           </select>
         </div> : null}
         {selected.provider === "composio" ? <ComposioAppSetup name={app.name} toolkit={selected.toolkit} connections={existing.filter(connection => connection.status === "active" && connection.enabled && !isToolConnectionAttentionHealth(connection.healthStatus))} onClose={onClose}
-          onBack={canChooseProvider ? () => setSelected(null) : undefined} onConnectNew={() => { onNavigate(`${aggregatorAppConnectHref(selected)}&new=1`); onClose(); }} /> : null}
+          onBack={canChooseProvider ? () => setSelected(null) : undefined} onConnectNew={() => { onClose(); onNavigate(`${aggregatorAppConnectHref(selected)}&new=1`); }} /> : null}
 
       </div>}
       {selected?.provider !== "composio" ? <DialogFooter className="sm:items-center sm:justify-between">
         <Button variant="ghost" onClick={selected && canChooseProvider ? () => setSelected(null) : onClose}>{selected && canChooseProvider ? "Back" : "Cancel"}</Button>
         {selected ? <div className="flex flex-wrap items-center gap-3">
           {managementUrl ? <Button asChild><a href={managementUrl} target="_blank" rel="noopener noreferrer" onClick={onClose}>Continue<ExternalLink className="size-4" /></a></Button> : null}
-          <Button variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground" onClick={() => { onNavigate(`${aggregatorAppConnectHref(selected)}&new=1`); onClose(); }}>Connect a new account</Button>
+          <Button variant="link" size="sm" className="h-auto p-0 text-xs text-muted-foreground hover:text-foreground" onClick={() => { onClose(); onNavigate(`${aggregatorAppConnectHref(selected)}&new=1`); }}>Connect a new account</Button>
         </div> : null}
       </DialogFooter> : null}
     </DialogContent>
