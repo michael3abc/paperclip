@@ -17,6 +17,16 @@ Each agent heartbeat reports cost events with:
 
 These are aggregated per agent per month (UTC calendar month).
 
+### Compass rate card
+
+Compass usage is priced with the versioned card in
+`server/src/services/compass-pricing.ts`. On this host, the usage-ledger service
+reads `/home/michael/projects/paperclip/server/src/services/compass-pricing.ts`
+from the canonical checkout. Before changing that source, run
+`python3 /home/michael/services/systemd/routing/compass-usage-ledger/ops/compass-usage-report.py --check-card`.
+The ledger's vendor list-price estimate is separate from an actual Compass
+invoice; its rate card and the Paperclip source must agree.
+
 ## Setting Budgets
 
 ### Company Budget
