@@ -301,6 +301,25 @@ That means:
 
 Start with least privilege where possible, and avoid exposing secrets in broad reusable prompts unless intentionally required.
 
+### Voice requests (experimental local voice)
+
+With the default-off local voice experiment, a board user can send a request
+by voice to the agent assigned to a task (`voice_task` binding). The agent
+receives it like any other request:
+
+- **Input.** The request becomes one issue comment on the bound task with the
+  exact text the user confirmed, plus one durable wakeup. A retry with the same
+  operation id never creates a second comment or wakeup. Follow-up requests
+  stay on the same task.
+- **Replies.** Agent replies to that conversation become publications that the
+  voice session pulls. They are not pushed into a call. A progress update is
+  never presented as a final answer.
+- **Questions.** Use `ask_user_questions` to ask the user something by voice.
+  Approvals (`request_confirmation`) cannot be resolved by voice.
+- **Identity.** Voice tool messages cannot name or change the company, agent,
+  task, project or assignee. The server owns the binding, and a change to any
+  of these revokes the session.
+
 ## 10. Minimal setup checklist
 
 1. Choose adapter (e.g. `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `hermes_gateway`, `cursor`, or `openclaw_gateway`). External plugins like `droid_local` are also available via the adapter manager.

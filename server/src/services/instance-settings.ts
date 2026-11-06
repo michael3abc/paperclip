@@ -263,6 +263,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableGrokBot: parsed.data.enableGrokBot ?? false,
       enableChatConnectors: parsed.data.enableChatConnectors ?? false,
       enableGitHubReviewBots: parsed.data.enableGitHubReviewBots ?? false,
+      enableLocalVoice: parsed.data.enableLocalVoice ?? false,
       enableMemoryConnectors: parsed.data.enableMemoryConnectors ?? false,
       enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
       enableCases: parsed.data.enableCases ?? false,
@@ -320,6 +321,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableGrokBot: false,
     enableChatConnectors: false,
     enableGitHubReviewBots: false,
+    enableLocalVoice: false,
     enableMemoryConnectors: false,
     enablePaperclipNotebook: false,
     enableCases: false,
@@ -665,7 +667,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
           await notifyNativeResultCommit(tx);
           await notifyNativeWorkspaceFinalization(tx);
         }
-        if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
+        if (patch.enableChatConnectors !== undefined || patch.enableLocalVoice !== undefined) await notifyVoiceChange(tx);
         await notifyToolConnectionHealth(tx, "*");
         return tx
           .update(instanceSettings)

@@ -97,7 +97,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
         },
       })
       .returning();
-    if (endpoint.provider === "speko") {
+    if (endpoint.provider === "speko" || endpoint.provider === "local_voice") {
       try {
         const authorization = await db.transaction((tx) => voiceStore.authorizePrincipal(tx, endpoint.companyId, endpoint.id, externalId));
         return { principal, userId: authorization.userId, linkedDenied: false };
@@ -182,9 +182,9 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
     userId: string | null;
     sponsorUserId?: string | null;
   }> {
-    if (endpoint.provider === "speko") {
+    if (endpoint.provider === "speko" || endpoint.provider === "local_voice") {
       const principal = await tx.select({ externalId: chatExternalPrincipals.externalId }).from(chatExternalPrincipals)
-        .where(and(eq(chatExternalPrincipals.id, principalId), eq(chatExternalPrincipals.companyId, endpoint.companyId), eq(chatExternalPrincipals.provider, "speko"))).then((rows) => rows[0]);
+        .where(and(eq(chatExternalPrincipals.id, principalId), eq(chatExternalPrincipals.companyId, endpoint.companyId), eq(chatExternalPrincipals.provider, endpoint.provider))).then((rows) => rows[0]);
       if (!principal) return { allowed: false, linkedDenied: true, userId: null };
       try { return await voiceStore.authorizePrincipal(tx as import("../../voice/voice-session-store.js").VoiceTransaction, endpoint.companyId, endpoint.id, principal.externalId); }
       catch (error) {

@@ -161,6 +161,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableLocalVoice: {
+    title: "Local voice",
+    description:
+      "Allow the local same-origin voice control plane for voice tasks. Requires chat connectors. Speko voice is unaffected; turning this off rejects new local voice sessions and tool calls.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableMemoryConnectors: {
     title: "Memory connectors",
     description: "Show experimental Mem0, Zep, Supermemory, Cognee, and Honcho setup. Existing connections keep running when hidden.",

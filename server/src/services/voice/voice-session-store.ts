@@ -6,15 +6,16 @@ import { environmentService } from "../environments.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, asc, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
-import { activityLog, chatVoicePhoneLines, chatVoiceInboundCalls, chatVoiceCallbacks, chatEndpoints, chatConversations, chatDeliveries, chatPublications, chatVoiceSessions, chatVoiceToolCalls, chatVoiceReplies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolConnectionInstalls, instanceUserRoles, issueThreadInteractions, issues, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
+import { activityLog, chatVoiceConfirmations, chatVoiceOperations, chatVoicePhoneLines, chatVoiceInboundCalls, chatVoiceCallbacks, chatEndpoints, chatConversations, chatDeliveries, chatPublications, chatVoiceSessions, chatVoiceToolCalls, chatVoiceReplies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolConnectionInstalls, instanceUserRoles, issueThreadInteractions, issues, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
-import type { ToolCredentialSecretRef, VoiceSession } from "@paperclipai/shared";
+import type { ToolCredentialSecretRef, VoiceBindingMode, VoiceConfirmationReceipt, VoiceOperationReceipt, VoiceProvider, VoiceSession } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, HttpError } from "../../errors.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { evaluateIssueThreadInteractionResolverAudience } from "../issue-thread-interaction-resolution.js";
 import { nativeSha256 } from "../native-runtime/canonical.js";
 import { authorizationService, type AuthorizationActor } from "../authorization.js";
-import type { SpekoToolEnvelope } from "./speko-protocol.js";
+import { spekoToolCommand, type SpekoToolEnvelope } from "./speko-protocol.js";
+import { sha256Hex, type VoiceCommandEnvelope } from "./voice-command.js";
 
 export type VoiceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type VoiceSessionRow = typeof chatVoiceSessions.$inferSelect;
@@ -35,6 +36,7 @@ export async function currentVoiceCredentialFingerprint(db: Db | VoiceTransactio
   }
   return voiceCredentialFingerprint(resolved);
 }
+const VOICE_STORE_PROVIDERS: readonly VoiceProvider[] = ["speko", "local_voice"];
 export const voiceTokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 export function serializeVoiceSession(row: VoiceSessionRow): VoiceSession {
   return { id: row.id, companyId: row.companyId, endpointId: row.endpointId, issueId: row.issueId, assignedAgentId: row.assignedAgentId, state: row.state, mode: row.mode, generation: row.generation, callerAuthority: row.callerAuthority, replyCursor: row.replyCursor, errorCode: row.errorCode, createdAt: row.createdAt.toISOString(), expiresAt: row.expiresAt.toISOString(), endedAt: row.endedAt?.toISOString() ?? null };
@@ -69,9 +71,14 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     if (work && (task.status === "cancelled" || task.hiddenAt)) throw forbidden("This voice task is no longer available for work");
     return task;
   }
-  async function endpointContext(tx: VoiceTransaction, companyId: string, endpointId: string) {
+  /**
+   * Speko and local voice endpoints share this authority path. Callers that
+   * serve one provider pass it explicitly; a session's own endpoint provider is
+   * later matched against the command provider in runCommand.
+   */
+  async function endpointContext(tx: VoiceTransaction, companyId: string, endpointId: string, providers: readonly VoiceProvider[] = VOICE_STORE_PROVIDERS) {
     const endpoint = await tx.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, companyId))).for("share", options.nonblockingAuthority ? { noWait: true } : undefined).then((rows) => rows[0]);
-    if (!endpoint || endpoint.provider !== "speko") throw notFound("Voice connection not found");
+    if (!endpoint || !providers.some((provider) => provider === endpoint.provider)) throw notFound("Voice connection not found");
     const connection = await tx.select().from(toolConnections).where(and(eq(toolConnections.id, endpoint.connectionId), eq(toolConnections.companyId, companyId))).for("share", options.nonblockingAuthority ? { noWait: true } : undefined).then((rows) => rows[0]);
     if (!["active", "verifying"].includes(endpoint.status) || !connection?.enabled || connection.status !== "active" || connection.transport !== "voice") throw forbidden("Voice connection is not active");
     const generation = Number((endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0);
@@ -156,10 +163,19 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     const task = guest ? await authorizeGuestTask(tx, context, session) : await authorizeTask(tx, companyId, session.issueId, { id: session.callerId, authority: session.callerAuthority as VoiceCaller["authority"] });
     const conversation = await tx.select().from(chatConversations).where(and(eq(chatConversations.id, session.conversationId), eq(chatConversations.companyId, companyId), eq(chatConversations.endpointId, session.endpointId), eq(chatConversations.issueId, session.issueId))).for("share", options.nonblockingAuthority ? { noWait: true } : undefined).then((rows) => rows[0]);
     if (!task || !conversation || !["active", "waiting"].includes(conversation.state) || task.assigneeAgentId !== session.assignedAgentId || context.endpoint.assignedAgentId !== session.assignedAgentId) throw forbidden("The voice task binding changed");
+    // Server-owned local binding: a local endpoint session is always a
+    // voice_task browser session bound to its task's project at reservation.
+    // Speko sessions never carry a binding mode.
+    const local = context.endpoint.provider === "local_voice";
+    if (local !== (session.bindingMode === "voice_task") || local && (session.mode !== "browser" || (task.projectId ?? null) !== (session.bindingProjectId ?? null))) throw forbidden("The voice task binding changed");
     return { ...context, session, conversation, task };
   }
   async function reserve(input: {
     companyId: string; endpointId: string; caller: VoiceCaller; idempotencyKey: string; requestFingerprint: string; maxDurationSeconds: number; mode?: "browser" | "outbound_phone" | "inbound_phone"; providerSessionId?: string; toolToken?: string;
+    /** Allowed endpoint providers. Omitted means Speko only, the pre-existing contract. */
+    providers?: readonly VoiceProvider[];
+    /** Required for, and only accepted with, local voice endpoints. */
+    bindingMode?: VoiceBindingMode;
     /** Runs only for a NEW request and in the same transaction as the session. */
     prepareBinding(tx: VoiceTransaction): Promise<{ issueId: string; conversationId: string }>;
   }) {
@@ -168,7 +184,9 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       await authorizeCaller(tx, input.companyId, input.caller);
       const previous = await tx.select().from(chatVoiceSessions).where(and(eq(chatVoiceSessions.companyId, input.companyId), eq(chatVoiceSessions.callerId, input.caller.id), eq(chatVoiceSessions.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0]);
       if (previous && (previous.requestFingerprint !== input.requestFingerprint || previous.endpointId !== input.endpointId)) throw conflict("Voice request key was already used for different work");
-      const context = await endpointContext(tx, input.companyId, input.endpointId);
+      const context = await endpointContext(tx, input.companyId, input.endpointId, input.providers ?? ["speko"]);
+      const local = context.endpoint.provider === "local_voice";
+      if (local ? input.bindingMode !== "voice_task" || (input.mode ?? "browser") !== "browser" : input.bindingMode !== undefined) throw conflict("Voice binding mode is not supported by this connection", { code: "voice_binding_mode_invalid" });
       await authorizeConnection(tx, context, input.caller);
       let inboundAdmission: typeof chatVoiceInboundCalls.$inferSelect | undefined;
       async function bindInboundSession(sessionId: string) {
@@ -229,6 +247,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       const sessionId = randomUUID();
       await notifyVoiceChange(tx, { kind: "session", id: sessionId });
       const [session] = await tx.insert(chatVoiceSessions).values({ id: sessionId, companyId: input.companyId, endpointId: input.endpointId, ...binding, assignedAgentId: context.endpoint.assignedAgentId,
+        ...(local ? { bindingMode: "voice_task" as const, bindingProjectId: task.projectId ?? null } : {}),
         callerId: input.caller.id, callerAuthority: input.caller.authority, mode: input.mode ?? "browser", state: input.providerSessionId ? "connecting" : "reserved", providerSessionId: input.providerSessionId ?? null, approvedByUserId: input.mode === "inbound_phone" ? input.caller.id : null, generation: context.generation, credentialFingerprint: context.fingerprint,
         toolTokenHash: voiceTokenHash(token), idempotencyKey: input.idempotencyKey, requestFingerprint: input.requestFingerprint, createdAt, expiresAt: new Date(createdAt.getTime() + input.maxDurationSeconds * 1000) }).returning();
       await tx.insert(activityLog).values({ companyId: input.companyId, actorType: "user", actorId: input.caller.id, action: "voice.session.requested", entityType: "voice_session", entityId: session.id, details: { endpointId: input.endpointId, issueId: session.issueId, mode: input.mode ?? "browser" } });
@@ -353,22 +372,42 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     if (run?.status === "succeeded") return { state: "awaiting_reply", message: "No agent run is currently active. Use only approved updates for the answer. This does not prove the requested work or any background command completed." };
     return { state: "pending", message: "The request is saved; execution status is not yet available." };
   }
+  type AcceptVoiceRequest = (tx: VoiceTransaction, context: Awaited<ReturnType<typeof authorizeSession>>, text: string, providerToolCallId: string) => Promise<string>;
+  /** Speko entry point. The verified envelope, fingerprint and stored responses are unchanged. */
   async function runTool(input: {
     companyId: string; endpointId: string; sessionId: string; token: string; envelope: SpekoToolEnvelope; webhookId: string; fingerprint: string;
     /** Stage the existing chat delivery. Execution drains after this transaction commits. */
-    accept(tx: VoiceTransaction, context: Awaited<ReturnType<typeof authorizeSession>>, text: string, providerToolCallId: string): Promise<string>;
+    accept: AcceptVoiceRequest;
   }) {
+    return runCommand({ companyId: input.companyId, endpointId: input.endpointId, sessionId: input.sessionId, token: input.token, accept: input.accept,
+      command: spekoToolCommand({ envelope: input.envelope, webhookId: input.webhookId, fingerprint: input.fingerprint }) });
+  }
+  function ledgerLockKey(session: VoiceSessionRow, conversation: typeof chatConversations.$inferSelect, operationId: string) {
+    return `voice-op:${session.companyId}:${session.callerId}:${session.issueId}:${session.conversationId}:${conversation.sessionGeneration}:${operationId}`;
+  }
+  /** Ledger fingerprint: bound agent, binding mode, tool and confirmed content. Never the provider tool call id. */
+  function operationFingerprint(session: VoiceSessionRow, command: VoiceCommandEnvelope["command"]) {
+    const content = command.tool === "submit_request" ? { textSha256: sha256Hex(command.args.text) }
+      : command.tool === "answer_question" ? { interactionId: command.args.interactionId, answersSha256: nativeSha256(command.args.answers) } : {};
+    return sha256Hex(JSON.stringify({ agentId: session.assignedAgentId, bindingMode: session.bindingMode, tool: command.tool, ...content }));
+  }
+  /** Provider-neutral tool execution. Local voice adds the durable operation ledger and confirmation receipt. */
+  async function runCommand(input: {
+    companyId: string; endpointId: string; sessionId: string; token: string; command: VoiceCommandEnvelope; accept: AcceptVoiceRequest;
+  }) {
+    const cmd = input.command, command = cmd.command;
     return db.transaction(async (tx) => {
       const context = await authorizeSession(tx, input.companyId, input.sessionId), { session } = context;
-      if (session.endpointId !== input.endpointId || session.providerSessionId !== input.envelope.session_id || !timingSafeEqual(Buffer.from(session.toolTokenHash, "hex"), Buffer.from(voiceTokenHash(input.token), "hex"))) throw forbidden("Voice tool scope does not match this session");
+      if (session.endpointId !== input.endpointId || context.endpoint.provider !== cmd.provider || session.providerSessionId !== cmd.providerSessionId || !timingSafeEqual(Buffer.from(session.toolTokenHash, "hex"), Buffer.from(voiceTokenHash(input.token), "hex"))) throw forbidden("Voice tool scope does not match this session");
+      const local = cmd.provider === "local_voice";
       if (session.state === "connecting") {
         await notifyVoiceChange(tx, { kind: "session", id: session.id });
         await tx.update(chatVoiceSessions).set({ state: "active", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
         await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "system", actorId: "voice-session-service", action: "voice.session.connected", entityType: "voice_session", entityId: session.id, details: { endpointId: session.endpointId, issueId: session.issueId } });
       }
-      const prior = await tx.select().from(chatVoiceToolCalls).where(and(eq(chatVoiceToolCalls.sessionId, session.id), eq(chatVoiceToolCalls.providerToolCallId, input.envelope.tool_call_id))).then((rows) => rows[0]);
+      const prior = await tx.select().from(chatVoiceToolCalls).where(and(eq(chatVoiceToolCalls.sessionId, session.id), eq(chatVoiceToolCalls.providerToolCallId, cmd.toolCallId))).then((rows) => rows[0]);
       if (prior) {
-        if (prior.fingerprint !== input.fingerprint) throw conflict("Voice tool retry changed its arguments");
+        if (prior.fingerprint !== cmd.fingerprint) throw conflict("Voice tool retry changed its arguments");
         if (prior.tool === "get_updates") {
           const updates = Array.isArray(prior.response.updates) ? prior.response.updates : [];
           for (const update of updates) {
@@ -383,22 +422,46 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
         return prior.response;
       }
       const replay = await tx.select({ id: chatVoiceToolCalls.id }).from(chatVoiceToolCalls)
-        .where(and(eq(chatVoiceToolCalls.companyId, session.companyId), eq(chatVoiceToolCalls.webhookId, input.webhookId))).then((rows) => rows[0]);
+        .where(and(eq(chatVoiceToolCalls.companyId, session.companyId), eq(chatVoiceToolCalls.webhookId, cmd.webhookId))).then((rows) => rows[0]);
       if (replay) throw conflict("Voice webhook id was already used for a different tool call");
       let deliveryId: string | null = null, response: Record<string, unknown>;
-      if (input.envelope.tool === "submit_request") {
+      // Local mutating tools: one durable operation per logical key. The same
+      // key returns the original receipt; changed content is a conflict; a key
+      // whose outcome is unknown keeps resolving to the same row.
+      let operation: { operationId: string; fingerprint: string; confirmationId?: string } | null = null;
+      if (local && command.tool !== "get_updates") {
+        if (!cmd.operationId) throw conflict("Voice operation id is required", { code: "voice_operation_required" });
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${ledgerLockKey(session, context.conversation, cmd.operationId)}, 0))`);
+        const fingerprint = operationFingerprint(session, command);
+        const [existing] = await tx.select().from(chatVoiceOperations).where(and(eq(chatVoiceOperations.companyId, session.companyId),
+          eq(chatVoiceOperations.callerId, session.callerId), eq(chatVoiceOperations.issueId, session.issueId),
+          eq(chatVoiceOperations.conversationId, session.conversationId), eq(chatVoiceOperations.conversationGeneration, context.conversation.sessionGeneration),
+          eq(chatVoiceOperations.operationId, cmd.operationId)));
+        if (existing) {
+          if (existing.fingerprint !== fingerprint || existing.tool !== command.tool) throw conflict("Voice operation id was already used for different content", { code: "voice_operation_conflict", operationId: cmd.operationId });
+          await tx.insert(chatVoiceToolCalls).values({ companyId: session.companyId, sessionId: session.id, providerToolCallId: cmd.toolCallId, webhookId: cmd.webhookId, fingerprint: cmd.fingerprint, tool: command.tool, deliveryId: null, response: existing.receipt });
+          return existing.receipt;
+        }
+        operation = { operationId: cmd.operationId, fingerprint };
+      }
+      if (command.tool === "submit_request") {
         if (context.task.status === "backlog") throw conflict("Move this task to Todo in Paperclip before requesting voice work.");
         if (session.callerAuthority === "guest_intake") {
           const requests = await tx.select({id: chatVoiceToolCalls.id}).from(chatVoiceToolCalls).where(and(eq(chatVoiceToolCalls.sessionId, session.id), eq(chatVoiceToolCalls.tool, "submit_request"))).limit(20);
           if (requests.length >= 20) throw conflict("This call has reached its message limit. Continue in Paperclip.");
         }
-        deliveryId = await input.accept(tx, context, input.envelope.args.text, input.envelope.tool_call_id);
+        if (local && operation) operation.confirmationId = await consumeConfirmation(tx, session, cmd, command.args.text);
+        deliveryId = await input.accept(tx, context, command.args.text, cmd.toolCallId);
         const delivery = await tx.select({ id: chatDeliveries.id }).from(chatDeliveries).where(and(eq(chatDeliveries.id, deliveryId), eq(chatDeliveries.companyId, session.companyId), eq(chatDeliveries.endpointId, session.endpointId))).then((rows) => rows[0]);
         if (!delivery) throw conflict("Voice request was not durably accepted");
         response = { status: "accepted", requestId: deliveryId, message: "Your request is saved. Work continues on the same task." };
-      } else if (input.envelope.tool === "answer_question") {
+        if (local && operation) {
+          const receipt: VoiceOperationReceipt = { operationId: operation.operationId, state: "accepted", tool: "submit_request", sessionId: session.id, deliveryId, textSha256: sha256Hex(command.args.text), acceptedAt: new Date().toISOString() };
+          response = { ...response, operationId: operation.operationId, receipt };
+        }
+      } else if (command.tool === "answer_question") {
         if (session.callerAuthority === "guest_intake") throw forbidden("Public callers can clarify in conversation, but cannot resolve protected task questions or approvals");
-        const { interactionId, answers } = input.envelope.args;
+        const { interactionId, answers } = command.args;
         const [published] = await tx.select({ id: chatVoiceReplies.id }).from(chatVoiceReplies)
           .innerJoin(chatPublications, eq(chatPublications.id, chatVoiceReplies.publicationId))
           .where(and(eq(chatVoiceReplies.companyId, session.companyId), eq(chatVoiceReplies.sessionId, session.id),
@@ -406,13 +469,24 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
             eq(chatPublications.issueId, session.issueId), eq(chatPublications.state, "published"),
             sql`${chatVoiceReplies.deliveredAt} is not null`, sql`${chatPublications.payload}->>'interactionId' = ${interactionId}`)).limit(1);
         if (!published) throw forbidden("This question was not presented to this voice session");
+        if (local) {
+          // Local voice writes only to a still-pending question. Approvals
+          // (request_confirmation) and resolved questions get zero writes.
+          const [interaction] = await tx.select({ kind: issueThreadInteractions.kind, status: issueThreadInteractions.status }).from(issueThreadInteractions)
+            .where(and(eq(issueThreadInteractions.companyId, session.companyId), eq(issueThreadInteractions.issueId, session.issueId), eq(issueThreadInteractions.id, interactionId))).for("update");
+          if (!interaction || interaction.kind !== "ask_user_questions" || interaction.status !== "pending") throw conflict("Only a pending question can be answered by voice", { code: "voice_question_not_pending" });
+        }
         const answered = await issueThreadInteractionService(tx as unknown as Db).answerQuestions(context.task, interactionId,
           { answers }, { userId: session.callerId });
         response = { status: "answered", interactionId, resultSha256: nativeSha256(answered.result), message: "Your answer was saved." };
+        if (local && operation) {
+          const receipt: VoiceOperationReceipt = { operationId: operation.operationId, state: "accepted", tool: "answer_question", sessionId: session.id, acceptedAt: new Date().toISOString() };
+          response = { ...response, operationId: operation.operationId, receipt };
+        }
       } else {
         await collectMissedReplies(tx, session);
-        const cursor = input.envelope.args.cursor;
-        const repeat = input.envelope.args.repeat === true;
+        const cursor = command.args.cursor;
+        const repeat = command.args.repeat === true;
         if (cursor > session.replyCursor) throw conflict("Voice reply cursor is ahead of this session");
         if (repeat) await collectRepeatReply(tx, session);
         // The durable delivered marker is authoritative. A later publication
@@ -456,8 +530,96 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
           ...(session.mode !== "browser" ? {delivery: "Approved task answers are pushed into this live call. Keep conversing; no completion polling is required."} : {}),
         };
       }
-      await tx.insert(chatVoiceToolCalls).values({ companyId: session.companyId, sessionId: session.id, providerToolCallId: input.envelope.tool_call_id, webhookId: input.webhookId, fingerprint: input.fingerprint, tool: input.envelope.tool, deliveryId, response });
+      if (operation && command.tool !== "get_updates") {
+        await tx.insert(chatVoiceOperations).values({ companyId: session.companyId, sessionId: session.id, callerId: session.callerId, issueId: session.issueId,
+          conversationId: session.conversationId, conversationGeneration: context.conversation.sessionGeneration, operationId: operation.operationId,
+          tool: command.tool, fingerprint: operation.fingerprint, deliveryId, confirmationId: operation.confirmationId ?? null, receipt: response });
+        if (operation.confirmationId) await tx.update(chatVoiceConfirmations).set({ state: "consumed", operationId: operation.operationId, consumedAt: new Date() }).where(eq(chatVoiceConfirmations.id, operation.confirmationId));
+        await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "user", actorId: session.callerId, action: "voice.operation.accepted", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId, operationId: operation.operationId, tool: command.tool, deliveryId } });
+      }
+      await tx.insert(chatVoiceToolCalls).values({ companyId: session.companyId, sessionId: session.id, providerToolCallId: cmd.toolCallId, webhookId: cmd.webhookId, fingerprint: cmd.fingerprint, tool: command.tool, deliveryId, response });
       return response;
+    });
+  }
+  /**
+   * The confirmed text must be exactly what the trusted confirmation endpoint
+   * hashed. A missing, superseded, consumed or mismatched (e.g. truncated)
+   * confirmation stops before any delivery is staged.
+   */
+  async function consumeConfirmation(tx: VoiceTransaction, session: VoiceSessionRow, cmd: VoiceCommandEnvelope, text: string) {
+    if (!cmd.confirmation || !/\S/.test(text)) throw conflict("Confirm this request before submitting it", { code: "voice_confirmation_required" });
+    const [confirmation] = await tx.select().from(chatVoiceConfirmations).where(and(eq(chatVoiceConfirmations.companyId, session.companyId),
+      eq(chatVoiceConfirmations.sessionId, session.id), eq(chatVoiceConfirmations.draftId, cmd.confirmation.draftId),
+      eq(chatVoiceConfirmations.revision, cmd.confirmation.revision))).for("update");
+    if (!confirmation) throw conflict("Confirm this request before submitting it", { code: "voice_confirmation_required" });
+    if (confirmation.callerId !== session.callerId) throw forbidden("This confirmation belongs to another caller");
+    if (confirmation.state === "superseded") throw conflict("A newer revision of this request was confirmed", { code: "voice_confirmation_superseded" });
+    if (confirmation.state !== "confirmed") throw conflict("This confirmation was already used", { code: "voice_confirmation_consumed" });
+    if (confirmation.textLength !== text.length || confirmation.textSha256 !== sha256Hex(text)) throw conflict("The request text differs from the confirmed text", { code: "voice_confirmation_mismatch" });
+    return confirmation.id;
+  }
+  function confirmationProjection(row: typeof chatVoiceConfirmations.$inferSelect): VoiceConfirmationReceipt {
+    return { sessionId: row.sessionId, draftId: row.draftId, revision: row.revision, textSha256: row.textSha256, textLength: row.textLength, state: row.state as VoiceConfirmationReceipt["state"], createdAt: row.createdAt.toISOString() };
+  }
+  async function localSession(tx: VoiceTransaction, companyId: string, sessionId: string, caller: VoiceCaller) {
+    const context = await authorizeSession(tx, companyId, sessionId);
+    if (context.endpoint.provider !== "local_voice" || context.session.bindingMode !== "voice_task") throw notFound("Voice session not found");
+    if (context.session.callerId !== caller.id || context.session.callerAuthority !== caller.authority) throw forbidden("This voice session belongs to another caller");
+    return context;
+  }
+  /**
+   * Trusted confirmation receipt. Only the caller's authenticated board
+   * session creates it, never the voice model's tool channel. A newer revision
+   * supersedes every older confirmed revision of the same draft.
+   */
+  async function confirmDraft(input: { companyId: string; sessionId: string; caller: VoiceCaller; draftId: string; revision: number; text: string }) {
+    if (!/\S/.test(input.text) || input.text.length > 16_000) throw conflict("Confirmed text must not be empty", { code: "voice_confirmation_empty" });
+    // The work queue trims the message into the issue comment; only the canonical form keeps the confirmed hash equal to what the agent receives.
+    if (input.text !== input.text.trim()) throw conflict("Confirmed text must not have leading or trailing whitespace", { code: "voice_confirmation_not_canonical" });
+    return db.transaction(async (tx) => {
+      const { session } = await localSession(tx, input.companyId, input.sessionId, input.caller);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-draft:${session.id}:${input.draftId}`}, 0))`);
+      const rows = await tx.select().from(chatVoiceConfirmations).where(and(eq(chatVoiceConfirmations.companyId, session.companyId),
+        eq(chatVoiceConfirmations.sessionId, session.id), eq(chatVoiceConfirmations.draftId, input.draftId))).orderBy(desc(chatVoiceConfirmations.revision));
+      const textSha256 = sha256Hex(input.text);
+      const same = rows.find((row) => row.revision === input.revision);
+      if (same) {
+        if (same.textSha256 !== textSha256 || same.textLength !== input.text.length) throw conflict("This draft revision was already confirmed with different text", { code: "voice_confirmation_conflict" });
+        return confirmationProjection(same);
+      }
+      if (rows.some((row) => row.state === "consumed")) throw conflict("This draft was already submitted", { code: "voice_draft_submitted" });
+      if (rows[0] && rows[0].revision > input.revision) throw conflict("A newer revision of this draft was already confirmed", { code: "voice_confirmation_stale" });
+      await tx.update(chatVoiceConfirmations).set({ state: "superseded" }).where(and(eq(chatVoiceConfirmations.sessionId, session.id),
+        eq(chatVoiceConfirmations.draftId, input.draftId), eq(chatVoiceConfirmations.state, "confirmed")));
+      const [created] = await tx.insert(chatVoiceConfirmations).values({ companyId: session.companyId, sessionId: session.id, callerId: session.callerId,
+        draftId: input.draftId, revision: input.revision, textSha256, textLength: input.text.length, confirmedByUserId: input.caller.id }).returning();
+      await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "user", actorId: input.caller.id, action: "voice.confirmation.created", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId, draftId: input.draftId, revision: input.revision, textSha256 } });
+      return confirmationProjection(created);
+    });
+  }
+  /**
+   * Resolve an operation whose outcome the client did not observe. Waits for
+   * an in-flight submit on the same key, then returns its receipt or
+   * not_found. The client must retry with the SAME operationId; it never mints
+   * a new one for an unknown outcome.
+   */
+  async function operationStatus(input: { companyId: string; sessionId: string; caller: VoiceCaller; operationId: string }): Promise<VoiceOperationReceipt | Record<string, unknown>> {
+    return db.transaction(async (tx) => {
+      const [session] = await tx.select().from(chatVoiceSessions).where(and(eq(chatVoiceSessions.id, input.sessionId), eq(chatVoiceSessions.companyId, input.companyId)));
+      if (!session || session.bindingMode !== "voice_task") throw notFound("Voice session not found");
+      if (session.callerId !== input.caller.id || session.callerAuthority !== input.caller.authority) throw forbidden("This voice session belongs to another caller");
+      await endpointContext(tx, input.companyId, session.endpointId, ["local_voice"]);
+      await authorizeTask(tx, input.companyId, session.issueId, input.caller, false);
+      const [conversation] = await tx.select().from(chatConversations).where(and(eq(chatConversations.id, session.conversationId), eq(chatConversations.companyId, input.companyId)));
+      if (!conversation) throw notFound("Voice conversation not found");
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${ledgerLockKey(session, conversation, input.operationId)}, 0))`);
+      const [existing] = await tx.select().from(chatVoiceOperations).where(and(eq(chatVoiceOperations.companyId, input.companyId),
+        eq(chatVoiceOperations.callerId, session.callerId), eq(chatVoiceOperations.issueId, session.issueId),
+        eq(chatVoiceOperations.conversationId, session.conversationId), eq(chatVoiceOperations.conversationGeneration, conversation.sessionGeneration),
+        eq(chatVoiceOperations.operationId, input.operationId)));
+      if (!existing) return { operationId: input.operationId, state: "not_found" } satisfies VoiceOperationReceipt;
+      const receipt = existing.receipt.receipt;
+      return receipt && typeof receipt === "object" ? receipt as Record<string, unknown> : { operationId: input.operationId, state: "accepted", tool: existing.tool as VoiceOperationReceipt["tool"] };
     });
   }
   async function authorizePrincipal(tx: VoiceTransaction, companyId: string, endpointId: string, externalId: string) {
@@ -525,5 +687,5 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       return next ? { sessionId, generation: session.generation, publicationId: next.publicationId, attempt: Math.max(0, Math.floor((Date.now() - next.createdAt.getTime()) / 10_000)) } : null;
     });
   }
-  return { endpointContext, authorizeConnection, reserve, stageDelivery, runTool, authorizeSession, authorizeCaller, authorizeTask, authorizePrincipal, enqueuePublication, notification, collectMissedReplies };
+  return { endpointContext, authorizeConnection, reserve, stageDelivery, runTool, runCommand, confirmDraft, operationStatus, authorizeSession, authorizeCaller, authorizeTask, authorizePrincipal, enqueuePublication, notification, collectMissedReplies };
 }

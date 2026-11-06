@@ -1,11 +1,12 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { isUuidLike, startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema } from "@paperclipai/shared";
-import { badRequest, forbidden, HttpError, tooManyRequests } from "../errors.js";
+import { isUuidLike, localVoiceConfirmationSchema, startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema } from "@paperclipai/shared";
+import { badRequest, forbidden, HttpError, tooManyRequests, unsupportedMediaType } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import { SpekoProtocolError } from "../services/voice/speko-protocol.js";
+import { LocalVoiceProtocolError, localVoiceToolResult } from "../services/voice/local-voice-protocol.js";
 import type { VoiceSessionService } from "../services/voice/voice-session-service.js";
 import type { VoiceCaller } from "../services/voice/voice-session-store.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -31,6 +32,7 @@ function session(req: Request) {
 export function voiceSessionRoutes(db: Db, service: VoiceSessionService) {
   const router = Router(), settings = instanceSettingsService(db);
   const starts = createInviteRateLimiter({ windowMs: 60_000, maxRequests: 10 });
+  const localTools = createInviteRateLimiter({ windowMs: 60_000, maxRequests: 600 });
   async function enabled() {
     if (!(await settings.getExperimental()).enableChatConnectors) throw forbidden("Enable experimental chat connectors to use voice");
   }
@@ -70,8 +72,48 @@ export function voiceSessionRoutes(db: Db, service: VoiceSessionService) {
     await enabled();
     const limit = starts.consume(`${companyId}:${actor.id}`);
     if (!limit.allowed) throw tooManyRequests("Too many voice session attempts");
-    const result = await service.start({ ...req.body, companyId, caller: actor });
+    // The server-owned voice_task binding selects the local provider; every
+    // other start keeps the pre-existing Speko path unchanged.
+    const result = req.body.bindingMode === "voice_task"
+      ? await service.local.start({ ...req.body, companyId, caller: actor })
+      : await service.start({ ...req.body, companyId, caller: actor });
     res.status(result.media ? 201 : 200).json(result);
+  });
+  /**
+   * Local voice control channel (voice.control.v1). Board session auth plus
+   * the board mutation guard (trusted same origin), plus the per-session
+   * control token in X-Paperclip-Voice-Session-Token. A bearer Authorization
+   * header would switch the request to agent/API-key auth, so it is not used.
+   */
+  router.post("/companies/:companyId/voice-sessions/:sessionId/local-tools", async (req, res) => {
+    const companyId = company(req), actor = caller(req), sessionId = session(req);
+    await enabled();
+    if (!localTools.consume(`${companyId}:${actor.id}:${sessionId}`).allowed) throw tooManyRequests("Too many voice tool calls");
+    if (!req.is("application/json")) throw unsupportedMediaType("Local voice control messages must be application/json");
+    const body = (req as Request & { rawBody?: Buffer }).rawBody;
+    if (!Buffer.isBuffer(body)) throw badRequest("Original control message body is required");
+    const token = req.get("x-paperclip-voice-session-token");
+    if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw forbidden("Missing voice session credential");
+    try {
+      const { toolCallId, result } = await service.local.tool(companyId, sessionId, actor, body, token);
+      res.json(localVoiceToolResult(toolCallId, 200, result));
+    } catch (error) {
+      if (error instanceof LocalVoiceProtocolError) throw new HttpError(error.code === "body_too_large" ? 413 : error.code === "invalid_json" ? 400 : 422, "Invalid voice control message", { code: `voice_control_${error.code}` });
+      throw error;
+    }
+  });
+  /** Trusted confirmation receipt: created only from the caller's own board session. */
+  router.post("/companies/:companyId/voice-sessions/:sessionId/confirmations", validate(localVoiceConfirmationSchema), async (req, res) => {
+    const companyId = company(req), actor = caller(req), sessionId = session(req);
+    await enabled();
+    res.status(201).json(await service.local.confirm(companyId, sessionId, actor, req.body));
+  });
+  /** Resolve an unknown submit outcome by its original operation id. */
+  router.get("/companies/:companyId/voice-sessions/:sessionId/operations/:operationId", async (req, res) => {
+    const companyId = company(req), actor = caller(req), sessionId = session(req);
+    if (!isUuidLike(req.params.operationId as string)) throw badRequest("Invalid voice operation id");
+    await enabled();
+    res.json(await service.local.operation(companyId, sessionId, actor, req.params.operationId as string));
   });
   router.get("/companies/:companyId/voice-sessions/:sessionId", async (req, res) => {
     res.json(await service.inspect(company(req), session(req), caller(req)));

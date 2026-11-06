@@ -92,6 +92,9 @@ function providerSetupState(
   switch (endpoint.provider) {
     case "speko":
       return { step, providerUrl: "https://platform.speko.ai/", webhookUrl } as const;
+    case "local_voice":
+      // Same-origin control plane only: no provider console and no public webhook.
+      return { step } as const;
     case "imessage-photon": return { step, providerUrl: "https://photon.codes/", testStartedAt: endpoint.setup.testStartedAt } as const;
     case "agentmail": return endpoint.setup;
     case "slack": {
@@ -357,8 +360,8 @@ function providerSetupState(
         // enables that surface, even when this process is running against a
         // database created before the column default was hardened.
         requireAtMention: input.provider === "slack",
-        allowGroupChats: !["microsoft-teams", "speko"].includes(input.provider),
-        allowUnlinkedPeople: !["slack", "imessage-photon", "speko"].includes(input.provider),
+        allowGroupChats: !["microsoft-teams", "speko", "local_voice"].includes(input.provider),
+        allowUnlinkedPeople: !["slack", "imessage-photon", "speko", "local_voice"].includes(input.provider),
         capabilities: CAPABILITIES[input.provider],
         setup: {
           step: "provider_setup",

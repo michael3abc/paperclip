@@ -10,9 +10,9 @@ import { captureVoiceDeliveryDiagnostics } from "./voice-delivery-diagnostics.js
 import { pushVoiceReplies } from "./voice-reply-push.js";
 import { voiceInboundService } from "./voice-inbound-service.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import { chatVoiceReports, chatVoiceCallbacks, chatConversations, chatEndpointResources, chatEndpoints, chatVoiceSessions, issues, activityLog, type Db } from "@paperclipai/db";
-import { VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION, type VoiceSession, type VoiceSessionMedia, type VoiceCallHistoryEntry, type VoiceCallReport } from "@paperclipai/shared";
+import { LOCAL_VOICE_CONTROL_PROTOCOL, VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION, type LocalVoiceSessionMedia, type VoiceProvider, type VoiceSession, type VoiceSessionMedia, type VoiceCallHistoryEntry, type VoiceCallReport } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, HttpError } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildChatCommunicationGuidance } from "../chat-communication-guidance.js";
@@ -21,6 +21,8 @@ import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
 import { serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
 import { registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
 import { verifySpekoToolRequest } from "./speko-protocol.js";
+import { localVoiceCommand, parseLocalVoiceToolMessage } from "./local-voice-protocol.js";
+import { LOCAL_PROVIDER_SESSION_PREFIX, LOCAL_VOICE_CAPABILITIES, SPEKO_VOICE_CAPABILITIES } from "./voice-provider-port.js";
 import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT } from "./voice-prompts.js";
 
 const liveStates = ["reserved", "creating", "creation_unknown", "connecting", "active", "ending"] as const;
@@ -37,8 +39,9 @@ export function voiceSessionService(db: Db, options: {
   const store = voiceSessionStore(db, options), issueSvc = issueService(db);
   const provider = options.provider ?? createSpekoProvider;
 
-  async function endpointFor(companyId: string, endpointId: string) {
-    const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, companyId), eq(chatEndpoints.provider, "speko")));
+  /** Provider-scoped endpoint lookup. Omitted providers means Speko, the pre-existing contract. */
+  async function endpointFor(companyId: string, endpointId: string, providers: readonly VoiceProvider[] = ["speko"]) {
+    const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, companyId), inArray(chatEndpoints.provider, [...providers])));
     if (!endpoint) throw notFound("Voice connection not found");
     return endpoint;
   }
@@ -51,11 +54,9 @@ export function voiceSessionService(db: Db, options: {
       return session;
     });
   }
-  async function start(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; mode?: "outbound_phone" | "inbound_phone"; phoneNumber?: string; providerSessionId?: string; toolToken?: string }): Promise<{ session: VoiceSession; media?: VoiceSessionMedia }> {
-    if (input.mode === "outbound_phone" && !(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Voice connections are disabled");
-    const endpoint = await endpointFor(input.companyId, input.endpointId);
-    const requestFingerprint = createHash("sha256").update(JSON.stringify({ endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.mode ? { mode: input.mode, phoneNumber: input.phoneNumber, providerSessionId: input.providerSessionId } : {}), ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
-    const reserved = await store.reserve({ ...input, requestFingerprint, prepareBinding: async (tx) => {
+  type BindingInput = { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string };
+  /** Shared task/conversation binding. The thread id prefix names the provider (`speko:` or `local_voice:`). */
+  async function prepareBinding(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: BindingInput, endpoint: Endpoint, threadProvider: VoiceProvider) {
       // One lock per task preserves the existing conversation on concurrent resumes.
       if (input.issueId) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-binding:${input.companyId}:${input.endpointId}:${input.issueId}`}, 0))`);
       // Serialize generic starts per authenticated caller/endpoint, including
@@ -89,11 +90,16 @@ export function voiceSessionService(db: Db, options: {
         if (!["active", "waiting"].includes(existing.state)) throw conflict("This voice conversation is no longer available");
         return { issueId: task.id, conversationId: existing.id };
       }
-      const conversationId = randomUUID(), threadId = `speko:${conversationId}`;
+      const conversationId = randomUUID(), threadId = `${threadProvider}:${conversationId}`;
       const [resource] = await tx.insert(chatEndpointResources).values({ companyId: input.companyId, endpointId: input.endpointId, type: "direct_message", providerResourceId: threadId, label: "Voice conversation", enabled: true, availability: "available" }).returning();
-      await tx.insert(chatConversations).values({ id: conversationId, companyId: input.companyId, endpointId: input.endpointId, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Voice conversation", communicationGuidance: buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true, communicationInstructions: endpoint.communicationInstructions }), isDirectMessage: true });
+      await tx.insert(chatConversations).values({ id: conversationId, companyId: input.companyId, endpointId: input.endpointId, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Voice conversation", communicationGuidance: buildChatCommunicationGuidance({ provider: threadProvider, isDirectMessage: true, communicationInstructions: endpoint.communicationInstructions }), isDirectMessage: true });
       return { issueId: task.id, conversationId };
-    } });
+  }
+  async function start(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; mode?: "outbound_phone" | "inbound_phone"; phoneNumber?: string; providerSessionId?: string; toolToken?: string }): Promise<{ session: VoiceSession; media?: VoiceSessionMedia }> {
+    if (input.mode === "outbound_phone" && !(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Voice connections are disabled");
+    const endpoint = await endpointFor(input.companyId, input.endpointId);
+    const requestFingerprint = createHash("sha256").update(JSON.stringify({ endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.mode ? { mode: input.mode, phoneNumber: input.phoneNumber, providerSessionId: input.providerSessionId } : {}), ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
+    const reserved = await store.reserve({ ...input, requestFingerprint, prepareBinding: (tx) => prepareBinding(tx, input, endpoint, "speko") });
     // Media credentials are intentionally not stored or reissued. An uncertain
     // browser response must inspect/end this attempt, never blindly create again.
     if (!reserved.created || input.mode === "inbound_phone") return { session: serializeVoiceSession(reserved.session) };
@@ -151,7 +157,10 @@ export function voiceSessionService(db: Db, options: {
       const [changed] = await tx.update(chatVoiceSessions).set({ state: "ending", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), inArray(chatVoiceSessions.state, [...liveStates].filter((state) => state !== "ending")))).returning({ id: chatVoiceSessions.id });
       if (changed) await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "system", actorId: "voice-session-service", action: "voice.session.ending", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId } });
     });
-    if (session.providerSessionId) {
+    if (isLocal(session)) {
+      // Local voice has no provider room: ending is a durable state change only.
+      await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: session.expiresAt.getTime() <= Date.now() ? "expired" : "ended", endedAt: new Date(), errorCode: null, updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), inArray(chatVoiceSessions.state, [...liveStates]))));
+    } else if (session.providerSessionId) {
       const endpoint = await endpointFor(session.companyId, session.endpointId), credentials = await options.credentials(endpoint);
       const client = provider(credentials.apiKey);
       // Closing the SDK room can race the provider end request. Confirm the
@@ -173,7 +182,11 @@ export function voiceSessionService(db: Db, options: {
   }
   async function inspect(companyId: string, sessionId: string, caller: VoiceCaller) {
     let session = await ownedSession(companyId, sessionId, caller);
-    if (session.providerSessionId && !terminalStates.some(state => state === session.state)) {
+    if (isLocal(session)) {
+      if (!terminalStates.some(state => state === session.state) && session.expiresAt.getTime() <= Date.now()) {
+        [session] = await db.update(chatVoiceSessions).set({ state: "expired", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, sessionId)).returning();
+      }
+    } else if (session.providerSessionId && !terminalStates.some(state => state === session.state)) {
       const endpoint = await endpointFor(companyId, session.endpointId), credentials = await options.credentials(endpoint);
       const state = await provider(credentials.apiKey).inspectSession(session.providerSessionId);
       if (state.endedAt) {
@@ -185,6 +198,81 @@ export function voiceSessionService(db: Db, options: {
   async function end(companyId: string, sessionId: string, caller: VoiceCaller) {
     const session = await ownedSession(companyId, sessionId, caller, false);
     return serializeVoiceSession(await closeProvider(session));
+  }
+  /** Local voice sessions are the only sessions with a server-owned binding mode. */
+  function isLocal(session: Pick<VoiceSessionRow, "bindingMode">) {
+    return session.bindingMode === "voice_task";
+  }
+  async function localEnabled() {
+    const settings = await instanceSettingsService(db).getExperimental();
+    if (!settings.enableChatConnectors || !settings.enableLocalVoice) throw forbidden("Local voice is disabled", { code: "local_voice_disabled" });
+  }
+  /**
+   * Phase-1 local start: browser capability only. Paperclip mints the
+   * provider session id (`local:<uuid>`) and a one-time control token; no
+   * provider is contacted and no phone mode is imitated.
+   */
+  async function startLocal(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; bindingMode?: "voice_task"; mode?: string; phoneNumber?: string }): Promise<{ session: VoiceSession; media?: LocalVoiceSessionMedia }> {
+    await localEnabled();
+    if (input.mode !== undefined || input.phoneNumber !== undefined) throw conflict("Local voice supports browser sessions only", { code: "local_voice_phone_unsupported" });
+    if (input.bindingMode !== "voice_task") throw conflict("Local voice requires the voice_task binding", { code: "voice_binding_mode_invalid" });
+    const endpoint = await endpointFor(input.companyId, input.endpointId, ["local_voice"]);
+    const requestFingerprint = createHash("sha256").update(JSON.stringify({ provider: "local_voice", bindingMode: "voice_task", endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
+    const reserved = await store.reserve({ companyId: input.companyId, endpointId: input.endpointId, caller: input.caller, idempotencyKey: input.idempotencyKey, requestFingerprint,
+      maxDurationSeconds: input.maxDurationSeconds, providers: ["local_voice"], bindingMode: "voice_task", providerSessionId: `${LOCAL_PROVIDER_SESSION_PREFIX}${randomUUID()}`,
+      prepareBinding: (tx) => prepareBinding(tx, input, endpoint, "local_voice") });
+    // Like Speko media credentials, the control token is shown once and never reissued.
+    if (!reserved.created) return { session: serializeVoiceSession(reserved.session) };
+    const session = reserved.session;
+    return { session: serializeVoiceSession(session), media: { provider: "local_voice", protocol: LOCAL_VOICE_CONTROL_PROTOCOL, bindingMode: "voice_task", sessionId: session.id,
+      generation: session.generation, transportToken: reserved.token, controlUrl: `/api/companies/${input.companyId}/voice-sessions/${session.id}/local-tools` } };
+  }
+  async function localOwnedSession(companyId: string, sessionId: string, caller: VoiceCaller) {
+    const session = await ownedSession(companyId, sessionId, caller, false);
+    if (!isLocal(session)) throw notFound("Voice session not found");
+    if (session.callerAuthority !== caller.authority) throw forbidden("This voice session belongs to another caller");
+    return session;
+  }
+  /** Same-origin local tool call. The voice session token travels in its own header, never as a bearer credential. */
+  async function localTool(companyId: string, sessionId: string, caller: VoiceCaller, body: Buffer, token: string) {
+    await localEnabled();
+    const session = await localOwnedSession(companyId, sessionId, caller);
+    const message = parseLocalVoiceToolMessage(body);
+    const command = localVoiceCommand(message, { sessionId: session.id, providerSessionId: session.providerSessionId ?? "" });
+    const result = await store.runCommand({ companyId, endpointId: session.endpointId, sessionId: session.id, token, command, accept: store.stageDelivery });
+    if (command.command.tool === "answer_question") options.onQuestionAnswered(command.command.args.interactionId);
+    return { toolCallId: message.toolCallId, result };
+  }
+  async function confirmLocal(companyId: string, sessionId: string, caller: VoiceCaller, input: { draftId: string; revision: number; text: string }) {
+    await localEnabled();
+    await localOwnedSession(companyId, sessionId, caller);
+    return store.confirmDraft({ companyId, sessionId, caller, ...input });
+  }
+  async function localOperation(companyId: string, sessionId: string, caller: VoiceCaller, operationId: string) {
+    await localEnabled();
+    await localOwnedSession(companyId, sessionId, caller);
+    return store.operationStatus({ companyId, sessionId, caller, operationId });
+  }
+  /** Local sessions end without a provider call when revoked, disabled or expired. */
+  async function reconcileLocal(limit = 25) {
+    const settings = await instanceSettingsService(db).getExperimental();
+    const enabled = settings.enableChatConnectors && settings.enableLocalVoice;
+    const rows = await db.select({ session: chatVoiceSessions }).from(chatVoiceSessions)
+      .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, chatVoiceSessions.companyId)))
+      .where(and(eq(chatEndpoints.provider, "local_voice"), inArray(chatVoiceSessions.state, [...liveStates])))
+      .orderBy(asc(chatVoiceSessions.updatedAt)).limit(limit);
+    for (const { session } of rows) {
+      let authorized = false;
+      if (enabled) {
+        try { await db.transaction((tx) => store.authorizeSession(tx, session.companyId, session.id)); authorized = true; }
+        catch (error) { if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error; }
+      }
+      if (authorized) continue;
+      const expired = session.expiresAt.getTime() <= Date.now();
+      await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: expired ? "expired" : "ended", endedAt: new Date(), errorCode: expired ? null : "local_voice_revoked", updatedAt: new Date() })
+        .where(and(eq(chatVoiceSessions.id, session.id), inArray(chatVoiceSessions.state, [...liveStates]))));
+    }
+    return rows.length;
   }
   async function tool(publicId: string, body: Buffer, headers: Record<string, string | string[] | undefined>) {
     const endpoint = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.publicId, publicId), eq(chatEndpoints.provider, "speko"))).then((rows) => rows[0]);
@@ -211,12 +299,14 @@ export function voiceSessionService(db: Db, options: {
   });
   const recovery = voiceSessionRecovery(db, {
     authorize: async session => {
+      if (isLocal(session)) await localEnabled();
       await db.transaction(async tx => {
         await store.authorizeSession(tx, session.companyId, session.id);
         await replies.authorityAvailable(tx, session.id);
       });
     },
     inspect: async session => {
+      if (isLocal(session)) return null;
       const endpoint = await endpointFor(session.companyId, session.endpointId);
       const credentials = await options.credentials(endpoint);
       return session.providerSessionId ? provider(credentials.apiKey).inspectSession(session.providerSessionId) : null;
@@ -247,7 +337,8 @@ export function voiceSessionService(db: Db, options: {
     await pushReplies(limit);
     await inbound.reconcile(limit);
     await reports.reconcile(limit);
-    return due.length;
+    const local = await reconcileLocal(limit);
+    return due.length + local;
   }
   async function pushReplies(limit = 25, companyId?: string, endpointId?: string) {
     return pushVoiceReplies(db, {store, credentials: options.credentials, provider, limit, companyId, endpointId});
@@ -300,7 +391,13 @@ export function voiceSessionService(db: Db, options: {
     const result = await start({ ...binding, mode: "outbound_phone", phoneNumber: preference.phoneNumber, idempotencyKey: invocationId, maxDurationSeconds: 600 });
     return { session: result.session };
   });
-  return { start, inspect, end, tool, reconcile, registerReportWork, registerRecoveryWork, registerReplyWork, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools };
+  /** Provider ports: endpointFor, start, tool, end, reconcile, report. */
+  const ports = {
+    speko: { provider: "speko" as const, capabilities: SPEKO_VOICE_CAPABILITIES, endpointFor: (companyId: string, endpointId: string) => endpointFor(companyId, endpointId), start, tool, end, reconcile, report: reports.reconcile },
+    local_voice: { provider: "local_voice" as const, capabilities: LOCAL_VOICE_CAPABILITIES, endpointFor: (companyId: string, endpointId: string) => endpointFor(companyId, endpointId, ["local_voice"]), start: startLocal, tool: localTool, end, reconcile: reconcileLocal, report: async () => 0 },
+  };
+  return { start, inspect, end, tool, reconcile, registerReportWork, registerRecoveryWork, registerReplyWork, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools,
+    ports, local: { start: startLocal, tool: localTool, confirm: confirmLocal, operation: localOperation, end, reconcile: reconcileLocal } };
 
 }
 export type VoiceSessionService = ReturnType<typeof voiceSessionService>;

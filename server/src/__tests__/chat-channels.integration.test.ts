@@ -1004,7 +1004,7 @@ function fakeTelegramFetch(
 }
 
 function chatSdkProvider(provider: ChatProvider): ChatSdkProvider {
-  if (provider === "agentmail" || provider === "speko") throw new Error(`${provider} has no Chat SDK runtime`);
+  if (provider === "agentmail" || provider === "speko" || provider === "local_voice") throw new Error(`${provider} has no Chat SDK runtime`);
   return provider;
 }
 

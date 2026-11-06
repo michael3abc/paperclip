@@ -81,7 +81,9 @@ export const slackAppConfigurationSchema = z.object({
 
 export const createChatEndpointSchema = z
   .object({
-    provider: chatProviderSchema.exclude(["agentmail"]),
+    // local_voice endpoints are not provisioned through the generic chat
+    // endpoint flow in phase 1 (no verification or activation path yet).
+    provider: chatProviderSchema.exclude(["agentmail", "local_voice"]),
     assignedAgentId: z.string().uuid(),
     applicationId: z.string().uuid().optional(),
     name: z.string().trim().min(1).max(160).optional(),

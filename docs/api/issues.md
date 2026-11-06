@@ -263,6 +263,25 @@ Resolving a card records the response only. Suggested-task creation, plan contin
 
 The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
 
+### Voice answers (experimental local voice)
+
+A local voice session (`bindingMode: "voice_task"`) may answer a question only
+when all of these hold:
+
+- the question was presented to that same session;
+- it is a pending `ask_user_questions` interaction on the bound task.
+
+The answer is recorded as the session's board user. The usual resolver-audience
+rules apply.
+
+A local voice session can never accept or reject `request_confirmation`
+interactions (approvals), and it cannot write to resolved interactions. Those
+attempts make zero writes and return `409 voice_question_not_pending`. A
+question that was never presented to the session, or whose publication was
+withdrawn, also gets zero writes and returns `403`. Each answer carries a client
+`operationId`. Retrying with the same id returns the original receipt, and
+reusing the id for different content returns `409 voice_operation_conflict`.
+
 ## Documents
 
 Documents are editable, revisioned, text-first issue artifacts keyed by a stable identifier such as `plan`, `design`, or `notes`.

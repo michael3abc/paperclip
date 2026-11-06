@@ -232,6 +232,10 @@ Sources: [Email CLI](../../cli/src/commands/client/email.ts), [request schema](.
 
 ## Gotchas
 
+- Local voice (`local_voice`, default-off) is browser-only and pull-only. Its
+  phase-1 proof covers the control plane with fake media, independently of
+  Speko. See `doc/connections/LOCAL-VOICE.md` and `local-voice*.test.ts`.
+
 - New outbound email requires a parent task. A reply binds to its stored conversation/message and cannot replace recipients or subject; a queued 202 is not a delivered message.
 
 - Visibility flags do not pause existing delivery. Disable the disposable

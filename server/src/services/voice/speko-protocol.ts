@@ -64,3 +64,18 @@ export function spekoToolDefinitions(callbackUrl: string) {
     { name: "get_updates", description: "Retrieve the assigned Paperclip agent’s approved answers for this live call. Use cursor=0 initially and then the returned cursor. Approved telephone answers are pushed into the live call automatically. Use this tool for a caller-requested status check, permitted task questions, or an explicit repeat; do not continuously poll for completion. Empty updates means pending, not finished. Read each returned answer once. Set repeat=true only when the caller explicitly asks to hear the last delivered answer again. The work state distinguishes queueing, execution, and awaiting publication; it is not an answer or proof of completion.", parameters: { type: "object", properties: { cursor: { type: "integer", minimum: 0 }, repeat: { type: "boolean", description: "Explicit caller request to repeat the last delivered answer" } }, required: ["cursor"], additionalProperties: false }, source },
   ];
 }
+
+/** Translate a verified Speko envelope into the provider-neutral command. The Speko wire format and fingerprint are unchanged. */
+export function spekoToolCommand(input: { envelope: SpekoToolEnvelope; webhookId: string; fingerprint: string }): import("./voice-command.js").VoiceCommandEnvelope {
+  const { envelope } = input;
+  return {
+    provider: "speko",
+    providerSessionId: envelope.session_id,
+    toolCallId: envelope.tool_call_id,
+    fingerprint: input.fingerprint,
+    webhookId: input.webhookId,
+    command: envelope.tool === "submit_request" ? { tool: envelope.tool, args: envelope.args }
+      : envelope.tool === "answer_question" ? { tool: envelope.tool, args: envelope.args }
+        : { tool: envelope.tool, args: envelope.args },
+  };
+}

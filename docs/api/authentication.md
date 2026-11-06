@@ -47,6 +47,26 @@ No authentication required. All requests are treated as the local board operator
 
 Board operators authenticate via Better Auth sessions (cookie-based). The web UI handles login/logout flows automatically.
 
+### Local Voice Control Token (experimental)
+
+When the default-off `enableLocalVoice` experiment is on, starting a local
+voice session (`bindingMode: "voice_task"`) returns a per-session control
+token once. Tool messages to
+`POST /api/companies/{companyId}/voice-sessions/{sessionId}/local-tools` need
+all of the following:
+
+- the caller's board session (an agent caller gets `403`);
+- a trusted same origin, enforced by the board mutation guard;
+- the token in `X-Paperclip-Voice-Session-Token`.
+
+The token does not go in `Authorization: Bearer`. A bearer header switches the
+request to agent or API-key authentication. The server stores only a hash of
+the token.
+
+The token is bound to one session, caller, company, task and assigned agent,
+and it cannot be used for any other session. Revocation, expiry and session
+end take effect on the next call. See `doc/connections/LOCAL-VOICE.md`.
+
 ## Company Scoping
 
 All entities belong to a company. The API enforces company boundaries:

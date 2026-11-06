@@ -14,8 +14,8 @@ export const connectionPurposeTransportSchema = z.discriminatedUnion(
       transport: z.enum(["chat_sdk", "rest_api", "voice"]),
       config: z.object({ provider: z.string().optional() }).passthrough().optional(),
     }).refine(
-      (connection) => connection.transport === "voice" ? connection.config?.provider === "speko" : connection.transport === "chat_sdk" ? connection.config?.provider !== "speko" : connection.config?.provider === "agentmail",
-      { message: "Channel transport must match its provider: voice for Speko, REST for AgentMail, Chat SDK otherwise", path: ["config", "provider"] },
+      (connection) => connection.transport === "voice" ? connection.config?.provider === "speko" || connection.config?.provider === "local_voice" : connection.transport === "chat_sdk" ? connection.config?.provider !== "speko" && connection.config?.provider !== "local_voice" : connection.config?.provider === "agentmail",
+      { message: "Channel transport must match its provider: voice for Speko or local voice, REST for AgentMail, Chat SDK otherwise", path: ["config", "provider"] },
     ),
     z.object({
       connectionPurpose: z.literal("ai"),

@@ -14,6 +14,7 @@ import { admitDiscordSdkMessage } from "./chat-channels/discord/messages.js";
 import { resolveInboundConversationBinding } from "./chat-channels/inbound/conversation-binding.js";
 import { githubResponseCommentService } from "./chat-github-response-comments.js";
 import { createSpekoChannelService, authorizeSpekoPublicVoiceTask, replaceSpekoChannelRuntime, SPEKO_CONVERSATION_IS_LINEAR } from "./chat-channels/speko/runtime.js";
+import { replaceLocalVoiceChannelRuntime } from "./chat-channels/local-voice/runtime.js";
 import { prepareDiscordRuntimeCommand } from "./chat-channels/discord/runtime-commands.js";
 import { createSlackSetupServices } from "./chat-channels/slack/setup-services.js";
 import { preservesProvisionedSlackVerification } from "./chat-channels/slack/callback-verification.js";
@@ -253,6 +254,7 @@ const REQUIRED_CREDENTIALS: Record<
   readonly string[]
 > = {
   speko: ["apiKey", "signingSecret", "agentId"],
+  local_voice: [],
   "imessage-photon": ["projectSecret"],
   agentmail: [],
   slack: ["botToken", "signingSecret"],
@@ -272,6 +274,7 @@ const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set<string>([
 
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
   speko: ["apiKey", "signingSecret", "agentId"],
+  local_voice: [],
   "imessage-photon": ["projectSecret"],
   agentmail: [],
   slack: ["botToken", "signingSecret"],
@@ -1026,6 +1029,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           await prepareDiscordRuntimeCommand(db, record.endpoint, context);
           instance = record.endpoint.provider === "speko"
             ? await replaceSpekoChannelRuntime(runtime, record, persistence)
+            : record.endpoint.provider === "local_voice"
+            ? await replaceLocalVoiceChannelRuntime(runtime, record, persistence)
             : await runtime.replaceEndpoint({
             companyId: record.endpoint.companyId,
             endpointId: record.endpoint.id,
@@ -1749,7 +1754,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       let { conversation: existingConversation, issue: existingIssue, latestConversation, isLinear } =
         await resolveInboundConversationBinding(db, {
           endpoint, thread,
-          isLinear: () => endpoint.provider === "speko" ? SPEKO_CONVERSATION_IS_LINEAR : surfaceKind !== "native_thread",
+          isLinear: () => endpoint.provider === "local_voice" ? false : endpoint.provider === "speko" ? SPEKO_CONVERSATION_IS_LINEAR : surfaceKind !== "native_thread",
           lookupConversation: endpoint.provider === "microsoft-teams"
             ? () => conversationForThread(endpoint.id, thread.id)
             : undefined,
@@ -2344,7 +2349,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             direction: "inbound",
           })
           .onConflictDoNothing();
-        if (taskEndpoint.provider === "slack" || taskEndpoint.provider === "speko") {
+        if (taskEndpoint.provider === "slack" || taskEndpoint.provider === "speko" || taskEndpoint.provider === "local_voice") {
           await resumeExternalConversation(taskTx as unknown as Db, endpoint.companyId, conversation.issueId);
         }
         await taskTx

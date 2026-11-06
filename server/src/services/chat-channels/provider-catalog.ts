@@ -5,6 +5,7 @@ import type {
 
 const PROVIDER_LABELS: Record<ChatProvider, string> = {
   speko: "Speko",
+  local_voice: "Local voice",
   "imessage-photon": "iMessage Photon",
   agentmail: "AgentMail",
   slack: "Slack",
@@ -16,6 +17,7 @@ const PROVIDER_LABELS: Record<ChatProvider, string> = {
 
 const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
   speko: { threads: false, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: false, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
+  local_voice: { threads: false, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: false, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
   "imessage-photon": { threads: false, directMessages: true, nativeStreaming: false, messageEdits: true, messageDeletes: false, reactions: false, files: true, cards: false, actions: true, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: false },
   agentmail: { threads: true, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: true, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: true },
   slack: {
@@ -108,7 +110,7 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
 export { PROVIDER_LABELS, CAPABILITIES };
 
 export function chatConnectionTransport(provider: ChatProvider): "voice" | "rest_api" | "chat_sdk" {
-  if (provider === "speko") return "voice";
+  if (provider === "speko" || provider === "local_voice") return "voice";
   if (provider === "agentmail") return "rest_api";
   return "chat_sdk";
 }

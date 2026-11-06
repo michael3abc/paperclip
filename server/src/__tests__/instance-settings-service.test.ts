@@ -113,6 +113,7 @@ describe("instance settings service", () => {
       enableArtifactsV1: false,
       enableChatConnectors: false,
       enableGitHubReviewBots: false,
+      enableLocalVoice: false,
       enableMemoryConnectors: false,
       enablePaperclipNotebook: false,
       enableConferenceRoomChat: false,

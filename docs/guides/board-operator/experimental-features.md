@@ -56,6 +56,24 @@ This setting controls visibility. Turning it off does not disconnect an
 existing bot or stop its messages. To stop a connection, pause it from its
 chat connection settings before turning off the experiment.
 
+## Local voice (phase 1)
+
+**Local voice** is off by default, and it also needs **Chat connectors** to be
+on. It adds a browser-only voice provider for one task at a time (`voice_task`
+binding). This first phase contains only the control plane:
+
+- confirmed requests;
+- answers to pending questions;
+- pulled replies.
+
+It has no microphone, speech recognition, speech synthesis or call UI yet, and
+it never places phone calls.
+
+Turning it off stops new sessions and rejects further voice tool calls. The
+next reconcile ends live local sessions. Requests that were already accepted
+stay on their tasks, and the agent still processes them. Speko voice is not
+affected by this setting.
+
 ## When to use them
 
 Experimental features are best used when you are:

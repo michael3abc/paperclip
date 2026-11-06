@@ -22,6 +22,7 @@ Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
 [Enterpret](./ENTERPRET.md), [Supabase](./SUPABASE.md), and
 [Vercel](./vercel.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
+Experimental voice: [Local voice phase 1](./LOCAL-VOICE.md).
 
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.

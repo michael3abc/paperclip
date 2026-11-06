@@ -33,7 +33,7 @@ import {
   browserUseSettingsSchema,
   browserUseViewportSchema,
   browserUseViewerSchema,
-  startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
+  startVoiceSessionSchema, localVoiceConfirmationSchema, LOCAL_VOICE_CONTROL_PROTOCOL, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
   slackToolCallSchema,
   slackSearchConfigSchema,
   // Agent
@@ -2231,7 +2231,8 @@ for (const [method, path, summary, body] of browserUseOperations) {
 // intentionally documented separately from this board API contract.
 const voiceSessionResponseSchema = z.object({id:z.string().uuid(), companyId:z.string().uuid(), endpointId:z.string().uuid(), issueId:z.string().uuid(), assignedAgentId:z.string().uuid(), state:z.enum(VOICE_SESSION_STATES), mode:z.enum(["browser","inbound_phone","outbound_phone"]), generation:z.number().int(), callerAuthority:z.enum(["member","instance_admin","local_board","guest_intake","pending_approval"]), replyCursor:z.number().int(), createdAt:z.string(), expiresAt:z.string(), endedAt:z.string().nullable(), errorCode:z.string().nullable()}).strict();
 const voiceMediaResponseSchema = z.object({sessionId:z.string().uuid(), generation:z.number().int(), transportToken:z.string(), transportUrl:z.string()}).strict();
-const voiceStartResponseSchema = z.object({session:voiceSessionResponseSchema, media:voiceMediaResponseSchema.optional()}).strict();
+const localVoiceMediaResponseSchema = z.object({provider:z.literal("local_voice"), protocol:z.literal(LOCAL_VOICE_CONTROL_PROTOCOL), bindingMode:z.literal("voice_task"), sessionId:z.string().uuid(), generation:z.number().int(), transportToken:z.string(), controlUrl:z.string()}).strict();
+const voiceStartResponseSchema = z.object({session:voiceSessionResponseSchema, media:z.union([voiceMediaResponseSchema, localVoiceMediaResponseSchema]).optional()}).strict();
 for (const [method,path,summary,body,response] of [
   ["post","/api/companies/{companyId}/voice-sessions","Create or resume a caller-bound voice session",startVoiceSessionSchema,voiceStartResponseSchema],
   ["get","/api/companies/{companyId}/voice-sessions/{sessionId}","Inspect your current voice session",undefined,voiceSessionResponseSchema],
@@ -2248,6 +2249,22 @@ for (const [method,path,summary,body,response] of [
   ["post","/api/companies/{companyId}/voice-phone/{endpointId}/incoming/{callId}","Approve or deny this exact live call",voiceInboundDecisionSchema,undefined],
 ] as const) {
   registry.registerPath({method,path,tags:["voice-sessions"],summary,description:"Experimental Speko connection. Requires a current authenticated board session (or local implicit board), company membership and current task/connection authority. Agent keys and board API keys cannot act as a caller. Caller ID grants no private access. Media tokens are short-lived; durable provider credentials are never returned. Ending your owned call remains available after losing task access.",request:{params:z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map(m=>[m[1],z.string().uuid()]))),...(body?{body:jsonBody(body)}:{})},responses:{200:r.ok(response),...(method==="post" && path.endsWith("voice-sessions")?{201:r.ok(voiceStartResponseSchema)}:{}),400:r.badRequest,401:r.unauthorized,403:r.forbidden,404:r.notFound,409:r.conflict,422:r.unprocessable,429:{description:"Voice attempt limit reached"}}});
+}
+
+// Experimental local voice (phase 1, default-off behind enableLocalVoice and
+// chat connectors). Board session plus the board mutation guard; tool messages
+// also carry the per-session control token header, never a bearer token.
+const localVoiceToolMessageSchema = z.object({v:z.literal(1), type:z.literal("tool"), toolCallId:z.string(), tool:z.enum(["submit_request","answer_question","get_updates"]), operationId:z.string().uuid().optional(), confirmation:z.object({draftId:z.string().uuid(), revision:z.number().int().min(1)}).strict().optional(), args:z.record(z.string(), z.unknown())}).strict();
+const localVoiceToolResultSchema = z.object({v:z.literal(1), type:z.literal("tool_result"), toolCallId:z.string(), status:z.number().int(), result:z.record(z.string(), z.unknown())}).strict();
+const voiceConfirmationReceiptSchema = z.object({sessionId:z.string().uuid(), draftId:z.string().uuid(), revision:z.number().int(), textSha256:z.string(), textLength:z.number().int(), state:z.enum(["confirmed","superseded","consumed"]), createdAt:z.string()}).strict();
+const voiceOperationReceiptSchema = z.object({operationId:z.string().uuid(), state:z.enum(["accepted","not_found"]), tool:z.enum(["submit_request","answer_question"]).optional(), sessionId:z.string().uuid().optional(), deliveryId:z.string().uuid().nullable().optional(), textSha256:z.string().nullable().optional(), acceptedAt:z.string().optional()}).strict();
+const localVoiceDescription = "Experimental local voice (voice.control.v1), default-off. Requires enableChatConnectors and enableLocalVoice, a current authenticated board session (or local implicit board) from a trusted same origin, company membership and current task/connection authority. Agent keys and board API keys cannot act as a caller. Identity is server-owned: messages cannot carry company, agent, task, project or assignee fields.";
+for (const [method,path,summary,body,response,status] of [
+  ["post","/api/companies/{companyId}/voice-sessions/{sessionId}/local-tools","Send one strict voice.control.v1 tool message (X-Paperclip-Voice-Session-Token header required)",localVoiceToolMessageSchema,localVoiceToolResultSchema,200],
+  ["post","/api/companies/{companyId}/voice-sessions/{sessionId}/confirmations","Create a trusted confirmation receipt for exact draft text",localVoiceConfirmationSchema,voiceConfirmationReceiptSchema,201],
+  ["get","/api/companies/{companyId}/voice-sessions/{sessionId}/operations/{operationId}","Resolve an unknown operation outcome by its original operation id",undefined,voiceOperationReceiptSchema,200],
+] as const) {
+  registry.registerPath({method,path,tags:["voice-sessions"],summary,description:localVoiceDescription,request:{params:z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map(m=>[m[1],z.string().uuid()]))),...(body?{body:jsonBody(body)}:{})},responses:{[status]:r.ok(response),400:r.badRequest,401:r.unauthorized,403:r.forbidden,404:r.notFound,409:r.conflict,...(method==="post"?{413:{description:"Control message too large"},415:{description:"Control messages must be application/json"}}:{}),422:r.unprocessable,429:{description:"Voice tool call limit reached"}}});
 }
 
 // Explicit task-bound email. Board setup and agent actions share the same vaulted

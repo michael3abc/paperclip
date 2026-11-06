@@ -192,6 +192,8 @@ function safeCardForPublication(
       const receipt = await voiceStore.enqueuePublication(input.endpoint.companyId, input.publication.id);
       return receipt;
     }
+    // Local voice is pull-only in phase 1: approved replies are queued and read via get_updates; no push.
+    if (input.endpoint.provider === "local_voice") return await voiceStore.enqueuePublication(input.endpoint.companyId, input.publication.id);
     if (input.endpoint.provider === "github" && ["failed", "completed"].includes(input.payload.progressState ?? "") &&
         !input.payload.interactionId && !isExplicitOperatorPublication(input.publication) &&
         (await db.select({ endpointId: chatGitHubConfigurations.endpointId }).from(chatGitHubConfigurations).where(and(

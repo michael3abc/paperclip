@@ -117,6 +117,30 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(coordinator!.nextWakeAt()).toBe(at);
     }, { timeout: 5000 });
   }
+  it("keeps local voice quiet until expiry and closes it without provider inspection", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableLocalVoice: true });
+    await start();
+    await settled();
+    const row = await session({ bindingMode: "voice_task", providerSessionId: `local:${randomUUID()}`, updatedAt: new Date() });
+    await futureSettled(row.expiresAt.getTime());
+    await quiet(120_000);
+    expect(inspect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(row.expiresAt.getTime() - Date.now() + 1000);
+    await settled();
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ id: row.id }));
+    expect(inspect).not.toHaveBeenCalled();
+  });
+  it("closes an active local session when its feature is disabled", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableLocalVoice: true });
+    const row = await session({ bindingMode: "voice_task", providerSessionId: `local:${randomUUID()}`, updatedAt: new Date() });
+    await start();
+    await futureSettled(row.expiresAt.getTime());
+    await instanceSettingsService(db).updateExperimental({ enableLocalVoice: false });
+    await settled();
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ id: row.id }));
+    expect(inspect).not.toHaveBeenCalled();
+    await quiet();
+  });
   it("bounds startup pages and retains every saved deadline", async () => {
     const due = await futureInventory(205), reads = voiceReads(), counts = reads.counts;
     await start();

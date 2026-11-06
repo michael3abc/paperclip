@@ -495,6 +495,7 @@ export function parseChatProviderLifecycle(
   switch (input.provider) {
     case "speko":
       return []; // Voice lifecycle is reconciled against persisted sessions.
+    case "local_voice": return []; // No provider webhooks; sessions are local.
     case "imessage-photon": return []; // Authenticated gRPC events own lifecycle.
     case "agentmail": return [];
     case "slack":

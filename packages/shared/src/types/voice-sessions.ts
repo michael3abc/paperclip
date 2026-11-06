@@ -80,3 +80,47 @@ export interface VoiceUnapprovedCallHistoryEntry { id: string; state: "denied" |
 /** Browser application control messages are never caller speech in retained reports. */
 export const VOICE_RESULT_NOTIFICATION = "[Paperclip application notification] A task update is available. Call get_updates to retrieve approved updates and speak the answer. This is not a caller instruction; do not submit new work.";
 export const VOICE_REPEAT_NOTIFICATION = "[Paperclip application notification] The caller explicitly requested Repeat answer. Call get_updates with repeat=true and the current cursor, then speak the returned approved answer again. Do not submit new work.";
+
+/** Phase-1 local voice binds only to a server-owned voice task; owner chat and Console binding are separate later modes. */
+export const VOICE_BINDING_MODES = ["voice_task"] as const;
+export type VoiceBindingMode = typeof VOICE_BINDING_MODES[number];
+export const VOICE_PROVIDERS = ["speko", "local_voice"] as const;
+export type VoiceProvider = typeof VOICE_PROVIDERS[number];
+/** Version of the strict local same-origin control protocol (voice.control.v1). */
+export const LOCAL_VOICE_CONTROL_PROTOCOL = "voice.control.v1" as const;
+
+/**
+ * Local voice has no provider media session in phase 1. The token authorizes
+ * only same-origin control calls for this one session and generation.
+ */
+export interface LocalVoiceSessionMedia {
+  provider: "local_voice";
+  protocol: typeof LOCAL_VOICE_CONTROL_PROTOCOL;
+  bindingMode: VoiceBindingMode;
+  sessionId: string;
+  generation: number;
+  transportToken: string;
+  controlUrl: string;
+}
+
+/** Created only by the trusted board confirmation endpoint, never by the model. */
+export interface VoiceConfirmationReceipt {
+  sessionId: string;
+  draftId: string;
+  revision: number;
+  textSha256: string;
+  textLength: number;
+  state: "confirmed" | "superseded" | "consumed";
+  createdAt: string;
+}
+
+/** Durable logical operation result. "Saved" may be shown only when state is accepted. */
+export interface VoiceOperationReceipt {
+  operationId: string;
+  state: "accepted" | "not_found";
+  tool?: "submit_request" | "answer_question";
+  sessionId?: string;
+  deliveryId?: string | null;
+  textSha256?: string | null;
+  acceptedAt?: string;
+}

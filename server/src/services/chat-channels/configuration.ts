@@ -946,6 +946,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     credentials: Record<string, string>,
   ): ResolvedChatSdkProviderConfig {
     if (endpoint.provider === "speko") throw conflict("Speko uses the voice runtime");
+    if (endpoint.provider === "local_voice") throw conflict("Local voice uses the voice runtime");
     if (endpoint.provider === "imessage-photon") return {
       provider: "imessage-photon", userName,
       intakeAfter: Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString())),

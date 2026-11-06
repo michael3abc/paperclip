@@ -5,7 +5,12 @@ import { createPaperclipChatSdkState, type ChatSdkStatePersistence } from "../ch
 
 /** Shared control-plane port. Provider SDK classes and voice implement it separately. */
 export type ChatEndpointRuntime = Omit<ChatSdkEndpointRuntime, "provider" | "sdkAdapterKey"> & { readonly provider: ChatProvider; readonly sdkAdapterKey: string };
-export interface CreateVoiceRuntimeOptions { companyId: string; endpointId: string; userName: string; persistence: ChatSdkStatePersistence }
+export interface CreateVoiceRuntimeOptions {
+  companyId: string; endpointId: string; userName: string; persistence: ChatSdkStatePersistence;
+  /** Defaults to Speko. Local voice threads are validated with their own prefix; neither accepts the other. */
+  provider?: "speko" | "local_voice";
+}
+const VOICE_THREAD_PATTERNS = { speko: /^speko:[0-9a-f-]{36}$/, local_voice: /^local_voice:[0-9a-f-]{36}$/ } as const;
 
 /**
  * Voice uses signed session tools and a pull outbox, not a Chat SDK adapter's
@@ -14,10 +19,12 @@ export interface CreateVoiceRuntimeOptions { companyId: string; endpointId: stri
  */
 export function createVoiceRuntime(options: CreateVoiceRuntimeOptions): ChatEndpointRuntime {
   let retired = false;
+  const provider = options.provider ?? "speko";
+  const threadPattern = VOICE_THREAD_PATTERNS[provider];
   const assertActive = () => { if (retired) throw new Error("Voice runtime is retired"); };
   const unsupported = (): never => { throw new Error("This operation is not supported by the voice transport"); };
   const adapter: Adapter<string> = {
-    name: "speko", userName: options.userName,
+    name: provider, userName: options.userName,
     channelIdFromThreadId: (id) => id, decodeThreadId: (id) => id, encodeThreadId: (id) => id,
     addReaction: unsupported, removeReaction: unsupported, deleteMessage: unsupported, editMessage: unsupported,
     parseMessage: unsupported, renderFormatted: unsupported, postMessage: unsupported,
@@ -27,14 +34,15 @@ export function createVoiceRuntime(options: CreateVoiceRuntimeOptions): ChatEndp
     fetchMessages: async () => { assertActive(); return { messages: [] }; },
     startTyping: async () => { assertActive(); },
   };
-  const state = createPaperclipChatSdkState({ ...options });
+  const { provider: _provider, ...stateOptions } = options;
+  const state = createPaperclipChatSdkState({ ...stateOptions });
   const thread = (id: string): Thread => {
     assertActive();
-    if (!/^speko:[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid voice conversation identity");
+    if (!threadPattern.test(id)) throw new Error("Invalid voice conversation identity");
     return new ThreadImpl({ adapter, stateAdapter: state, id, channelId: id, isDM: true });
   };
   return {
-    companyId: options.companyId, endpointId: options.endpointId, provider: "speko", sdkAdapterKey: "speko",
+    companyId: options.companyId, endpointId: options.endpointId, provider, sdkAdapterKey: provider,
     initialize: async () => { assertActive(); }, shutdown: async () => { retired = true; },
     thread, channel: (id) => thread(id).channel, getProviderAdapter: () => adapter,
     getUser: async () => null, openDirectMessage: unsupported, abortTurn: async () => { assertActive(); },
