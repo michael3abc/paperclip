@@ -153,6 +153,14 @@ chat history remains available through `get_task_history`. Unexpected mutation
 exceptions and result-persistence failures immediately fail the owning turn for
 reconciliation instead of waiting for its execution timeout. They retain the
 unresolved operation and do not authorize a retry or a replacement assignment.
+External assignment prompts, instructions, catalogs, settled operation outcomes,
+and input responses retain their complete payload on the authenticated PRP
+transport. Diagnostic preview truncation must not remove the latest wake after
+a long chat handoff or change a completion report. Existing frame/outbox limits
+reject oversized messages explicitly before enqueue; they never silently shorten
+execution data. Content and credential policy remains owned by the harness.
+Replay fingerprints cover the complete external payload, including long tails.
+Existing truncated assignments are not rewritten or silently resumed by this fix.
 Work requests use a durable admission receipt keyed by binding, generation and
 request ID. Retries read that receipt, even after a task finishes, and cannot
 enqueue another run or move the same request to another task. A Dot runs one

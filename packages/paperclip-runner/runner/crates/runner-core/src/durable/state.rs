@@ -568,11 +568,21 @@ impl DurableState {
             payload
         };
 
-        let sanitized_payload = preserve_bounded_display_content(
-            event_type.as_str(),
-            &payload,
-            sanitize_value(&payload),
-        )?;
+        // External assignments and receipts are authoritative execution data on
+        // the authenticated PRP channel, not diagnostic previews. A 4 KiB
+        // string cap can remove the current wake behind a long handoff, alter
+        // a tool schema, or corrupt the accepted completion report. The harness
+        // owns content/credential policy; the frame and outbox limits below
+        // reject oversized messages atomically instead of rewriting them.
+        let sanitized_payload = if is_authoritative_external_event(event_type.as_str()) {
+            payload.clone()
+        } else {
+            preserve_bounded_display_content(
+                event_type.as_str(),
+                &payload,
+                sanitize_value(&payload),
+            )?
+        };
         // Restore authoritative tool arguments before checking protocol identities.
         // Their contents are execution data, not a redacted diagnostic preview.
         let sanitized_payload =
@@ -1006,6 +1016,15 @@ pub(crate) fn canonical_digest(value: &Value) -> String {
     format!("{:x}", Sha256::digest(canonical_json(value).as_bytes()))
 }
 
+fn is_authoritative_external_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "external_provider.dispatch_requested"
+            | "external_provider.operation_settled"
+            | "external_provider.input_available"
+    )
+}
+
 fn executor_event_fingerprint(
     event_type: &str,
     priority: EventPriority,
@@ -1014,7 +1033,7 @@ fn executor_event_fingerprint(
     let identity = json!({
         "eventType": event_type,
         "priority": priority.number(),
-        "payload": sanitize_value(payload),
+        "payload": if is_authoritative_external_event(event_type) { payload.clone() } else { sanitize_value(payload) },
     });
     format!("{:x}", Sha256::digest(canonical_json(&identity).as_bytes()))
 }
@@ -3242,6 +3261,100 @@ mod tests {
                 "OPENAI_API_KEY [REDACTED]; proxyAuthorization Basic [REDACTED]"
             ))
         );
+    }
+
+    #[test]
+    fn external_assignment_keeps_latest_wake_after_long_handoff_and_catalog() {
+        let mut config = config(PathBuf::from("unused"));
+        config.max_outbox_bytes = 128 * 1024;
+        let mut state = DurableState::new(&config);
+        let text = serde_json::to_string(&json!({
+            "task": {"prompt": "Historical context. ".repeat(400)},
+            "wake": {"comment": "CURRENT-OWNER-INSTRUCTION"},
+        }))
+        .unwrap();
+        let payload = json!({
+            "binding": {"runId": "run_1"},
+            "text": text,
+            "instructions": format!("{} FINISH-EXACTLY-ONCE", "Instructions. ".repeat(400)),
+            "tools": [{"operationId": "read", "description": "Description. ".repeat(400)}],
+            "completionContract": {"revision": "1", "criterionIds": ["objective"]},
+        });
+        state
+            .enqueue_executor_event(
+                &config,
+                "external-1".to_owned(),
+                "external_provider.dispatch_requested".to_owned(),
+                EventPriority::P0,
+                payload.clone(),
+            )
+            .unwrap();
+        let transmitted = state.outbox[0]
+            .envelope
+            .pointer("/payload/payload")
+            .unwrap();
+        assert_eq!(transmitted, &payload);
+        let envelope: Value = serde_json::from_str(transmitted["text"].as_str().unwrap()).unwrap();
+        assert_eq!(envelope["wake"]["comment"], "CURRENT-OWNER-INSTRUCTION");
+        assert!(state
+            .has_executor_event_receipt(
+                "external-1",
+                "external_provider.dispatch_requested",
+                EventPriority::P0,
+                &payload
+            )
+            .unwrap());
+        let mut changed = payload.clone();
+        changed["text"] = json!(format!("{} CHANGED-TAIL", text));
+        assert!(state
+            .has_executor_event_receipt(
+                "external-1",
+                "external_provider.dispatch_requested",
+                EventPriority::P0,
+                &changed
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn external_receipts_preserve_long_results_and_reject_oversized_frames_atomically() {
+        for event_type in [
+            "external_provider.operation_settled",
+            "external_provider.input_available",
+        ] {
+            let mut config = config(PathBuf::from("unused"));
+            let mut state = DurableState::new(&config);
+            let payload = json!({"binding": {"runId": "run_1"}, "requestId": "request-1",
+                "outcome": {"status": "completed", "result": {"summary": format!("{} RESULT-TAIL", "完整回覆。".repeat(500))}}});
+            config.max_frame_bytes = 2_048;
+            let seq = state.next_source_seq;
+            assert!(state
+                .enqueue_executor_event(
+                    &config,
+                    "external-result".to_owned(),
+                    event_type.to_owned(),
+                    EventPriority::P0,
+                    payload.clone()
+                )
+                .is_err());
+            assert_eq!(state.next_source_seq, seq);
+            assert!(state.outbox.is_empty());
+            assert!(state.executor_event_receipts.is_empty());
+            config.max_frame_bytes = 65_536;
+            state
+                .enqueue_executor_event(
+                    &config,
+                    "external-result".to_owned(),
+                    event_type.to_owned(),
+                    EventPriority::P0,
+                    payload.clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                state.outbox[0].envelope.pointer("/payload/payload"),
+                Some(&payload)
+            );
+        }
     }
 
     #[test]

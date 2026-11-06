@@ -134,7 +134,11 @@ it.each([
 
 it.each(["local", "local pending finish", "custom local directory", "external launcher", "grok external launcher", "external launcher empty controller"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
-  await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
+  const longPayload = launch === "local";
+  const instructions = longPayload ? "Use only the synthetic counter. ".repeat(250) + "INSTRUCTIONS-TAIL" : "Use only the synthetic counter.";
+  const message = longPayload ? JSON.stringify({ history: "Old context. ".repeat(500), currentWake: "CURRENT-WAKE-TAIL" }) : "Read the synthetic counter.";
+  const answer = longPayload ? "完整測試結果。".repeat(800) + "RESULT-TAIL" : "counter";
+  await writeFile(join(root, "AGENTS.md"), instructions);
   const input = execution(root, launch === "grok external launcher" ? "grok_bot" : "openai_dot");
   let send: ((op: ExternalProviderOperation) => Promise<void>) | undefined;
   let spawned: { pid: number; processGroupId: number | null; startedAt: string } | undefined;
@@ -163,7 +167,7 @@ it.each(["local", "local pending finish", "custom local directory", "external la
       return { connectUrl: authority.connectUrl, release: () => authority.stop() };
     },
     dynamicTools: [{ name: "synthetic_counter", description: "Read a synthetic counter", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
-    dynamicToolHandler: async () => ({ count: ++calls }),
+    dynamicToolHandler: async () => ({ count: ++calls, answer }),
     ...(pendingFinish ? { completionFeedback: firstCompletion } : {}),
     port: { dispatch: async event => { dispatches.push(event); }, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
@@ -197,11 +201,13 @@ it.each(["local", "local pending finish", "custom local directory", "external la
     action, input: args, digest: externalOperationDigest(action, args),
   });
   try {
-    await session.startTurn({ message: { role: "user", text: "Read the synthetic counter." } });
+    await session.startTurn({ message: { role: "user", text: message } });
+    await vi.waitFor(() => expect(dispatches[0]).toMatchObject({ payload: { text: message } }), { timeout: 10000 });
+    if (longPayload) expect(dispatches[0]).toMatchObject({ payload: { instructions: expect.stringContaining("INSTRUCTIONS-TAIL") } });
     await send!(operation("accept", {}));
     const call = operation("tool", { name: "synthetic_counter", arguments: {} });
     await send!(call);
-    await vi.waitFor(() => expect(settlements.get(call.requestId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });
+    await vi.waitFor(() => expect(settlements.get(call.requestId)).toMatchObject({ status: "completed", isError: false, result: { count: 1, answer } }), { timeout: 10000 });
     if (input.provider.kind === "grok_bot") {
       const renewal = operation("renew", { expiresAtUnixMs: Date.now() + 3600000 });
       await send!(renewal);
