@@ -47,7 +47,7 @@ export interface HeartbeatEnvironmentSelectionInput {
     "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId"> & { runtimeConfig?: Record<string, unknown> };
   task: {
     freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
-    issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
+    issueRef: Pick<Issue, "id" | "projectId" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
     issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> | null;
     issueId: string | null;
     context: Record<string, unknown>;
@@ -511,9 +511,10 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
     issueId !== null && issueRef !== null &&
     issueRef.projectId !== null && issueRef.projectWorkspaceId !== null &&
-    reusableExistingExecutionWorkspace?.projectId === issueRef.projectId &&
+    reusableExistingExecutionWorkspace !== null &&
+    reusableExistingExecutionWorkspace.projectId === issueRef.projectId &&
     reusableExistingExecutionWorkspace.projectWorkspaceId === issueRef.projectWorkspaceId &&
-    reusableExistingExecutionWorkspace?.metadata?._controllerProvisionCopyOnly === true &&
+    reusableExistingExecutionWorkspace.metadata?._controllerProvisionCopyOnly === true &&
     await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
       workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace });
   const boundTaskDirectory = !controllerOnly && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&

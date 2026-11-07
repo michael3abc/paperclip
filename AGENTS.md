@@ -458,6 +458,8 @@ Base validation uses the saved strategy only for a same-company/project/task
 local Recovery copy with its server-owned copy-only receipt; source-free task
 Retry validation stays intact. Keep current configuration separately for drift
 diagnostics and fresh admission.
+Environment selection carries the issue's projectId in its typed input and checks
+that a saved workspace exists before comparing project/source ownership.
 Exercise the assembled heartbeat path for project-bound non-Git Recovery reuse,
 including preserved files, provider execution and task ownership rejection.
 Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
