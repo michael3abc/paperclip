@@ -45,7 +45,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const [pmRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: pm.id, status: 'running',
       nativeIssueId: chat.id, issueId: chat.id, scopeKind: 'issue', runtimeMode: 'native', contextSnapshot: { issueId: chat.id } }).returning();
     await db.update(issues).set({ executionRunId: pmRun.id }).where(eq(issues.id, chat.id));
-    const stopped = classifyTaskWatchdogSubtree({ watchdog: { ...watchdog, lastReviewedFingerprint: null }, issues: [source], activeRuns: [], queuedWakeRequests: [] });
+    const stopped = classifyTaskWatchdogSubtree({ watchdog: { ...watchdog, lastReviewedFingerprint: null, lastReviewedStopSnapshot: null }, issues: [source], activeRuns: [], queuedWakeRequests: [] });
     if (stopped.state !== 'stopped') throw new Error(stopped.state);
     const ensureChild = vi.fn(async () => {
       const [existing] = await db.select().from(issues).where(eq(issues.originId, source.id));
@@ -177,9 +177,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const f = await fixture();
     const enqueued: string[] = [];
     const service = taskWatchdogService(db, { enqueueWakeup: async (agentId, options) => {
+      const issueId = options?.contextSnapshot?.issueId;
+      const key = options?.idempotencyKey;
+      if (typeof issueId !== 'string' || !key) throw new Error('Coordination wake requires an issue and an idempotency key');
       enqueued.push(agentId);
-      const context = options.contextSnapshot as { issueId: string };
-      return f.wake((await db.select().from(issues).where(eq(issues.id, context.issueId)))[0], f.stopped, options.idempotencyKey!);
+      return f.wake((await db.select().from(issues).where(eq(issues.id, issueId)))[0], f.stopped, key);
     } });
     await service.reconcileTaskWatchdogs({ companyId: f.company.id, watchdogId: f.watchdog.id });
     expect(enqueued).toEqual([f.pm.id]);
