@@ -188,22 +188,36 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
     await expect(access(join(source,".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it("starts and settles a document worker through heartbeat without a Git repository", async () => {
+  it.each([false, true])("starts and settles a document worker through heartbeat without a Git repository (retained Recovery: %s)", async retained => {
     const { input, source, issue } = await fixture();
     await rm(join(source,".git"),{ recursive:true });
+    const cwd = retained ? join(home, `recovery-${issue.id}`) : source;
+    if (retained) {
+      await mkdir(cwd);
+      await writeFile(join(cwd, "README.md"), "source content\n");
+      await writeFile(join(cwd, "saved-delivery.txt"), "existing delivery\n");
+    }
+    const workspace = retained ? (await db.insert(executionWorkspaces).values({
+      companyId: issue.companyId, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
+      sourceIssueId: issue.id, name: "Retained Recovery directory", cwd, mode: "isolated_workspace",
+      strategyType: "project_primary", providerType: "local_fs", status: "idle",
+      metadata: { source: "project_primary", _controllerProvisionCopyOnly: true },
+    }).returning())[0] : null;
     const userId = `document-owner-${randomUUID()}`;
     await db.insert(authUsers).values({ id:userId,name:"Document owner",email:`${userId}@example.test`,createdAt:new Date(),updatedAt:new Date() });
     await db.insert(companyMemberships).values({ companyId:issue.companyId,principalId:userId,principalType:"user",membershipRole:"owner",status:"active" });
     await db.update(companies).set({ defaultResponsibleUserId:userId }).where(eq(companies.id,issue.companyId));
     await db.update(heartbeatRuns).set({ status:"failed",finishedAt:new Date() }).where(eq(heartbeatRuns.id,input.run.id));
-    await db.update(issues).set({ status:"todo",responsibleUserId:userId,executionWorkspaceSettings:{ mode:"shared_workspace" },
+    await db.update(issues).set({ status:"todo",responsibleUserId:userId,
+      executionWorkspaceId: workspace?.id ?? null, executionWorkspacePreference: workspace ? "reuse_existing" : null,
+      executionWorkspaceSettings:{ mode: retained ? "isolated_workspace" : "shared_workspace" },
       workspaceSelection:{ version:1,source:"explicit",selection:{ kind:"configured_source",mode:"shared",projectWorkspaceId:issue.projectWorkspaceId! } } }).where(eq(issues.id,issue.id));
     await db.update(agents).set({ status:"idle",runtimeConfig:{ requireProjectWorkspace:true,heartbeat:{ enabled:false,wakeOnDemand:true } } }).where(eq(agents.id,input.agent.id));
     const originalAdapter = getServerAdapter("process");
     const executed = vi.fn(async (execution: AdapterExecutionContext) => {
       const [lease] = await leases(execution.runId);
       const workspace = await input.services.executionWorkspacesSvc.getStoredById(issue.companyId,lease.executionWorkspaceId!);
-      expect(workspace?.cwd).toBe(source);
+      expect(workspace?.cwd).toBe(cwd);
       await writeFile(join(workspace!.cwd!,"completed.txt"),"document worker ran\n");
       await db.update(issues).set({ status:"done" }).where(eq(issues.id,issue.id));
       return { exitCode:0,signal:null,timedOut:false,summary:"Document work completed" };
@@ -217,7 +231,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       await heartbeat.drainActiveRunExecutions();
       expect(run).not.toBeNull(); expect(executed).toHaveBeenCalledOnce();
       expect(await readRun(run!.id)).toMatchObject({ status:"succeeded",errorCode:null });
-      expect(await readFile(join(source,"completed.txt"),"utf8")).toBe("document worker ran\n");
+      expect(await readFile(join(cwd,"completed.txt"),"utf8")).toBe("document worker ran\n");
+      if (workspace) {
+        expect((await readIssue(issue.id)).executionWorkspaceId).toBe(workspace.id);
+        expect(await readFile(join(cwd, "saved-delivery.txt"), "utf8")).toBe("existing delivery\n");
+        await expect(access(join(source, "completed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
       expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
       await expect(access(join(source,".git"))).rejects.toMatchObject({ code:"ENOENT" });
     } finally { await heartbeat.drainActiveRunExecutions();registerServerAdapter(originalAdapter); }
@@ -230,6 +249,28 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (kind === "shared_mode") input.policy.effectiveExecutionWorkspaceMode = "shared_workspace";
     if (kind === "shared_strategy") input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/requires a project task with an isolated Git worktree/);
+  });
+  it.each(["foreign_owner", "git_required", "missing_directory"] as const)("rejects invalid retained Recovery reuse: %s", async scenario => {
+    const { input, source, issue } = await fixture(true);
+    await rm(join(source, ".git"), { recursive: true });
+    input.agent.runtimeConfig = { requireProjectWorkspace: true, requireTaskWorktree: scenario === "git_required" };
+    const [saved] = await db.insert(executionWorkspaces).values({
+      companyId: issue.companyId, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
+      sourceIssueId: scenario === "foreign_owner" ? null : issue.id, name: "Retained Recovery directory",
+      cwd: scenario === "missing_directory" ? join(home, "missing-directory") : source,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", status: "idle",
+      metadata: { source: "project_primary", _controllerProvisionCopyOnly: true },
+    }).returning();
+    await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issue.id));
+    await reuse(input, toExecutionWorkspace(saved));
+    const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
+      scenario === "foreign_owner" ? /must reuse only this task/
+        : scenario === "git_required" ? /isolated Git worktree/ : /could not be restored/,
+    );
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+    await expect(access(join(saved.cwd!, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([false, true])("places Cursor Cloud in its provider API without a Computer under managed-only policy (ephemeral: %s)", async ephemeral => {

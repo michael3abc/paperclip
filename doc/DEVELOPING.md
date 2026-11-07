@@ -4901,6 +4901,13 @@ controller copy-only receipt can be reused under its exact company/task ownershi
 Validate its canonical existing directory, including attempt/workspace layouts;
 never recreate missing files, reinterpret it as today's git_worktree default, or use
 another issue's path. The original configured source still has its access checks.
+Workspace preparation validates the persisted strategy before restoration, even
+when the resolved anchor is a task_session and the current isolated default is
+git_worktree. Keep the latest configuration for freshness diagnostics; new
+admissions and explicit Git-required workers retain their normal checks. Regression
+coverage starts a worker through heartbeat from a project-bound idle Recovery
+directory, preserves its deliverables and binding, and rejects foreign ownership,
+missing directories and Git-required reuse before acquiring an environment.
 Task delivery instructions follow the run's runtimeMode. Legacy workers use the
 installed upload helper and run-authenticated task API; native workers use current
 register_deliverable/paperclip_finish tools. Missing native tools do not require a

@@ -453,6 +453,10 @@ project/worker authority, an idempotency key and observed task/run versions. Unk
 outcomes must inspect the original continuation receipt; a wake alone is not completion.
 Formal review retains current stage, participant and policy bindings. Keep human gates,
 manual holds and completed/cancelled work intact. Saved Recovery directory realization
-and ownership govern reuse, even for a configured non-Git source. Delivery guidance
-must match the actual runtime: native tools for Runner, authenticated Paperclip skill
+and ownership govern reuse, even for a configured non-Git source.
+Base validation must use the saved strategy before restoring a reused workspace;
+keep current configuration separately for drift diagnostics and fresh admission.
+Exercise the assembled heartbeat path for project-bound non-Git Recovery reuse,
+including preserved files, provider execution and task ownership rejection.
+Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
 and task APIs for legacy adapters. Never require a native-only tool in a legacy run.

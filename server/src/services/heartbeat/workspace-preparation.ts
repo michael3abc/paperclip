@@ -614,7 +614,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   }
   if (!pluginPrepared && !remoteAuthority) await timeWorkspace("workspace_base_validation", () => assertGitWorktreeBaseWorkspaceReady({
     requestedExecutionWorkspaceMode,
-    config: hostExecutionWorkspaceConfig,
+    // Restoration below uses the persisted realization, including Recovery copies.
+    // Validate that same strategy; today's isolated default must not turn an
+    // existing local directory into a Git worktree before restoration is reached.
+    // Keep latest configuration intact for drift diagnostics and new admissions.
+    config: requestedShouldReuseExisting && reusableExistingExecutionWorkspace && !fresh
+      ? { ...hostExecutionWorkspaceConfig, workspaceStrategy: {
+          ...parseObject(hostExecutionWorkspaceConfig.workspaceStrategy),
+          type: reusableExistingExecutionWorkspace.strategyType,
+        } }
+      : hostExecutionWorkspaceConfig,
     issue: issueRef,
     base: executionWorkspaceBase,
     anchor: {

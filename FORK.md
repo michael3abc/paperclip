@@ -129,3 +129,11 @@ non-Git Recovery reuse and runtime-specific worker delivery guidance. Release fr
 michael/main only, with additive migrations 0437/0438 and scoped related-test receipts.
 Enable tracking after readiness for the five current PMs and register only explicitly
 selected historical tasks. Keep completed/cancelled work and the prior release.
+
+HOM-240 acceptance exposed a second preparation path: project-bound Recovery
+copies resolved as task_session were validated against the current git_worktree
+default before their saved project_primary restoration. Base validation now follows
+the same persisted strategy as restoration, retaining drift diagnostics and current
+admission/ownership checks. Assembled heartbeat regression preserves the original
+delivery and workspace through provider execution; negative cases cover foreign
+ownership, missing directories and Git-required workers. No migration is added.

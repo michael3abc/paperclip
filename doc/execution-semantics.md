@@ -3511,6 +3511,13 @@ The adapter retains its current-run helper until a later admitted turn replaces 
 
 ## Managed project PM follow-through
 
+Reusing a saved project Recovery copy validates its persisted physical strategy
+before restoration. An isolated local directory does not become a Git worktree
+because current configuration defaults to one. Retain the original task binding
+and files, fail missing directories explicitly, and preserve Git-required worker
+constraints. New admission and configuration-drift reporting still use current
+configuration.
+
 A project PM with zero worker slots can own durable tracking of an authorized task.
 The Owner enables runtimeConfig.taskTracking with enabled=true, intervalSec=300 and
 maxRecoveryAttempts=2. New PM dispatch registers its watchdog transactionally; existing
