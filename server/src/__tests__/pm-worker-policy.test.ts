@@ -1,10 +1,11 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { eq } from "drizzle-orm";
-import { agents, companies, projects, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb, toolApplications, toolConnections, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, projects, projectWorkspaces, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb, toolApplications, toolConnections, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import type { PmWorkerPolicy } from "@paperclipai/shared";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
@@ -23,6 +24,8 @@ describe("PM worker policy with owned database and real files", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>, db: ReturnType<typeof createDb>, home: string, root: string;
   const companyId = randomUUID(), projectId = randomUUID(), otherProjectId = randomUUID(), pmId = randomUUID(), workerId = randomUUID(), userId = randomUUID();
   const issueId = randomUUID(), otherIssueId = randomUUID(), runId = randomUUID(), legacyRunId = randomUUID(), otherRunId = randomUUID(), choiceId = randomUUID();
+  const sourceId = randomUUID();
+  const workspaceSelection = { kind: "configured_source", projectWorkspaceId: sourceId, mode: "managed_isolated" } as const;
   const actor = { type: "board" as const, userId, source: "session" as const };
   const policy: PmWorkerPolicy = { version: 2, defaultSelectionId: choiceId, workers: [{ agentId: workerId, harness: "codex_local",
     selections: [{ id: choiceId, model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "一般 coding agent" }] }] };
@@ -37,6 +40,10 @@ describe("PM worker policy with owned database and real files", () => {
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "owner" });
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [pmId] } });
     await db.insert(projects).values([{ id: projectId, companyId, name: "Project" }, { id: otherProjectId, companyId, name: "Other" }]);
+    const repo = path.join(home, "source"); await fs.mkdir(repo);
+    execFileSync("git", ["init", repo], { stdio: "ignore" });
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "Fixture"], { stdio: "ignore" });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Owned Git source", cwd: repo, isPrimary: true });
     root = resolveManagedInstructionsRoot({ id: pmId, companyId, name: "PM", adapterConfig: {} });
     await db.insert(agents).values([
       { id: pmId, companyId, name: "PM", status: "active", adapterType: "claude_local",
@@ -74,7 +81,7 @@ describe("PM worker policy with owned database and real files", () => {
     const task = (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
     expect(task.assigneeAdapterOverrides).toEqual({ adapterConfig: { model: "historical-model" } });
     expect((await db.select().from(agents).where(eq(agents.id, workerId)))[0]!.adapterConfig?.model).toBe("unchanged-global-model");
-    const selection = await assertPmDispatch(db, await scope(), { projectId });
+    const selection = await assertPmDispatch(db, await scope(), { workspaceSelection, projectId });
     expect(selection).toMatchObject({ assigneeAgentId: workerId, assigneeAdapterOverrides: { workerSelectionId: choiceId,
       adapterConfig: { model: "gpt-6.1-sol", permissionMode: "approve-reads", dangerouslyBypassApprovalsAndSandbox: false } } });
     await expect(svc.save(companyId, pmId, { policy, baseRevision: before.revision, baseHash: before.documentHash }, actor)).rejects.toThrow("changed");
@@ -96,11 +103,11 @@ describe("PM worker policy with owned database and real files", () => {
     try { await expect(svc.save(companyId, pmId, { policy: changed, baseRevision: before.revision, baseHash: before.documentHash }, actor)).rejects.toThrow("Injected"); }
     finally { fault.mockRestore(); }
     expect((await readAgent()).runtimeConfig?.pmDelegation).toEqual(policy);
-    await expect(assertPmDispatch(db, await scope(), { projectId })).rejects.toThrow("out of sync");
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).rejects.toThrow("out of sync");
     const repair = await svc.read(companyId, pmId, actor);
     expect(repair.warnings).toContainEqual(expect.stringContaining("out of sync"));
     await svc.save(companyId, pmId, { policy, baseRevision: repair.revision, baseHash: repair.documentHash }, actor);
-    await expect(assertPmDispatch(db, await scope(), { projectId })).resolves.toMatchObject({ assigneeAgentId: workerId });
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).resolves.toMatchObject({ assigneeAgentId: workerId });
   });
   it("allows only one concurrent editor and rejects legacy settings for new dispatch", async () => {
     const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
@@ -149,15 +156,15 @@ describe("PM worker policy with owned database and real files", () => {
     const after = await svc.read(companyId, pmId, actor);
     expect(after.policy).toEqual(routed); expect(after.warnings).toEqual([]);
     for (const choice of selections) {
-      const dispatched = await assertPmDispatch(db, await scope(), { projectId, assigneeAdapterOverrides: { workerSelectionId: choice.id } });
+      const dispatched = await assertPmDispatch(db, await scope(), { workspaceSelection, projectId, assigneeAdapterOverrides: { workerSelectionId: choice.id } });
       expect(dispatched.assigneeAdapterOverrides).toMatchObject({ aiConnection: choice.aiConnection, adapterConfig: { model: choice.model, effort: "high", permissionMode: "approve-all" } });
     }
     expect((await db.select().from(agents).where(eq(agents.id, workerId)))[0]!.runtimeConfig?.aiConnection).toEqual(routes[0]!.binding);
-    await expect(assertPmDispatch(db, await scope(), { projectId, assigneeAdapterOverrides: { workerSelectionId: selections[0]!.id, aiConnection: routes[1]!.binding } })).rejects.toThrow("connection differs");
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId, assigneeAdapterOverrides: { workerSelectionId: selections[0]!.id, aiConnection: routes[1]!.binding } })).rejects.toThrow("connection differs");
     const wrongRoute = structuredClone(routed); wrongRoute.workers[0]!.selections[0]!.aiConnection = routes[1]!.binding;
     await expect(svc.save(companyId, pmId, { policy: wrongRoute, baseRevision: after.revision, baseHash: after.documentHash }, actor)).rejects.toThrow("not supported");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, routes[1]!.binding.grantId));
-    await expect(assertPmDispatch(db, await scope(), { projectId, assigneeAdapterOverrides: { workerSelectionId: selections[1]!.id } })).rejects.toThrow("unavailable or not installed");
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId, assigneeAdapterOverrides: { workerSelectionId: selections[1]!.id } })).rejects.toThrow("unavailable or not installed");
   });
 
 });
