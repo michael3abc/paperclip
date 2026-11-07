@@ -5,7 +5,7 @@ import type { heartbeatService } from "./heartbeat.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logActivity } from "./activity-log.js";
-import { readDecisionDelegation } from "./delegated-decision-policy.js";
+import { readDecisionAuthority } from "./delegated-decision-policy.js";
 import { registerDeadlineWork } from "./deadline-work.js";
 
 export const notifyDelegatedDecision = (tx: object, companyId: string) => notifyDeliveryWork(tx, DELIVERY_QUEUES.delegatedDecisions, companyId);
@@ -31,7 +31,7 @@ export function delegatedDecisionDelivery(db: Db, heartbeat: Pick<ReturnType<typ
       const table = item.kind === "interaction" ? issueThreadInteractions : approvals;
       const key = `delegated-decision:${item.kind}:${item.id}:${context.revision}`;
       try {
-        const grant = await readDecisionDelegation(db, item.companyId);
+        const grant = await readDecisionAuthority(db, item.companyId, context);
         if (!grant || grant.scope.revision !== context.grantRevision) throw new Error("delegation_changed");
         const [conversation] = await db.select({ id: issues.id }).from(issues).where(and(
           eq(issues.companyId, item.companyId), eq(issues.conversationAgentId, context.recipientAgentId!),

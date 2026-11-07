@@ -15,6 +15,7 @@ import { isConversation } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { readNativeExecutionReviewAssignment, readNativeExecutionReviewDecision, nativeExecutionReviewTransition } from "./native-execution-review.js";
 import { assertCurrentWakeCommentsRead, NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ, NATIVE_CURRENT_WAKE_COMMENTS_UNREAD, resolveCurrentWakeCommentsBinding } from "./current-wake-comments.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
@@ -98,6 +99,16 @@ export async function nativeCompletionFeedback(
   const acceptedHandoff = await assertNativeCaseHandoffResult(db, runId, issue.id, result);
   if (acceptedHandoff) return "The persisted case handoff controls this turn. End the turn; the task remains open for its next agent.";
   const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+  if (readNativeExecutionReviewAssignment(run.contextSnapshot)) {
+    if (result.continuation) throw new Error("Execution reviews cannot schedule continuations; resolve the assigned review or report its blocker.");
+    const decision = readNativeExecutionReviewDecision(run);
+    if (result.reportedWorkDisposition === "blocked" && !decision)
+      return "Review blocker recorded. The original review remains pending; no worker decision was submitted.";
+    if (!decision) throw new Error("Use resolve_review to record accept or reject before finishing this execution review.");
+    nativeExecutionReviewTransition(issue, run, decision);
+    if (result.reportedWorkDisposition !== "done") throw new Error("The review decision is recorded. Finish the review with reportedWorkDisposition=done; the decision controls the worker task.");
+    return "Review report accepted. The recorded decision will be applied after this run and workspace finalization finish; the worker task is not complete merely because the review turn is done.";
+  }
   if (reviewContext) {
     if (result.continuation?.kind === "monitor") throw new Error("Review-only runs cannot yield to a task monitor; resolve the assigned review or report its blocker.");
     const review = await getNativeReviewAssignment(db, {

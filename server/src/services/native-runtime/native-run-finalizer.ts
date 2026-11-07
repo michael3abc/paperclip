@@ -29,6 +29,7 @@ import { readPersistedNativeFailureEvidence } from "./native-provider-failure-ev
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { readNativeExecutionReviewAssignment, readNativeExecutionReviewDecision, planNativeExecutionReview } from "./native-execution-review.js";
 import { conversationNativeDecision, isConversation, settleConversationTurnForRun } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { randomUUID } from "node:crypto";
@@ -1378,6 +1379,8 @@ export async function finalizeNativeRun(input: {
         : Promise.resolve(null),
     ]);
     const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+    const executionReview = readNativeExecutionReviewAssignment(run.contextSnapshot);
+    const executionReviewDecision = executionReview ? readNativeExecutionReviewDecision(run) : null;
     const nativeReview = reviewContext ? await getNativeReviewAssignment(input.db, {
       companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId,
       contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
@@ -1426,6 +1429,7 @@ export async function finalizeNativeRun(input: {
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
+      ...(executionReview ? { nativeReviewOutcome: "pending" as const } : {}),
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
@@ -1454,6 +1458,10 @@ export async function finalizeNativeRun(input: {
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
     });
+    const executionReviewTransition = executionReviewDecision && terminalState === "succeeded"
+      && input.workspaceFinalizeStatus === "succeeded" && result.reportedWorkDisposition === "done"
+      ? await planNativeExecutionReview(input.db, authoritativeIssue, run, executionReviewDecision) : null;
+    if (executionReviewTransition) proposedDecision = executionReviewTransition.status;
     // Already accepted results still require the server-owned first-task decision.
     // Keep the task open without inventing an interaction or rerunning the work.
     if (proposedDecision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(input.db, {
@@ -1521,6 +1529,8 @@ export async function finalizeNativeRun(input: {
         priorStatusVersion: Number(authoritativeIssue.statusVersion),
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
         decision,
+        requireExecutionReviewDecision: decision.reasonCode === "native_execution_review_decided"
+          ? executionReviewDecision ?? undefined : undefined,
         supersededExternalReviewRequests: supersededReviews.length && !governanceGate &&
           ["completion_claim_policy_accepted", "completion_contract_satisfied", "external_chat_response_waiting", "scheduled_monitor_waiting"].includes(decision.reasonCode ?? "")
           ? { agentId: run.agentId, resultId: resultRow.id, interactionIds: supersededReviews.map(({ interaction }) => interaction.id) } : undefined,

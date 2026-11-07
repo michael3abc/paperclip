@@ -2,6 +2,7 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import { readRemoteWorkspaceAuthority, readWorkspaceProviderBinding } from "@paperclipai/shared";
 import { cleanupRemoteWorkspaceAllocation, inspectRemoteWorkspacePersistence, type DestroyRemoteWorkspaceLease } from "./remote-workspace-lifecycle.js";
+import { workspaceProcessConsumers } from "./workspace-process-consumers.js";
 import { inspectPluginWorkspace, removePluginWorkspace, restorePluginWorkspace, pluginWorkspaceSupportsMergeAncestry, type WorkspaceWorkers } from "./plugin-workspaces.js";
 import { acquireExecutionWorkspaceLifecycleLock, withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
@@ -1534,12 +1535,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
     }
     if (selection.kind === "configured_source") {
-      const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
+      const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, metadata: projectWorkspaces.metadata, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
         .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId)).where(and(
           eq(projectWorkspaces.id, selection.projectWorkspaceId), eq(projectWorkspaces.companyId, input.companyId),
           await projectReadSqlCondition(reader, input.actor),
         ));
       if (!source) throw notFound("Workspace source is unavailable or inaccessible");
+      if (selection.mode === "shared" && source.metadata?.usage === "production") throw conflict("This source serves production; select the project's fixed development checkout");
       const mode = selection.mode === "shared" ? "shared_workspace" : "isolated_workspace";
       let executionWorkspaceSettings: Record<string, unknown> = { mode };
       if (input.preserveImplicitDefaultSettings) {
@@ -2086,6 +2088,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     ) {
       throw new Error("Refusing terminal workspace cleanup because the git worktree changed after delivery was verified");
     }
+    // `git worktree remove` can discard ignored files even without --force.
+    // Compaction owns regenerable outputs; all other ignored content must be
+    // preserved before this destructive boundary may proceed.
+    if (await readGitStdout(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], workspacePath)) {
+      throw new Error("Refusing terminal workspace cleanup because ignored files have not been preserved");
+    }
+    if ((await workspaceProcessConsumers(workspacePath)).length) throw conflict("Workspace still has a local process or service using its path");
   }
 
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
@@ -2496,6 +2505,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (await workspaceHasActiveRun(workspace)) throw conflict("Workspace still has active execution");
       await removePluginWorkspace(db, opts.pluginWorkerManager, workspace, expectedHeadSha, recoveryPullRequest, beforeRemove);
       return { cleaned: true, warnings: [] };
+    }
+    if (workspace.cwd && workspace.providerType === "git_worktree" && (await workspaceProcessConsumers(workspace.cwd)).length) {
+      throw conflict("Workspace still has a local process or service using its path");
     }
     const [
       {

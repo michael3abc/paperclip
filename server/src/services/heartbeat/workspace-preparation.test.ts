@@ -154,6 +154,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(after.executionWorkspacePreference).toBe(before.executionWorkspacePreference);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
   });
+  it("uses the configured development checkout for a project-exclusive worker", async () => {
+    const { input, source } = await fixture(); input.agent.runtimeConfig = { requireProjectWorkspace: true };
+    const result = await prepareHeartbeatWorkspace(db, input);
+    expect(result.executionWorkspace.cwd).toBe(source);
+    expect(result.executionWorkspace.strategy).toBe("project_primary");
+    expect(input.task.context.sharedCheckoutClaim).toMatchObject({ path: source, issueId: input.task.issueId });
+    const retained = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,input.run.id)))[0]!;
+    expect(retained.contextSnapshot?.sharedCheckoutClaim).toEqual(input.task.context.sharedCheckoutClaim);
+  });
   it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("refuses a shared worker without a task worktree: %s", async kind => {
     const { input } = await fixture(true);
     input.agent.runtimeConfig = { requireTaskWorktree: true };

@@ -12,6 +12,13 @@ export const delegatedDecisionScopeSchema = z.object({
 }).strict();
 export type DecisionDelegationScope = z.infer<typeof delegatedDecisionScopeSchema>;
 
+/** Independent of company delegation and its optional momo recipient. */
+export const PROJECT_PM_DECISION_PERMISSION = "company:project_pm_decisions";
+export const projectPmDecisionScopeSchema = delegatedDecisionScopeSchema.extend({
+  projectIds: z.array(z.string().uuid()).min(1).refine(ids => new Set(ids).size === ids.length),
+  scopes: z.array(z.enum(["task_decisions", "ordinary_operations", "external_writes", "general_approvals"])).min(1),
+});
+
 export const HUMAN_RESERVED_DECISION_REASONS = [
   "explicit_human", "major_irreversible_destruction", "sensitive_data_export",
   "account_security_expansion", "delegation_change", "uncertain",
@@ -24,7 +31,9 @@ export interface DelegatedDecisionContext {
   grantId: string;
   grantRevision: string;
   ownerUserId: string;
-  delegateAgentId: string;
+  delegateAgentId: string | null;
+  authority?: "project_pm";
+  sourceIssueId?: string | null;
   level: "pm" | "delegate" | "human";
   recipientAgentId: string | null;
   projectId: string | null;
@@ -45,6 +54,11 @@ export const updateDecisionDelegationSchema = z.object({
   scopes: delegatedDecisionScopeSchema.shape.scopes,
   reason: z.string().trim().min(1).max(4000),
 }).strict();
+
+export const updateProjectPmDecisionAuthoritySchema = updateDecisionDelegationSchema.omit({ agentId: true }).extend({
+  projectIds: projectPmDecisionScopeSchema.shape.projectIds,
+  scopes: projectPmDecisionScopeSchema.shape.scopes,
+});
 
 export const delegatedRequestSchema = z.object({
   kind: z.enum(["interaction", "approval", "runtime"]),

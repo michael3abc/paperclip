@@ -1,7 +1,8 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as localServiceSupervisor from "../services/local-service-supervisor.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -944,6 +945,29 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
+
+  it("retains ignored files instead of deleting them with a merged worktree", async () => {
+    const seed = await seedAncestryTerminalWorkspace();
+    const common = (await readGit(seed.worktreePath, ["rev-parse", "--git-common-dir"]))!;
+    await fs.appendFile(path.join(path.resolve(seed.worktreePath, common), "info", "exclude"), "\nprivate-result.txt\n");
+    await fs.writeFile(path.join(seed.worktreePath, "private-result.txt"), "unsaved result");
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep.cleanupFailed).toBe(1);
+    expect(await fs.readFile(path.join(seed.worktreePath, "private-result.txt"), "utf8")).toBe("unsaved result");
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id,seed.executionWorkspaceId));
+    expect(workspace.cleanupReason).toContain("ignored files");
+    expect((await db.select().from(issues).where(eq(issues.id,seed.sourceIssueId)))).toHaveLength(1);
+  });
+
+  it("retains a merged worktree while a local process still owns its directory", async () => {
+    const seed = await seedAncestryTerminalWorkspace();
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {cwd:seed.worktreePath,stdio:"ignore"});
+    await once(child,"spawn");
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces(); expect(sweep.cleanupFailed).toBe(1);
+      expect((await fs.stat(seed.worktreePath)).isDirectory()).toBe(true);
+    } finally { child.kill("SIGTERM"); await once(child,"close"); }
+  });
 
   it("reads workspace details and company-scoped execution configuration without live Git inspection", async () => {
     const seed = await seedAncestryTerminalWorkspace();

@@ -33,6 +33,7 @@ import {
   completionContracts,
   heartbeatRuns,
   issueApprovals,
+  issueExecutionDecisions,
   issueRecoveryActions,
   issueThreadInteractions,
   issues,
@@ -51,6 +52,8 @@ import {
 } from "./status-arbiter.js";
 import { nativeSha256 } from "./canonical.js";
 import { getNativeReviewAssignment, type NativeReviewAssignmentContext } from "./native-review-participant.js";
+import { planNativeExecutionReview, type NativeExecutionReviewDecision } from "./native-execution-review.js";
+import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import {
   readNativeBoardResponseWaitSource,
   readNativeBoardResponseWaitOrigin,
@@ -1606,6 +1609,7 @@ export async function commitNativeStatusDecision(input: {
   decision: NativeStatusDecision;
   failpoint?: NativeStatusCommitFailpoint;
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
+  requireExecutionReviewDecision?: NativeExecutionReviewDecision;
   supersedesCommittedDecisionId?: string;
   supersededExternalReviewRequests?: { agentId: string; resultId: string; interactionIds: string[] };
   requireExternalChatResponseWaitAuthorization?: { agentId: string; completionContinuationKey?: string };
@@ -1773,6 +1777,28 @@ export async function commitNativeStatusDecision(input: {
     ) {
       throw new NativeStatusRaceError();
     }
+    let executionReview: Awaited<ReturnType<typeof planNativeExecutionReview>> | null = null;
+    let executionReviewerId: string | null = null;
+    if (reasonCode === "native_execution_review_decided") {
+      const expected = input.requireExecutionReviewDecision;
+      const [reviewRun] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.nativeIssueId, input.issueId),
+      )).for("update");
+      const [accepted] = coordinator.resultId ? await tx.select().from(nativeRunResults).where(and(
+        eq(nativeRunResults.id, coordinator.resultId), eq(nativeRunResults.runId, input.runId),
+        eq(nativeRunResults.companyId, input.companyId), eq(nativeRunResults.issueId, input.issueId),
+        eq(nativeRunResults.schemaStatus, "accepted"),
+      )) : [];
+      const terminal = record(accepted?.resultJson.terminal), report = record(accepted?.resultJson.result);
+      if (!expected || !reviewRun || isNativeRunnerOwnershipHeld(reviewRun)
+        || terminal.runTerminalState !== "succeeded" || terminal.turnTerminalState !== "completed"
+        || report.reportedWorkDisposition !== "done") throw new NativeStatusRaceError();
+      await lockNativeGovernanceSources({ db: tx as unknown as Db, companyId: input.companyId, issueId: input.issueId });
+      executionReview = await planNativeExecutionReview(tx as unknown as Db, issue, reviewRun, expected);
+      if (nativeSha256(executionReview.status) !== nativeSha256(input.decision)) throw new NativeStatusRaceError();
+      executionReviewerId = reviewRun.agentId;
+    } else if (input.requireExecutionReviewDecision) throw new NativeStatusRaceError();
     // Recheck under the issue lock, retaining run/proposal/document proof until
     // commit. A newer decision cannot race an earlier first-task Done assessment.
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
@@ -2216,14 +2242,31 @@ export async function commitNativeStatusDecision(input: {
       if (!updated) throw new NativeStatusRaceError();
     } else {
       failAt("status_projection", input.failpoint);
+      if (executionReview && executionReviewerId) {
+        const [receipt] = await tx.insert(issueExecutionDecisions).values({
+          companyId: input.companyId, issueId: input.issueId, ...executionReview.decision,
+          actorAgentId: executionReviewerId, createdByRunId: input.runId,
+        }).returning();
+        executionReview.patch.executionState = { ...executionReview.patch.executionState!, lastDecisionId: receipt!.id };
+        const comment = await issueService(tx as unknown as Db).addComment(input.issueId,
+          executionReview.decision.body, { agentId: executionReviewerId, runId: input.runId }, undefined, tx);
+        const { publication } = await persistActivity(tx as unknown as Db, {
+          companyId: input.companyId, actorType: "agent", actorId: executionReviewerId,
+          agentId: executionReviewerId, runId: input.runId, action: "issue.execution_decision",
+          entityType: "issue", entityId: input.issueId, issueId: input.issueId,
+          details: { decisionId: receipt!.id, ...executionReview.decision, commentId: comment.id },
+        });
+        publications.push(publication);
+      }
       const projected = await issueService(tx as unknown as Db).update(
         input.issueId,
         {
+          ...(executionReview?.patch ?? {}),
           status: input.decision.toStatus,
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
           unblockDescriptor: input.decision.unblockDescriptor,
-          actorAgentId: null,
+          actorAgentId: executionReviewerId,
           actorUserId: null,
         },
         tx,
@@ -2269,6 +2312,29 @@ export async function commitNativeStatusDecision(input: {
           reasonCode,
         },
       });
+    }
+
+    if (executionReview) {
+      const state = parseIssueExecutionState(updated.executionState);
+      const recipient = state?.status === "pending" ? state.currentParticipant
+        : state?.status === "changes_requested" ? state.returnAssignee : null;
+      if (state && recipient?.type === "agent" && recipient.agentId) {
+        const pending = state.status === "pending";
+        const executionStage = { stageId: state.currentStageId, stageType: state.currentStageType,
+          currentParticipant: state.currentParticipant, returnAssignee: state.returnAssignee,
+          reviewRequest: state.reviewRequest, lastDecisionOutcome: state.lastDecisionOutcome,
+          wakeRole: pending ? state.currentStageType === "approval" ? "approver" : "reviewer" : "executor",
+          allowedActions: pending ? ["approve", "request_changes"] : ["address_changes", "resubmit"],
+        };
+        const wakeId = await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId,
+          issueId: input.issueId, agentId: recipient.agentId,
+          reason: pending ? state.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested" : "execution_changes_requested",
+          idempotencyKey: `native-execution-review:${decisionRow.id}`,
+          payload: { executionStage, reviewDecisionId: state.lastDecisionId }, contextSnapshot: { executionStage },
+        });
+        materialized.push({ effectKind: "execution_review_wake", targetType: "agent_wakeup_request",
+          targetId: wakeId, payload: { reviewDecisionId: state.lastDecisionId, agentId: recipient.agentId } });
+      }
     }
 
     if (input.decision.statusAction === "done" && issue.status !== "done") {

@@ -2,7 +2,7 @@ import { z } from "zod";
 export const taskWorkspaceSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task_directory") }).strict(),
   z.object({ kind: z.literal("existing"), workspaceId: z.string().uuid() }).strict(),
-  z.object({ kind: z.literal("configured_source"), projectWorkspaceId: z.string().uuid(), mode: z.enum(["shared", "managed_isolated"]) }).strict(),
+  z.object({ kind: z.literal("configured_source"), projectWorkspaceId: z.string().uuid(), mode: z.enum(["shared", "managed_isolated"]).default("shared") }).strict(),
 ]);
 export const taskWorkspaceIntentSchema = z.object({
   version: z.literal(1), request: z.object({ key: z.string().min(1).max(200), expectedBindingRevision: z.number().int().nonnegative() }).strict().optional(), selection: taskWorkspaceSelectionSchema,

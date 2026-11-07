@@ -173,11 +173,11 @@ type TestActor =
       runId: string | null;
     };
 
-function loadAppModules() {
-  return Promise.all([
-    import("../middleware/index.js"),
-    import("../routes/issues.js"),
-  ]);
+async function loadAppModules() {
+  // Install route mocks before traversing their shared middleware graph.
+  const middleware = await import("../middleware/index.js");
+  const routes = await import("../routes/issues.js");
+  return [middleware, routes] as const;
 }
 
 async function createApp(actor?: TestActor) {
@@ -930,6 +930,58 @@ describe("issue execution policy routes", () => {
       expect.any(Array),
     );
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves blocked status and pending review during a workspace-only repair", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "blocked",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Drifted active review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: "11111111-1111-4111-8111-111111111111",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp()).patch(`/api/issues/${issue.id}`)
+      .send({ executionWorkspaceSettings: { mode: "isolated_workspace" }, executionWorkspacePreference: "reuse_existing" });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    expect(res.body.executionState).toEqual(issue.executionState);
+    expect(res.body.assigneeAgentId).toBe(issue.assigneeAgentId);
+    const patch = mockIssueService.update.mock.calls[0]?.[1];
+    expect(patch).not.toHaveProperty("status");
+    expect(patch).not.toHaveProperty("executionState");
+    expect(patch).not.toHaveProperty("assigneeAgentId");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("allows a board user to cancel a drifted pending agent review task", async () => {

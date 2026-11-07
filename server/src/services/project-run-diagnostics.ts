@@ -12,7 +12,7 @@ export function projectRunDiagnostics(input: {
   return { failureCategory, providerWorkStarted,
     processStop: input.processStoppedAt ? "confirmed"
       : providerWorkStarted === false && input.recoveryKind === "bootstrap" ? "not_started" : "unknown",
-    recoverySummary: failureCategory === "workspace" ? "Inspect the task's configured repository and isolated workspace selection. A failed run is not authorization to retry."
+    recoverySummary: failureCategory === "workspace" ? "Inspect the task's configured development repository and workspace ownership. A failed run is not authorization to retry."
       : failureCategory === "configuration" ? "Inspect current dispatchReadiness and task configuration before scheduling new work."
       : failureCategory ? "Execution failed. Read the task history and recovery action; a terminal run status alone does not prove process stop." : null };
 }

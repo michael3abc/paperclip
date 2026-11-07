@@ -27,7 +27,7 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
   for (const group of policy.workers) for (const choice of group.selections) {
     const worker = workers.find(w => w.id === group.agentId);
     let blocker: string | null = null;
-    if (!worker || worker.adapterType !== group.harness || worker.runtimeConfig?.requireTaskWorktree !== true
+    if (!worker || worker.adapterType !== group.harness || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
       || ["paused", "terminated", "pending_approval"].includes(worker.status) || worker.lifecycleState !== "ready") {
       blocker = "PM_WORKER_UNAVAILABLE";
     } else {
@@ -46,5 +46,5 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
     result.selections.push({ id: choice.id, agentId: group.agentId, model: choice.model, thinking: choice.thinking,
       ready: !blocker && result.documentSynchronized, blocker });
   }
-  return { ...result, instruction: "Read current WORKERS.md and select its stable option ID. Ready describes saved dispatch metadata, not provider execution. Use the task's configured_source / managed_isolated repository. Read this project's sessions API for execution diagnostics; do not request full worker configuration." };
+  return { ...result, instruction: "Read current WORKERS.md and select its stable option ID. Ready describes saved dispatch metadata, not provider execution. Use this project's configured_source development checkout in shared mode by default. One writer holds it exclusively; additional writers wait. Select managed_isolated only when parallel writes or an independent version are needed. Read this project's sessions API for execution diagnostics; do not request full worker configuration." };
 }

@@ -14496,7 +14496,10 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
-      const transition: ReturnType<typeof applyIssueExecutionPolicyTransition> = expectedStatusVersion !== undefined
+      // Workspace maintenance cannot implicitly advance or normalize a review.
+      const workspaceOnlyUpdate = Object.keys(req.body).length > 0 && Object.keys(req.body).every(key =>
+        ["executionWorkspaceId", "executionWorkspacePreference", "executionWorkspaceSettings", "projectWorkspaceId"].includes(key));
+      const transition: ReturnType<typeof applyIssueExecutionPolicyTransition> = expectedStatusVersion !== undefined || workspaceOnlyUpdate
         ? { patch: {} }
         : applyIssueExecutionPolicyTransition({
         issue: existing,

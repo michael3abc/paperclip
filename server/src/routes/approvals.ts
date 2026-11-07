@@ -1,7 +1,7 @@
 import { forbidden } from "../errors.js";
-import { readDecisionDelegation, saveDecisionDelegation } from "../services/delegated-decision-policy.js";
+import { readDecisionDelegation, saveDecisionDelegation, readProjectPmDecisionAuthority, saveProjectPmDecisionAuthority } from "../services/delegated-decision-policy.js";
 import { getDelegatedRequest } from "../services/delegated-requests.js";
-import { updateDecisionDelegationSchema } from "@paperclipai/shared";
+import { updateDecisionDelegationSchema, updateProjectPmDecisionAuthoritySchema } from "@paperclipai/shared";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
@@ -242,6 +242,20 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     const result = await saveDecisionDelegation(db, { ...req.body, companyId, ownerUserId: req.actor.userId });
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/project-pm-decision-authority", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId); assertBoard(req);
+    res.json(await readProjectPmDecisionAuthority(db, companyId, { includeDisabled: true }));
+  });
+
+  router.put("/companies/:companyId/project-pm-decision-authority", validate(updateProjectPmDecisionAuthoritySchema), async (req, res) => {
+    assertBoard(req);
+    if (!req.actor.userId) throw forbidden("An authenticated human Owner is required");
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await saveProjectPmDecisionAuthority(db, { ...req.body, companyId, ownerUserId: req.actor.userId }));
   });
 
   router.get("/companies/:companyId/approvals", async (req, res) => {

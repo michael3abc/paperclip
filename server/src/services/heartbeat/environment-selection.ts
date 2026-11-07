@@ -410,11 +410,10 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   }
   // A live holder is always consulted for shared workspaces. Depending on policy and the final
   // execution target it either remains the existing deferral gate or becomes dispatch context.
-  // Local/SSH folders never take an exclusive workspace lock, including when older
-  // project or issue settings request serialization. Sandbox protection still uses
-  // the existing holder staleness and workspace_busy retry ladder.
+  // Project-exclusive workers claim the physical checkout in workspace preparation.
+  // Existing unrestricted host profiles retain their separate sharing policy.
   if (
-    !controllerOnly && issueRef?.projectWorkspaceId &&
+    agent.runtimeConfig?.requireProjectWorkspace !== true && !controllerOnly && issueRef?.projectWorkspaceId &&
     effectiveExecutionWorkspaceMode === "shared_workspace"
   ) {
     const workspaceHolder = await findSharedWorkspaceHolder({

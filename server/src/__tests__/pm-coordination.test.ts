@@ -35,6 +35,8 @@ import { saveDecisionDelegation } from "../services/delegated-decision-policy.js
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { executePmProjectRead } from "../services/pm-project-read-tools.js";
+import { prepareNativeExecutionReview } from "../services/native-runtime/native-execution-review.js";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.js";
 
 describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on owned storage and database", (pmHarness) => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>, db: ReturnType<typeof createDb>, home: string;
@@ -129,6 +131,21 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     await expect(executePmProjectRead(db, scope, runId, "read_project_file", { path: "binary-evidence" })).rejects.toThrow("Binary");
     await fs.unlink(path.join(home, "escape-link"));
   });
+  it("reads an exact commit without switching or copying the checkout", async () => {
+    const repo = path.join(home, "source");
+    await fs.writeFile(path.join(repo, "review.txt"), "committed version\n");
+    execFileSync("git", ["-C", repo, "add", "review.txt"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "Review fixture"], { stdio: "ignore" });
+    const commit = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    await fs.writeFile(path.join(repo, "review.txt"), "uncommitted work\n");
+    const projectScope = scope;
+    expect(await executePmProjectRead(db, projectScope, runId, "read_project_file", { path: "review.txt", commit, projectWorkspaceId: sourceId }))
+      .toMatchObject({ commit, content: "committed version\n" });
+    await expect(executePmProjectRead(db, projectScope, runId, "read_project_file", { path: "../AGENTS.md", commit, projectWorkspaceId: sourceId })).rejects.toThrow("relative");
+    await expect(executePmProjectRead(db, projectScope, runId, "read_project_file", { path:"review.txt", commit, projectWorkspaceId:randomUUID() })).rejects.toThrow("outside");
+    expect(await fs.readFile(path.join(repo, "review.txt"), "utf8")).toBe("uncommitted work\n");
+    await fs.writeFile(path.join(repo, "review.txt"), "committed version\n");
+  });
   it("rejects guessed execution tools, cross-project reads and generic API escalation", async () => {
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     await expect(buildNativeRuntimeContext({ db, agent: agent!, runId, runtimeConfig: {}, runtimeSkillEntries: [] }))
@@ -164,14 +181,14 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
       assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection };
     await expect(execute("create_task", args)).rejects.toThrow("Read the current bundle");
     await reads();
-    for (const selection of [undefined, { kind: "task_directory" }, { kind: "existing", workspaceId: randomUUID() }, { ...workspaceSelection, mode: "shared" }]) {
+    for (const selection of [undefined, { kind: "task_directory" }, { kind: "existing", workspaceId: randomUUID() }]) {
       await expect(execute("create_task", { ...args, workspaceSelection: selection })).rejects.toMatchObject({
-        details: { code: "PM_ISOLATED_WORKSPACE_REQUIRED" }, paperclipPublicToolError: expect.stringContaining("PM_ISOLATED_WORKSPACE_REQUIRED"),
+        details: { code: "PM_PROJECT_WORKSPACE_REQUIRED" }, paperclipPublicToolError: expect.stringContaining("PM_PROJECT_WORKSPACE_REQUIRED"),
       });
     }
-    await expect(execute("create_task", { ...args, executionWorkspaceSettings: { mode: "shared_workspace" } })).rejects.toThrow("managed_isolated");
+    await expect(execute("create_task", { ...args, executionWorkspaceSettings: { mode: "shared_workspace" } })).rejects.toThrow("Workspace settings conflict");
     await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/companies/${companyId}/issues`, query: {}, runId,
-      body: { title: args.title, initialPlan: args.initialPlan, projectId, parentId: issueId, assigneeAgentId: workerId, workspaceSelection: { kind: "task_directory" } } })).rejects.toThrow("managed_isolated");
+      body: { title: args.title, initialPlan: args.initialPlan, projectId, parentId: issueId, assigneeAgentId: workerId, workspaceSelection: { kind: "task_directory" } } })).rejects.toThrow("configured_source");
     expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toHaveLength(0);
     expect(wakes).toHaveLength(0);
     await expect(execute("create_task", { ...args, assigneeActorId: agentId })).rejects.toThrow("shared worker");
@@ -192,6 +209,27 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     expect(wakes.every(wake => wake.agentId === workerId)).toBe(true);
     expect(new Set(wakes.map(wake => wake.key))).toEqual(new Set([`created-child:${created.task.id}`]));
     expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toHaveLength(1);
+  });
+  it("defaults new project-worker tasks to a serialized development source and retains explicit isolation", async () => {
+    const [worker] = await db.select().from(agents).where(eq(agents.id,workerId));
+    await db.update(agents).set({runtimeConfig:{...worker!.runtimeConfig,requireTaskWorktree:false,requireProjectWorkspace:true}}).where(eq(agents.id,workerId));
+    try {
+      const created = await execute("create_task", { idempotencyKey:"default-development", title:"Single writer",
+        initialPlan:"Use the configured development checkout, preserve existing work and report evidence.",
+        workspaceSelection:{kind:"configured_source",projectWorkspaceId:sourceId} }) as { task:{id:string} };
+      const [task] = await db.select().from(issues).where(eq(issues.id,created.task.id));
+      expect(task?.workspaceSelection?.selection).toMatchObject({kind:"configured_source",mode:"shared"});
+      expect(task?.executionWorkspaceSettings?.mode).toBe("shared_workspace");
+      await expect(execute("create_task", { idempotencyKey:"concurrent-override",title:"Unsafe writers",initialPlan:"test",
+        workspaceSelection:{kind:"configured_source",projectWorkspaceId:sourceId,mode:"shared"},
+        executionWorkspaceSettings:{sharedWorkspaceConcurrency:"allow"} })).rejects.toThrow("one writer");
+      await db.update(projectWorkspaces).set({metadata:{usage:"production"}}).where(eq(projectWorkspaces.id,sourceId));
+      await expect(execute("create_task", { idempotencyKey:"production-source",title:"Production source",initialPlan:"test",
+        workspaceSelection:{kind:"configured_source",projectWorkspaceId:sourceId,mode:"shared"} })).rejects.toThrow("production");
+    } finally {
+      await db.update(agents).set({runtimeConfig:worker!.runtimeConfig}).where(eq(agents.id,workerId));
+      await db.update(projectWorkspaces).set({metadata:null}).where(eq(projectWorkspaces.id,sourceId));
+    }
   });
   it("reports current dispatch metadata without exposing worker configuration", async () => {
     const listed = await execute("list_agents", {}) as any;
@@ -335,6 +373,40 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     expect(all.filter(row => row.addresseeAgentId === agentId).map(row => row.status).sort()).toEqual(["accepted", "rejected"]);
     expect(all.find(row => row.status === "accepted")?.result).toMatchObject({ acceptanceReason: expect.stringContaining("acceptance case verified") });
   }, 30_000);
+
+  it("exposes the policy-stage review tool to zero-slot PMs without opening management APIs", async () => {
+    const reviewIssueId = randomUUID(), reviewRunId = randomUUID();
+    const reviewPolicy = normalizeIssueExecutionPolicy({ mode: "normal", stages: [{ type: "review", approvalsNeeded: 1,
+      participants: [{ type: "agent", agentId }] }] })!;
+    const transition = applyIssueExecutionPolicyTransition({ issue: { status: "in_progress", assigneeAgentId: workerId },
+      policy: reviewPolicy, requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: workerId }, commentBody: "Delivery" });
+    const state = parseIssueExecutionState(transition.patch.executionState)!;
+    await db.insert(issues).values({ id: reviewIssueId, companyId, projectId, title: "Policy stage review", status: "in_review",
+      assigneeAgentId: agentId, executionPolicy: { ...reviewPolicy }, executionState: { ...state } });
+    await db.insert(heartbeatRuns).values({ id: reviewRunId, companyId, agentId, nativeIssueId: reviewIssueId, runtimeMode: "native",
+      status: "running", responsibleUserId: userId, contextSnapshot: { issueId: reviewIssueId, wakeReason: "execution_review_requested",
+        executionStage: { stageId: state.currentStageId, stageType: "review", wakeRole: "reviewer", currentParticipant: state.currentParticipant,
+          allowedActions: ["approve", "request_changes"] } } });
+    await db.update(issues).set({ executionRunId: reviewRunId }).where(eq(issues.id, reviewIssueId));
+    const cwd = path.join(home, reviewRunId); await fs.mkdir(cwd);
+    const copy = (await agentInstructionWorkingCopyService(db).prepare({ companyId, agentId, runId: reviewRunId, cwd }))!;
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const runtimeContext = await buildNativeRuntimeContext({ db, agent: agent!, runId: reviewRunId, runtimeConfig: {}, runtimeSkillEntries: [],
+      instructionWorkingCopy: { rootPath: copy.localRoot, entryPath: "AGENTS.md", kind: "agent_files" } });
+    const executionReview = (await prepareNativeExecutionReview(db, { companyId, agentId, runId: reviewRunId, issueId: reviewIssueId }))!;
+    const review = new PaperclipRunnerToolAuthority(db, { companyId, agentId, runId: reviewRunId, issueId: reviewIssueId, runtimeContext, executionReview });
+    try {
+      expect(review.definitions().map(tool => tool.name)).toContain("resolve_review");
+      expect(review.definitions().map(tool => tool.name)).not.toContain("create_task");
+      await expect(review.execute({ tool: "resolve_review", callId: "before-reads", arguments: { decision: "reject", reason: "Missing document evidence" } }))
+        .rejects.toThrow("Read the current bundle");
+      for (const file of PM_BUNDLE_FILES) await review.execute({ tool: "read_bundle_file", callId: file, arguments: { path: file } });
+      await expect(review.execute({ tool: "resolve_review", callId: "after-reads", arguments: { decision: "reject", reason: "Missing document evidence" } }))
+        .resolves.toMatchObject({ status: "pending_finalization" });
+      await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/issues/${reviewIssueId}/stalled-review-decision`,
+        query: {}, body: { action: "request_changes" }, runId: reviewRunId })).rejects.toMatchObject({ details: { code: "PM_API_DENIED" } });
+    } finally { review.close(); }
+  });
 
   it("does not let run-end collection overwrite a newer canonical support-file save", async () => {
     await reads();

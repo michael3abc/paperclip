@@ -24,7 +24,7 @@ export function pmWorkerPolicyRevision(value: unknown): string | null {
 
 export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string | null): Promise<PmWorkerCatalogEntry[]> {
   const workers = await db.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local"])));
-  const eligible = workers.filter(worker => worker.runtimeConfig?.requireTaskWorktree === true
+  const eligible = workers.filter(worker => (worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
     && !["paused", "terminated", "pending_approval"].includes(worker.status));
   const connectionService = aiConnectionService(db);
   const connections = userId ? await connectionService.list(companyId, userId) : [];
@@ -102,7 +102,7 @@ export function pmWorkerPolicyService(db: Db) {
         // Recheck identity under the same transaction as the owner update.
         const selected = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, policy.workers.map(worker => worker.agentId))));
         if (policy.workers.some(worker => !selected.some(row => row.id === worker.agentId && row.adapterType === worker.harness
-          && row.runtimeConfig?.requireTaskWorktree === true && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
+          && (row.runtimeConfig?.requireTaskWorktree === true || row.runtimeConfig?.requireProjectWorkspace === true) && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
         const document = updatePmWorkerDocument(previous?.toString("utf8") ?? "", policy);
         const bytes = Buffer.from(document);
         if (bytes.length > 1024 * 1024) throw unprocessable("WORKERS.md exceeds 1 MiB");

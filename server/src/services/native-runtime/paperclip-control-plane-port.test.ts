@@ -1705,7 +1705,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       companyId: identity.companyId, issueId, agentId: reviewerAgentId, runId: reviewRunId, nativeReview,
     });
     expect(reviewAuthority.definitions().map((tool) => tool.name)).toEqual([
-      "get_task_context", "get_task_history", "list_documents", "read_document", "list_document_revisions", "resolve_review",
+      "get_task_context", "get_task_history", "list_documents", "read_document", "list_document_revisions", "request_human_input", "resolve_review",
     ]);
     await expect(reviewAuthority.execute({ tool: "get_task_context", callId: "review-read", arguments: {} }))
       .resolves.toMatchObject({ assignedReview: { id: agentReview.id }, activeTask: { assigneeAgentId: identity.agentId } });

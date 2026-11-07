@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { agents, companies, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, type Db } from "@paperclipai/db";
+import { agents, companies, companyMemberships, heartbeatRuns, issues, projects, principalPermissionGrants, type Db } from "@paperclipai/db";
 import {
-  DECISION_DELEGATION_PERMISSION, delegatedDecisionScopeSchema,
+  DECISION_DELEGATION_PERMISSION, delegatedDecisionScopeSchema, PROJECT_PM_DECISION_PERMISSION, projectPmDecisionScopeSchema,
   type DecisionDelegationScope, type DelegatedDecisionContext,
   type HumanReservedDecisionReason,
 } from "@paperclipai/shared";
@@ -106,6 +106,66 @@ export async function saveDecisionDelegation(db: Db, input: {
   return result;
 }
 
+
+export async function readProjectPmDecisionAuthority(db: Db, companyId: string, options: { includeDisabled?: boolean; lock?: boolean } = {}) {
+  const query = db.select().from(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, companyId),
+    eq(principalPermissionGrants.permissionKey, PROJECT_PM_DECISION_PERMISSION)));
+  const rows = await (options.lock ? query.for("share") : query);
+  if (!rows.length) return null;
+  if (rows.length !== 1) throw conflict("Ambiguous project PM decision authority");
+  const row = rows[0]!, parsed = projectPmDecisionScopeSchema.safeParse(row.scope);
+  if (!parsed.success || row.principalType !== "user" || row.principalId !== row.grantedByUserId || !row.grantedByUserId)
+    throw forbidden("Invalid Owner project PM authority");
+  if (!options.includeDisabled && (!parsed.data.enabled || Date.parse(parsed.data.activatedAt) > Date.now())) return null;
+  await assertDecisionDelegationOwner(db, companyId, row.grantedByUserId);
+  return { id: row.id, companyId, agentId: null, ownerUserId: row.grantedByUserId, scope: parsed.data };
+}
+
+export async function saveProjectPmDecisionAuthority(db: Db, input: {
+  companyId: string; ownerUserId: string; baseRevision: string | null; enabled: boolean;
+  allowSelfApproval: boolean; projectIds: string[]; scopes: Array<"task_decisions" | "ordinary_operations" | "external_writes" | "general_approvals">; reason: string;
+}) {
+  let publication: Parameters<typeof publishActivity>[0] | undefined;
+  const result = await db.transaction(async tx => {
+    const database = tx as unknown as Db;
+    await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, input.companyId)).for("update");
+    await assertDecisionDelegationOwner(database, input.companyId, input.ownerUserId);
+    const previous = await readProjectPmDecisionAuthority(database, input.companyId, { includeDisabled: true });
+    if ((previous?.scope.revision ?? null) !== input.baseRevision) throw conflict("Project PM authority revision changed");
+    if (previous && previous.ownerUserId !== input.ownerUserId) throw forbidden("Only the granting Owner may change this authority");
+    const companyProjects = await tx.select({ id: projects.id }).from(projects).where(eq(projects.companyId, input.companyId));
+    const companyAgents = await tx.select().from(agents).where(eq(agents.companyId, input.companyId));
+    for (const projectId of input.projectIds) {
+      if (!companyProjects.some(p => p.id === projectId) || companyAgents.filter(a => pmCoordinationScope(a)?.projectId === projectId).length !== 1)
+        throw forbidden("Each authorized project requires exactly one current company PM");
+    }
+    const scope = projectPmDecisionScopeSchema.parse({ version: 1, revision: randomUUID(), activatedAt: new Date().toISOString(),
+      enabled: input.enabled, allowSelfApproval: input.allowSelfApproval, projectIds: input.projectIds, scopes: input.scopes });
+    const values = { principalType: "user", principalId: input.ownerUserId, scope, grantedByUserId: input.ownerUserId, updatedAt: new Date() };
+    const [saved] = previous
+      ? await tx.update(principalPermissionGrants).set(values).where(eq(principalPermissionGrants.id, previous.id)).returning()
+      : await tx.insert(principalPermissionGrants).values({ ...values, companyId: input.companyId, permissionKey: PROJECT_PM_DECISION_PERMISSION }).returning();
+    const activity = await persistActivity(database, { companyId: input.companyId, actorType: "user", actorId: input.ownerUserId,
+      action: "project_pm_authority.updated", entityType: "company", entityId: input.companyId,
+      details: { grantId: saved!.id, previousRevision: input.baseRevision, scope, reason: input.reason } });
+    publication = activity.publication;
+    return saved!;
+  });
+  if (publication) publishActivity(publication);
+  return result;
+}
+
+export async function readDecisionAuthority(db: Db, companyId: string, context: DelegatedDecisionContext, options: { lock?: boolean } = {}) {
+  if (context.authority !== "project_pm") return readDecisionDelegation(db, companyId, options);
+  const grant = await readProjectPmDecisionAuthority(db, companyId, options);
+  if (!grant || !context.projectId || !grant.scope.projectIds.includes(context.projectId) || context.delegateAgentId !== null) return null;
+  if (context.sourceIssueId) {
+    const [issue] = await db.select({ projectId: issues.projectId }).from(issues).where(and(eq(issues.id, context.sourceIssueId), eq(issues.companyId, companyId))).limit(1);
+    if (issue?.projectId !== context.projectId) return null;
+  }
+  return { ...grant, scope: { ...grant.scope, scopes: grant.scope.scopes as DecisionDelegationScope["scopes"] } };
+}
+
 /** Facts here come from the persisted request/issue, never an agent-supplied risk rating. */
 export async function routeDelegatedDecision(db: Db, input: {
   companyId: string; issueId?: string | null; requesterAgentId: string | null;
@@ -115,17 +175,41 @@ export async function routeDelegatedDecision(db: Db, input: {
   requiredScopes?: DecisionDelegationScope["scopes"];
   requiresDelegate?: boolean;
 }): Promise<DelegatedDecisionContext | null> {
-  const grant = await readDecisionDelegation(db, input.companyId, { lock: true });
-  if (!grant || input.createdAt.getTime() < Date.parse(grant.scope.activatedAt)) return null;
   const requiredScopes: DecisionDelegationScope["scopes"] = [...new Set([
     input.category === "approval" ? "general_approvals" as const : "task_decisions" as const,
     ...(input.requiredScopes ?? []),
   ])];
-  if (!requiredScopes.every(scope => grant.scope.scopes.includes(scope))) return null;
   const [requester] = input.requesterAgentId ? await db.select().from(agents).where(and(eq(agents.id, input.requesterAgentId), eq(agents.companyId, input.companyId))).limit(1) : [];
   if (input.requesterAgentId && !requester || !requester && input.category !== "approval") throw forbidden("Decision requester is outside the company");
-  const [issue] = input.issueId ? await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1) : [];
-  if (input.issueId && !issue) throw forbidden("Decision task is outside the company");
+  const [sourceRun] = input.sourceRunId ? await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, input.companyId))).limit(1) : [];
+  if (input.sourceRunId && (!sourceRun || sourceRun.agentId !== input.requesterAgentId)) throw forbidden("Decision source run is outside the requester");
+  const runIssueId = sourceRun?.nativeIssueId ?? sourceRun?.issueId ??
+    (typeof sourceRun?.contextSnapshot?.issueId === "string" ? sourceRun.contextSnapshot.issueId : null);
+  if (runIssueId && input.issueId && runIssueId !== input.issueId) throw forbidden("Decision task differs from the source run");
+  const sourceIssueId = input.issueId ?? runIssueId;
+  const [issue] = sourceIssueId ? await db.select().from(issues).where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId))).limit(1) : [];
+  if (sourceIssueId && !issue) throw forbidden("Decision task is outside the company");
+  const projectId = issue?.projectId ?? (requester ? pmCoordinationScope(requester)?.projectId : null) ?? null;
+  const requesterProject = requester ? pmCoordinationScope(requester)?.projectId : null;
+  if (requesterProject && projectId !== requesterProject) throw forbidden("PM decisions are limited to the assigned project");
+  const pmGrant = await readProjectPmDecisionAuthority(db, input.companyId, { lock: true });
+  if (pmGrant && projectId && pmGrant.scope.projectIds.includes(projectId)
+    && input.createdAt.getTime() >= Date.parse(pmGrant.scope.activatedAt)
+    && requiredScopes.every(scope => (pmGrant.scope.scopes as string[]).includes(scope))) {
+    const candidates = (await db.select().from(agents).where(eq(agents.companyId, input.companyId)))
+      .filter(agent => pmCoordinationScope(agent)?.projectId === projectId);
+    if (candidates.length !== 1) throw conflict("The task project must have exactly one designated PM");
+    const pm = candidates[0]!;
+    const reservedReasons = [...input.reservedReasons];
+    if (requester?.id === pm.id && !pmGrant.scope.allowSelfApproval) reservedReasons.push("explicit_human");
+    return { version: 1, authority: "project_pm", grantId: pmGrant.id, grantRevision: pmGrant.scope.revision,
+      ownerUserId: pmGrant.ownerUserId, delegateAgentId: null, projectId, sourceIssueId: issue?.id ?? null,
+      level: reservedReasons.length ? "human" : "pm", recipientAgentId: reservedReasons.length ? null : pm.id,
+      sourceRunId: input.sourceRunId, sourceFingerprint: input.fingerprint, revision: randomUUID(), reservedReasons, requiredScopes };
+  }
+  const grant = await readDecisionDelegation(db, input.companyId, { lock: true });
+  if (!grant || input.createdAt.getTime() < Date.parse(grant.scope.activatedAt)
+    || !requiredScopes.every(scope => grant.scope.scopes.includes(scope))) return null;
   const context: DelegatedDecisionContext = {
     version: 1, grantId: grant.id, grantRevision: grant.scope.revision, ownerUserId: grant.ownerUserId,
     delegateAgentId: grant.agentId, level: "delegate", recipientAgentId: grant.agentId,
@@ -152,9 +236,9 @@ export async function assertDelegatedDecisionActor(db: Db, input: {
   const { context } = input;
   if (context.revision !== input.revision || context.sourceFingerprint !== input.fingerprint) throw conflict("Delegated request has changed; the old answer is stale");
   if (context.level === "human" || context.reservedReasons.length || context.recipientAgentId !== input.agentId) throw forbidden("This request is not delegated to this agent");
-  const grant = await readDecisionDelegation(db, input.companyId, { lock: true });
+  const grant = await readDecisionAuthority(db, input.companyId, context, { lock: true });
   if (!grant || grant.id !== context.grantId || grant.scope.revision !== context.grantRevision || grant.agentId !== context.delegateAgentId) throw forbidden("The delegation is no longer current");
-  if (!context.requiredScopes.every(scope => grant.scope.scopes.includes(scope))) throw forbidden("This operation is outside the delegation scope");
+  if (!context.requiredScopes.every(scope => (grant.scope.scopes as string[]).includes(scope))) throw forbidden("This operation is outside the delegation scope");
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId))).limit(1).for("share");
   if (!run || run.status !== "running") throw forbidden("A current running agent turn is required to decide");
   const [agent] = await db.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))).limit(1).for("share");
@@ -165,7 +249,7 @@ export async function assertDelegatedDecisionActor(db: Db, input: {
 
 export function nextDelegatedDecision(context: DelegatedDecisionContext, humanReason?: HumanReservedDecisionReason): DelegatedDecisionContext {
   if (context.level === "human") throw conflict("The request is already waiting for the human Owner");
-  const human = context.level === "delegate" || !!humanReason;
+  const human = context.authority === "project_pm" || context.level === "delegate" || !!humanReason;
   return { ...context, revision: randomUUID(), level: human ? "human" : "delegate",
     recipientAgentId: human ? null : context.delegateAgentId,
     reservedReasons: human ? [...new Set([...context.reservedReasons, humanReason ?? "uncertain"])] : context.reservedReasons };

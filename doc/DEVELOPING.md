@@ -4698,11 +4698,36 @@ action documentation catalog and test the actual exported provider catalog. Thes
 fields still pass the server's issue validators, PM worker selection, project/workspace
 scope and review enforcement; advertising them does not grant additional authority.
 
-New PM tasks require `workspaceSelection.kind=configured_source` and
-`mode=managed_isolated` for their own project's source. The same dispatch admission
-rejects omitted/shared/existing-task selections and conflicting preferences through
-both native tools and HTTP before a task is saved or a worker wakes. Existing
-task continuation keeps its recorded contract.
+New PM tasks require `workspaceSelection.kind=configured_source` for their own
+project. Omitted `mode` means `shared`: use the project's fixed development checkout
+with one writer. Additional writers wait through the existing workspace-busy queue;
+only explicit parallelism or an independent version selects `managed_isolated`.
+The same native/HTTP admission rejects missing sources, production sources in shared
+mode, existing-task worktrees and conflicting settings before creating the task.
+Owner-managed `requireProjectWorkspace` admits these two modes; an explicit
+`requireTaskWorktree` worker remains isolated-only until its Owner changes that policy.
+Existing task continuation keeps its recorded contract.
+
+Local shared checkout admission records a durable claim on the run under a
+transaction advisory lock keyed by host and canonical Git checkout. Aliases and
+subdirectories cannot create a second writer. Acquisition precedes provisioning;
+there is no idle scan. A waiting run has not started its provider. Silence or a
+terminal status cannot free a provider's claim: require process-stop evidence and
+settled finalization/environment leases. New tasks cannot adopt another owner's
+unsaved files, a live local process or a running service's checkout. Mark configured
+production sources with `metadata.usage=production` and use a separate fixed
+checkout for development. Unsupported shared-host environments fail explicitly;
+managed remote storage keeps its own existing writer reservation.
+
+Read-only source tools share the source without writer ownership. For fixed-version
+review, `read_project_file` accepts a full `commit` SHA and reads a bounded regular
+Git blob without changing HEAD, files or Git index. A provider that has write tools
+still counts as a writer even when its prompt calls the task read-only.
+Merged task worktrees use the existing terminal reaper/cooldown. It verifies delivery
+ancestry, retained results, clean files, closed task trees and released execution
+resources; local processes using the directory also block removal. Removal and
+branch deletion are non-forced and leave task/run history intact. Uncertain ownership
+or unsaved results remain explicit cleanup blockers, never permission to delete.
 
 PM `list_agents` includes `dispatchReadiness`: policy revision/version, current
 default, managed document synchronization and bounded per-selection readiness.
@@ -4713,13 +4738,36 @@ diagnostics. Its additive `diagnostics` projection contains a failure category,
 tri-state provider-start evidence, confirmed/not-started/unknown stop evidence and
 a fixed recovery summary. Raw errors/results/logs are never returned. A terminal
 run or absent PID alone is not stop proof. PM dispatch errors preserve public
-domain codes, including `PM_ISOLATED_WORKSPACE_REQUIRED`.
+domain codes, including `PM_PROJECT_WORKSPACE_REQUIRED` and `PM_WORKSPACE_POLICY_CONFLICT`.
 When an API response is externalized, PM asset reads require a response reservation
 from the same company, PM and task; existing content authorization still applies.
 Unknown, other-agent and other-task assets remain denied. A PM review can persist
 its own home for run recovery, but must not rebind the implementation task or
 prepare its repositories in that home. The original worker worktree remains the
 task workspace across review and subsequent revision.
+
+Execution-policy review stages and native completion-review interactions have
+different durable identities. Runner advertises `resolve_review` to a zero-slot
+PM assigned an execution-policy review after pinning the stage, policy/state
+hashes and task status version in that run. The tool accepts only `accept` or
+`reject` with a bounded evidence-linked reason. It records an idempotent semantic
+tool receipt with `status=pending_finalization`; the task's status, assignee and
+execution lock remain unchanged while the reviewer is running. Finish the review
+with `paperclip_finish` and `reportedWorkDisposition=done` after recording the
+decision. This reports that the review turn is complete, not that the worker's
+objective has been satisfied.
+
+The native finalizer rechecks that receipt and the current assigned stage under
+the issue/run locks after successful provider and workspace finalization. It uses
+the existing execution-policy transition to save the review decision, comment,
+task projection and durable next wake in one transaction. Rejection returns the
+same task to its recorded worker; acceptance retains subsequent human stages and
+independent interaction/approval gates. Model overrides and the worker workspace
+are preserved. A stale stage/policy, failed finalization or missing decision does
+not advance the review. Existing native completion-review interactions continue
+through their own `resolve_review` route. Neither path authorizes generic task
+status PATCH or the board-only `stalled-review-decision` endpoint. Regression
+coverage is in `native-execution-review.test.ts` and `pm-coordination.test.ts`.
 
 ### Delegated decisions
 
@@ -4768,3 +4816,29 @@ revision/hash APIs, support files before entry. Preserve current worker model an
 AI-connection selections. Update momo's delegate scope and PM/worker routing
 instructions only after the deployed tools are available. Skipped or unobserved
 checks remain explicitly unverified; previous release waivers do not apply.
+
+
+Independent project PM decisions use GET/PUT
+`/api/companies/:companyId/project-pm-decision-authority`. A human Owner saves a
+revision-checked project list and decision scopes; the grant is stored separately
+from `company:delegate_decisions` and never enables momo or depends on Dot.
+Current zero-slot PM identity and source project are checked again at resolution
+and provider delivery. New ordinary approvals, worker questions/plan Allow and
+PM self-proposals may route to that PM. Explicit human, account/security,
+sensitive export and destructive gates remain human; hiring and budget overrides
+are excluded. Existing worker/model/resource admission still applies. A PM grant
+cannot be issued by Markdown or an agent, and changing it never rebinds old
+requests. A PM escalation reaches the Owner; cross-project coordination may use
+momo separately under its existing authority.
+
+Workspace-only PATCHes skip execution-stage transitions. They cannot normalize
+blocked pending-review tasks into `in_review` or clear their review state. Normal
+explicit review/status operations keep their prior authorization and transitions.
+
+Local process inspection is supplementary to durable run, finalizer, lease and
+service ownership. On Linux it checks observable same-user process paths;
+privilege-separated processes with inaccessible paths produce an explicit
+`workspace.process_inspection_limited` warning. A negative scan is never proof
+that a managed provider has stopped. Production sources must be labelled and
+use a separate fixed development checkout. Cleanup also rejects ignored files
+until their contents have been preserved or explicitly settled.

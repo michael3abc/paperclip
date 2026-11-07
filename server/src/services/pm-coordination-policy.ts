@@ -133,9 +133,11 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   if (input.workspaceSelection != null) {
     const selected = taskWorkspaceSelectionSchema.parse(input.workspaceSelection);
     if (selected.kind === "configured_source") {
-      const [source] = await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
+      const [source] = await db.select({ projectId: projectWorkspaces.projectId, metadata: projectWorkspaces.metadata }).from(projectWorkspaces)
         .where(and(eq(projectWorkspaces.id, selected.projectWorkspaceId), eq(projectWorkspaces.companyId, scope.companyId))).limit(1);
       if (source?.projectId !== scope.projectId) throw forbidden("Workspace source is outside this PM's project", { code: "PM_PROJECT_DENIED" });
+      if (selected.mode === "shared" && source.metadata?.usage === "production") throw unprocessable(
+        "This source serves production. Select the project's fixed development checkout.", { code: "PM_DEVELOPMENT_SOURCE_REQUIRED" });
     } else if (selected.kind === "existing") {
       const [workspace] = await db.select({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
         .where(and(eq(executionWorkspaces.id, selected.workspaceId), eq(executionWorkspaces.companyId, scope.companyId))).limit(1);
@@ -143,9 +145,12 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     }
   }
   const [worker] = await db.select().from(agents).where(and(eq(agents.id, String(input.assigneeAgentId)), eq(agents.companyId, scope.companyId))).limit(1);
-  if (!worker || !["claude_local", "codex_local"].includes(worker.adapterType) || worker.runtimeConfig?.requireTaskWorktree !== true
+  if (!worker || !["claude_local", "codex_local"].includes(worker.adapterType) || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
     || ["paused", "terminated", "pending_approval"].includes(worker.status)) {
     throw forbidden("The selected shared worker is unavailable; inspect its recorded status", { code: "PM_WORKER_UNAVAILABLE" });
+  }
+  if (worker.runtimeConfig?.requireTaskWorktree === true && (input.workspaceSelection as { mode?: string })?.mode === "shared") {
+    throw unprocessable("This worker still requires isolated worktrees; its Owner-managed workspace policy has not been changed.", { code: "PM_WORKER_WORKSPACE_POLICY_CONFLICT" });
   }
   if (scope.delegation?.version === 2) {
     const group = scope.delegation.workers.find(item => item.agentId === worker.id)!;
@@ -167,11 +172,18 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
 export function assertPmDispatchWorkspace(input: { workspaceSelection?: unknown; executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown }) {
   const selected = taskWorkspaceSelectionSchema.safeParse(input.workspaceSelection);
   const settings = input.executionWorkspaceSettings as Record<string, unknown> | null | undefined;
-  if (!selected.success || selected.data.kind !== "configured_source" || selected.data.mode !== "managed_isolated"
-    || (settings?.mode != null && settings.mode !== "isolated_workspace")
-    || (input.executionWorkspacePreference != null && input.executionWorkspacePreference !== "isolated_workspace")) {
-    throw unprocessable("Select this project's configured_source repository with mode managed_isolated; shared directories, PM homes and existing task worktrees cannot launch new shared-worker tasks.", { code: "PM_ISOLATED_WORKSPACE_REQUIRED" });
+  if (!selected.success || selected.data.kind !== "configured_source") {
+    throw unprocessable("Select this project's configured_source development repository; PM homes and another task's worktree are not dispatch sources.", { code: "PM_PROJECT_WORKSPACE_REQUIRED" });
   }
+  const mode = selected.data.mode === "managed_isolated" ? "isolated_workspace" : "shared_workspace";
+  if ((settings?.mode != null && settings.mode !== mode)
+    || (input.executionWorkspacePreference != null && input.executionWorkspacePreference !== mode)
+    || settings?.sharedWorkspaceConcurrency === "allow") {
+    throw unprocessable("Workspace settings conflict with the selected source. A shared checkout permits one writer; additional writers wait. Select managed_isolated only for parallel work or an independent version.", { code: "PM_WORKSPACE_POLICY_CONFLICT" });
+  }
+  input.workspaceSelection = selected.data;
+  input.executionWorkspaceSettings = { ...settings, mode, sharedWorkspaceConcurrency: "serialize" };
+
 }
 
 /** Preserve source gates; PM-provided workflow settings cannot grant execution authority. */

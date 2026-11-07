@@ -4307,7 +4307,7 @@ export function agentRoutes(
     if (req.actor.type === "agent" && !isDeepStrictEqual(asRecord(rollbackConfig.runtimeConfig)?.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
       throw forbidden("Only an operator can change a fixed working directory.");
     }
-    if (req.actor.type === "agent" && asRecord(rollbackConfig.runtimeConfig)?.requireTaskWorktree !== existing.runtimeConfig.requireTaskWorktree) {
+    if (req.actor.type === "agent" && (asRecord(rollbackConfig.runtimeConfig)?.requireTaskWorktree !== existing.runtimeConfig.requireTaskWorktree || asRecord(rollbackConfig.runtimeConfig)?.requireProjectWorkspace !== existing.runtimeConfig.requireProjectWorkspace)) {
       throw forbidden("Only an operator can change the task worktree requirement.");
     }
     assertProviderTraceSettingTransition(
@@ -5621,7 +5621,7 @@ export function agentRoutes(
         existing.runtimeConfig,
       );
       requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
-      if (req.actor.type === "agent" && requestedRuntimeConfig.requireTaskWorktree !== existing.runtimeConfig.requireTaskWorktree) {
+      if (req.actor.type === "agent" && (requestedRuntimeConfig.requireTaskWorktree !== existing.runtimeConfig.requireTaskWorktree || requestedRuntimeConfig.requireProjectWorkspace !== existing.runtimeConfig.requireProjectWorkspace)) {
         throw forbidden("Only an operator can change the task worktree requirement.");
       }
       if (req.actor.type === "agent" && !isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {

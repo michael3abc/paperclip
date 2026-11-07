@@ -14,7 +14,7 @@ import { conflict, forbidden, notFound } from "../errors.js";
 import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
-import { assertDelegatedDecisionActor, decisionFingerprint, readDecisionDelegation } from "./delegated-decision-policy.js";
+import { assertDelegatedDecisionActor, decisionFingerprint, readDecisionAuthority } from "./delegated-decision-policy.js";
 
 export type ToolReviewActor = { agentId?: string | null; userId?: string | null; runId?: string | null; delegationRevision?: string; reason?: string };
 
@@ -23,9 +23,9 @@ export async function assertDelegatedToolReview(db: Db, interactionId: string | 
   if (!interactionId || rememberAction) throw forbidden("Delegated tool reviews cannot grant persistent permissions");
   const [interaction] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, companyId))).limit(1);
   const context = interaction?.delegation;
-  if (!interaction || !context || context.level !== "delegate" || !context.requiredScopes.includes("external_writes")) throw forbidden("This tool action is reserved for a human");
+  if (!interaction || !context || !["delegate", "pm"].includes(context.level) || !context.requiredScopes.includes("external_writes")) throw forbidden("This tool action is reserved for a human");
   if (recovery) {
-    const grant = await readDecisionDelegation(db, companyId);
+    const grant = await readDecisionAuthority(db, companyId, context);
     if (interaction.status !== "accepted" || interaction.resolvedByAgentId !== actor.agentId || !interaction.resolvedByRunId
       || !grant || grant.id !== context.grantId || grant.scope.revision !== context.grantRevision
       || context.recipientAgentId !== actor.agentId || context.reservedReasons.length

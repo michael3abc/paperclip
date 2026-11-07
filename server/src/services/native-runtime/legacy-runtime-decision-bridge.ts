@@ -5,7 +5,7 @@ import { questionSetToAskUserQuestionsPayload, type AskUserQuestionsInteraction 
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { conflict, forbidden } from "../../errors.js";
 import { normalizeAcpFormElicitation, parsePaperclipQuestionSet } from "../../vendor/paperclip-runner/index.js";
-import { decisionFingerprint, readDecisionDelegation } from "../delegated-decision-policy.js";
+import { decisionFingerprint, readDecisionAuthority } from "../delegated-decision-policy.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { parseSavedQuestionInteractionAnswers } from "../question-interaction-answers.js";
 
@@ -28,8 +28,6 @@ export async function requestLegacyRuntimeDecision(db: Db, binding: Binding, inp
   const raw = record(input.request);
   const tool = record(raw.toolCall);
   if (input.kind === "permission" && !["ExitPlanMode", "AskUserQuestion"].includes(String(tool.name ?? record(tool.rawInput).toolName))) return undefined;
-  const grant = await readDecisionDelegation(db, binding.companyId);
-  if (!grant) throw forbidden("Decision delegation is unavailable; the original request remains unresolved");
   if (!input.responseDelivery) throw conflict("This adapter cannot acknowledge delivery to the original provider request");
   input.signal.throwIfAborted();
   const form = input.kind === "elicitation" ? normalizeAcpFormElicitation(raw as { mode: string }) : null;
@@ -93,8 +91,8 @@ export async function deliverLegacyRuntimeDecision(db: Db, interaction: AskUserQ
   if (!entry) return "not_native";
   if (!interaction.result || interaction.status !== "answered") throw conflict("The provider request has no committed answer");
   if (interaction.resolvedByAgentId) {
-    const grant = await readDecisionDelegation(db, interaction.companyId);
     const context = interaction.delegation;
+    const grant = context ? await readDecisionAuthority(db, interaction.companyId, context) : null;
     if (!grant || !context || grant.id !== context.grantId || grant.scope.revision !== context.grantRevision
       || context.recipientAgentId !== interaction.resolvedByAgentId || context.level === "human" || context.reservedReasons.length
       || !context.requiredScopes.every(scope => grant.scope.scopes.includes(scope))

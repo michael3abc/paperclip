@@ -99,6 +99,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 
 Current change: PM dispatch live schema, bounded readiness/session diagnostics, and pre-creation isolated-workspace admission.
 Acceptance follow-up: scoped saved-response asset reads and preservation of task worktree bindings during PM review.
+PM autonomy follow-up: native assigned-review decisions, independent Owner-scoped project PM authority, exclusive development checkouts with queued writers, commit-pinned reads and safe worktree reclamation; workspace maintenance preserves review state.
 
 ## Release
 

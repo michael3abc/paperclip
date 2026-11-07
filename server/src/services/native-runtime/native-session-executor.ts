@@ -213,6 +213,7 @@ import { nativeSha256 } from "./canonical.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { createAssignedMcpTools, getAssignedMcpGateway } from "./assigned-mcp-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { prepareNativeExecutionReview } from "./native-execution-review.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
 import {
   assertCurrentWakeCommentsRead,
@@ -12966,6 +12967,8 @@ async function createRunnerdBackendWithinSessionClaim(
   if (nativeReview && !await getNativeReviewAssignment(input.db, {
     ...input.execution.binding, contextSnapshot: nativeReview,
   })) throw new Error("native_review_assignment_no_longer_available");
+  const executionReview = !nativeReview && "runtimeContext" in input.execution && input.execution.runtimeContext.toolPolicy
+    ? await prepareNativeExecutionReview(input.db, input.execution.binding) : null;
   // Codex and OpenCode send dynamic tool calls over authenticated PRP. Keep
   // the assigned gateway on the control plane instead of asking the sandbox to
   // reach the host's HTTP origin (which may be private or loopback-only).
@@ -13008,6 +13011,7 @@ async function createRunnerdBackendWithinSessionClaim(
     apiUrl: resolveLocalRuntimeApiUrl(),
     casesEnabled: input.casesEnabled === true,
     ...(nativeReview ? { nativeReview } : {}),
+    ...(executionReview ? { executionReview } : {}),
     connectorAssignments,
     assignedMcpTools,
     companyId: input.execution.binding.companyId,

@@ -1,3 +1,4 @@
+import { claimSharedCheckout } from "./shared-checkout.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
 import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS, WorkspaceBusyDeferral } from "./retries.js";
@@ -221,6 +222,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       { reason: "shared_worker_requires_task_worktree" },
     );
   }
+  if (agent.runtimeConfig?.requireProjectWorkspace === true && (
+    !issueId || !issueRef?.projectId || !issueRef.projectWorkspaceId || fixedBinding || !runtimeWorkspaceSelectionEnabled ||
+    !["shared_workspace", "isolated_workspace"].includes(effectiveExecutionWorkspaceMode) ||
+    (effectiveExecutionWorkspaceMode === "shared_workspace" && resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "project_primary")
+  )) throw new WorkspaceValidationFailure("This shared worker requires a configured project development checkout or an explicitly isolated task worktree.",
+    { reason: "shared_worker_requires_project_workspace" });
   const {
     requestedShouldReuseExisting,
     existingExecutionWorkspace,
@@ -231,7 +238,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     isDotRun,
     runOptions,
   } = input.reuse;
-  if (agent.runtimeConfig?.requireTaskWorktree === true && reusableExistingExecutionWorkspace &&
+  if ((agent.runtimeConfig?.requireTaskWorktree === true ||
+      (agent.runtimeConfig?.requireProjectWorkspace === true && reusableExistingExecutionWorkspace?.mode !== "shared_workspace")) && reusableExistingExecutionWorkspace &&
       reusableExistingExecutionWorkspace.sourceIssueId !== issueId) {
     throw new WorkspaceValidationFailure("A shared worker must reuse only this task's own worktree.",
       { reason: "shared_worker_worktree_owner_mismatch" });
@@ -649,6 +657,17 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     trustPreset: trustPreset.kind,
     lowTrustSandboxDriver: lowTrustPreflightEnvironmentDriver,
   };
+  // PM review homes are coordination storage; providers writing project sources
+  // must own the physical checkout before provision/setup or execution.
+  if (agent.runtimeConfig?.requireProjectWorkspace === true && !remoteAuthority && !pluginTaskWorkspace && !controllerOnly && !input.task.context.paperclipPmWorkspace &&
+      effectiveExecutionWorkspaceMode === "shared_workspace" && issueId && issueRef?.projectWorkspaceId) {
+    if (selectedEnvironmentForConfig?.driver !== "local") throw new WorkspaceValidationFailure(
+      "Shared host checkout ownership is available on the local environment; use managed remote storage or an isolated workspace for this environment.",
+      { reason: "shared_checkout_environment_unsupported" });
+    await claimSharedCheckout(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id,
+      issueId, projectWorkspaceId: issueRef.projectWorkspaceId, cwd: executionWorkspaceBase.baseCwd,
+      deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0, context });
+  }
   const workspaceFreshnessSource = resolvedWorkspace.freshnessSource ?? executionWorkspaceBase;
   const latestWorkspaceConfigMetadata =
     buildEffectiveRunWorkspaceConfigMetadata({

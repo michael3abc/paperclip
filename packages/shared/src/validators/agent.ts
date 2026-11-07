@@ -141,6 +141,8 @@ export const agentRuntimeConfigSchema = z.object({
   workspaceBinding: agentWorkspaceBindingSchema.optional(),
   /** Shared workers must execute a project task in its isolated Git worktree. */
   requireTaskWorktree: z.boolean().optional(),
+  /** Shared workers may use a configured project checkout with exclusive writer admission. */
+  requireProjectWorkspace: z.boolean().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

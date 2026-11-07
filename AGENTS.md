@@ -131,11 +131,19 @@ Project PMs can be restricted to coordination and review with
 Reject implementation children assigned to such a PM before adapter dispatch,
 including stale worker-role contexts; preserve execution-policy reviews in the PM
 home with the PM's own model. A shared Claude or Codex worker may serve multiple
-projects: use issue-scoped model settings, task sessions and isolated Git worktrees,
+projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
 hold when changing this topology or reuse another task's session/worktree.
-Shared native workers set `runtimeConfig.requireTaskWorktree=true`; reject missing
-project tasks and shared-directory overrides before workspace preparation.
+Shared native workers set `runtimeConfig.requireProjectWorkspace=true`; reject missing
+project tasks or unconfigured sources. A configured development checkout is the default:
+one writer owns its canonical path through provider stop and workspace settlement;
+additional writers queue. Explicit parallel work or independent versions may select
+`managed_isolated`. `requireTaskWorktree=true` remains an explicit isolated-only worker
+restriction; only the Owner may change either flag. Existing runs keep their contract.
+Read-only PM source tools share files; fixed-version reads take a full commit SHA and
+never switch the checkout. A provider with write capabilities always counts as a writer.
+A production source (`metadata.usage=production`) needs a separate fixed development
+checkout. Never silently fall back to a PM home or reuse another task's worktree.
 
 Zero-slot project PMs use the server-owned coordination capability policy in every
 chat, task and review run. The qualified local Claude ACP and isolated Codex
@@ -153,14 +161,29 @@ source, workspace and review before waking that worker. Preserve source Owner ga
 Keep these dispatch fields in the live `protocol-actions/create-task.ts` schema
 as well as the documentation catalog. Test the exported provider catalog; a field
 present only in the documentation catalog is rejected before server authorization.
-New PM dispatch requires a same-project configured source in managed-isolated mode;
-reject shared directories and existing-task worktrees before task creation. PM
+New PM dispatch requires a same-project configured development source; default to
+`shared`, serialize writers, and reject conflicting settings or existing-task worktrees
+before task creation. Claims cover aliases and subdirectories of one physical checkout.
+Silent/terminal runs are not release proof; retain unresolved provider/finalizer/lease
+ownership. New owners cannot inherit unsaved files. Merged worktrees use the existing
+terminal reaper: preserve results and history, verify clean files, stopped processes,
+released leases/services and branch ancestry, then remove the directory and merged
+branch without force. Keep the existing cooldown and failed-cleanup receipts. PM
 `list_agents.dispatchReadiness` reports current policy/document/selection metadata;
 it is not provider acceptance. PMs may read only their project's sessions endpoint
 for bounded failure and stop evidence, never full worker configuration or raw logs.
 Captured response assets may be read only by their originating PM on the same
 task; large API responses retain the same authorization as their capture. PM
 review homes are run-scoped and must never replace a worker task workspace binding.
+Workspace-only issue PATCHes preserve status, assignment and pending review state;
+maintenance cannot normalize a blocked task into review or wake its reviewer.
+Owner-issued `project-pm-decision-authority` is separate from company delegation.
+Its revision and explicit project list authorize current project PMs to decide
+ordinary plans, one-shot Allow and approvals, including their own proposals when
+allowed. It does not depend on momo or Dot, expand worker/model/budget access,
+grant shell, approve hiring/budget overrides or override human/security gates.
+PMs decide within scope directly; do not create unnecessary self-addressed questions.
+Only the human Owner may grant or revoke this authority; never migrate old requests.
 Use `read_bundle_file` receipts and `write_bundle_file` CAS saves for PM support
 files; protect AGENTS.md and synchronize the registered run baseline on every save.
 PM Agent settings own `pmDelegation` version 2: one default and explicit harness,
@@ -181,9 +204,17 @@ issue documents, attachments and artifact work products, never path scanning.
 Retain separately labelled CC Pocket history and distinguish source errors from
 empty results. New UI settings do not activate agents or deploy changes.
 Review decisions require evidence-linked reasons and the current assigned review;
-they grant no general approval authority. Company decision delegation is a separate
-human-Owner-managed permission grant. New worker questions route through their
-task project's PM; PM questions route to the company delegate via
+they grant no general approval authority. For execution-policy review stages, Runner
+pins the assigned stage, policy/state hashes and status version before advertising
+`resolve_review`. Its receipt records a pending decision without releasing the
+reviewer's execution lock. Only successful run/workspace finalization may commit
+that decision, audit/comment and the original task's next wake atomically. Recheck
+the saved scope under row locks; preserve later human stages and independent
+approval cards. Generic status PATCH and board-only stalled-review APIs remain
+unavailable to PMs. Completion-review interactions keep their existing route.
+Company decision delegation remains a separate
+human-Owner-managed permission grant. Outside an independently authorized project,
+new worker questions route through their task project's PM; PM questions route to the company delegate via
 `request_human_input`, not by adding the delegate to the worker catalog. Omit
 `resolverPolicy` for ordinary delegated questions; explicit human gates stay human.
 Use the assigned request's current revision with the controlled resolve/escalate

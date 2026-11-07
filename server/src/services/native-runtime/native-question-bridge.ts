@@ -19,7 +19,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
 import { conflict, forbidden } from "../../errors.js";
-import { approvalReservedReasons, decisionFingerprint, readDecisionDelegation } from "../delegated-decision-policy.js";
+import { approvalReservedReasons, decisionFingerprint, readDecisionAuthority, routeDelegatedDecision } from "../delegated-decision-policy.js";
 import { readPendingNativeRuntimeRequest } from "./runtime-request-resolution-authority.js";
 import { logActivity } from "../activity-log.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -141,8 +141,11 @@ export async function projectNativeRuntimeRequest(input: {
   ) {
     throw new Error("native_runtime_request_invalid");
   }
-  const grant = await readDecisionDelegation(input.db, input.binding.companyId);
-  const delegationEligible = Boolean(grant && Date.parse(input.event.emittedAt) >= Date.parse(grant.scope.activatedAt));
+  const delegationEligible = Boolean(await routeDelegatedDecision(input.db, {
+    companyId: input.binding.companyId, issueId: input.binding.issueId, requesterAgentId: input.binding.agentId,
+    sourceRunId: input.binding.runId, fingerprint: decisionFingerprint(request), createdAt: new Date(input.event.emittedAt),
+    category: "runtime", reservedReasons: approvalReservedReasons("request_board_approval", record(request.details) ?? {}),
+  }));
   let questionSet: PaperclipQuestionSet;
   if (["permission_approval", "command_approval", "file_approval"].includes(String(request.requestKind)) && request.type === "permission") {
     const choices = Array.isArray(request.choices) ? request.choices.map(record) : [];
@@ -279,8 +282,8 @@ export async function assertNativeQuestionCommandAuthorized(db: Db,
   if (!row || row.status !== "answered" || row.kind !== "ask_user_questions"
     || record(row.payload)?.runtimeRequestId !== requestId) throw conflict("The original question answer is unavailable");
   if (!row.delegation || !row.resolvedByAgentId) return;
-  const grant = await readDecisionDelegation(db, binding.companyId);
   const context = row.delegation;
+  const grant = await readDecisionAuthority(db, binding.companyId, context);
   if (!grant || grant.id !== context.grantId || grant.scope.revision !== context.grantRevision
     || grant.agentId !== context.delegateAgentId || context.recipientAgentId !== row.resolvedByAgentId
     || context.level === "human" || context.reservedReasons.length
@@ -315,7 +318,7 @@ export async function deliverNativeQuestionResponse(
     if (!pending || pending.fingerprint !== interaction.payload.runtimeRequestFingerprint
       || pending.turnId !== interaction.payload.runtimeRequestTurnId) throw conflict("The original runtime request is no longer current");
     if (interaction.resolvedByAgentId) {
-      const grant = await readDecisionDelegation(db, interaction.companyId);
+      const grant = await readDecisionAuthority(db, interaction.companyId, interaction.delegation);
       if (!grant || grant.id !== interaction.delegation.grantId || grant.scope.revision !== interaction.delegation.grantRevision
         || grant.agentId !== interaction.delegation.delegateAgentId
         || !interaction.delegation.requiredScopes.every(scope => grant.scope.scopes.includes(scope))

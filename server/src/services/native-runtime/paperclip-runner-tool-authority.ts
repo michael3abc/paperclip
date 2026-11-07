@@ -104,6 +104,7 @@ import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "./native-review-participant.js";
+import { assertNativeExecutionReviewAssignment, executionReviewReceiptKey, type NativeExecutionReviewAssignment } from "./native-execution-review.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { logActivity, persistActivity, publishActivity } from "../activity-log.js";
 import { captureRunIdentity } from "../run-identity.js";
@@ -157,6 +158,10 @@ export const MUSE_NATIVE_OPERATIONS = new Set([
 const NATIVE_REVIEW_READ_TOOLS = new Set([
   "get_task_context", "get_task_history", "list_documents", "read_document", "list_document_revisions",
 ]);
+const EXECUTION_REVIEW_WRITE_TOOLS = new Set([
+  "resolve_review", "write_document", "comment_on_task", "report_progress", "request_human_input",
+  "finish_task", "block_task", "paperclip_finish", "paperclip_block",
+]);
 
 // The owning catalogs classify first-party reads. Recovery still calls execute(),
 // which rechecks the current tool advertisement, run, permissions and file scope.
@@ -184,6 +189,7 @@ const UNKNOWN_DOCUMENT_REVISION_BODY = "[Document revision content omitted: hist
 type Binding = {
   /** Server-derived scope for one addressed native completion review. */
   nativeReview?: NativeReviewAssignmentContext;
+  executionReview?: NativeExecutionReviewAssignment;
   companyId: string;
   issueId: string;
   runId: string;
@@ -324,13 +330,22 @@ export class PaperclipRunnerToolAuthority {
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
-    const definitions = [...this.#unrestrictedDefinitions(), ...(!this.binding.nativeReview ? DELEGATED_DECISION_TOOLS : [])];
+    let definitions = [...this.#unrestrictedDefinitions(), ...(!this.binding.nativeReview ? DELEGATED_DECISION_TOOLS : [])];
+    if (this.binding.executionReview) definitions.push({
+      name: "resolve_review",
+      description: "Record accept or reject for this run's assigned execution review, with a reason citing the reviewed evidence. The decision stays pending until this run finishes and its workspace is finalized. Then Paperclip advances the original review or returns the same task to its original worker. After this tool succeeds, report the review complete with paperclip_finish and reportedWorkDisposition=done; do not change task status or dispatch another task.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["decision", "reason"], properties: {
+        decision: { type: "string", enum: ["accept", "reject"] }, reason: { type: "string", minLength: 1, maxLength: 4000 },
+      } },
+    });
+    if (this.binding.executionReview) definitions = definitions.filter(tool =>
+      PM_READ_TOOLS.has(String(tool.name)) || EXECUTION_REVIEW_WRITE_TOOLS.has(String(tool.name)));
     if (!this.binding.runtimeContext?.toolPolicy) return definitions;
     return [...definitions.filter(tool => PM_READ_TOOLS.has(String(tool.name)) || PM_WRITE_TOOLS.has(String(tool.name))),
       ...TASK_ATTACHMENT_DEFINITIONS.map(tool => ({ ...tool, description: tool.description.replace("This sends file contents to OpenAI.", "Contents are returned to this run's provider.") })),
-      ...(!this.binding.nativeReview ? CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool => tool.operationId === "request_approval")
+      ...(!this.binding.nativeReview && !this.binding.executionReview ? CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool => tool.operationId === "request_approval")
         .map(tool => ({ name: tool.operationId, description: tool.description, inputSchema: tool.inputSchema })) : []),
-      ...PM_BUNDLE_TOOLS.filter(tool => !this.binding.nativeReview || tool.name === "read_bundle_file"), ...PM_PROJECT_READ_TOOLS];
+      ...PM_BUNDLE_TOOLS.filter(tool => (!this.binding.nativeReview && !this.binding.executionReview) || tool.name === "read_bundle_file"), ...PM_PROJECT_READ_TOOLS];
   }
 
   #unrestrictedDefinitions(): Array<Record<string, unknown>> {
@@ -564,6 +579,10 @@ export class PaperclipRunnerToolAuthority {
       if (!MUSE_NATIVE_OPERATIONS.has(tool)) throw forbidden("This operation is outside the Muse first-party runtime profile");
     }
     if (this.binding.firstPartyOnly && (EXTERNAL_WORKSPACE_OPERATIONS.has(tool) || tool.startsWith("workspace_"))) throw forbidden("Paperclip workspace access is unavailable to this Grok Bot session.");
+    if (this.binding.executionReview && PM_WRITE_TOOLS.has(tool)
+      && !EXECUTION_REVIEW_WRITE_TOOLS.has(tool)) {
+      throw forbidden("This execution review may only inspect, record review evidence and decide its assigned stage.");
+    }
     if (this.binding.nativeReview && tool !== "resolve_review" && tool !== "read_bundle_file" && tool !== "request_human_input"
       && !(pm && (Object.hasOwn(TASK_ATTACHMENT_SCHEMAS, tool) || PM_PROJECT_READ_TOOLS.some(item => item.name === tool))) && !NATIVE_REVIEW_READ_TOOLS.has(tool)) {
       throw forbidden("This review run may only inspect the assigned task and resolve its review.");
@@ -674,7 +693,7 @@ export class PaperclipRunnerToolAuthority {
         beforeAccept: async tx => { await this.#lockAuthorizedMutationContext(tx); },
       });
     }
-    if (this.binding.nativeReview && call.tool === "resolve_review") return this.#resolveReview(call.arguments);
+    if ((this.binding.nativeReview || this.binding.executionReview) && call.tool === "resolve_review") return this.#resolveReview(call.arguments);
     if (Object.hasOwn(TASK_ATTACHMENT_SCHEMAS, call.tool)) {
       const authorize = async () => {
         const current = await this.#boundContext({ tool: call.tool });
@@ -1664,6 +1683,18 @@ export class PaperclipRunnerToolAuthority {
     const reason = typeof input.reason === "string" ? input.reason.trim() : "";
     if (this.binding.runtimeContext?.toolPolicy && (!reason || reason.length > 4000)) throw badRequest("PM review decisions require a bounded reason citing the reviewed evidence.");
     if (input.decision === "reject" && !reason) throw badRequest("Explain the changes required before rejecting the review.");
+    if (this.binding.executionReview) {
+      if (!reason || reason.length > 4000) throw badRequest("Execution review decisions require a bounded reason citing the reviewed evidence.");
+      const assignment = this.binding.executionReview;
+      const validate = async (_tx: Db, context: { run: typeof heartbeatRuns.$inferSelect; issue: typeof issues.$inferSelect }) => {
+        assertNativeExecutionReviewAssignment(assignment, context.run, context.issue);
+      };
+      return this.#withMutationReceipt("resolve_review", executionReviewReceiptKey(assignment.stageId),
+        { decision: input.decision, reason }, async (tx, context) => {
+          await validate(tx, context);
+          return { status: "pending_finalization", assignment, decision: input.decision, reason };
+        }, { beforeReceiptReplay: validate });
+    }
     const context = await this.#boundContext();
     const review = await getNativeReviewAssignment(this.db, {
       ...this.binding, contextSnapshot: this.binding.nativeReview,

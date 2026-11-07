@@ -146,6 +146,7 @@ import {
   createApprovalSchema,
   resolveApprovalSchema,
   updateDecisionDelegationSchema,
+  updateProjectPmDecisionAuthoritySchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -5883,6 +5884,19 @@ registry.registerPath({
   summary: "Replace decision delegation at its current revision (granting human Owner only)",
   description: "Applies only to new requests. Replaced grants invalidate outstanding agent decisions; they never approve or replay old work. Agents cannot call this operation.",
   request: { params: z.object({ companyId: z.string() }), body: jsonBody(updateDecisionDelegationSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/project-pm-decision-authority", tags: ["approvals"],
+  summary: "Read independent Owner-issued project PM decision authority (human board only)",
+  request: { params: z.object({ companyId: z.string() }) }, responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+registry.registerPath({
+  method: "put", path: "/api/companies/{companyId}/project-pm-decision-authority", tags: ["approvals"],
+  summary: "Replace bounded project PM decision authority at its revision (granting human Owner only)",
+  description: "New decisions only; independent of company delegate availability. Does not grant execution, expand resources, bypass human gates or replay history.",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(updateProjectPmDecisionAuthoritySchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
 });
 
