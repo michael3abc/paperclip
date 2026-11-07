@@ -12,6 +12,7 @@ import { ProjectDetail } from "./ProjectDetail";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockProjectsApi = vi.hoisted(() => ({
+  sessions: vi.fn(),
   get: vi.fn(),
   list: vi.fn(),
   update: vi.fn(),
@@ -217,6 +218,19 @@ describe("ProjectDetail", () => {
     root = null;
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it("opens native sessions without waiting for plugin slots", async () => {
+    mockLocation.pathname = "/projects/project-1";
+    mockLocation.search = "?tab=sessions";
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: true });
+    mockProjectsApi.sessions.mockResolvedValue({ records: [{ runId: "run-1", issueId: "issue-1", identifier: "HOM-225", title: "Original review", agentId: "worker", agentName: "Shared worker", status: "succeeded", sessionId: "native-session", startedAt: null, finishedAt: null }], pms: [], nextOffset: null });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    await act(async () => { root = createRoot(container); root.render(<QueryClientProvider client={client}><ProjectDetail /></QueryClientProvider>); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Original review"));
+    expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+    expect(container.textContent).toContain("native-session");
+    expect(mockProjectsApi.sessions).toHaveBeenCalledWith("project-1", 0);
   });
 
   it.each(["alias", "other project", "other company"])("preserves a draft only for a same-project route alias (%s)", async target => {

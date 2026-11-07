@@ -8,6 +8,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
+import { pmCoordinationScope, PM_EDITABLE_BUNDLE_FILES } from "./pm-coordination-policy.js";
 import {
   authorizationService,
   authorizationDeniedDetails,
@@ -236,6 +237,23 @@ export async function authorizeOwnAgentMemoryWrite(
     resource: { type: "agent", companyId: target.companyId, agentId: target.id },
     scope: { targetAgentId: target.id, requiresChangeGrant: true },
   });
+  if (decision.allowed || decision.reason === "deny_no_grant") return bound;
+  throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+}
+
+/** Narrow PM self-maintenance, retaining current identity, trust and explicit denials. */
+export async function authorizeOwnPmWorkflowWrite(
+  db: Connection, actor: AuthorizationActor,
+  target: { companyId: string; id: string; runtimeConfig: Record<string, unknown> | null }, relativePath: string,
+) {
+  if (actor.type !== "agent" || actor.agentId !== target.id || actor.companyId !== target.companyId
+    || !actor.runId || !pmCoordinationScope(target) || !PM_EDITABLE_BUNDLE_FILES.has(relativePath)) {
+    throw forbidden("Only a PM's own run may maintain its workflow support files", { code: "PM_BUNDLE_DENIED" });
+  }
+  const bound = await resolveInstructionActor(db, actor);
+  const decision = await authorizationService(db).decide({ actor: bound, action: "agent_instructions:update",
+    resource: { type: "agent", companyId: target.companyId, agentId: target.id },
+    scope: { targetAgentId: target.id, requiresChangeGrant: true } });
   if (decision.allowed || decision.reason === "deny_no_grant") return bound;
   throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
 }

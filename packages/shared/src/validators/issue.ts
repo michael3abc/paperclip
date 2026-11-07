@@ -306,6 +306,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
+    workerSelectionId: z.string().uuid().optional(),
     adapterConfig: z.record(z.string(), z.unknown())
       .refine(config => !Object.prototype.hasOwnProperty.call(config, "homeMode"), "homeMode must be set by an operator on the agent, not on a task")
       .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => key.toUpperCase() === "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"), "Prepared harness homes must be provisioned by the execution environment, not on a task")
@@ -1344,6 +1345,7 @@ export const suggestTasksResultSchema = z.object({
     .max(50)
     .optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
+  acceptanceReason: z.string().trim().max(4000).nullable().optional(),
 });
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
@@ -2175,6 +2177,7 @@ export type CreateIssueThreadInteractionInput = z.input<
 
 export const acceptIssueThreadInteractionSchema = z
   .object({
+    reason: z.string().trim().min(1).max(4000).optional(),
     rememberAction: z.boolean().optional(),
     selectedClientKeys: z
       .array(z.string().trim().min(1).max(120))

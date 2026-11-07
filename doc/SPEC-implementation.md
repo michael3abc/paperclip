@@ -330,6 +330,71 @@ execution-policy review/approval stage is rejected before adapter execution.
 Previously claimed worker roles cannot bypass a current zero-slot policy. Positive
 slots (1–4) must be explicitly configured to allow a dual-purpose agent.
 
+Zero-slot PMs also have a server-derived coordination tool policy, pinned in the
+native runtime context and ACP session compatibility digest. It is enforced for
+chat, work and review under the qualified local Claude ACP/SDK path, including
+approve-all. Unsupported/preconfigured/remote paths and incompatible retained
+sessions fail closed. Native tools are Read/Grep/Glob within declared read roots;
+PreToolUse rejects other native tools and non-Paperclip MCP names. User/project
+tool settings cannot override the policy. External MCP/connector operations have
+no approved PM grants in this version and are neither advertised nor callable.
+This is a platform tool/API boundary, not host filesystem or network isolation.
+
+The authenticated bridge and HTTP middleware enforce current company, project,
+agent, running task and review scope. PMs can discover their workers/models,
+dispatch, maintain plans/documents, comment, request Owner decisions and resolve
+their assigned native review. Task attachments use the existing bounded,
+integrity-checked attachment readers. PMs cannot configure agents, grant rights,
+change budgets, approve general approvals or invoke generic execution endpoints.
+Workspace selections must belong to the same project. PM HTTP task reads return
+the task's core payload rather than enriching it with cross-project ancestry;
+native child and source-plan views also retain the project boundary.
+Review runs may only read and accept/reject their assigned review, including when
+using generic HTTP. Acceptance supports an optional `reason`, persisted as
+`acceptanceReason`; PM acceptance and rejection require an evidence-linked reason.
+
+`create_task` accepts existing issue model overrides, execution policy and workspace
+selection fields. PM dispatch requires configured worker options and initialPlan;
+chat creates an independent same-project task, while ordinary work creates a child.
+The server preserves source Owner gates and adds PM review before any wake. The
+Owner-owned `runtimeConfig.pmDelegation` version 2 stores `defaultSelectionId`
+and `workers:[{agentId,harness,selections}]`. Each selection has a stable UUID plus
+`model`, nullable `thinking` (automatic), explicitly chosen `permission` and
+`speed` (`standard` or supported `fast`). `assigneeAdapterOverrides.workerSelectionId`
+chooses an option; omission selects the unique default. The server snapshots exact
+adapter parameters onto the new issue without changing shared worker defaults or
+previous tasks. Missing, legacy or invalid settings block new dispatch. Existing
+legacy task reassignment still validates its original exact selection.
+
+The PM's Runtime settings read/write `/agents/:id/worker-policy`. PUT requires
+`{policy,baseRevision,baseHash}`, existing agent/configuration and instruction-file
+authorization, and a board actor. It returns policy revision and document hash.
+Catalog entries use existing shared workers and harness model capabilities; unsupported
+models, thinking, permission or speed combinations are rejected, never substituted.
+CLI permissions are explicit `default`/`full-access`; ACP permissions are explicit
+`deny-all`/`approve-reads`/`approve-all`. None remove Paperclip policy, isolation or
+review gates. Ambiguous legacy settings are displayed for manual migration.
+
+The file-store transaction saves configuration history and durable files together.
+Only `<!-- paperclip:worker-policy:start -->` through
+`<!-- paperclip:worker-policy:end -->` in WORKERS.md is generated. Other prose is
+preserved. Revision/hash conflicts fail; a filesystem failure rolls back the DB,
+and any partially materialized mismatch blocks dispatch pending an explicit repaired
+save. Generic agent patches cannot change pmDelegation; file edits cannot change
+its managed section. Markdown never grants authority.
+
+Project `?tab=sessions` uses GET `/projects/:id/sessions?offset=0` (50 runs/page,
+`nextOffset`), filtering by recorded issue/project/company and issue visibility.
+It includes shared workers' session IDs and run/issue links for both Runner and direct-adapter runs; runtimeMode=legacy does not imply CC Pocket plugin history. Artifacts use
+the existing project-filtered native artifact API (documents, attachments and artifact
+work products); workspace-only files are not indexed. Source errors are distinct
+from empty results. GET `/projects/:id/work-products?offset=0` supplements the artifact cards with other registered delivery types and formal execution-policy review decisions, preserving review/status, using the same issue/project visibility and 50-row pagination. CC Pocket history remains separately labelled and its old
+worker editor/action is retired in favor of a link to the explicitly mapped PM.
+There is no project-list fallback, task replay or automatic production migration. PMs cannot override trust, environment, network or runtime grants.
+Reassignment revalidates the target worker against the task's saved model choice.
+Bundle reads and saves use the current-hash receipts described in
+[agent-files.md](agent-files.md). This adds no database schema or separate service.
+
 Worker agent identity is company-scoped, not project-scoped. Projects may share one
 `claude_local` and one `codex_local` agent, with independent concurrency limits
 (for example 20 each). Each issue retains its project, parent, reviewer, model/effort

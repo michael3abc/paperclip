@@ -16,7 +16,18 @@
         "skills": { "type": "array", "items": { "$ref": "#/$defs/skill" } },
         "mcp": { "$ref": "#/$defs/mcp" },
         "connectionInstructions": { "$ref": "#/$defs/connectionInstructions" },
+        "toolPolicy": { "$ref": "#/$defs/toolPolicy" },
         "aggregateDigest": { "$ref": "#/$defs/sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "toolPolicy": {
+      "type": "object",
+      "required": ["kind", "version", "readRoots"],
+      "properties": {
+        "kind": { "const": "project_pm" },
+        "version": { "const": 1 },
+        "readRoots": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^/" } }
       },
       "additionalProperties": false
     },

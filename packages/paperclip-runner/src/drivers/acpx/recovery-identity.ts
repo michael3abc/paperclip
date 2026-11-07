@@ -64,6 +64,7 @@ export async function createAcpxRecoveryBinding(input: {
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   grokDisableWebSearch?: boolean;
   providerConfigurationDigest?: string;
+  toolPolicy?: { kind: "project_pm"; version: 1; readRoots: string[] };
   homeBinding?: Readonly<Record<string, string>>;
   providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
 }): Promise<AcpxRecoveryBinding> {
@@ -104,6 +105,7 @@ export async function createAcpxRecoveryBinding(input: {
       reportedModelId: input.profile.reportedModelId,
       permissionPolicy: input.profile.permissionPolicy,
       ...(input.providerConfigurationDigest === undefined ? {} : { providerConfigurationDigest: input.providerConfigurationDigest }),
+      ...(input.toolPolicy === undefined ? {} : { toolPolicy: input.toolPolicy }),
       ...(input.providerPolicy === undefined ? {} : { executionPolicy: {
         readOnly: input.providerPolicy.readOnly,
         readRoots: input.providerPolicy.readRoots ?? [],

@@ -148,6 +148,7 @@ export interface IssueCreationSource {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  workerSelectionId?: string;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }
@@ -1266,6 +1267,7 @@ export interface SuggestTasksResult {
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
+  acceptanceReason?: string | null;
 }
 
 /** Server-recorded task creation in a standing chat's current session. */

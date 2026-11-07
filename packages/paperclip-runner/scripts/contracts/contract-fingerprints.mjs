@@ -36,6 +36,13 @@ export const CONTRACTS = [
       const version = JSON.parse(readFile(`${R}/package.json`) ?? "{}").dependencies?.acpx;
       return path => path === `patches/acpx@${version}.patch`;
     } } },
+  // The qualified Claude patch owns the PM native tool boundary, including
+  // PreToolUse enforcement when the provider approves all permission prompts.
+  { id: "claude-acp-patch", expand: { dirs: ["patches"], suffix: ".patch", required: true, aggregate: true, probes: [{ kind: "bytes" }],
+    include: readFile => {
+      const version = JSON.parse(readFile(`${R}/package.json`) ?? "{}").dependencies?.["@agentclientprotocol/claude-agent-acp"];
+      return path => path === `patches/@agentclientprotocol__claude-agent-acp@${version}.patch`;
+    } } },
 ];
 
 /** Every hand-registered file a probe reads. */

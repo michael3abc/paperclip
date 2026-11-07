@@ -1,3 +1,4 @@
+import { PmWorkerSettings } from "../components/PmWorkerSettings";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
@@ -1758,6 +1759,10 @@ export function ConfigurationTab({
         sectionTitles={{ adapter: "", configuration: "", environment: "" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
+
+      {content === "runtime" && (agent.runtimeConfig?.workspaceBinding as { mode?: string; workerSlots?: number } | undefined)?.mode === "project_pm"
+        && ((agent.runtimeConfig?.workspaceBinding as { workerSlots?: number }).workerSlots ?? 0) === 0
+        ? <PmWorkerSettings key={agent.id} agentId={agent.id} /> : null}
 
       {content === "permissions" ? <TrustPresetSection
         layout="cards"

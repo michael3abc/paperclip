@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -23,6 +24,10 @@ import { budgetServiceInTransaction } from "./budgets.js";
 export async function prepareAgentConfiguration(db: Db, existing: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch> {
   await notifyAttentionRetentionWork(db, { companyId: existing.companyId });
   const id = existing.id;
+  if (data.runtimeConfig !== undefined && !options?.allowPmWorkerPolicyUpdate
+    && !isDeepStrictEqual(data.runtimeConfig?.pmDelegation ?? null, existing.runtimeConfig?.pmDelegation ?? null)) {
+    throw unprocessable("Use the worker-policy API to update PM delegation together with WORKERS.md");
+  }
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
     const changedFields = changedPendingApprovalConfigFields(agentRecordQueries(db).normalizeAgentRow(existing), data);

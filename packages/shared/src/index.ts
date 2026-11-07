@@ -2923,3 +2923,7 @@ export { readProviderFailure, type ProviderFailure } from "./provider-failure.ge
 export type { BoardBootstrap, BoardBootstrapSession } from "./types/board-bootstrap.js";
 export { readBoardBootstrap } from "./board-bootstrap.js";
 export * from "./push.js";
+export { pmWorkerPolicySchema, savePmWorkerPolicySchema, renderPmWorkerPolicy, pmWorkerManagedBlock, updatePmWorkerDocument,
+  type PmWorkerPolicy, type PmWorkerSelection, type PmWorkerCatalogEntry, type PmWorkerPolicyView, type SavePmWorkerPolicy } from "./pm-worker-policy.js";
+
+export type { ProjectSessionRecord, ProjectSessionRecords, ProjectWorkProductRecords } from "./project-execution-records.js";

@@ -174,6 +174,7 @@ export interface AcpxRuntimePortOpenOptions {
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
   readOnly?: boolean;
+  toolPolicy?: NativeRuntimeContextSnapshot["toolPolicy"];
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
@@ -354,6 +355,10 @@ export class AcpxRuntimeHost {
       throw new Error("Pi admission requires an explicit task execution policy");
     }
     const preconfigured = usesPreconfiguredHome(options.environment);
+    const toolPolicy = options.runtimeContext?.toolPolicy;
+    if (toolPolicy && (options.agent !== "claude" || preconfigured)) {
+      throw new Error("PM coordination tool policy requires the isolated Claude ACP provider");
+    }
     const preparedHome = preparedHarnessHome(options.environment, options.agent);
     if (preconfigured && options.permissionMode !== "approve-all") {
       throw new Error("preconfigured home currently requires ACPX approve-all; local permission rules still apply");
@@ -388,6 +393,7 @@ export class AcpxRuntimeHost {
           profile,
           requestedModel: options.model,
           ...(options.agent === "pi" ? { providerConfigurationDigest: piProviderConfiguration(options.environment)?.digest } : {}),
+          ...(toolPolicy ? { toolPolicy } : {}),
           permissionMode: options.permissionMode,
           mode: resolveAcpxProviderMode(options.agent, options.mode),
           piThinkingLevel: resolvePiThinkingLevel(options.agent, options.piThinkingLevel),
@@ -668,6 +674,7 @@ export class AcpxRuntimeHost {
             restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,
             readOnly: options.providerPolicy?.readOnly,
+            ...(toolPolicy ? { toolPolicy } : {}),
             mode: binding.mode,
             piThinkingLevel: binding.piThinkingLevel,
             claudeEffort: binding.claudeEffort,
@@ -685,12 +692,12 @@ export class AcpxRuntimeHost {
               : { assertWorkspaceHeld: () => { options.assertWorkspaceHeld?.(); agentFiles?.assertHeld(); } }),
             ...(options.signal === undefined ? {} : { signal: options.signal }),
             mcpServers: [
-              ...(options.providerPolicy?.readOnly ? [] : prepareStdioMcpBindings(options.environment ?? {}, sandbox.root)),
+              ...(options.providerPolicy?.readOnly || toolPolicy ? [] : prepareStdioMcpBindings(options.environment ?? {}, sandbox.root)),
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
               // This is Paperclip's authenticated gateway, not a direct upstream
               // binding. Its existing grants and approval checks remain authoritative.
-              ...(nativeMcp ? [{ name: nativeMcp.name, url: nativeMcp.url,
+              ...(nativeMcp && !toolPolicy ? [{ name: nativeMcp.name, url: nativeMcp.url,
                 bearerToken: nativeMcp.token, runnerOwned: true }] : []),
             ],
             ...(options.onGoalUpdate === undefined

@@ -74,6 +74,8 @@ export interface ClaudeLoginContext {
 }
 
 export interface UpdateAgentOptions {
+  /** Only the worker-policy save service may mutate this coupled policy/document. */
+  allowPmWorkerPolicyUpdate?: boolean;
   expectedConfigurationRevision?: string;
   expectedConfiguration?: Pick<AgentConfigurationRecord, "adapterType" | "adapterConfig" | "runtimeConfig" | "defaultEnvironmentId">;
   recordRevision?: RevisionMetadata;

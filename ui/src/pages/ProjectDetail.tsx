@@ -1,3 +1,4 @@
+import { ProjectSessions, ProjectArtifacts } from "../components/ProjectExecutionRecords";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
@@ -51,7 +52,7 @@ import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "sessions" | "artifacts" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -349,7 +350,7 @@ export function ProjectDetail() {
   const activeRouteTab = routeProjectRef ? resolveProjectTab(location.pathname, routeProjectRef) : null;
   const pluginTabFromSearch = useMemo(() => {
     const tab = new URLSearchParams(location.search).get("tab");
-    return isProjectPluginTab(tab) ? tab : null;
+    return isProjectPluginTab(tab) || tab === "sessions" || tab === "artifacts" ? tab : null;
   }, [location.search]);
   const activeTab = activeRouteTab ?? pluginTabFromSearch;
 
@@ -391,7 +392,7 @@ export function ProjectDetail() {
   const pluginTabItems = useMemo(
     () => pluginDetailSlots.map((slot) => ({
       value: `plugin:${slot.pluginKey}:${slot.id}` as ProjectPluginTab,
-      label: slot.displayName,
+      label: slot.pluginKey.includes("ccpocket") && ["Sessions", "Artifacts"].includes(slot.displayName) ? `CC Pocket history · ${slot.displayName}` : slot.displayName,
       slot,
     })),
     [pluginDetailSlots],
@@ -518,7 +519,7 @@ export function ProjectDetail() {
   useEffect(() => {
     if (!project) return;
     if (routeProjectRef === canonicalProjectRef && !location.pathname.endsWith("/overview")) return;
-    if (isProjectPluginTab(activeTab)) {
+    if (isProjectPluginTab(activeTab) || activeTab === "sessions" || activeTab === "artifacts") {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(activeTab)}`, { replace: true });
       return;
     }
@@ -657,7 +658,7 @@ export function ProjectDetail() {
     },
   });
 
-  if (pluginTabFromSearch && !activePluginTab && !error) {
+  if (isProjectPluginTab(pluginTabFromSearch) && !activePluginTab && !error) {
     if (!pluginTabDecisionLoaded) {
       return <PageSkeleton variant="detail" />;
     }
@@ -692,7 +693,7 @@ export function ProjectDetail() {
     if (cachedTab === "workspaces" && !workspaceTabDecisionLoaded) {
       return <PageSkeleton variant="detail" />;
     }
-    if (isProjectPluginTab(cachedTab)) {
+    if (isProjectPluginTab(cachedTab) || cachedTab === "sessions" || cachedTab === "artifacts") {
       return <Navigate to={`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(cachedTab)}`} replace />;
     }
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
@@ -718,7 +719,7 @@ export function ProjectDetail() {
     if (project?.id) {
       try { localStorage.setItem(`paperclip:project-tab:${project.id}`, tab); } catch {}
     }
-    if (isProjectPluginTab(tab)) {
+    if (isProjectPluginTab(tab) || tab === "sessions" || tab === "artifacts") {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
       return;
     }
@@ -859,6 +860,8 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "list", label: "Tasks" },
+            { value: "sessions", label: "Sessions" },
+            { value: "artifacts", label: "Artifacts" },
 
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
@@ -876,6 +879,9 @@ export function ProjectDetail() {
       </Tabs>
 
 
+
+      {activeTab === "sessions" && <ProjectSessions projectId={project.id} />}
+      {activeTab === "artifacts" && resolvedCompanyId && <ProjectArtifacts companyId={resolvedCompanyId} projectId={project.id} />}
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />

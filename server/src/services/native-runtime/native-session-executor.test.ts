@@ -42,6 +42,7 @@ import { basename, dirname, join, relative } from "node:path";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
   activityLog,
+  agents,
   budgetReservations,
   heartbeatRuns,
   environmentLeases,
@@ -6632,7 +6633,9 @@ function leaseDb(
   const select = () => ({
     from: (table: unknown) => {
       const rows =
-        table === nativeRunFinalizations
+        table === agents
+          ? [{ id: boundExecution.binding.agentId, companyId: boundExecution.binding.companyId, runtimeConfig: {} }]
+          : table === nativeRunFinalizations
           ? [coordinator]
           : table === heartbeatRuns
             ? [
@@ -12855,7 +12858,7 @@ describe("runnerd provider runtime wiring", () => {
       select: () => ({ from: (table: unknown) => {
         const result = Promise.resolve(table === heartbeatRuns ? [{
           status, runnerProfileJson: { nativeExecutionInput: priorExecution },
-        }] : []);
+        }] : table === agents ? [{ id: priorExecution.binding.agentId, companyId: priorExecution.binding.companyId, runtimeConfig: {} }] : []);
         const query = { then: result.then.bind(result), where: () => query, limit: () => query };
         return query;
       } }),

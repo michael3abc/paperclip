@@ -2282,6 +2282,7 @@ export function issueThreadInteractionService(
           result: {
             version: 1,
             outcome: "accepted",
+            ...(args.input.reason ? { acceptanceReason: args.input.reason } : {}),
             ...(selectedOptionIds ? { selectedOptionIds } : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,

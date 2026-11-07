@@ -11,6 +11,44 @@ target permissions. Access to another agent’s files additionally requires the
 caller’s own target-scoped configuration permission; shared company membership
 or a responsible user alone does not grant peer access.
 
+Project PMs bound with `workerSlots=0` have a narrower support-file capability.
+Their entry is `AGENTS.md`; each run uses `read_bundle_file` for the entry,
+`PROJECT.md` and `memory/handoff.md`. Dispatch additionally requires `WORKERS.md`
+and `REVIEW.md`; review requires `REVIEW.md`. Receipts bind company, agent, run,
+path and current content hash. A changed file requires another read, including
+on a resumed session. Related decisions live in `memory/decisions.md`; task state
+and handoff remain in issues. Shared workers use `PROJECT.md`, `DELIVERY.md` and
+`memory/decisions.md`, without a shared task-progress memory.
+
+`write_bundle_file({path,content,baseHash,changeReason})` permits only the PM's own
+PROJECT, WORKERS, REVIEW, decisions and handoff files. The existing bundle-file
+GET/PUT routes apply the same capability and receipts for a bound PM run.
+AGENTS.md and all other paths remain protected. Saves record the reason in the
+existing file audit, enforce an exact hash precondition even for identical content,
+and synchronize the current working copy and registered baseline. A canonical
+save followed by a synchronization failure returns `saved:true` and
+`workingCopySynchronized:false`; inspect it rather than replaying the write.
+Uncertain mutation receipts never authorize another execution. Final collection
+rejects PM edits that were not saved through the controlled tool/API, and cannot
+overwrite newer canonical content with an older run copy.
+
+Markdown does not grant worker, model, budget or approval authority. The server's
+Owner-maintained `runtimeConfig.pmDelegation` stores the accepted worker IDs and
+version-2 options (stable ID, harness, model, thinking, explicit permission and
+speed) and a unique default. Agent Runtime settings use GET/PUT
+`/agents/:id/worker-policy` with configuration revision and WORKERS.md base hash.
+The file-store transaction persists policy/config history and the managed block
+between `paperclip:worker-policy:start` and `paperclip:worker-policy:end` markers;
+handwritten prose remains intact. Generic agent patches cannot change the policy,
+and bundle saves cannot change/remove this block. Dispatch verifies the current
+policy and projection; an incomplete file/config save returns an error and blocks
+new dispatch until explicitly repaired. This API does not resynchronize existing
+tasks or overwrite their saved worker parameters. Legacy lists require explicit
+migration; ambiguous permissions or defaults are never guessed. Each agent owns an independent bundle; no
+cross-agent shared files or symlinks are part of the reading chain. Back up source
+files, hashes and entry versions outside the bundle before maintenance; update
+support files before the entry only after active runs and synchronization settle.
+
 ## Layout
 
 `PAPERCLIP_DURABLE_AGENT_FILES=true` opts managed files into shared storage. This

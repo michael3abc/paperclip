@@ -1,8 +1,12 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef14627011e02b30 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2922,9 +2922,19 @@ export class ClaudeAcpAgent {
+@@ -1,3 +1,4 @@
++import { paperclipPmToolPolicy } from "./paperclip-pm-policy.js";
+ import { agent as acpAgent, CreateElicitationResponse, methods, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
+ import { deleteSession, getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
+ import { GOAL_ACTIONS, GOAL_CONTROL_METHOD, GOAL_EXTENSION_VERSION, goalUpdateFromPrompt, parseGoalRequest, toGoalSnapshot, } from "./goal-extension.js";
+@@ -2922,9 +2923,19 @@
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -25,7 +29,15 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
                                      },
                                  });
                              }
-@@ -5311,6 +5321,10 @@ export class ClaudeAcpAgent {
+@@ -5231,6 +5242,7 @@
+         // backward compatibility but callers should prefer the tools array.
+         const tools = userProvidedOptions?.tools ??
+             (params._meta?.disableBuiltInTools === true ? [] : { type: "preset", preset: "claude_code" });
++        const pmPolicy = paperclipPmToolPolicy(process.env.PAPERCLIP_PM_TOOL_POLICY, params.cwd, mcpServers);
+         const abortController = userProvidedOptions?.abortController || new AbortController();
+         // Per-session task state. Created here (rather than in the session record
+         // below) so the TaskCreated/TaskCompleted hook callbacks can close over
+@@ -5311,14 +5323,21 @@
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -34,20 +46,22 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
              ...(settings && { settings }),
++            ...(pmPolicy ? { settingSources: [], settings: {} } : {}),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5318,7 +5332,9 @@ export class ClaudeAcpAgent {
+             cwd: params.cwd,
              includePartialMessages: true,
              forwardSubagentText,
-             mcpServers: {
+-            mcpServers: {
 -                ...(userProvidedOptions?.mcpServers || {}),
++            mcpServers: pmPolicy ? { paperclip: mcpServers.paperclip } : {
 +                ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1"
 +                    ? {}
 +                    : (userProvidedOptions?.mcpServers || {})),
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5345,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5348,16 @@
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
@@ -64,6 +78,23 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
              // Forward MCP elicitation requests onto ACP elicitation. Only attached
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
+@@ -5354,7 +5383,7 @@
+                 "replay-user-messages": "",
+             },
+             disallowedTools: [...(userProvidedOptions?.disallowedTools || []), ...disallowedTools],
+-            tools,
++            tools: pmPolicy?.tools ?? tools,
+             hooks: {
+                 ...userProvidedOptions?.hooks,
+                 ...(fileChangeAuditSupport
+@@ -5365,6 +5394,7 @@
+                         ],
+                     }
+                     : {}),
++                ...(pmPolicy ? { PreToolUse: [{ hooks: [pmPolicy.preToolUse] }] } : {}),
+                 PostToolUse: [
+                     ...(userProvidedOptions?.hooks?.PostToolUse || []),
+                     {
 diff --git a/dist/settings.js b/dist/settings.js
 --- a/dist/settings.js
 +++ b/dist/settings.js
@@ -80,3 +111,47 @@ diff --git a/dist/settings.js b/dist/settings.js
              this.effective = filterEscalatingDefaultMode(resolved);
          }
          catch (error) {
+diff --git a/dist/paperclip-pm-policy.js b/dist/paperclip-pm-policy.js
+new file mode 100644
+--- /dev/null
++++ b/dist/paperclip-pm-policy.js
+@@ -0,0 +1,39 @@
++import { realpath } from "node:fs/promises";
++import path from "node:path";
++
++// This policy comes only from the admitted Runner context. It is independent
++// of Claude permission mode, user settings, prompts and tool annotations.
++export function paperclipPmToolPolicy(raw, cwd, mcpServers) {
++    if (!raw) return null;
++    const policy = JSON.parse(raw);
++    if (policy.kind !== "project_pm" || policy.version !== 1 || !Array.isArray(policy.readRoots)
++        || !policy.readRoots.length || policy.readRoots.some(root => typeof root !== "string" || !path.isAbsolute(root))
++        || Object.keys(policy).some(key => !["kind", "version", "readRoots"].includes(key))) {
++        throw new Error("Invalid Paperclip PM tool policy");
++    }
++    const bridge = mcpServers.paperclip;
++    if (bridge?.type !== "http" || bridge.url !== process.env.PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL) {
++        throw new Error("PM tools require the authenticated Paperclip bridge");
++    }
++    const tools = ["Read", "Grep", "Glob"];
++    const deny = () => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny",
++        permissionDecisionReason: "PMs coordinate and review. Delegate execution to a Paperclip worker." } });
++    return { tools, async preToolUse(input) {
++        if (input.hook_event_name !== "PreToolUse") return deny();
++        // The authenticated bridge checks each operation and its resource scope.
++        if (input.tool_name.startsWith("mcp__paperclip__")) return {};
++        if (!tools.includes(input.tool_name)) return deny();
++        const args = input.tool_input;
++        const requested = input.tool_name === "Read" ? args?.file_path : (args?.path ?? cwd);
++        if (typeof requested !== "string" || requested.includes("\0")) return deny();
++        try {
++            const target = await realpath(path.resolve(cwd, requested));
++            for (const root of policy.readRoots) {
++                const canonical = await realpath(root);
++                const relative = path.relative(canonical, target);
++                if (relative === "" || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative))) return {};
++            }
++        } catch { return deny(); }
++        return deny();
++    } };
++}

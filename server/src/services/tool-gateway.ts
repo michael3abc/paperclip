@@ -47,6 +47,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { currentPmCoordinationScope } from "./pm-coordination-policy.js";
 import {
   and,
   asc,
@@ -2185,6 +2186,11 @@ export function createToolGatewayService(
   async function captureSessionIdentity(
     session: ToolGatewaySession,
   ): Promise<ToolGatewaySession> {
+    for (const agentId of new Set([session.agentId, session.originatingAgentId].filter((id): id is string => !!id))) {
+      if (await currentPmCoordinationScope(db, { companyId: session.companyId, agentId })) {
+        throw new ToolGatewayHttpError(403, "Project PMs have no approved external connector capabilities; use the scoped Paperclip bridge", "pm_connector_denied");
+      }
+    }
     // Authentication creates a fresh operation snapshot on every invocation.
     // Never trust a previously attached context on a reusable transport session.
     // Approved operations restore their signed origin after authentication.
@@ -9479,6 +9485,7 @@ export function createToolGatewayService(
 
     /** Standing instructions use exactly the same authorization as tool discovery. */
     async resolveConnectionInstructionsForRun(binding: { companyId: string; agentId: string; runId: string }) {
+      if (await currentPmCoordinationScope(db, binding)) return null;
       const candidates = await db.select().from(toolConnections).where(and(
         eq(toolConnections.companyId, binding.companyId), eq(toolConnections.enabled, true),
         eq(toolConnections.status, "active"), sql`${toolConnections.agentInstructions}->>'enabled' = 'true'`,

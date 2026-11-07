@@ -13,6 +13,7 @@ import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
+import { currentPmCoordinationScope } from "../pm-coordination-policy.js";
 import {
   type DurableChatWakeupRequest,
 } from "../durable-chat-wakeup.js";
@@ -896,6 +897,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   runId: string;
   expectedAssignmentDigest?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
+  if (await currentPmCoordinationScope(input.db, { companyId: input.agent.companyId, agentId: input.agent.id })) return [];
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveToolAssignmentsForAgent(
     input.agent.companyId,

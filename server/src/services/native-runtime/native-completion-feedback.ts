@@ -1,4 +1,6 @@
 import { readRequiredQualityReview } from "../required-quality-review.js";
+import { currentPmCoordinationScope } from "../pm-coordination-policy.js";
+import { requirePmBundleReads } from "../pm-bundle-tools.js";
 import { pendingTaskRepository } from "../task-workspace-tools.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
 import { eligibleIssueMonitorWait } from "../issue-monitors.js";
@@ -67,6 +69,8 @@ export async function nativeCompletionFeedback(
     )
     .then((rows) => rows[0]);
   if (!issue) throw new Error("Completion task no longer exists.");
+  const pm = await currentPmCoordinationScope(db, { companyId: run.companyId, agentId: run.agentId });
+  if (pm) await requirePmBundleReads(db, pm, runId, "finish_task");
   const wakeScope = { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId };
   const currentWake = await resolveCurrentWakeCommentsBinding(db, wakeScope);
   if (currentWake) {

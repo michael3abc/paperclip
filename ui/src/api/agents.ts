@@ -1,3 +1,4 @@
+import type { PmWorkerPolicyView, SavePmWorkerPolicy } from "@paperclipai/shared";
 import type { AgentPublicIdentity } from "@paperclipai/shared";
 import type { AgentProjectAccess } from "@paperclipai/shared";
 import type {
@@ -112,6 +113,8 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  workerPolicy: (id: string) => api.get<PmWorkerPolicyView>(`/agents/${id}/worker-policy`),
+  saveWorkerPolicy: (id: string, input: SavePmWorkerPolicy) => api.put<{ revision: string; documentHash: string; policy: SavePmWorkerPolicy["policy"] }>(`/agents/${id}/worker-policy`, input),
   projectAccess: (id: string) => api.get<AgentProjectAccess>(`/agents/${id}/project-access`),
   addProjectAccess: (id: string, projectIds: string[]) => api.post<AgentProjectAccess>(`/agents/${id}/project-access`, { projectIds }),
   qualifyRunner: (id: string, expectedEnvironmentId: string, companyId?: string) =>

@@ -16,6 +16,9 @@
       "DOM.AsyncIterable"
     ],
     "paths": {
+      "@paperclipai/plugin-sdk": [
+        "../../../packages/plugins/sdk/dist/index.d.ts"
+      ],
       "@daytonaio/sdk": [
         "../../scripts/typecheck-stubs/daytona-sdk.d.ts"
       ]
