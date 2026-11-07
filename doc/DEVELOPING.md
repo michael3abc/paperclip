@@ -4916,6 +4916,12 @@ When pumping fake timers to settle PostgreSQL I/O, compare the saved absolute
 deadline after reconstruction instead of adding a fixed elapsed interval. Exercise
 delayed startup, retain exact-deadline assertions across restart, and observe both
 ordinary queries and transactional event reads when proving idle silence.
+Cases that deliberately roll back signaled writes need their own database client
+owner. Reuse the owned suite database, close each case's client after joining its
+work, and open a fresh client before the next case. Row truncation alone leaves
+uncertain transaction signals that can enqueue valid extra startup reconciliation.
+Keep production uncertainty recovery intact; do not suppress its notifications
+to make deadline fixtures pass.
 The timing-only recovery fixture uses real Drizzle query builders and substitutes
 only execution for its legacy-watchdog rows. Keep event-table reads and producer
 SQL explicit, preserve the idle/deadline assertions, and verify durable event

@@ -109,6 +109,8 @@ ancestor Git metadata. Chromium injection tests do not qualify APNs or physical 
 Database-backed scheduler tests must separate fake deadline advancement from
 wall-time batch completion and join execution cleanup before fixture teardown.
 Assert persisted absolute deadlines after I/O; never assume a fixed startup duration.
+Isolate each test's database-client work-signal owner; truncation cannot clear
+uncertain transaction notifications retained in memory after deliberate rollback.
 Timing-only recovery fixtures retain real Drizzle query/locking composition;
 event persistence, rollback and contention require owned PostgreSQL coverage.
 

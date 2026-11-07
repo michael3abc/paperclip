@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { agents, companies, projects, issues, issueWatchdogEvents, issueWatchdogs, heartbeatRuns, agentWakeupRequests, issueRecoveryActions, createDb, applyPendingMigrations, type Db } from '@paperclipai/db';
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from './helpers/embedded-postgres.js';
@@ -14,6 +14,8 @@ import { createDeliveryWorkCoordinator } from '../services/delivery-work-coordin
 import { consumeTaskWatchdogEvents, registerTaskWatchdogWork } from '../services/task-watchdog-work.js';
 import { issueService } from '../services/issues.js';
 import { setImmediate as immediate } from 'node:timers/promises';
+import { databaseWorkPending } from '@paperclipai/db/work-signals';
+import { DELIVERY_QUEUES } from '../services/delivery-work-notifications.js';
 
 const external = resolveExternalTestDatabaseUrl('PAPERCLIP_PM_FOLLOWTHROUGH_TEST_DATABASE_URL');
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -23,10 +25,16 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   beforeAll(async () => {
     if (external) await applyPendingMigrations(external);
     else database = await startEmbeddedPostgresTestDatabase('pm-followthrough-');
-    db = createDb(external ?? database!.connectionString);
   }, 90_000);
-  beforeEach(async () => { await db.execute(sql`truncate companies cascade`); });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  beforeEach(async () => {
+    // Rollback cases retain uncertain transaction signals on the client until
+    // reconciliation. Truncating rows does not reset that process-local state.
+    // Give each case a fresh owner while retaining the owned suite database.
+    db = createDb(external ?? database!.connectionString);
+    await db.execute(sql`truncate companies cascade`);
+  });
+  afterEach(async () => { await db?.$client.end({ timeout: 1 }); });
+  afterAll(async () => { await database?.cleanup(); });
 
   async function fixture() {
     const [company] = await db.insert(companies).values({ name: 'PM follow-through', issuePrefix: 'P' + randomUUID().slice(0, 7) }).returning();
@@ -257,6 +265,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   it.each([0, 2000])('reconstructs five-minute deadlines, preserves drain work and stops SQL after terminal settlement (startup delay %i ms)', async startupDelayMs => {
     const f = await fixture();
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.taskWatchdogs), 'deadline fixture must not inherit transaction signals from another test').toBe(false);
     const firstDeadline = Date.now() + 300_000;
     await db.update(issueWatchdogs).set({ nextCheckAt: new Date(firstDeadline) }).where(eq(issueWatchdogs.id, f.watchdog.id));
     let drained = false;

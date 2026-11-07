@@ -166,3 +166,9 @@ deadline test: pumping I/O advanced its fake clock before a fixed 298-second
 jump. A controlled startup delay reproduces the early-call assertion failure.
 Use the persisted absolute deadline across restart, retain drain/resume checks,
 and verify both query and transaction silence after terminal settlement.
+
+The stronger startup assertion then exposed cross-case work-signal state: a
+deliberately rolled-back producer left uncertainty on the suite's shared client,
+although its rows had been truncated. A two-case reproduction confirms the leak.
+Give each test a fresh client owner and close it after joined cleanup; preserve
+the production transaction-reconciliation path and the exact startup deadline.
