@@ -309,6 +309,7 @@ export type IssueThreadInteractionResolverPolicyProvenance =
   (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES)[number];
 
 export const ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES = [
+  "company_delegation",
   "requested",
   "company_cap",
   "governed_action",

@@ -212,6 +212,7 @@ export const configuredEnvironment = runner.configuredEnvironment;
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
 
 export const resolveGrokDisableWebSearch = runner.resolveGrokDisableWebSearch;
+export const normalizeAcpFormElicitation = runner.normalizeAcpFormElicitation;
 
 export const CursorCloudClient = runner.CursorCloudClient;
 export const parseNativeCursorCloudConfig = runner.parseNativeCursorCloudConfig;

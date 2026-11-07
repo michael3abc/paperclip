@@ -4457,7 +4457,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // it (today's `clearWarmHandleTimer(cached)` after the reuse decision).
         let cached = canResume ? hostStore.borrow(prepared.sessionKey) : undefined;
         providerProcessReason = canResume ? "cache_miss" : Object.keys(previousParams).length ? "identity_mismatch" : "created";
-        if (cached && (cached.observabilityCompatibilityKey !== ctx.observability?.compatibilityKey || ctx.context.refreshTools === true
+        if (cached && (ctx.onRuntimeDecision !== undefined || cached.observabilityCompatibilityKey !== ctx.observability?.compatibilityKey || ctx.context.refreshTools === true
           || asString(previousParams.mcpFingerprint, "") !== shortHash(prepared.mcpIdentity)
           // MCP bearer credentials are run-scoped, even for an unchanged catalog.
           || prepared.mcpServers.length > 0)) {
@@ -4501,6 +4501,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           sessionStore: runtimeStore,
           agentRegistry: prepared.agentRegistry,
           permissionMode: prepared.permissionMode,
+          ...(ctx.onRuntimeDecision ? { elicitationModes: ["form"] as const } : {}),
           nonInteractivePermissions: prepared.nonInteractivePermissions,
           mcpServers: prepared.mcpServers,
           timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
@@ -4511,12 +4512,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // The engine passes a complete, sanitized launch environment. ACPX
           // must not merge the Paperclip server's ambient environment back in
           // when it spawns the provider child.
-          inheritProcessEnv: false,
+          spawnEnvironment: () => ({}),
           // Observe permission requests without deciding them: returning
           // undefined leaves the decision to ACPX's permission-mode resolver.
-          onPermissionRequest: async (request) => {
+          onPermissionRequest: async (request, context) => {
             const toolCallId = request.raw?.toolCall?.toolCallId;
             if (typeof toolCallId === "string" && toolCallId) permissionRequestedToolCallIds.add(toolCallId);
+            if (ctx.onRuntimeDecision && typeof toolCallId === "string") {
+              const result = await ctx.onRuntimeDecision({ kind: "permission", requestId: `${request.sessionId}:${toolCallId}`,
+                request: request.raw, signal: context.signal, responseDelivery: context.responseDelivery });
+              if (result !== undefined) {
+                if (!["allow_once", "reject_once", "cancel"].includes(String(result.outcome))) throw new Error("Invalid delegated provider permission response");
+                return result as { outcome: "allow_once" | "reject_once" | "cancel" };
+              }
+            }
             return undefined;
           },
           onAgentStderr: prepared.childStderrLogPath
@@ -5061,6 +5070,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestId: ctx.runId,
           timeoutMs: startTimeoutMs,
           signal,
+          ...(ctx.onRuntimeDecision ? { onElicitation: async (request, context) => {
+            const response = await ctx.onRuntimeDecision!({ kind: "elicitation", requestId: `${sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName}:${context.requestId}`,
+              request, signal: context.signal, responseDelivery: context.responseDelivery });
+            if (!response || !["accept", "decline", "cancel"].includes(String(response.action))) throw new Error("Invalid delegated provider question response");
+            return response as { action: "accept"; content?: Record<string, string | number | boolean | string[]> } | { action: "decline" | "cancel" };
+          } } : {}),
           // The callback belongs to this turn, including when a runtime is reused.
           // Diagnostics are retained even when an adapter has no recovery
           // classifier. Redact before bounding so partial secrets cannot leak.
@@ -5658,7 +5673,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // Host lane: save a clean persistent warm-eligible turn, but carry the
           // live run-scoped credential so the gate blocks the transfer.
           if (!slots.has("acp_runtime")) return null;
-          const permits = clean && prepared.mode === "persistent" && warmIdleMs > 0;
+          const permits = clean && prepared.mode === "persistent" && warmIdleMs > 0 && !ctx.onRuntimeDecision;
           if (!permits) return null;
           return { kind: "host", causePermitsSave: true, liveRunScopedCredentials: [LIVE_RUN_SCOPED_API_KEY] };
         },

@@ -1,4 +1,5 @@
 import type { ApprovalStatus, ApprovalType } from "../constants.js";
+import type { DelegatedDecisionContext } from "../delegated-decisions.js";
 
 export interface Approval {
   id: string;
@@ -10,6 +11,8 @@ export interface Approval {
   payload: Record<string, unknown>;
   decisionNote: string | null;
   decidedByUserId: string | null;
+  decidedByAgentId: string | null;
+  delegation: DelegatedDecisionContext | null;
   decidedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

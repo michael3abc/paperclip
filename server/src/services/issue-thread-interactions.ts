@@ -1,3 +1,4 @@
+import { assertDelegatedDecisionActor, decisionFingerprint, routeDelegatedDecision } from "./delegated-decision-policy.js";
 import { getIssueDocumentTargetSnapshot, getIssueAttachmentTargetSnapshot, assertRequestConfirmationTargetIsCurrent } from "./issue-thread-interaction-targets.js";
 import { enqueuePushSource } from "./web-push-events.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -120,6 +121,7 @@ import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
 import {
   logActivity,
+  persistActivity,
   publishActivity,
   type ActivityPublication,
 } from "./activity-log.js";
@@ -160,6 +162,7 @@ export { extractGitHubPullRequestReferences } from "./github-pull-request-merge.
 export type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 
 type InteractionActor = {
+  delegationRevision?: string;
   identityContextId?: string | null;
   agentId?: string | null;
   runId?: string | null;
@@ -181,7 +184,22 @@ async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; com
   await assertAgentRunWriteAllowed(tx, issue.companyId, actor);
 }
 
+async function recordDelegatedInteractionDecision(tx: Db, interaction: IssueThreadInteraction, reason: string | null | undefined) {
+  if (!interaction.delegation || !interaction.resolvedByAgentId) return;
+  if (!reason?.trim() || reason.length > 4000) throw forbidden("A delegated decision requires a bounded reason");
+  await persistActivity(tx, { companyId: interaction.companyId, actorType: "agent",
+    actorId: interaction.resolvedByAgentId, agentId: interaction.resolvedByAgentId,
+    runId: interaction.resolvedByRunId, issueId: interaction.issueId,
+    action: "delegation.decision_recorded", entityType: "interaction", entityId: interaction.id,
+    details: { delegation: interaction.delegation, status: interaction.status, reason } });
+}
+
 type CreateInteractionOptions = {
+  /** Trusted original runtime event time; reprojecting history cannot activate delegation. */
+  decisionRequestedAt?: Date;
+  decisionReservedReasons?: import("@paperclipai/shared").HumanReservedDecisionReason[];
+  /** Only the gateway may mark a reviewed ordinary external write delegable. */
+  delegateOrdinaryToolAction?: boolean;
   /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
@@ -482,15 +500,29 @@ function resolverActor(actor: InteractionActor) {
   return { type: "agent" as const, agentId: null, runId: null };
 }
 
-function assertInteractionResolutionAllowed(
+async function assertInteractionResolutionAllowed(
+  database: Db,
   current: IssueThreadInteractionRow,
   actor: InteractionActor,
 ) {
+  if (current.delegation?.level === "human" && actor.userId !== current.delegation.ownerUserId) {
+    throw forbidden("This delegated request is reserved for the granting human Owner");
+  }
+  if (current.delegation && actor.agentId) {
+    if (!actor.runId) throw forbidden("A running decision turn is required");
+    await assertDelegatedDecisionActor(database, {
+      companyId: current.companyId, context: current.delegation, agentId: actor.agentId, runId: actor.runId,
+      revision: current.delegation.revision,
+      fingerprint: decisionFingerprint({ kind: current.kind, payload: current.payload, sourceRunId: current.sourceRunId }),
+    });
+    if (actor.delegationRevision !== current.delegation.revision) throw conflict("The delegated request changed; reread the current revision");
+  }
   return assertIssueThreadInteractionResolverAudience({
     actor: resolverActor(actor),
     interaction: current,
     additionalRestriction: actor.resolverPolicyRestriction,
     governedAction:
+      !(current.delegation?.level === "delegate" && current.delegation.requiredScopes.includes("external_writes")) &&
       current.kind === "request_confirmation" &&
       current.payload !== null &&
       typeof current.payload === "object" &&
@@ -532,7 +564,7 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
     isRequestConfirmationLikeKind(interaction.kind) &&
     (await isIssueReviewVerdictInteraction(tx, { issue, interaction }));
 
-  assertInteractionResolutionAllowed(interaction, actor);
+  await assertInteractionResolutionAllowed(tx, interaction, actor);
   if (actor.agentId && isNativeCompletionReview(interaction)) {
     const target = (interaction.payload as { target?: { revisionId?: string } }).target;
     if (!actor.runId || !await getNativeReviewAssignment(tx, {
@@ -2308,6 +2340,7 @@ export function issueThreadInteractionService(
       }
 
       const acceptedInteraction = hydrateInteraction(updated);
+      await recordDelegatedInteractionDecision(tx as unknown as Db, acceptedInteraction, args.input.reason);
       await args.mutationOptions?.afterResolveInTransaction?.(
         tx,
         acceptedInteraction,
@@ -2598,6 +2631,7 @@ export function issueThreadInteractionService(
         );
       }
       const rejectedInteraction = hydrateInteraction(resolved);
+      await recordDelegatedInteractionDecision(tx as unknown as Db, rejectedInteraction, reason);
       await args.mutationOptions?.afterResolveInTransaction?.(
         tx,
         rejectedInteraction,
@@ -2842,7 +2876,7 @@ export function issueThreadInteractionService(
           "Only connection_intent interactions have a connection phase",
         );
       }
-      assertInteractionResolutionAllowed(current, actor);
+      await assertInteractionResolutionAllowed(db, current, actor);
       const payload = connectionIntentPayloadSchema.parse(current.payload);
       const [updated] = await db
         .update(issueThreadInteractions)
@@ -2881,7 +2915,7 @@ export function issueThreadInteractionService(
       }
       if (!actor.userId)
         throw forbidden("Connection intents require a human resolver");
-      assertInteractionResolutionAllowed(current, actor);
+      await assertInteractionResolutionAllowed(db, current, actor);
       const status =
         result.outcome === "connected"
           ? "accepted"
@@ -3467,6 +3501,51 @@ export function issueThreadInteractionService(
         data.continuationPolicy = "wake_assignee";
         if (data.kind === "request_confirmation" || data.kind === "request_item_verdicts") data.payload.supersedeOnUserComment = false;
       }
+      const usedDeprecatedResolverPolicyAlias =
+        data.resolverPolicy === "board_or_agents" ||
+        data.resolverPolicy === "board_only";
+      const governance = await db
+        .select({
+          interactionResolverGovernance:
+            companies.interactionResolverGovernance,
+        })
+        .from(companies)
+        .where(eq(companies.id, issue.companyId))
+        .then((rows) => rows[0]?.interactionResolverGovernance ?? {});
+      let policy: Omit<ReturnType<typeof resolveInteractionPolicy>, "effectiveResolverPolicySource"> & {
+        effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+      } = resolveInteractionPolicy({
+        kind: data.kind,
+        requested: data.resolverPolicy,
+        governance,
+        hasToolAction:
+          data.kind === "request_confirmation" &&
+          data.payload.toolAction !== undefined,
+        hasSecretProposal:
+          data.kind === "request_confirmation" &&
+          data.payload.secretProposal !== undefined,
+      });
+      const previousRequest = data.idempotencyKey ? await getIdempotentInteraction({
+        issueId: issue.id, companyId: issue.companyId, idempotencyKey: data.idempotencyKey,
+      }) : null;
+      const delegation = previousRequest ? previousRequest.delegation : actor.agentId && !isNativeCompletionReview(data)
+        ? await routeDelegatedDecision(db, {
+          companyId: issue.companyId, issueId: issue.id, requesterAgentId: actor.agentId,
+          sourceRunId: data.sourceRunId ?? actor.runId ?? null,
+          fingerprint: decisionFingerprint({ kind: data.kind, payload: data.payload, sourceRunId: data.sourceRunId ?? null }),
+          createdAt: options.decisionRequestedAt ?? new Date(), category: "interaction",
+          reservedReasons: policy.effectiveResolverPolicy === "human_only"
+            && (data.resolverPolicy !== undefined || governance[data.kind]?.cap !== undefined
+              || governance[data.kind]?.defaultPolicy !== undefined || policy.effectiveResolverPolicySource === "governed_action" && !options.delegateOrdinaryToolAction)
+            ? ["explicit_human", ...(options.decisionReservedReasons ?? [])] : options.decisionReservedReasons ?? [],
+          ...(options.delegateOrdinaryToolAction ? { requiredScopes: ["external_writes"], requiresDelegate: true } : {}),
+        }) : null;
+      if (delegation) {
+        policy = { ...policy, effectiveResolverPolicy: delegation.level === "human" ? "human_only" : "anyone",
+          effectiveResolverPolicySource: "company_delegation" };
+        data.addresseeAgentId = delegation.recipientAgentId ?? undefined;
+        data.addresseeUserId = delegation.level === "human" ? delegation.ownerUserId : undefined;
+      }
       // Chat ownership is server-owned and immutable. Ordinary human questions
       // must not depend on a model copying an opaque user identity correctly.
       let defaultAddresseeUserId: string | null = null;
@@ -3485,28 +3564,6 @@ export function issueThreadInteractionService(
           data.addresseeUserId = defaultAddresseeUserId;
         }
       }
-      const usedDeprecatedResolverPolicyAlias =
-        data.resolverPolicy === "board_or_agents" ||
-        data.resolverPolicy === "board_only";
-      const governance = await db
-        .select({
-          interactionResolverGovernance:
-            companies.interactionResolverGovernance,
-        })
-        .from(companies)
-        .where(eq(companies.id, issue.companyId))
-        .then((rows) => rows[0]?.interactionResolverGovernance ?? {});
-      const policy = resolveInteractionPolicy({
-        kind: data.kind,
-        requested: data.resolverPolicy,
-        governance,
-        hasToolAction:
-          data.kind === "request_confirmation" &&
-          data.payload.toolAction !== undefined,
-        hasSecretProposal:
-          data.kind === "request_confirmation" &&
-          data.payload.secretProposal !== undefined,
-      });
       const normalizedData = {
         ...data,
         resolverPolicy: policy.requestedResolverPolicy,
@@ -3519,14 +3576,16 @@ export function issueThreadInteractionService(
       }
 
       if (normalizedData.addresseeAgentId) {
-        if (normalizedData.addresseeAgentId === actor.agentId) {
+        if (normalizedData.addresseeAgentId === actor.agentId && !delegation) {
           throw unprocessable(
             "Agents cannot address issue-thread interactions to themselves",
           );
         }
         if (
           normalizedData.kind === "request_confirmation" &&
-          normalizedData.payload.toolAction !== undefined
+          normalizedData.payload.toolAction !== undefined &&
+          !(options.delegateOrdinaryToolAction && delegation?.level === "delegate"
+            && delegation.requiredScopes.includes("external_writes"))
         ) {
           throw unprocessable(
             "Tool-action confirmations cannot be addressed to agents",
@@ -3560,7 +3619,7 @@ export function issueThreadInteractionService(
           db,
           addressee,
         );
-        if (!invokability.invokable) {
+        if (!invokability.invokable && !delegation) {
           throw unprocessable(
             "addresseeAgentId must reference an invokable agent",
             {
@@ -3840,6 +3899,7 @@ export function issueThreadInteractionService(
             await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
           }
           if (data.kind === "request_confirmation") await notifyMergeConfirmationWork(tx, { companyId: issue.companyId, issueId: issue.id });
+          if (delegation) await notifyDeliveryWork(tx, DELIVERY_QUEUES.delegatedDecisions, issue.companyId);
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({
@@ -3865,6 +3925,7 @@ export function issueThreadInteractionService(
               addresseeUserId: data.addresseeUserId ?? null,
               createdByUserId: actor.userId ?? null,
               payload: data.payload,
+              delegation: delegation ?? null,
             })
             .returning();
           await enqueuePushSource(tx as unknown as Db, { companyId: row.companyId, issueId: row.issueId,
@@ -3884,7 +3945,7 @@ export function issueThreadInteractionService(
           // questions remain answerable in history even when another is asked.
           // Scoped to the same agent + issue + kind; other actors are untouched.
           const canSupersedeSiblingCards =
-            options.supersedePendingSiblingInteractions !== false &&
+            !delegation && options.supersedePendingSiblingInteractions !== false &&
             ((data.kind === "request_confirmation" &&
               data.payload.toolAction === undefined &&
               data.payload.secretProposal === undefined &&
@@ -4015,11 +4076,12 @@ export function issueThreadInteractionService(
       mutationOptions: InteractionResolutionMutationOptions = {},
     ): Promise<ResolvedInteractionResult> => {
       const data = acceptIssueThreadInteractionSchema.parse(input);
+      actor = { ...actor, delegationRevision: data.delegationRevision };
       const current = await getPendingInteractionForResolution({
         issue,
         interactionId,
       });
-      assertInteractionResolutionAllowed(current, actor);
+      await assertInteractionResolutionAllowed(db, current, actor);
       switch (current.kind) {
         case "suggest_tasks":
           // Accepting suggest_tasks only creates follow-up issues; it does not
@@ -4104,7 +4166,7 @@ export function issueThreadInteractionService(
       ) {
         throw interactionNotFoundError();
       }
-      assertInteractionResolutionAllowed(current, actor);
+      await assertInteractionResolutionAllowed(db, current, actor);
       if (current.kind !== "suggest_tasks") {
         throw unprocessable("Only suggest_tasks interactions can be accepted");
       }
@@ -4320,11 +4382,12 @@ export function issueThreadInteractionService(
       mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       const data = rejectIssueThreadInteractionSchema.parse(input);
+      actor = { ...actor, delegationRevision: data.delegationRevision };
       const current = await getPendingInteractionForResolution({
         issue,
         interactionId,
       });
-      assertInteractionResolutionAllowed(current, actor);
+      await assertInteractionResolutionAllowed(db, current, actor);
       switch (current.kind) {
         case "suggest_tasks":
           return issueThreadInteractionService(db).rejectSuggestedTasks(
@@ -4363,6 +4426,7 @@ export function issueThreadInteractionService(
     }> => {
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
+      actor = { ...actor, delegationRevision: data.delegationRevision };
       const submission = await db.transaction(async (tx) => {
         await mutationOptions.beforeResolveInTransaction?.(tx);
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
@@ -4393,7 +4457,7 @@ export function issueThreadInteractionService(
           );
         }
 
-        assertInteractionResolutionAllowed(current, actor);
+        await assertInteractionResolutionAllowed(tx as unknown as Db, current, actor);
         const interaction = hydrateInteraction(
           current,
         ) as RequestItemVerdictsInteraction;
@@ -4486,6 +4550,8 @@ export function issueThreadInteractionService(
         await touchIssue(tx, issue.id, issue.companyId);
         await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         if (complete) await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
+        await recordDelegatedInteractionDecision(tx as unknown as Db, { ...hydrateInteraction(updated),
+          resolvedByAgentId: actor.agentId ?? null, resolvedByRunId: actor.runId ?? null }, data.reason);
         return {
           interaction: hydrateInteraction(updated),
           newlyResolvedItemIds,
@@ -5241,6 +5307,7 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
       mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
+      actor = { ...actor, delegationRevision: input.delegationRevision };
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -5254,7 +5321,7 @@ export function issueThreadInteractionService(
       ) {
         throw interactionNotFoundError();
       }
-      assertInteractionResolutionAllowed(current, actor);
+      await assertInteractionResolutionAllowed(db, current, actor);
       if (current.kind !== "ask_user_questions") {
         throw unprocessable(
           "Only ask_user_questions interactions can be answered",
@@ -5291,6 +5358,20 @@ export function issueThreadInteractionService(
         const [issueRow] = await tx.select({ status: issues.status }).from(issues)
           .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
         if (!issueRow) throw interactionNotFoundError();
+        const [lockedRequest] = await tx.select().from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+        )).for("update");
+        if (!lockedRequest || lockedRequest.status !== "pending") throw interactionAlreadyResolvedError();
+        if (actor.agentId && lockedRequest.delegation && input.delegationRevision !== lockedRequest.delegation.revision) {
+          throw conflict("The delegated request changed; reread it before answering");
+        }
+        await assertInteractionResolutionAllowed(tx as unknown as Db, lockedRequest, actor);
+        if (lockedRequest.delegation) {
+          const { assertPendingNativeQuestionAnswer } = await import("./native-runtime/native-question-bridge.js");
+          await assertPendingNativeQuestionAnswer(tx as unknown as Db,
+            hydrateInteraction(lockedRequest) as AskUserQuestionsInteraction, normalizedAnswers, actor.agentId ?? null);
+        }
         let historicalAnswer = false;
         if (isTerminalIssueStatus(issueRow.status)) {
           if (issueRow.status === "done" && actor.userId && !actor.agentId && !actor.runId && !actor.systemId) {
@@ -5330,6 +5411,7 @@ export function issueThreadInteractionService(
 
         if (!row) throw interactionAlreadyResolvedError();
         const answered = hydrateInteraction(row) as AskUserQuestionsInteraction;
+        await recordDelegatedInteractionDecision(tx as unknown as Db, answered, input.summaryMarkdown);
         // This answer updates conversation history only. It must not resume
         // the completed source run or enqueue new work for the closed task.
         if (!historicalAnswer) {
@@ -5387,7 +5469,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.issueId, issue.id),
         )).for("update");
         if (!current) throw interactionNotFoundError();
-        assertInteractionResolutionAllowed(current, actor);
+        await assertInteractionResolutionAllowed(db, current, actor);
         if (current.status !== "pending" || current.dismissedAt) return hydrateInteraction(current);
         if (task.status === "in_review" && isRequestConfirmationLikeKind(current.kind)) {
           await assertRequestConfirmationResolutionAllowedUnderLock(tx as unknown as Db, task, current, actor);

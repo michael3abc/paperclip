@@ -478,6 +478,22 @@ it("persists authentication and commands before the runner can observe them", as
   }
 });
 
+it("rechecks command authority at wire delivery and retains a revoked response", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-command-authority-"));
+  const authorize = vi.fn(async () => { throw new Error("grant revoked"); });
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion,
+    expectedRunnerDigest, beforeCommandDelivery: authorize });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    core.queueCommand("request.resolve", { requestId: "permission-1", resolution: { action: "accept" } }, "question_revoked", true);
+    expect(await receiveSecure(client)).toBeNull();
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ commandId: "question_revoked", type: "request.resolve" }));
+    expect(core.getCommand("question_revoked")?.status).toBe("pending");
+    client.socket.destroy();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 it("does not dispatch a semantic effect when external journal persistence fails", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-external-journal-failure-"));
   const dispatch = vi.fn(async () => ({ result: "written" }));

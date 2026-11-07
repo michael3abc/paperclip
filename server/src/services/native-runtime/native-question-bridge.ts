@@ -1,4 +1,5 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { assertPendingLegacyDecision, deliverLegacyRuntimeDecision } from "./legacy-runtime-decision-bridge.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -17,6 +18,9 @@ import {
 } from "../../vendor/paperclip-runner/index.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
+import { conflict, forbidden } from "../../errors.js";
+import { approvalReservedReasons, decisionFingerprint, readDecisionDelegation } from "../delegated-decision-policy.js";
+import { readPendingNativeRuntimeRequest } from "./runtime-request-resolution-authority.js";
 import { logActivity } from "../activity-log.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../question-response-delivery.js";
@@ -113,7 +117,7 @@ async function authorizedNativeRun(
   return run ? { ...run, requestId } : null;
 }
 
-/** Materialize questions; permission requests use the privileged runtime card. */
+/** Materialize new delegated requests; historical privileged cards keep their policy. */
 export async function projectNativeRuntimeRequest(input: {
   db: Db;
   binding: Pick<NativeRunStoreBinding, "companyId" | "issueId" | "runId" | "agentId" | "normalizedSessionId" | "runnerSourceInstanceId">;
@@ -137,7 +141,10 @@ export async function projectNativeRuntimeRequest(input: {
   ) {
     throw new Error("native_runtime_request_invalid");
   }
-  if (request.requestKind === "permission_approval" && request.type === "permission") {
+  const grant = await readDecisionDelegation(input.db, input.binding.companyId);
+  const delegationEligible = Boolean(grant && Date.parse(input.event.emittedAt) >= Date.parse(grant.scope.activatedAt));
+  let questionSet: PaperclipQuestionSet;
+  if (["permission_approval", "command_approval", "file_approval"].includes(String(request.requestKind)) && request.type === "permission") {
     const choices = Array.isArray(request.choices) ? request.choices.map(record) : [];
     const supported = new Set(["accept", "accept_for_session", "decline", "cancel"]);
     if (
@@ -158,17 +165,16 @@ export async function projectNativeRuntimeRequest(input: {
     ) {
       throw new Error("native_runtime_permission_invalid");
     }
-    // The committed run event itself feeds TaskChatProtocolCard. Its decisions
-    // go through the instance-admin runtime-request route and the exact pending
-    // turn, not the human-only question-response delivery path. Returning here
-    // allows the durable coordinator to acknowledge the event without creating
-    // a second, less-privileged interaction or changing any offered choices.
-    return null;
-  }
-  if (request.requestKind !== "runtime" || request.type !== "input") {
+    if (!delegationEligible) return null;
+    questionSet = parsePaperclipQuestionSet({ schema: "paperclip.question_set.v1", title: "Execution decision",
+      description: JSON.stringify(request.details ?? {}).slice(0, 16_000),
+      questions: [{ id: "decision", prompt: request.prompt, required: true, answerMode: "single_select",
+        options: choices.map(choice => ({ id: choice!.key, label: choice!.label })) }] });
+  } else if (request.requestKind === "runtime" && request.type === "input") {
+    questionSet = parsePaperclipQuestionSet(request.input);
+  } else {
     throw new Error("native_runtime_request_invalid");
   }
-  const questionSet = parsePaperclipQuestionSet(request.input);
   if (questionSet.questions.some((question) => question.textValidation?.pattern !== undefined)) {
     // JavaScript regular expressions have no execution budget. Provider-authored
     // patterns therefore stay fail-closed until the runner contract supplies a
@@ -190,15 +196,17 @@ export async function projectNativeRuntimeRequest(input: {
     {
       kind: "ask_user_questions",
       idempotencyKey,
+      ...(!delegationEligible ? { resolverPolicy: "human_only" as const } : {}),
       sourceRunId: input.binding.runId,
-      resolverPolicy: "human_only",
       continuationPolicy: "none",
       ...(questionSet.title ? { title: questionSet.title.slice(0, 240) } : {}),
       ...(typeof request.prompt === "string" ? { summary: request.prompt.slice(0, 1000) } : {}),
-      payload: toInteractionPayload(questionSet, request.requestId),
+      payload: { ...toInteractionPayload(questionSet, request.requestId),
+        runtimeRequestTurnId: String(request.turnId ?? input.event.turnId), runtimeRequestFingerprint: decisionFingerprint(request) },
     },
     { agentId: input.binding.agentId, runId: input.binding.runId },
-    { supersedePendingSiblingInteractions: false },
+    { supersedePendingSiblingInteractions: false, decisionRequestedAt: new Date(input.event.emittedAt),
+      decisionReservedReasons: approvalReservedReasons("request_board_approval", record(request.details) ?? {}) },
   ) as AskUserQuestionsInteraction;
   if (!existing) {
     await logActivity(input.db, {
@@ -225,6 +233,24 @@ export async function projectNativeRuntimeRequest(input: {
 }
 
 /** Validate untrusted board input before the existing interaction service persists it. */
+export async function assertPendingNativeQuestionAnswer(db: Db, interaction: AskUserQuestionsInteraction,
+  answers: RespondIssueThreadInteraction["answers"], agentId: string | null) {
+  if (await assertPendingLegacyDecision(db, interaction)) return;
+  if (!requestIdForInteraction(interaction)) return;
+  const run = await authorizedNativeRun(db, interaction);
+  if (!run || run.status !== "running") throw conflict("The source runtime turn is no longer running");
+  const pending = await readPendingNativeRuntimeRequest(db, { companyId: interaction.companyId, runId: run.id, requestId: run.requestId });
+  if (!pending || pending.fingerprint !== interaction.payload.runtimeRequestFingerprint
+    || pending.turnId !== interaction.payload.runtimeRequestTurnId) throw conflict("The original runtime request changed or ended");
+  if (pending.resolverPolicy === "instance_admin") {
+    const parsed = await parseQuestionInteractionAnswers(interaction.payload.questionSet!, answers, interaction.payload.questions);
+    const selected = parsed.answers.decision?.selectedOptionIds;
+    const choices = pending.canonicalRequest?.choices as { key: string }[] | undefined;
+    if (!selected || selected.length !== 1 || !choices?.some(choice => choice.key === selected[0])) throw unprocessable("Choose one of the original runtime decisions");
+    if (agentId && selected[0] === "accept_for_session") throw forbidden("Session-wide permission changes require human approval; escalate this request");
+  }
+}
+
 export async function validateNativeQuestionResponseInput(
   interaction: AskUserQuestionsInteraction,
   input: RespondIssueThreadInteraction,
@@ -240,6 +266,30 @@ export async function validateNativeQuestionResponseInput(
   }
 }
 
+/** Recheck an already committed agent answer at the provider dispatch edge.
+ * The deciding run may have finished; the exact grant and source request may not change. */
+export async function assertNativeQuestionCommandAuthorized(db: Db,
+  binding: NativeQuestionCommandTarget["binding"], commandId: string | undefined, requestId: string) {
+  if (!commandId?.startsWith("question_")) throw forbidden("A durable question response identity is required");
+  const interactionId = commandId.slice("question_".length);
+  const [row] = await db.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, binding.companyId),
+    eq(issueThreadInteractions.issueId, binding.issueId), eq(issueThreadInteractions.sourceRunId, binding.runId),
+  )).limit(1);
+  if (!row || row.status !== "answered" || row.kind !== "ask_user_questions"
+    || record(row.payload)?.runtimeRequestId !== requestId) throw conflict("The original question answer is unavailable");
+  if (!row.delegation || !row.resolvedByAgentId) return;
+  const grant = await readDecisionDelegation(db, binding.companyId);
+  const context = row.delegation;
+  if (!grant || grant.id !== context.grantId || grant.scope.revision !== context.grantRevision
+    || grant.agentId !== context.delegateAgentId || context.recipientAgentId !== row.resolvedByAgentId
+    || context.level === "human" || context.reservedReasons.length
+    || !context.requiredScopes.every(scope => grant.scope.scopes.includes(scope))
+    || context.sourceFingerprint !== decisionFingerprint({ kind: row.kind, payload: row.payload, sourceRunId: row.sourceRunId })) {
+    throw forbidden("The delegated runtime answer is no longer authorized");
+  }
+}
+
 /** Queue an answered interaction into the active durable PRP command stream. */
 export async function deliverNativeQuestionResponse(
   db: Db,
@@ -248,12 +298,41 @@ export async function deliverNativeQuestionResponse(
   if (interaction.status !== "answered" || !interaction.result || !interaction.payload.questionSet) {
     return "not_native";
   }
+  const legacy = await deliverLegacyRuntimeDecision(db, interaction);
+  if (legacy !== "not_native") return legacy;
   const run = await authorizedNativeRun(db, interaction);
   // A historical question can be answered after its provider turn has ended.
   // Fall through to durable fresh-wake delivery instead of waiting forever for
   // a command target that cannot return for this terminal run.
-  if (!run || ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) return "not_native";
+  if (!run || ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) {
+    if (interaction.delegation && requestIdForInteraction(interaction)) throw conflict("The original runtime turn ended; this decision cannot start a replacement run");
+    return "not_native";
+  }
   const response = parseSavedQuestionInteractionAnswers(interaction.payload.questionSet, interaction.result.answers, interaction.payload.questions);
+  const pending = interaction.payload.runtimeRequestFingerprint
+    ? await readPendingNativeRuntimeRequest(db, { companyId: interaction.companyId, runId: run.id, requestId: run.requestId }) : null;
+  if (interaction.delegation) {
+    if (!pending || pending.fingerprint !== interaction.payload.runtimeRequestFingerprint
+      || pending.turnId !== interaction.payload.runtimeRequestTurnId) throw conflict("The original runtime request is no longer current");
+    if (interaction.resolvedByAgentId) {
+      const grant = await readDecisionDelegation(db, interaction.companyId);
+      if (!grant || grant.id !== interaction.delegation.grantId || grant.scope.revision !== interaction.delegation.grantRevision
+        || grant.agentId !== interaction.delegation.delegateAgentId
+        || !interaction.delegation.requiredScopes.every(scope => grant.scope.scopes.includes(scope))
+        || interaction.delegation.recipientAgentId !== interaction.resolvedByAgentId
+        || interaction.delegation.level === "human" || interaction.delegation.reservedReasons.length
+        || interaction.delegation.sourceFingerprint !== decisionFingerprint({ kind: interaction.kind,
+          payload: interaction.payload, sourceRunId: interaction.sourceRunId })) throw forbidden("The delegated runtime decision is no longer authorized");
+    }
+  }
+  let resolution: Record<string, unknown> | null = null;
+  if (pending?.resolverPolicy === "instance_admin") {
+    const selected = response.answers.decision?.selectedOptionIds;
+    const choices = pending.canonicalRequest?.choices as { key: string }[] | undefined;
+    if (!selected || selected.length !== 1 || !choices?.some(choice => choice.key === selected[0])) throw unprocessable("Choose one of the original runtime decisions");
+    if (interaction.resolvedByAgentId && selected[0] === "accept_for_session") throw forbidden("Session-wide permission changes require the human Owner");
+    resolution = { action: selected[0] };
+  }
   const target = activeTargets.get(run.id);
   if (
     !target
@@ -266,7 +345,8 @@ export async function deliverNativeQuestionResponse(
   try {
     await target.queueCommand(
       "request.resolve",
-      { requestId: run.requestId, response: response as unknown as Record<string, unknown> },
+      { requestId: run.requestId, ...(pending ? { turnId: pending.turnId } : {}),
+        ...(resolution ? { resolution } : { response: response as unknown as Record<string, unknown> }) },
       `question_${interaction.id}`,
     );
     return "queued";

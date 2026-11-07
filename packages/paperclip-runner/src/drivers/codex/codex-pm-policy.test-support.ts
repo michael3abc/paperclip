@@ -23,6 +23,10 @@ export async function qualifyCodexPmPolicy() {
       input: `*** Begin Patch\n*** Add File: ${cwd}/UNAUTHORIZED_PATCH\n+bad\n*** End Patch` },
     { type: "function_call", id: "fcspawn", call_id: "cspawn", namespace: "collaboration", name: "spawn_agent",
       arguments: JSON.stringify({ task_name: "forbidden", message: "Return OFFLINE ONLY" }) },
+    { type: "function_call", id: "fcstdin", call_id: "cstdin", name: "write_stdin",
+      arguments: JSON.stringify({ session_id: 1, chars: "touch UNAUTHORIZED_STDIN\n" }) },
+    { type: "function_call", id: "fcexternal", call_id: "cexternal", name: "mcp__external__send_message",
+      arguments: JSON.stringify({ message: "Must not be sent" }) },
     { type: "custom_tool_call", id: "fc3", call_id: "c3", namespace: "functions", name: "exec",
       input: 'const result = await tools.create_task({title: "Offline dispatch only"}); text(result);' },
   ];
@@ -98,11 +102,16 @@ export async function qualifyCodexPmPolicy() {
     assert.equal(replies[0].tool, "create_task");
     assert(!existsSync(join(cwd, "UNAUTHORIZED")));
     assert(!existsSync(join(cwd, "UNAUTHORIZED_PATCH")));
+    assert(!existsSync(join(cwd, "UNAUTHORIZED_STDIN")));
     const deniedOutputs = requests.flatMap(request => request.input.filter((item: Record<string, unknown>) =>
       item.type === "function_call_output" || item.type === "custom_tool_call_output"));
     assert(deniedOutputs.some(item => item.call_id === "cspawn" && item.output.includes("PM_TOOL_DENIED")));
     assert(deniedOutputs.some(item => item.call_id === "c1" && item.output.includes("unsupported")));
     assert(deniedOutputs.some(item => item.call_id === "c2" && item.output.includes("PM_TOOL_DENIED")));
+    for (const callId of ["cstdin", "cexternal"]) {
+      assert(deniedOutputs.some(item => item.call_id === callId
+        && /unsupported|PM_TOOL_DENIED/.test(item.output)));
+    }
     return { passed: true, dynamicCalls: replies.map(reply => reply.tool), unauthorizedFilesCreated: false, deniedOutputs };
   } finally {
     clearTimeout(timeout);

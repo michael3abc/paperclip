@@ -1,3 +1,4 @@
+import { DelegatedDecisionStatus } from "../components/DelegatedDecisionStatus";
 import { describeError } from "../api/errors";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useState } from "react";
@@ -148,7 +149,8 @@ export function ApprovalDetail() {
 
   const payload = approval.payload as Record<string, unknown>;
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
-  const isActionable = approval.status === "pending" || approval.status === "revision_requested";
+  const isActionable = (!approval.delegation || approval.delegation.level === "human")
+    && (approval.status === "pending" || approval.status === "revision_requested");
   const isBudgetApproval = approval.type === "budget_override_required";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
@@ -235,6 +237,9 @@ export function ApprovalDetail() {
               {JSON.stringify(payload, null, 2)}
             </pre>
           )}
+          {approval.delegation && <DelegatedDecisionStatus delegation={approval.delegation} status={approval.status}
+            recipientName={agentNameById.get(approval.decidedByAgentId ?? approval.delegation.recipientAgentId ?? "")} />}
+          {approval.decidedByAgentId && <p className="text-xs text-muted-foreground">{agentNameById.get(approval.decidedByAgentId) ?? "代理決策者"} 依委任{approval.status === "approved" ? "批准" : "決議"}</p>}
           {approval.decisionNote && (
             <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
           )}
@@ -283,12 +288,12 @@ export function ApprovalDetail() {
               </Button>
             </>
           )}
-          {isBudgetApproval && approval.status === "pending" && (
+          {isActionable && isBudgetApproval && approval.status === "pending" && (
             <p className="text-sm text-muted-foreground">
               Resolve this budget stop from the budget controls on <Link to="/costs" className="underline underline-offset-2">/costs</Link>.
             </p>
           )}
-          {approval.status === "pending" && (
+          {isActionable && approval.status === "pending" && (
             <Button
               size="sm"
               variant="outline"
@@ -298,7 +303,7 @@ export function ApprovalDetail() {
               Request revision
             </Button>
           )}
-          {approval.status === "revision_requested" && (
+          {isActionable && approval.status === "revision_requested" && (
             <Button
               size="sm"
               variant="outline"

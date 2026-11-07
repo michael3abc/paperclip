@@ -145,6 +145,7 @@ import {
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
+  updateDecisionDelegationSchema,
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
@@ -5868,6 +5869,25 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/decision-delegation",
+  tags: ["approvals"],
+  summary: "Read the company's Owner-issued decision delegation (human board only)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/decision-delegation",
+  tags: ["approvals"],
+  summary: "Replace decision delegation at its current revision (granting human Owner only)",
+  description: "Applies only to new requests. Replaced grants invalidate outstanding agent decisions; they never approve or replay old work. Agents cannot call this operation.",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(updateDecisionDelegationSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/approvals",
   tags: ["approvals"],
   summary: "List approvals in a company",
@@ -5910,6 +5930,7 @@ registry.registerPath({
   path: "/api/approvals/{id}/approve",
   tags: ["approvals"],
   summary: "Approve an approval",
+  description: "A delegated agent must supply its current run, delegationRevision and decisionNote. Only the assigned delegate may decide an in-scope new request. Agent decisions use decidedByAgentId and never impersonate a human. Budget approvals also require the formal budget resolution.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(resolveApprovalSchema),

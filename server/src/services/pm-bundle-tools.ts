@@ -36,7 +36,7 @@ export async function requirePmBundleReads(db: Db, scope: PmCoordinationScope, r
   await assertPmRun(db, scope, runId);
   const required = ["AGENTS.md", "PROJECT.md", "memory/handoff.md"];
   if (["create_task", "reassign_task", "dispatch"].includes(operation)) required.push("WORKERS.md", "REVIEW.md");
-  else if (["resolve_review", "request_review", "review"].includes(operation)) required.push("REVIEW.md");
+  else if (["resolve_review", "request_review", "review", "resolve_delegated_request", "escalate_delegated_request"].includes(operation)) required.push("REVIEW.md");
   const reads = await db.select({ details: activityLog.details }).from(activityLog).where(and(
     eq(activityLog.companyId, scope.companyId), eq(activityLog.agentId, scope.agentId), eq(activityLog.runId, runId),
     eq(activityLog.action, "pm.bundle_read"))).orderBy(desc(activityLog.createdAt)).limit(200);

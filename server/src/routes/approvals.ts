@@ -1,3 +1,7 @@
+import { forbidden } from "../errors.js";
+import { readDecisionDelegation, saveDecisionDelegation } from "../services/delegated-decision-policy.js";
+import { getDelegatedRequest } from "../services/delegated-requests.js";
+import { updateDecisionDelegationSchema } from "@paperclipai/shared";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
@@ -48,7 +52,19 @@ export function approvalRoutes(
   const router = Router();
   router.param("id", async (req, res, next, id) => {
     try {
-      if (!(await canActorReadApproval(db, req.actor, id))) {
+      let readable = await canActorReadApproval(db, req.actor, id);
+      if (!readable && req.actor.type === "agent" && req.actor.agentId && req.actor.companyId && req.actor.runId) {
+        // The Owner's current grant authorizes this exact assigned decision and
+        // its sources, not arbitrary company approvals or unrelated tasks.
+        try {
+          await getDelegatedRequest(db, { companyId: req.actor.companyId, agentId: req.actor.agentId,
+            runId: req.actor.runId }, "approval", id);
+          readable = true;
+        } catch (error) {
+          if (!(error instanceof Error && "status" in error && [403, 404, 409].includes(Number(error.status)))) throw error;
+        }
+      }
+      if (!readable) {
         res.status(404).json({ error: "Approval not found" });
         return;
       }
@@ -90,7 +106,7 @@ export function approvalRoutes(
     linkedIssues: Awaited<ReturnType<typeof issueApprovalsSvc.listIssuesForApproval>>;
     lostIssueIds: Set<string>;
     alreadyWoken?: { agentId: string; issueId: string } | null;
-    requestedByUserId: string;
+    decisionActor: { actorType: "agent" | "user"; actorId: string };
   }) {
     for (const issue of input.linkedIssues) {
       if (!input.lostIssueIds.has(issue.id) || !issue.assigneeAgentId) continue;
@@ -112,8 +128,8 @@ export function approvalRoutes(
             issueId: issue.id,
             ...approvalReviewPathContext(input.approvalId),
           },
-          requestedByActorType: "user",
-          requestedByActorId: input.requestedByUserId,
+          requestedByActorType: input.decisionActor.actorType,
+          requestedByActorId: input.decisionActor.actorId,
           contextSnapshot: {
             source: `approval.${input.approvalStatus}`,
             approvalId: input.approvalId,
@@ -127,8 +143,8 @@ export function approvalRoutes(
 
         await logActivity(db, {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.requestedByUserId,
+          actorType: input.decisionActor.actorType,
+          actorId: input.decisionActor.actorId,
           action: "approval.review_path_wakeup_queued",
           entityType: "approval",
           entityId: input.approvalId,
@@ -146,8 +162,8 @@ export function approvalRoutes(
         );
         await logActivity(db, {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.requestedByUserId,
+          actorType: input.decisionActor.actorType,
+          actorId: input.decisionActor.actorId,
           action: "approval.review_path_wakeup_failed",
           entityType: "approval",
           entityId: input.approvalId,
@@ -212,6 +228,22 @@ export function approvalRoutes(
     return false;
   }
 
+  router.get("/companies/:companyId/decision-delegation", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    res.json(await readDecisionDelegation(db, companyId, { includeDisabled: true }));
+  });
+
+  router.put("/companies/:companyId/decision-delegation", validate(updateDecisionDelegationSchema), async (req, res) => {
+    assertBoard(req);
+    if (!req.actor.userId) throw forbidden("An authenticated human Owner is required");
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await saveDecisionDelegation(db, { ...req.body, companyId, ownerUserId: req.actor.userId });
+    res.json(result);
+  });
+
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -261,7 +293,7 @@ export function approvalRoutes(
       decidedByUserId: null,
       decidedAt: null,
       updatedAt: new Date(),
-    });
+    }, { runId: actor.runId });
 
     if (uniqueIssueIds.length > 0) {
       await issueApprovalsSvc.linkManyForApproval(approval.id, uniqueIssueIds, {
@@ -294,14 +326,19 @@ export function approvalRoutes(
   });
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    if (req.actor.type !== "agent") assertBoard(req);
+    if (req.actor.type === "agent" && (!req.actor.agentId || !req.actor.runId || !req.body.delegationRevision))
+      throw forbidden("Delegated decisions require an agent run and current request revision");
+    const actor = getActorInfo(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+    const decisionActor = req.actor.type === "agent"
+      ? { agentId: req.actor.agentId!, runId: req.actor.runId!, revision: req.body.delegationRevision! }
+      : req.actor.userId ?? "board";
+    const { approval, applied } = await svc.approve(id, decisionActor, req.body.decisionNote, req.body.budgetResolution);
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
@@ -314,8 +351,8 @@ export function approvalRoutes(
 
       await logActivity(db, {
         companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
         action: "approval.approved",
         entityType: "approval",
         entityId: approval.id,
@@ -340,8 +377,8 @@ export function approvalRoutes(
               issueIds: linkedIssueIds,
               ...(primaryReviewPathContext ?? {}),
             },
-            requestedByActorType: "user",
-            requestedByActorId: req.actor.userId ?? "board",
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
             contextSnapshot: {
               source: "approval.approved",
               approvalId: approval.id,
@@ -357,8 +394,8 @@ export function approvalRoutes(
 
           await logActivity(db, {
             companyId: approval.companyId,
-            actorType: "user",
-            actorId: req.actor.userId ?? "board",
+            actorType: actor.actorType,
+            actorId: actor.actorId,
             action: "approval.requester_wakeup_queued",
             entityType: "approval",
             entityId: approval.id,
@@ -379,8 +416,8 @@ export function approvalRoutes(
           );
           await logActivity(db, {
             companyId: approval.companyId,
-            actorType: "user",
-            actorId: req.actor.userId ?? "board",
+            actorType: actor.actorType,
+            actorId: actor.actorId,
             action: "approval.requester_wakeup_failed",
             entityType: "approval",
             entityId: approval.id,
@@ -402,7 +439,7 @@ export function approvalRoutes(
         alreadyWoken: primaryReviewPathWakeCovered && approval.requestedByAgentId && primaryIssueId
           ? { agentId: approval.requestedByAgentId, issueId: primaryIssueId }
           : null,
-        requestedByUserId: req.actor.userId ?? "board",
+        decisionActor: actor,
       });
     }
 
@@ -410,22 +447,27 @@ export function approvalRoutes(
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    if (req.actor.type !== "agent") assertBoard(req);
+    if (req.actor.type === "agent" && (!req.actor.agentId || !req.actor.runId || !req.body.delegationRevision))
+      throw forbidden("Delegated decisions require an agent run and current request revision");
+    const actor = getActorInfo(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
+    const decisionActor = req.actor.type === "agent"
+      ? { agentId: req.actor.agentId!, runId: req.actor.runId!, revision: req.body.delegationRevision! }
+      : req.actor.userId ?? "board";
+    const { approval, applied } = await svc.reject(id, decisionActor, req.body.decisionNote);
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
       await logActivity(db, {
         companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
@@ -437,7 +479,7 @@ export function approvalRoutes(
         companyId: approval.companyId,
         linkedIssues,
         lostIssueIds: lostReviewIssueIds,
-        requestedByUserId: req.actor.userId ?? "board",
+        decisionActor: actor,
       });
     }
 

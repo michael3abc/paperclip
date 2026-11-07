@@ -54,7 +54,8 @@ export async function resolvePushAudience(db: Db, source: PushSource, userId: st
     relevant = true; destination = `/${company.issuePrefix}/decisions?decisionId=${row.id}`;
   } else if (source.sourceKind === "approval") {
     const row = await db.query.approvals.findFirst({ where: and(eq(approvals.id, source.sourceId), eq(approvals.companyId, source.companyId)) });
-    if (!row || row.status !== "pending" || row.requestedByUserId === userId || !await canActorReadApproval(db, actor, row.id)) return null;
+    if (!row || row.status !== "pending" || row.delegation && row.delegation.level !== "human"
+      || row.requestedByUserId === userId || !await canActorReadApproval(db, actor, row.id)) return null;
     relevant = true; title = "待批准申請";
     body = typeof row.payload.title === "string" ? row.payload.title : row.type;
     destination = `/${company.issuePrefix}/approvals/${row.id}`;

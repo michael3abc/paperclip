@@ -22,6 +22,7 @@ import {
   flushNativeQuestionResponses,
   projectNativeRuntimeRequest,
   registerNativeQuestionCommandTarget,
+  assertNativeQuestionCommandAuthorized,
 } from "./native-question-bridge.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 
@@ -280,6 +281,11 @@ export function runnerPrpCoordinator(
         expectedRunnerVersion: input.runnerVersion,
         expectedRunnerDigest: input.runnerDigest,
         connectionLeaseTtlMs,
+        beforeCommandDelivery: async command => {
+          if (command.type === "request.resolve" && command.commandId.startsWith("question_")) {
+            await assertNativeQuestionCommandAuthorized(db, storeBinding, command.commandId, String(command.payload.requestId));
+          }
+        },
         onCommittedEvent: async (event) => {
           await nativeStore.appendEvent(event);
           if (event.eventType === "runtime_request.created") {

@@ -167,7 +167,7 @@ import {
   type ToolAccessDecisionCache,
 } from "./tool-access-policy.js";
 import { toolDiscoveryScheduler, ToolDiscoveryBusyError } from "./tool-discovery-scheduler.js";
-import { commitToolActionReview } from "./tool-action-review.js";
+import { assertDelegatedToolReview, commitToolActionReview, type ToolReviewActor } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
@@ -294,7 +294,7 @@ const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS: McpGatewayProtocolLimitOptions = {
   sessionSetup: { windowMs: 60 * 1000, max: 30 },
 };
 const TOOL_APPROVAL_DESCRIPTION_SUFFIX =
-  "Requires human approval: calling it posts an approval card on your task and you will be woken with the result once decided.";
+  "Requires a formal decision: calling it posts a request on your task for the authorized reviewer and you will be woken with the result once decided.";
 
 export type ToolGatewayProviderType =
   | "mcp_http_fixture"
@@ -2480,7 +2480,7 @@ export function createToolGatewayService(
       .where(eq(issues.id, issueId))
       .limit(1);
     const task = issue?.identifier ?? issueId;
-    return `A human approval card was posted on task ${task}. Do not retry this call now. Wrap up other work and end your run noting you are waiting on tool approval (status in_review). You will be woken when it is decided; if approved, the action runs automatically and your wake includes the result.`;
+    return `A formal decision request was posted on task ${task}. Do not retry this call now. Wrap up other work and end your run noting you are waiting on tool approval (status in_review). You will be woken when it is decided; if approved, the action runs automatically and your wake includes the result.`;
   }
 
   async function throwApprovalRequired(input: {
@@ -2700,13 +2700,27 @@ export function createToolGatewayService(
         .onConflictDoNothing(), { issueIds: [approvalIssueId] });
     }
 
-    const interaction = await interactions.create(
-      { id: input.session.issueId, companyId: input.session.companyId },
+    const decisionPolicies = input.policyDecision.matchedPolicyIds.length
+      ? await db.select({ policyType: toolPolicies.policyType, config: toolPolicies.config,
+        createdByUserId: toolPolicies.createdByUserId }).from(toolPolicies).where(and(
+          eq(toolPolicies.companyId, input.session.companyId), inArray(toolPolicies.id, input.policyDecision.matchedPolicyIds))) : [];
+    const reservedPolicy = decisionPolicies.some(policy => policy.config?.humanOnly === true
+      || policy.config?.ownerOnly === true || policy.config?.resolverPolicy === "human_only"
+      || policy.policyType === "require_approval" && policy.createdByUserId
+        && !["app_gallery_finish", "connection_intent"].includes(String(policy.config?.source)));
+    const delegatedOrdinaryAction = !reservedPolicy && input.tool.risk === "write"
+      && !input.argumentsSummary.redactedFields?.length
+      && !/(?:^|[_:/.-])(auth|oauth|permission|grant|role|token|secret|credential|account|export)(?:[_:/.-]|$)/i.test(input.tool.name);
+    const { interaction, signedRows } = await db.transaction(async decisionTx => {
+    // Publish the decision only with its signed action binding. The delegate
+    // must never observe a request before the original action is resolvable.
+    const interaction = await issueThreadInteractionService(decisionTx as unknown as Db).create(
+      { id: input.session.issueId!, companyId: input.session.companyId },
       {
         kind: "request_confirmation",
         idempotencyKey: `tool-action:${actionRequest.id}`,
         title: "Approve tool action",
-        resolverPolicy: "human_only",
+        ...(delegatedOrdinaryAction ? {} : { resolverPolicy: "human_only" as const }),
         sourceRunId: input.session.runId ?? undefined,
         summary: "This action needs your approval before it runs.",
         continuationPolicy: "wake_assignee",
@@ -2754,7 +2768,8 @@ export function createToolGatewayService(
           },
         },
       },
-      { agentId: input.session.agentId },
+      { agentId: input.session.agentId, runId: input.session.runId },
+      { delegateOrdinaryToolAction: delegatedOrdinaryAction },
     );
 
     // Sign the row only while it is still pending. A concurrent matching call can
@@ -2763,7 +2778,7 @@ export function createToolGatewayService(
     // an expired row. When the guard matches no row, the row is already resolved.
     // Do not emit an approval card for a dead row; throw a retriable conflict so
     // the retry finds the live request or creates a fresh, signable one.
-    const signedRows = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
+    const signedRows = await writeToolReviewChange(decisionTx as unknown as Db, actionRequest.companyId, tx => tx
       .update(toolActionRequests)
       .set({
         interactionId: interaction.id,
@@ -2782,6 +2797,8 @@ export function createToolGatewayService(
         ),
       )
       .returning({ id: toolActionRequests.id }));
+    return { interaction, signedRows };
+    });
     if (signedRows.length === 0) {
       await db
         .update(toolInvocations)
@@ -9993,7 +10010,8 @@ export function createToolGatewayService(
           const { request, invocation, payload } = prepared;
           if (!isTestOriginInvocation(invocation) && payload.executionOnApprove !== true) return false;
           await this.approveActionRequest({ companyId: request.companyId, actionRequestId: request.id,
-            actor: { userId: request.decidedByUserId ?? request.resolvedByUserId } });
+            recoverCommittedDecision: true,
+            actor: { agentId: request.decidedByAgentId ?? request.resolvedByAgentId, userId: request.decidedByUserId ?? request.resolvedByUserId } });
           const [remaining] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
             .where(eq(toolActionRequests.id, request.id));
           return remaining?.status === "approved";
@@ -10013,19 +10031,15 @@ export function createToolGatewayService(
     },
 
     async approveActionRequest(input: {
+      /** Internal recovery only; public routes never supply this flag. */
+      recoverCommittedDecision?: boolean;
       companyId: string;
       rememberAction?: boolean;
       issueId?: string;
       interactionId?: string;
       actionRequestId: string;
-      actor: { agentId?: string | null; userId?: string | null };
+      actor: ToolReviewActor;
     }) {
-      if (input.actor.agentId)
-        throw new ToolGatewayHttpError(
-          403,
-          "Only a human can resolve a tool review",
-          "human_review_required",
-        );
       const [actionRequest] = await db
         .select()
         .from(toolActionRequests)
@@ -10083,6 +10097,8 @@ export function createToolGatewayService(
           );
         }
       }
+      if (input.recoverCommittedDecision && (actionRequest.status !== "approved" || actionRequest.decidedByAgentId !== (input.actor.agentId ?? null))) throw new ToolGatewayHttpError(409, "The committed tool decision changed", "action_context_mismatch");
+      await assertDelegatedToolReview(db, actionRequest.interactionId, input.companyId, input.actor, input.rememberAction, input.recoverCommittedDecision);
       if (
         ["executing", "executed", "failed"].includes(actionRequest.status) &&
         actionRequest.decidedAt
@@ -10306,7 +10322,7 @@ export function createToolGatewayService(
       interactionId?: string;
       actionRequestId: string;
       reason?: string;
-      actor: { agentId?: string | null; userId?: string | null };
+      actor: ToolReviewActor;
     }) {
       const updated = await commitToolActionReview(db, {
         ...input,

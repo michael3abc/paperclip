@@ -46,6 +46,9 @@ export const agentWakeupRequests = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    delegatedDecisionIdempotencyUq: uniqueIndex("agent_wakeup_requests_delegated_decision_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} LIKE 'delegated-decision:%'`),
     taskRetryIdempotencyUq: uniqueIndex("agent_wakeup_requests_task_retry_idempotency_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'task-retry:%'`),

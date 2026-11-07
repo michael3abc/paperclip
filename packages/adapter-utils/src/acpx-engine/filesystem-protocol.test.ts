@@ -9,8 +9,8 @@ import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "acpx/
 const runnerRuntimePath = createRequire(new URL("../../../paperclip-runner/package.json", import.meta.url)).resolve("acpx/runtime");
 const nativeRuntime = await import(runnerRuntimePath) as typeof import("acpx/runtime");
 const runtimes = [
-  { version: "0.12.0", api: { createAcpRuntime, createAgentRegistry, createRuntimeStore } },
-  { version: "0.13.1", api: nativeRuntime },
+  { version: "adapter-utils 0.13.1", api: { createAcpRuntime, createAgentRegistry, createRuntimeStore } },
+  { version: "runner 0.13.1", api: nativeRuntime },
 ];
 const roots: string[] = [];
 const fixture = fileURLToPath(new URL("../../../../scripts/mcp-fixtures/servers/acp-filesystem-agent.mjs", import.meta.url));
@@ -39,7 +39,7 @@ async function drive(api: (typeof runtimes)[number]["api"], input: {
     agentRegistry: api.createAgentRegistry({ overrides: { custom: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixture.replaceAll("\\", "/"))}` } }),
     permissionMode: input.permissionMode ?? "approve-all",
     nonInteractivePermissions: "deny",
-    inheritProcessEnv: false,
+    spawnEnvironment: () => ({}),
     onAgentStderr: (chunk: string) => { stderr += chunk; },
   });
   const handle = await runtime.ensureSession({

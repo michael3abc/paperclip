@@ -236,8 +236,8 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
   }),
   descriptor({
     operationId: "request_human_input",
-    title: "Request structured human input",
-    description: "Create a typed, durable interaction on the active task.",
+    title: "Request a decision",
+    description: "Create a typed, durable decision request on the active task. With company delegation enabled, worker requests go to the task's project PM and PM requests go to the company delegate. Do not find the delegate in the worker catalog or create an execution task for escalation. Omit resolverPolicy for ordinary decisions; the server preserves human-only gates.",
     effect: "write",
     allowedModes: ALL_MODES,
     inputSchema: object(
@@ -255,7 +255,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         title: text("Interaction card title.", 300),
         prompt: text("Question or decision prompt.", 10_000),
         payload: openObject,
-        resolverPolicy: { const: "human_only", description: "Optionally require an authenticated human response." },
+        resolverPolicy: { const: "human_only", description: "Reserve this request for the human when explicitly required or when the matter must be escalated to the human. Omit for ordinary PM/delegate decisions." },
         targetRevisionId: nullableText(
           "Optional bound document revision.",
           240,

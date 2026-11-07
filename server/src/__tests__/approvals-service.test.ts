@@ -49,7 +49,8 @@ function createApproval(status: string): ApprovalRecord {
 function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
   const pendingSelectResults = [...selectResults];
   let inTransaction = false;
-  const selectWhere = vi.fn(async () => (inTransaction ? pendingSelectResults.shift() : pendingSelectResults[0]) ?? []);
+  const selectWhere = vi.fn(async () => (inTransaction && pendingSelectResults.length > 1
+    ? pendingSelectResults.shift() : pendingSelectResults[0]) ?? []);
   const from = vi.fn((table) => table === issueApprovals
     ? { where: async () => [] }
     : table === companies

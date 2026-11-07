@@ -3039,6 +3039,13 @@
       "when": 1793976409736,
       "tag": "0435_giant_thunderbird",
       "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1794031943445,
+      "tag": "0436_woozy_blizzard",
+      "breakpoints": true
     }
   ]
 }

@@ -990,6 +990,8 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, principalType),
             eq(principalPermissionGrants.principalId, principalId),
+            // Company decision delegation has a separate Owner-only CAS API.
+            ne(principalPermissionGrants.permissionKey, "company:delegate_decisions"),
           ),
         );
       if (grants.length === 0) return;

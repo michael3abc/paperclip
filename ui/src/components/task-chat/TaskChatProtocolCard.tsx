@@ -1,4 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from "react";
+import { DelegatedDecisionStatus, DelegatedRuntimeInteractions } from "@/components/DelegatedDecisionStatus";
 import {
   AlertTriangle,
   Bot,
@@ -1104,6 +1105,14 @@ export function TaskChatProtocolCard({
   imageUploadHandler,
   mentions,
 }: TaskChatProtocolCardProps) {
+  const interactions = useContext(DelegatedRuntimeInteractions);
+  if (item.surface === "runtime_request") {
+    const interaction = interactions.find(candidate => candidate.kind === "ask_user_questions"
+      && candidate.sourceRunId === item.runId && candidate.payload.runtimeRequestId === item.requestId);
+    if (interaction?.delegation && interaction.delegation.level !== "human") {
+      return <DelegatedDecisionStatus delegation={interaction.delegation} status={interaction.status} />;
+    }
+  }
   switch (item.surface) {
     case "provider_activity":
       return <ProviderActivityCard item={item} />;

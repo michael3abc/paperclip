@@ -22,6 +22,7 @@ export function approvalQueueSeedingService(db: Db) {
     return database.select({ id: approvals.id, companyId: approvals.companyId, issueId: linkedIssue }).from(approvals)
       .innerJoin(companies, eq(companies.id, approvals.companyId))
       .where(and(eq(approvals.status, "pending"), eq(companies.status, "active"), companyId === undefined ? undefined : eq(approvals.companyId, companyId), condition,
+        sql`(${approvals.delegation} IS NULL OR ${approvals.delegation}->>'level' = 'human')`,
         sql`exists (select 1 from ${issues} where ${issues.id} = ${linkedIssue}
           and ${issues.companyId} = ${approvals.companyId} and ${executionIssueCondition()}
           and exists (select 1 from ${issueWorkProducts} where ${pullRequestSeedProductCondition(approvals.companyId)}

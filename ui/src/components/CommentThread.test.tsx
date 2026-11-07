@@ -354,6 +354,7 @@ describe("CommentThread", () => {
         text: "Estimated monthly cost is $42.",
       },
       decisionNote: null,
+      decidedByAgentId: null, delegation: null,
       decidedByUserId: null,
       decidedAt: null,
       createdAt: new Date("2026-03-11T09:00:00.000Z"),

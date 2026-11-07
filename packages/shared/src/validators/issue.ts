@@ -1511,6 +1511,8 @@ const askUserQuestionsPayloadFields = {
   questionSet: paperclipQuestionSetPayloadSchema.optional(),
   /** Stable correlation for draft handoff from a live runtime request. */
   runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
+  runtimeRequestTurnId: z.string().min(1).max(160).optional(),
+  runtimeRequestFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 };
 
 export const askUserQuestionsPayloadSchema = z
@@ -2179,6 +2181,7 @@ export type CreateIssueThreadInteractionInput = z.input<
 
 export const acceptIssueThreadInteractionSchema = z
   .object({
+    delegationRevision: z.string().uuid().optional(),
     reason: z.string().trim().min(1).max(4000).optional(),
     rememberAction: z.boolean().optional(),
     selectedClientKeys: z
@@ -2242,6 +2245,7 @@ export const resolveConfirmationFromCommentSchema = z.object({
 export type ResolveConfirmationFromComment = z.infer<typeof resolveConfirmationFromCommentSchema>;
 
 export const rejectIssueThreadInteractionSchema = z.object({
+    delegationRevision: z.string().uuid().optional(),
   reason: z.string().trim().max(4000).optional(),
 });
 export type RejectIssueThreadInteraction = z.infer<
@@ -2270,6 +2274,7 @@ export type WithdrawIssueThreadInteraction = z.infer<
 >;
 
 export const respondIssueThreadInteractionSchema = z.object({
+    delegationRevision: z.string().uuid().optional(),
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   summaryMarkdown: multilineTextSchema
     .pipe(z.string().max(20000))
@@ -2282,6 +2287,8 @@ export type RespondIssueThreadInteraction = z.infer<
 
 export const submitIssueThreadInteractionVerdictsSchema = z
   .object({
+    delegationRevision: z.string().uuid().optional(),
+    reason: z.string().trim().min(1).max(4000).optional(),
     verdicts: z
       .array(
         z.object({

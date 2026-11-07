@@ -1,3 +1,5 @@
+import type { ToolReviewActor } from "../services/tool-action-review.js";
+import { getDelegatedRequest } from "../services/delegated-requests.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
@@ -3455,7 +3457,7 @@ export function issueRoutes(
       interactionId?: string;
       actionRequestId: string;
       reason?: string;
-      actor: { agentId?: string | null; userId?: string | null };
+      actor: ToolReviewActor;
     }) => Promise<unknown>;
     approveToolActionRequest?: (input: {
       rememberAction?: boolean;
@@ -3463,7 +3465,7 @@ export function issueRoutes(
       issueId: string;
       interactionId: string;
       actionRequestId: string;
-      actor: { agentId?: string | null; userId?: string | null };
+      actor: ToolReviewActor;
     }) => Promise<unknown>;
     approveSecretProposal?: (input: {
       companyId: string;
@@ -6044,6 +6046,7 @@ export function issueRoutes(
     issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
     interaction: {
       id: string;
+      delegation?: import("@paperclipai/shared").DelegatedDecisionContext | null;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
       sourceRunId?: string | null;
@@ -6090,6 +6093,7 @@ export function issueRoutes(
         interaction,
         additionalRestriction: resolverPolicyRestriction,
         governedAction:
+          !(interaction.delegation?.level === "delegate" && interaction.delegation.requiredScopes.includes("external_writes")) &&
           interaction.kind === "request_confirmation" &&
           (payload?.toolAction !== undefined ||
             payload?.secretProposal !== undefined),
@@ -6147,6 +6151,10 @@ export function issueRoutes(
 
     const interactionSvc = issueThreadInteractionService(db);
     const current = await interactionSvc.getForIssue(issue, interactionId);
+    if (current.delegation && req.actor.type === "agent") {
+      const delegated = await getDelegatedRequest(db, { companyId: issue.companyId, agentId: req.actor.agentId!, runId: runId || req.actor.runId! }, "interaction", interactionId);
+      if (req.body?.delegationRevision !== delegated.revision) throw conflict("The delegated request revision is required and must be current");
+    }
     const resolutionAuthorization =
       await assertIssueThreadInteractionResolutionAllowed(
         req,
@@ -17380,7 +17388,7 @@ export function issueRoutes(
       });
 
       if (
-        interaction.addresseeAgentId &&
+        !interaction.delegation && interaction.addresseeAgentId &&
         issueThreadInteractionAttentionAgentAllowed({
           agentId: interaction.addresseeAgentId,
           interaction,
@@ -17516,6 +17524,7 @@ export function issueRoutes(
           rememberAction: req.body.rememberAction === true,
           actor: {
             agentId: actor.agentId,
+            runId: actor.runId, delegationRevision: req.body.delegationRevision, reason: req.body.reason,
             userId: actor.actorType === "user" ? actor.actorId : null,
           },
         });
@@ -17832,6 +17841,7 @@ export function issueRoutes(
           reason: req.body.reason,
           actor: {
             agentId: actor.agentId,
+            runId: actor.runId, delegationRevision: req.body.delegationRevision, reason: req.body.reason,
             userId: actor.actorType === "user" ? actor.actorId : null,
           },
         });

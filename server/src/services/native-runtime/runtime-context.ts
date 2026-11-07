@@ -324,7 +324,7 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
     instructions: { ...instructions, ...(input.instructionWorkingCopy ? { workingCopy: input.instructionWorkingCopy } : {}) },
     skills,
     mcp,
-    ...(pm ? { toolPolicy: { kind: "project_pm" as const, version: 1 as const,
+    ...(pm ? { toolPolicy: { kind: "project_pm" as const, version: 2 as const,
       readRoots: [...new Set([pm.workerRoot, instructions.bundle.rootPath, ...(input.instructionWorkingCopy ? [input.instructionWorkingCopy.rootPath] : [])])] } } : {}),
     ...(input.runtimeConfig.paperclipConnectionInstructions ? {
       connectionInstructions: input.runtimeConfig.paperclipConnectionInstructions as { text: string; digest: string },

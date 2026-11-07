@@ -1,3 +1,4 @@
+import { DELEGATED_DECISION_TOOLS, executeDelegatedDecisionTool } from "./delegated-decision-tools.js";
 import { budgetServiceInTransaction } from "../budgets.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
@@ -6,6 +7,7 @@ import { notifyAttentionRetentionWork } from "../retention-work-notifications.js
 import { requiredQualityReviewSchema, createIssueInputSchema } from "@paperclipai/shared";
 import { PM_READ_TOOLS, PM_WRITE_TOOLS, currentPmCoordinationScope, assertPmTool, assertPmIssue, assertPmRun, assertPmDispatch, pmDispatchExecutionPolicy, assertPmApproval } from "../pm-coordination-policy.js";
 import { PM_BUNDLE_TOOLS, readPmBundleFile, writePmBundleFile, requirePmBundleReads } from "../pm-bundle-tools.js";
+import { PM_PROJECT_READ_TOOLS, executePmProjectRead } from "../pm-project-read-tools.js";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -164,7 +166,7 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
   ...RUNNER_BRIDGE_READ_OPERATIONS,
   ...Object.keys(TASK_ATTACHMENT_SCHEMAS),
   READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
-  READ_TOOL_RESULT, "connections_search",
+  READ_TOOL_RESULT, "connections_search", "list_delegated_requests", "get_delegated_request", "read_project_file", "search_project_files",
 ]);
 const RECOVERABLE_READ_ERRORS = new Set([
   "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
@@ -321,13 +323,13 @@ export class PaperclipRunnerToolAuthority {
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
-    const definitions = this.#unrestrictedDefinitions();
+    const definitions = [...this.#unrestrictedDefinitions(), ...(!this.binding.nativeReview ? DELEGATED_DECISION_TOOLS : [])];
     if (!this.binding.runtimeContext?.toolPolicy) return definitions;
     return [...definitions.filter(tool => PM_READ_TOOLS.has(String(tool.name)) || PM_WRITE_TOOLS.has(String(tool.name))),
       ...TASK_ATTACHMENT_DEFINITIONS.map(tool => ({ ...tool, description: tool.description.replace("This sends file contents to OpenAI.", "Contents are returned to this run's provider.") })),
       ...(!this.binding.nativeReview ? CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool => tool.operationId === "request_approval")
         .map(tool => ({ name: tool.operationId, description: tool.description, inputSchema: tool.inputSchema })) : []),
-      ...PM_BUNDLE_TOOLS.filter(tool => !this.binding.nativeReview || tool.name === "read_bundle_file")];
+      ...PM_BUNDLE_TOOLS.filter(tool => !this.binding.nativeReview || tool.name === "read_bundle_file"), ...PM_PROJECT_READ_TOOLS];
   }
 
   #unrestrictedDefinitions(): Array<Record<string, unknown>> {
@@ -336,7 +338,7 @@ export class PaperclipRunnerToolAuthority {
       // still follow the configured agent/environment policy, including tests.
       return [
         ...CAPABILITY_SEMANTIC_TOOL_CATALOG
-          .filter((tool) => NATIVE_REVIEW_READ_TOOLS.has(tool.operationId))
+          .filter((tool) => NATIVE_REVIEW_READ_TOOLS.has(tool.operationId) || tool.operationId === "request_human_input")
           .map((tool) => ({ name: tool.operationId, description: tool.description, inputSchema: tool.inputSchema })),
         {
           name: "resolve_review",
@@ -508,7 +510,7 @@ export class PaperclipRunnerToolAuthority {
       if (result === undefined) return null;
       return { result: call.tool === "hire_agent" ? hireAgentResult(result, context.actor.adapterConfig?.provider) : apiToolResult(result) };
     }
-    if (call.tool === "workspace_write" || call.tool === "workspace_run" || call.tool === "write_bundle_file") {
+    if (["workspace_write", "workspace_run", "write_bundle_file", "resolve_delegated_request", "escalate_delegated_request"].includes(call.tool)) {
       const bridge = record(record(run.resultJson?.bridgeToolReceipts)[callKey]);
       if (bridge.state === "completed" && bridge.tool === call.tool
         && bridge.digest === toolInputDigest({ tool: call.tool, arguments: call.arguments })
@@ -561,8 +563,8 @@ export class PaperclipRunnerToolAuthority {
       if (!MUSE_NATIVE_OPERATIONS.has(tool)) throw forbidden("This operation is outside the Muse first-party runtime profile");
     }
     if (this.binding.firstPartyOnly && (EXTERNAL_WORKSPACE_OPERATIONS.has(tool) || tool.startsWith("workspace_"))) throw forbidden("Paperclip workspace access is unavailable to this Grok Bot session.");
-    if (this.binding.nativeReview && tool !== "resolve_review" && tool !== "read_bundle_file"
-      && !(pm && Object.hasOwn(TASK_ATTACHMENT_SCHEMAS, tool)) && !NATIVE_REVIEW_READ_TOOLS.has(tool)) {
+    if (this.binding.nativeReview && tool !== "resolve_review" && tool !== "read_bundle_file" && tool !== "request_human_input"
+      && !(pm && (Object.hasOwn(TASK_ATTACHMENT_SCHEMAS, tool) || PM_PROJECT_READ_TOOLS.some(item => item.name === tool))) && !NATIVE_REVIEW_READ_TOOLS.has(tool)) {
       throw forbidden("This review run may only inspect the assigned task and resolve its review.");
     }
   }
@@ -588,11 +590,37 @@ export class PaperclipRunnerToolAuthority {
         };
       }
     }
-    return this.#execute(call);
+    try { return await this.#execute(call); }
+    catch (error) {
+      // Public domain validation is actionable for dispatch; preserve its
+      // original diagnostic without exposing arbitrary internal exceptions.
+      if (call.tool === "create_task" && error instanceof HttpError && error.status >= 400 && error.status < 500) {
+        Object.assign(error, { paperclipPublicToolError: error.message.slice(0, 2000) });
+      }
+      throw error;
+    }
   }
 
   async #execute(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
     await this.#assertToolScope(call.tool);
+    if (PM_PROJECT_READ_TOOLS.some(tool => tool.name === call.tool)) {
+      await this.#boundContext();
+      const scope = await currentPmCoordinationScope(this.db, this.binding);
+      if (!scope) throw forbidden("Project read tools require a PM role");
+      return settleRunnerBridgeRead(() => executePmProjectRead(this.db, scope, this.binding.runId, call.tool, call.arguments));
+    }
+    if (DELEGATED_DECISION_TOOLS.some(tool => tool.name === call.tool)) {
+      const current = await this.#boundContext({ tool: call.tool });
+      const token = this.#apiToken(current);
+      if (!token) throw forbidden("Decision tool authentication is unavailable");
+      const execute = () => executeDelegatedDecisionTool({ db: this.db, actor: this.binding,
+        name: call.tool, arguments: call.arguments,
+        apiUrl: this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL ?? "",
+        token,
+      });
+      return call.tool === "get_delegated_request" || call.tool === "list_delegated_requests"
+        ? settleRunnerBridgeRead(execute) : this.#bridgeMutation(call, execute);
+    }
     if (call.tool === "read_bundle_file" || call.tool === "write_bundle_file") {
       await this.#boundContext();
       const pm = await currentPmCoordinationScope(this.db, this.binding);
@@ -1090,7 +1118,7 @@ export class PaperclipRunnerToolAuthority {
       const old = record(receipts[key]);
       if (receipts[key]) {
         if (old.digest !== digest) throw badRequest("Call ID reused with different arguments");
-        return { result: old.result ?? { outcome: "unknown", guidance: "A workspace effect may have occurred. Inspect files and state before issuing another mutation; this call will not execute again." } };
+        return { result: old.result ?? { outcome: "unknown", guidance: "A controlled mutation may have occurred. Inspect the original request and state before issuing another mutation; this call will not execute again." } };
       }
       if (Object.keys(receipts).length >= 1000) throw badRequest("Workspace mutation limit reached");
       receipts[key] = { digest, tool: call.tool, state: "pending" };
@@ -1100,9 +1128,9 @@ export class PaperclipRunnerToolAuthority {
     if (prior) return prior.result;
     let result: unknown;
     try { result = await execute(); } catch (error) {
-      const uncertainBundleSave = call.tool === "write_bundle_file" && !(error instanceof HttpError && [400, 403, 404, 409, 422].includes(error.status));
+      const uncertainBundleSave = ["write_bundle_file", "resolve_delegated_request", "escalate_delegated_request"].includes(call.tool) && !(error instanceof HttpError && [400, 403, 404, 409, 422].includes(error.status));
       result = { outcome: uncertainBundleSave ? "unknown" : "failed", message: error instanceof Error ? error.message : "Controlled operation failed",
-        ...(uncertainBundleSave ? { guidance: "The bundle save may have committed. Read the current file and audit receipt before issuing a new save; this call will not execute again." } : {}) };
+        ...(uncertainBundleSave ? { guidance: "The controlled mutation may have committed. Read the current request or file and its audit receipt before issuing a new save; this call will not execute again." } : {}) };
     }
     await this.db.transaction(async tx => {
       const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("update");
@@ -1111,7 +1139,7 @@ export class PaperclipRunnerToolAuthority {
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, bridgeToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
     });
     await logActivity(this.db, { companyId: this.binding.companyId, actorType: "agent", actorId: this.binding.agentId, runId: this.binding.runId,
-      action: "runner.workspace_operation", entityType: "issue", entityId: this.binding.issueId, details: { tool: call.tool, requestFingerprint: digest, outcome: record(result).outcome ?? "completed" } });
+      action: call.tool.endsWith("delegated_request") ? "runner.decision_operation" : "runner.workspace_operation", entityType: "issue", entityId: this.binding.issueId, details: { tool: call.tool, requestFingerprint: digest, outcome: record(result).outcome ?? "completed" } });
     return result;
   }
 
@@ -2776,6 +2804,7 @@ export class PaperclipRunnerToolAuthority {
       },
     ) => Promise<unknown>) | null,
     options: {
+      reviewQuestion?: boolean;
       receiptOnly?: boolean;
       onDefinitePreCommitFailure?: () => Promise<void>;
       beforeReceiptReplay?: (
@@ -2792,6 +2821,7 @@ export class PaperclipRunnerToolAuthority {
       try {
         const context = await this.#lockAuthorizedMutationContext(
           tx as unknown as Db,
+          options.reviewQuestion === true && operationId === "request_human_input",
         );
         assertNativeSkillTestTool(this.#apiScope(context), operationId);
         const isFilePreparation =
@@ -2891,7 +2921,7 @@ export class PaperclipRunnerToolAuthority {
     });
   }
 
-  async #lockAuthorizedMutationContext(tx: Db): Promise<{
+  async #lockAuthorizedMutationContext(tx: Db, reviewQuestion = false): Promise<{
     run: typeof heartbeatRuns.$inferSelect;
     issue: typeof issues.$inferSelect;
     actor: typeof agents.$inferSelect;
@@ -2920,7 +2950,7 @@ export class PaperclipRunnerToolAuthority {
         eq(heartbeatRuns.agentId, this.binding.agentId),
         eq(heartbeatRuns.nativeIssueId, this.binding.issueId),
         eq(issues.companyId, this.binding.companyId),
-        eq(issues.assigneeAgentId, this.binding.agentId),
+        ...(reviewQuestion && this.binding.nativeReview ? [] : [eq(issues.assigneeAgentId, this.binding.agentId)]),
         eq(issues.executionRunId, this.binding.runId),
         eq(agents.companyId, this.binding.companyId),
       ))
@@ -2934,12 +2964,21 @@ export class PaperclipRunnerToolAuthority {
       || context.run.agentId !== this.binding.agentId
       || context.run.nativeIssueId !== this.binding.issueId
       || context.issue.companyId !== this.binding.companyId
-      || context.issue.assigneeAgentId !== this.binding.agentId
+      || (!(reviewQuestion && this.binding.nativeReview) && context.issue.assigneeAgentId !== this.binding.agentId)
       || context.issue.executionRunId !== this.binding.runId
       || context.actor.companyId !== this.binding.companyId
       || ["paused", "terminated", "pending_approval", "error"].includes(context.actor.status)
     ) {
       throw new Error("paperclip_runner_tool_binding_not_authorized");
+    }
+    if (reviewQuestion && this.binding.nativeReview) {
+      const admitted = readNativeReviewAssignmentContext(context.run.contextSnapshot);
+      if (!admitted || admitted.nativeReviewInteractionId !== this.binding.nativeReview.nativeReviewInteractionId
+        || admitted.nativeReviewDecisionId !== this.binding.nativeReview.nativeReviewDecisionId
+        || !await getNativeReviewAssignment(tx, { ...this.binding, actingRunId: this.binding.runId,
+          contextSnapshot: admitted, issueExecutionRunId: context.issue.executionRunId })) {
+        throw forbidden("The assigned review changed; a question cannot be created from this run");
+      }
     }
     if (this.binding.museRuntime) {
       const decision = await authorizationService(tx).decide({
@@ -2968,6 +3007,9 @@ export class PaperclipRunnerToolAuthority {
       interactionKind as keyof typeof interactionKinds
     ];
     if (!kind) throw new Error("paperclip_runner_interaction_kind_invalid");
+    if (this.binding.nativeReview && kind !== "ask_user_questions") {
+      throw forbidden("A review run may ask decision questions; it cannot create other work or replacement reviews");
+    }
     const prompt = requiredString(input.prompt);
     const idempotencyKey = requiredString(input.idempotencyKey);
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
@@ -3064,7 +3106,7 @@ export class PaperclipRunnerToolAuthority {
       };
     const result = await this.#withMutationReceipt(
       "request_human_input", idempotencyKey, input, receiptOnly ? null : apply,
-      { beforeReceiptReplay: async (tx, context) => {
+      { reviewQuestion: Boolean(this.binding.nativeReview), beforeReceiptReplay: async (tx, context) => {
         const receipt = record(record(record(context.run.resultJson).semanticToolReceipts)[idempotencyKey]);
         const interaction = record(record(receipt.result).interaction);
         if (interaction.status === "accepted" && interaction.sourceRunId !== this.binding.runId) {

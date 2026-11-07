@@ -19,10 +19,12 @@ import {
   toolActionDeliveries,
   agents,
   approvals,
+  authUsers,
   companies,
   companySecretBindings,
   companySecrets,
   companyMemberships,
+  principalPermissionGrants,
   toolConnectionInstalls,
   issueComments,
   connectionGrants,
@@ -48,6 +50,7 @@ import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { issueService } from "../services/issues.js";
 import { approvalService } from "../services/approvals.js";
+import { saveDecisionDelegation } from "../services/delegated-decision-policy.js";
 import { commitToolActionReview } from "../services/tool-action-review.js";
 import { bindVerifiedToolApprovalArguments, claimToolTestApproval, releaseToolApproval, startToolInvocation } from "../services/tool-approval-execution.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
@@ -257,6 +260,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(companyMemberships);
+    await db.delete(principalPermissionGrants);
     await db.delete(companies);
   }
 
@@ -1911,7 +1915,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       parameters: { noteId: "n1", body: "short" },
     })).rejects.toMatchObject({
       reasonCode: "approval_required",
-      details: { instructions: expect.stringContaining("A human approval card was posted on task") },
+      details: { instructions: expect.stringContaining("A formal decision request was posted on task") },
     });
 
     unsubscribe();
@@ -1986,6 +1990,33 @@ describeEmbeddedPostgres("tool gateway service", () => {
       approvedActionRequestId: actionRequest.id,
       parameters: { noteId: "n1", body: "short" },
     })).rejects.toMatchObject({ reasonCode: "action_not_approved" });
+  });
+
+  it.each([false, true])("delegates ordinary external writes but preserves explicit human policy (%s)", async humanOnly => {
+    const { company, agent, run } = await createRunFixture(db);
+    const ownerId = randomUUID();
+    await db.insert(authUsers).values({ id: ownerId, name: "Delegating Owner", email: `${ownerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: ownerId, membershipRole: "owner" });
+    await saveDecisionDelegation(db, { companyId: company.id, ownerUserId: ownerId, agentId: agent.id,
+      baseRevision: null, enabled: true, allowSelfApproval: true, scopes: ["task_decisions", "external_writes"] });
+    await db.insert(toolPolicies).values({ ...reviewNotePolicyRow(company), ...(humanOnly ? { createdByUserId: ownerId } : {}) });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "owned", body: "reviewed simulated write" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    expect(interaction.delegation?.level).toBe(humanOnly ? "human" : "delegate");
+    const actor = { agentId: agent.id, runId: run.id, delegationRevision: interaction.delegation!.revision, reason: "Owned simulated action matches the requested scope" };
+    await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor, rememberAction: true })).rejects.toThrow();
+    if (humanOnly) {
+      await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor })).rejects.toThrow();
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, request.id)))[0].status).toBe("pending");
+    } else {
+      expect(await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor })).toMatchObject({ status: "executed" });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
+        .toMatchObject({ status: "accepted", resolvedByAgentId: agent.id, resolvedByUserId: null });
+    }
   });
 
   it("approves a pending action request directly from the review queue and preserves signed arguments", async () => {

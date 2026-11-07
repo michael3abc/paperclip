@@ -1802,6 +1802,8 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("approval_retention", () => registerApprovalRetentionWork(deliveryWork, approvalRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("delegated_decisions", () => registerDelegatedDecisionDelivery(deliveryWork, delegatedDecisionDelivery(db as any, heartbeat),
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("status_card_evaluation", () => registerStatusCardEvaluationWork(deliveryWork, statusCardEvaluation,
@@ -2153,3 +2155,4 @@ if (isMainModule(import.meta.url)) {
     process.exit(1);
   });
 }
+import { delegatedDecisionDelivery, registerDelegatedDecisionDelivery } from "./services/delegated-decision-delivery.js";

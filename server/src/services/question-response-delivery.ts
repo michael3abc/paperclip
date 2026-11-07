@@ -24,6 +24,7 @@ import { logActivity } from "./activity-log.js";
 import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
 const DELIVERY_CLAIM_STALE_MS = 30_000;
@@ -876,7 +877,17 @@ export function questionResponseDeliveryService(
           : "question_response_target_unavailable",
       });
     }
-    const assigneeAgentId = issue.assigneeAgentId;
+    const reviewContext = readNativeReviewAssignmentContext(sourceRun?.contextSnapshot);
+    const review = reviewContext && sourceRun?.agentId === interaction.createdByAgentId
+      ? await getNativeReviewAssignment(db, { companyId: issue.companyId, issueId: issue.id,
+        agentId: sourceRun.agentId, contextSnapshot: reviewContext }) : null;
+    if (reviewContext && !review) return recordTerminal({ delivery: claimed, interaction,
+      status: "failed", mode: null, targetRunId: null, adapter, errorCode: "question_response_review_changed" });
+    // A reviewer owns its question, while the worker keeps the task assignee.
+    // Reuse the exact review admission instead of waking implementation work.
+    const assigneeAgentId = review ? sourceRun!.agentId : issue.assigneeAgentId;
+    const reviewContinuation = review ? { ...reviewContext, sourceRunId: review.sourceRun.id,
+      revisionId: review.sourceDecision.id } : {};
     const inferredSourceCommentId =
       sourceRun && issueIdFromRun(sourceRun) === interaction.issueId
         ? sourceCommentIdFromRun(sourceRun)
@@ -1203,7 +1214,7 @@ export function questionResponseDeliveryService(
                   mutation: "interaction",
                 },
                 idempotencyKey: wakeIdempotencyKey,
-                allowRunCoalescing: !externalChatBoundary,
+                allowRunCoalescing: !externalChatBoundary && !review,
                 requestedByActorType: actor.actorType,
                 requestedByActorId: actor.actorId,
                 contextSnapshot: {
@@ -1222,6 +1233,7 @@ export function questionResponseDeliveryService(
                       }
                     : {}),
                   wakeReason: "issue_commented",
+                  ...reviewContinuation,
                   source: "issue.interaction.respond",
                 },
               }),

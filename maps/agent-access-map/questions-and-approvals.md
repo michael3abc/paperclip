@@ -38,7 +38,7 @@ API: `present` — POST /api/issues/{id}/interactions, kind ask_user_questions.
 
 Agent access: `available` — native request_human_input(interactionKind=questions) in standard/planning/ask/skill_test when advertised; permitted legacy REST/CLI interaction:create. Muse closed native profile omits this tool.
 
-Policy: Agent mutation requires authenticated source run and low-trust/issue boundaries; sourceRunId is server-stamped. Chat addressee defaults to immutable owner. User/agent addressee mutually exclusive; agent cannot address self, foreign or uninvokable agent. Company kind governance clamps policy. Native dedicated input does not expose arbitrary addressee/policy fields.
+Policy: Agent mutation requires authenticated source run and low-trust/issue boundaries; sourceRunId is server-stamped. Without company delegation, chat addressee defaults to immutable owner. An active Owner-issued delegation routes new ordinary worker requests to the task project's PM and PM requests to the company delegate; explicit human gates stay human. User/agent addressee remain mutually exclusive. Review runs may ask questions through the controlled tool without taking worker ownership.
 
 Evidence: `source-only` — [interaction routes](../../server/src/routes/issues.ts), [interaction service](../../server/src/services/issue-thread-interactions.ts), [native authority](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
 
@@ -54,7 +54,7 @@ answer authorization and the private terminal receipt remain unchanged.
 
 API: `present` — POST /api/issues/{id}/interactions/{interactionId}/respond.
 
-Agent access: `partial` — eligible responder REST; CLI interaction:respond; admitted native call_api standard/skill_test; request_human_input creates requests rather than answers.
+Agent access: `partial` — eligible responder REST; CLI interaction:respond; admitted native call_api standard/skill_test; assigned delegated recipients use get_delegated_request and resolve_delegated_request or escalate_delegated_request with the current revision. request_human_input creates requests rather than answers.
 
 Policy: Same company/readable issue and current effective audience; agents need matching authenticated run/company/agent/responsible user, issue mutation or admitted watchdog containment, no low-trust boundary violation and cross-issue influence allowance. Current review policy can narrow audience; service rechecks cancellation/write authority under lock. Board chat responder must own the conversation. Only pending ask_user_questions; normalize/validate question and option IDs, required single/multi/custom/text constraints. Save answer/actor/run and durable outbox atomically. Human-only does not permit agent resolution.
 
@@ -422,7 +422,7 @@ Capability ID: `questions-and-approvals/governance`.
 
 Review: `operation-reviewed`.
 
-Formal approval request/read/revision/decision operations retain independent board authority.
+Formal approval authority remains separate from task review. An Owner-issued company grant can authorize a named agent for new ordinary approvals; it cannot transfer human-reserved decisions.
 
 ### `read-and-context`
 
@@ -456,13 +456,13 @@ Gaps: Creation/linking/each payload-specific governed effect needs separate evid
 
 API: `present` — POST /api/approvals/{id}/approve, /reject, /request-revision.
 
-Agent access: `restricted` — board/company/approval visibility; CLI only with board context. Agent REST/native call_api and personal assistant cannot decide.
+Agent access: `partial` — board/company/approval visibility, or the assigned company delegate through resolve_delegated_request and the same authenticated REST policy. An ordinary agent, PM title or assistant OAuth connection alone cannot decide.
 
-Policy: Auth actor supplies decidedByUserId; body cannot spoof. Approve/reject pending or revision_requested with conditional update; repeated same terminal verdict no-op/no repeated effect, opposing verdict 422. requestRevision only pending; no equal replay guarantee. Newly applied decision alone triggers reviewed lifecycle/adapter/linked continuation.
+Policy: Human decisions use decidedByUserId; delegated decisions use the mutually exclusive decidedByAgentId with current grant, request revision, source payload fingerprint, run and reason. The grant covers eligible new hire_agent, approve_ceo_strategy, budget_override_required and request_board_approval requests. Human-reserved and pre-activation requests are excluded. Newly applied decisions alone trigger governed effects; repeated matching decisions cannot repeat them.
 
 Evidence: `source-only` — [approval routes](../../server/src/routes/approvals.ts), [conditional records](../../server/src/lib/approval-records.ts), [governed effects](../../server/src/services/approvals.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
 
-Verification: `not-run` — Board decisions and revision request, reload audit + actual governed effect. Duplicate same decision one effect; concurrent opposite fails; agent denied and forged actor ignored.
+Verification: `not-run` — Compare board, assigned delegate and unrelated agent decisions; reload attribution and governed effect. Check self-proposals under the grant, revoked grants, stale revisions, explicit human gates and competing decisions. Source tests do not qualify the deployed Dot acceptance path.
 
 Gaps: Request-revision concurrency/replay not claimed as equivalent to approve/reject; payload integrations remain explicit.
 

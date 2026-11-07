@@ -55,7 +55,7 @@ describe("native runtime request resolution authority", () => {
         dbReturning(createdEvent("command_approval")),
         binding,
       ),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       ...binding,
       requestKind: "command_approval",
       turnId: "turn-1",

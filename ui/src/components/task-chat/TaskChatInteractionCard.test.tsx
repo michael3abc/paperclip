@@ -122,6 +122,32 @@ describe("TaskChatInteractionCard", () => {
     container.remove();
   });
 
+  it("keeps delegated questions out of human takeover until explicitly escalated", () => {
+    const interaction = createRequestConfirmation({ delegation: {
+      version: 1, grantId: "grant", grantRevision: "grant-revision", ownerUserId: "owner",
+      delegateAgentId: "momo", recipientAgentId: "momo", level: "delegate", projectId: "project",
+      sourceRunId: "source-run", sourceFingerprint: "fingerprint", revision: "request-revision",
+      reservedReasons: [], requiredScopes: ["task_decisions"],
+    } });
+    const accept = vi.fn();
+    const render = () => flushSync(() => root.render(<TooltipProvider><ThemeProvider>
+      <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover"
+        currentUserId="owner" onAcceptInteraction={accept} onRejectInteraction={vi.fn()} />
+    </ThemeProvider></TooltipProvider>));
+    render();
+    expect(container.textContent).toContain("已交");
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+    interaction.delegation = { ...interaction.delegation!, level: "human", recipientAgentId: null,
+      revision: "escalated-revision", reservedReasons: ["uncertain"] };
+    interaction.addresseeAgentId = null;
+    interaction.addresseeUserId = "owner";
+    interaction.effectiveResolverPolicy = "human_only";
+    render();
+    expect(container.textContent).not.toContain("已交");
+    expect(container.querySelectorAll("button").length).toBeGreaterThan(0);
+    expect(accept).not.toHaveBeenCalled();
+  });
+
   it("opens the real tool review and reveals the proposal tail before approval", async () => {
     const accept = vi.fn();
     const reject = vi.fn();

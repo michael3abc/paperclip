@@ -4690,3 +4690,51 @@ configuration is created or changed by a worker-policy save. Keep the managed JS
 projection and unique default consistent, retain old task settings and reject
 unavailable connections/models explicitly. Model choices show their connection;
 identical model IDs on different accounts remain distinct choices.
+
+### Delegated decisions
+
+The existing interaction/approval services own decision effects. The company
+Owner configures a versioned `company:delegate_decisions` grant through
+`GET/PUT /api/companies/:companyId/decision-delegation`; PUT requires the granting
+human Owner, `baseRevision` and a reason. Generic permission replacement cannot
+change or remove this grant. Enabling it applies only to subsequently created
+requests; existing cards, explicit human gates and cancelled plans remain intact.
+
+Workers use the task project's zero-slot PM, independent of `reportsTo`. PMs
+request ordinary decisions through `request_human_input` without a human-only
+override. The server routes to the delegate; the delegate is not a worker option.
+`list_delegated_requests` and `get_delegated_request` expose assigned decisions,
+source references and current revisions. `resolve_delegated_request` answers the
+original interaction/approval. `escalate_delegated_request` only moves toward the
+delegate or the granting human, rotates the request revision and records a reason.
+Neither operation claims a worker's checkout or creates a substitute task.
+An active native review may create decision questions through the same controlled
+tool. Answer delivery retains the original review interaction/decision and targets
+the reviewer; it never wakes the worker as implementation work. A changed review
+fails explicitly. Review runs still cannot dispatch execution tasks.
+
+The delegate may approve its own in-scope proposal when the Owner enables that
+scope. General approvals include hiring, strategy, budget override and ordinary
+board requests. Budget changes retain the formal incident resolution and existing
+hard stops. Human-only requests, security/access expansion, sensitive export,
+major irreversible destruction and delegation changes cannot be downgraded.
+External tool reviews preserve explicit human policies and stored argument hashes;
+delegated one-shot approval cannot create a remembered permission.
+
+Runtime plan/Allow and question answers bind the original request, run, turn and
+payload fingerprint. Plan decisions reaching ACP permission handling are not
+auto-accepted by approve-all. Legacy ACP callbacks require a live response owner
+and delivery acknowledgement; a lost process cannot be replaced by a fresh wake.
+Native commands retain their durable response identity and recheck the current
+grant at wire delivery, including replay after reconnect. Decision wakes reuse the
+recipient's own conversation, use unique receipts and the existing delivery
+coordinator. Failed admission is visible and leaves the request pending; it does
+not invalidate an otherwise healthy Dot OAuth binding or authorize a fallback.
+
+Roll out capability before activating the grant. Qualify Claude and Codex native
+paths and Dot acceptance/return on isolated tasks, with no real spend or external
+effects. Back up bundles outside their active roots and update through the native
+revision/hash APIs, support files before entry. Preserve current worker model and
+AI-connection selections. Update momo's delegate scope and PM/worker routing
+instructions only after the deployed tools are available. Skipped or unobserved
+checks remain explicitly unverified; previous release waivers do not apply.

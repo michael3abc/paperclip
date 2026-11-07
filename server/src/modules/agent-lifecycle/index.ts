@@ -1,3 +1,4 @@
+import type { ApprovalDecisionActor } from "../../lib/approval-records.js";
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
 import { agents } from "@paperclipai/db";
 import { inArray, sql } from "drizzle-orm";
@@ -52,7 +53,7 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
     if (result) scheduleAgentLifecycle(db, id);
     return result ? records.getById(id) : null;
   }
-  async function decideHire(target: HireDecisionTarget, decision: "approved" | "rejected", userId: string, note?: string | null) {
+  async function decideHire(target: HireDecisionTarget, decision: "approved" | "rejected", userId: ApprovalDecisionActor, note?: string | null) {
     const result = await approvalRecords(db, effects).decide(target, decision, userId, note);
     if (result?.hireApprovedAgentId) scheduleAgentLifecycle(db, result.hireApprovedAgentId);
     return result;
@@ -70,8 +71,8 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       scheduleAgentLifecycle(db, agent.id);
       return agent;
     },
-    approveHire: (target: HireDecisionTarget, userId = "board", note?: string | null) => decideHire(target, "approved", userId, note),
-    rejectHire: (target: HireDecisionTarget, userId = "board", note?: string | null) => decideHire(target, "rejected", userId, note),
+    approveHire: (target: HireDecisionTarget, userId: ApprovalDecisionActor = "board", note?: string | null) => decideHire(target, "approved", userId, note),
+    rejectHire: (target: HireDecisionTarget, userId: ApprovalDecisionActor = "board", note?: string | null) => decideHire(target, "rejected", userId, note),
     async updateConfiguration(id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
       const existing = await records.getById(id);
       if (!existing) return null;

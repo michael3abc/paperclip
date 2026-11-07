@@ -180,7 +180,7 @@ it("pins the Codex PM catalog and restrictive launch through host preparation", 
   const base = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
     instructions: { entryPath: "AGENTS.md", bundle: { schema: "paperclip.runtime-asset.v1" as const, digest, manifestDigest: digest, rootPath: "/bundle", fileCount: 1, totalBytes: 10 } },
     skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
-    toolPolicy: { kind: "project_pm" as const, version: 1 as const, readRoots: ["/workspace"] } };
+    toolPolicy: { kind: "project_pm" as const, version: 2 as const, readRoots: ["/workspace"] } };
   const context = { ...base, aggregateDigest: canonicalNativeRuntimeContextDigest(base) };
   const selected = runnerProviderLaunchRequirements({ provider: "codex" }, requirements.identity,
     { model: "gpt-6-astra", approvalPolicy: "never", permissions: "paperclip-runner-workspace-read-only", dynamicTools: [{ name: "create_task" }] }, context, "PM instructions");

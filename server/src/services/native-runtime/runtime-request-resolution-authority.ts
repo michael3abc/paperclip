@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import type { HarnessRuntimeRequestKind } from "../../vendor/paperclip-runner/index.js";
+import { decisionFingerprint } from "../delegated-decision-policy.js";
 
 const TERMINAL_RUNTIME_REQUEST_EVENTS = [
   "runtime_request.resolved",
@@ -30,6 +31,8 @@ export interface PendingNativeRuntimeRequest {
   readonly turnId: string;
   /** Server-owned policy derived from the canonical request kind. */
   readonly resolverPolicy: "human_only" | "instance_admin";
+  readonly fingerprint?: string;
+  readonly canonicalRequest?: Record<string, unknown>;
 }
 
 export interface NativeRuntimeRequestResolver {
@@ -62,7 +65,7 @@ function canonicalPendingRequest(input: {
   const request = record(eventPayload?.request);
   if (
     !event
-    || event.schema !== "paperclip.prp.event.v1"
+    || !["paperclip.prp.event.v1", "paperclip.prp.event.v2", "paperclip.prp.event.v3"].includes(String(event.schema))
     || event.eventType !== "runtime_request.created"
     || event.sourceKind !== "runner"
     || event.runId !== input.runId
@@ -100,6 +103,8 @@ function canonicalPendingRequest(input: {
     requestId,
     requestKind: kind,
     turnId,
+    fingerprint: decisionFingerprint(request),
+    canonicalRequest: request,
     resolverPolicy: APPROVAL_REQUEST_KINDS.has(kind)
       ? "instance_admin"
       : "human_only",

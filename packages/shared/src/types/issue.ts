@@ -1,3 +1,4 @@
+import type { DelegatedDecisionContext } from "../delegated-decisions.js";
 import type { ChatProvider } from "./chat-channels.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
 import type { ExecutionProjection, ExecutionBlocker, TaskInterruptionPresentation } from "./execution-projection.js";
@@ -1371,6 +1372,8 @@ export interface AskUserQuestionsPayload {
   questionSet?: PaperclipQuestionSetPayload;
   /** Correlates a recovered interaction with the live runtime request it replaces. */
   runtimeRequestId?: string | null;
+  runtimeRequestTurnId?: string;
+  runtimeRequestFingerprint?: string;
 }
 
 export interface AskUserQuestionsAnswer {
@@ -1672,6 +1675,7 @@ export interface RequestItemVerdictsResult {
 }
 
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
+  delegation?: DelegatedDecisionContext | null;
   id: string;
   companyId: string;
   issueId: string;

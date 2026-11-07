@@ -1,3 +1,4 @@
+import { DelegatedDecisionStatus } from "./DelegatedDecisionStatus";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
@@ -3728,6 +3729,10 @@ export function IssueThreadInteractionCard({
 }: IssueThreadInteractionCardProps) {
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const compactDecision = presentationVariant === "coordinator-decision";
+  if (interaction.delegation && interaction.delegation.level !== "human") {
+    return <DelegatedDecisionStatus delegation={interaction.delegation} status={interaction.status}
+      recipientName={interaction.delegation.recipientAgentId ? agentMap?.get(interaction.delegation.recipientAgentId)?.name : undefined} />;
+  }
   // Single enforcement point (PAP-424, plan from PAP-420; extended by PAP-437):
   // a card that should never be drawn — a degenerate `ask_user_questions`
   // (placeholder junk like the onboarding `Test / A` card, no genuine question)

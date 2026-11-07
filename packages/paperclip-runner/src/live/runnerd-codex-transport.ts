@@ -3529,7 +3529,7 @@ export function unwrapToolResponse(response: Record<string, unknown>, preserveEn
   const value = record(items[0]).text;
   let result: unknown = response;
   try {
-    if (!preserveEnvelope && typeof value === "string") result = JSON.parse(value);
+    if (!preserveEnvelope && !response.publicError && typeof value === "string") result = JSON.parse(value);
   } catch {
     result = response;
   }

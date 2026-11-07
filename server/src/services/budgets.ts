@@ -3,6 +3,8 @@ import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
+import { approvalResolutionRecords, type ApprovalDecisionActor } from "../lib/approval-records.js";
+import { decisionFingerprint, routeDelegatedDecision, assertDelegatedDecisionActor } from "./delegated-decision-policy.js";
 import { notifyAttentionRetentionWork, notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, inArray, sql, or, isNull } from "drizzle-orm";
@@ -331,9 +333,13 @@ async function markApprovalStatus(
   approvalId: string | null,
   status: "approved" | "rejected",
   decisionNote: string | null | undefined,
-  decidedByUserId: string,
+  decidedByUserId: ApprovalDecisionActor,
 ) {
   if (!approvalId) return;
+  if (typeof decidedByUserId !== "string") {
+    await approvalResolutionRecords(db).resolveApproval(approvalId, status, decidedByUserId, decisionNote, db);
+    return;
+  }
   const [approval] = await db.select({ companyId: approvals.companyId }).from(approvals).where(eq(approvals.id, approvalId));
   if (!approval) return;
   await notifyApprovalWork(db, approval.companyId, { approvalId });
@@ -343,6 +349,7 @@ async function markApprovalStatus(
       status,
       decisionNote: decisionNote ?? null,
       decidedByUserId,
+      decidedByAgentId: null,
       decidedAt: new Date(),
       updatedAt: new Date(),
     })
@@ -561,6 +568,11 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     await notifyAttentionRetentionWork(db, { companyId: policy.companyId, sourceKind: "budget_alert" });
     if (thresholdType === "hard") await notifyApprovalWork(db, policy.companyId);
+    const delegation = thresholdType === "hard" ? await routeDelegatedDecision(db, {
+      companyId: policy.companyId, requesterAgentId: null, sourceRunId: null, category: "approval",
+      fingerprint: decisionFingerprint({ type: "budget_override_required", payload }), createdAt: new Date(), reservedReasons: [],
+      requiredScopes: ["agent_model_budget"],
+    }) : null;
     const approval = thresholdType === "hard"
       ? await db
         .insert(approvals)
@@ -571,6 +583,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           requestedByAgentId: null,
           status: "pending",
           payload,
+          delegation,
         })
         .returning()
         .then((rows) => rows[0] ?? null)
@@ -862,6 +875,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       companyId: string,
       input: BudgetPolicyUpsertInput,
       actorUserId: string | null,
+      agentActor?: { agentId: string; runId: string },
     ): Promise<BudgetPolicySummary> => {
       const scope = await resolveScopeRecord(db, input.scopeType, input.scopeId);
       if (scope.companyId !== companyId) {
@@ -985,8 +999,9 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
       await recordActivity({
         companyId,
-        actorType: "user",
-        actorId: actorUserId ?? "board",
+        actorType: agentActor ? "agent" : "user",
+        actorId: agentActor?.agentId ?? actorUserId ?? "board",
+        ...(agentActor ? { agentId: agentActor.agentId, runId: agentActor.runId } : {}),
         action: "budget.policy_upserted",
         entityType: "budget_policy",
         entityId: row.id,
@@ -1034,7 +1049,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       companyId: string,
       incidentId: string,
       input: BudgetIncidentResolutionInput,
-      actorUserId: string,
+      actor: ApprovalDecisionActor,
     ): Promise<BudgetIncident> => {
       const incident = await db
         .select()
@@ -1043,6 +1058,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         .then((rows) => rows[0] ?? null);
       if (!incident) throw notFound("Budget incident not found");
       if (incident.companyId !== companyId) throw notFound("Budget incident not found");
+      const actorUserId = typeof actor === "string" ? actor : null;
+      if (typeof actor !== "string") {
+        const approval = incident.approvalId ? await approvalResolutionRecords(db).getExistingApproval(incident.approvalId, db) : null;
+        if (!approval?.delegation || approval.status !== "pending" || incident.status !== "open") throw unprocessable("This budget incident is no longer delegated and pending");
+        await assertDelegatedDecisionActor(db, { companyId, context: approval.delegation, agentId: actor.agentId,
+          runId: actor.runId, revision: actor.revision, fingerprint: decisionFingerprint({ type: approval.type, payload: approval.payload }) });
+        if (!input.decisionNote?.trim()) throw unprocessable("A delegated budget decision requires a reason");
+      }
 
       const policy = await getPolicyRow(incident.policyId);
       if (policy.companyId !== companyId || policy.scopeType !== incident.scopeType || policy.scopeId !== incident.scopeId) {
@@ -1104,7 +1127,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
           })
           .where(and(eq(budgetIncidents.policyId, policy.id), eq(budgetIncidents.status, "open")));
 
-        await markApprovalStatus(db, incident.approvalId ?? null, "approved", input.decisionNote, actorUserId);
+        await markApprovalStatus(db, incident.approvalId ?? null, "approved", input.decisionNote, actor);
       } else {
         await db
           .update(budgetIncidents)
@@ -1114,13 +1137,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
             updatedAt: new Date(),
           })
           .where(eq(budgetIncidents.id, incident.id));
-        await markApprovalStatus(db, incident.approvalId ?? null, "rejected", input.decisionNote, actorUserId);
+        await markApprovalStatus(db, incident.approvalId ?? null, "rejected", input.decisionNote, actor);
       }
 
       await recordActivity({
         companyId: incident.companyId,
-        actorType: "user",
-        actorId: actorUserId,
+        ...(typeof actor === "string" ? { actorType: "user" as const, actorId: actor }
+          : { actorType: "agent" as const, actorId: actor.agentId, agentId: actor.agentId, runId: actor.runId }),
         action: "budget.incident_resolved",
         entityType: "budget_incident",
         entityId: incident.id,
@@ -1384,7 +1407,7 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
     getInvocationBlock: (companyId: string, agentId: string | null, context?: AdmissionContext) =>
       withBudgetSpan("budget.admission.inspect", () => withAccountingReadSnapshot(db, companyId,
         tx => budgetServiceInTransaction(tx).getInvocationBlock(companyId, agentId, context))),
-    resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) => {
+    resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: ApprovalDecisionActor) => {
       const [scope] = await db.select({ scopeType: budgetIncidents.scopeType, scopeId: budgetIncidents.scopeId }).from(budgetIncidents)
         .where(and(eq(budgetIncidents.id, incidentId), eq(budgetIncidents.companyId, companyId)));
       if (!scope) throw notFound("Budget incident not found");

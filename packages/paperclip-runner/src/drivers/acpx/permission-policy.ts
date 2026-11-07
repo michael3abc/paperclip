@@ -101,6 +101,11 @@ export function decideAcpxPermission(
   _options: AcpxPermissionPolicyOptions = {},
 ): AcpxPermissionDisposition {
   if (mode === "deny-all") return "reject_once";
+  // These tools are explicit decision requests, even in an otherwise full-
+  // access run. Provider metadata can require review, never grant permission.
+  const raw = _request.raw as { toolCall?: { name?: string; title?: string; rawInput?: { toolName?: string } } } | undefined;
+  const name = raw?.toolCall?.name ?? raw?.toolCall?.rawInput?.toolName;
+  if (name === "ExitPlanMode" || name === "AskUserQuestion") return "delegate";
   if (mode === "approve-all") return "allow_once";
   // inferredKind and raw semantic/MCP metadata both originate outside the
   // runner trust boundary. Neither can grant local semantic authority.

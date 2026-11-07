@@ -14,7 +14,7 @@ const { k: AcpClient } = await import(pathToFileURL(join(acpx, "dist/live-checkp
 
 // Only model responses and the owned MCP endpoint are fixtures. ACPX, Claude
 // ACP, the Claude CLI/SDK, tool discovery and PreToolUse dispatch are real.
-async function exerciseBoundary(enforced) {
+async function exerciseBoundary(enforced, decisions = false) {
   const home = await mkdtemp(join(tmpdir(), "paperclip-pm-acp-"));
   const project = join(home, "project"), config = join(home, "config");
   await mkdir(project); await mkdir(config);
@@ -22,6 +22,14 @@ async function exerciseBoundary(enforced) {
   await writeFile(readable, "allowed-evidence"); await writeFile(forbidden, "outside-evidence");
   const requests = [], results = [], errors = [];
   let attacked = false, foreignMcp = 0;
+  let decisionStage = 0;
+  const permissionRequests = [], elicitations = [], deliveries = [];
+  const decisionCalls = [
+    ["EnterPlanMode", {}],
+    ["ExitPlanMode", { plan: "Owned fixture: choose one harmless implementation option." }],
+    ["AskUserQuestion", { questions: [{ question: "Which harmless option?", header: "Scope", multiSelect: false,
+      options: [{ label: "A", description: "Keep scope" }, { label: "B", description: "Reduce scope" }] }] }],
+  ];
   const attacks = enforced ? [
     ["Bash", { command: `touch ${written}`, description: "test execution boundary" }],
     ["Write", { file_path: written, content: "forbidden" }],
@@ -55,7 +63,9 @@ async function exerciseBoundary(enforced) {
           if (item.type === "tool_result") results.push(item);
         }
       }
-      const content = target && !attacked ? attacks.map(([name, input], index) => ({ type: "tool_use", id: `toolu_pm_${index}`, name, input }))
+      const selectedDecision = decisions && target ? decisionCalls[decisionStage++] : null;
+      const content = selectedDecision ? [{ type: "tool_use", id: `toolu_decision_${decisionStage}`, name: selectedDecision[0], input: selectedDecision[1] }]
+        : !decisions && target && !attacked ? attacks.map(([name, input], index) => ({ type: "tool_use", id: `toolu_pm_${index}`, name, input }))
         : [{ type: "text", text: "PM_POLICY_PROBE complete" }];
       if (target) attacked = true;
       const message = { id: "msg_pm_probe", type: "message", role: "assistant", model: body.model, content,
@@ -79,18 +89,33 @@ async function exerciseBoundary(enforced) {
     CLAUDE_CONFIG_DIR: config, ANTHROPIC_BASE_URL: url, ANTHROPIC_API_KEY: "owned-test-placeholder",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_AUTOUPDATER: "1", IS_SANDBOX: "1",
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1", PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: `${url}/mcp`,
-    PAPERCLIP_PM_TOOL_POLICY: enforced ? JSON.stringify({ kind: "project_pm", version: 1, readRoots: [project] }) : "" };
+    PAPERCLIP_PM_TOOL_POLICY: enforced ? JSON.stringify({ kind: "project_pm", version: 2, readRoots: [project] }) : "" };
   const client = new AcpClient({ agentCommand: process.execPath, agentArgv: [join(claude, "dist/index.js")], cwd: project,
     permissionMode: "approve-all", nonInteractivePermissions: "deny", spawnEnvironment: () => environment,
+    elicitationModes: ["form"],
+    ...(decisions ? { onPermissionRequest: async (params, context) => {
+      permissionRequests.push(params); deliveries.push(context.responseDelivery);
+      return { outcome: "allow_once" };
+    } } : {}),
     mcpServers: [{ type: "http", name: "paperclip", url: `${url}/mcp`, headers: [] }, { type: "http", name: "foreign", url: `${url}/foreign`, headers: [] }],
   });
   try {
     await client.start(); const session = await client.createSession();
     await client.setSessionMode(session.sessionId, "bypassPermissions");
-    await client.prompt(session.sessionId, [{ type: "text", text: "PM_POLICY_PROBE: inspect evidence." }]);
+    await client.prompt(session.sessionId, [{ type: "text", text: "PM_POLICY_PROBE: inspect evidence." }], undefined,
+      decisions ? async (params, context) => {
+        elicitations.push(params); deliveries.push(context.responseDelivery);
+        const properties = params.requestedSchema?.properties ?? {};
+        return { action: "accept", content: Object.fromEntries(Object.entries(properties).map(([key, schema]) => [key, schema.enum?.[0] ?? "A"])) };
+      } : undefined);
+    await Promise.all(deliveries);
     assert.deepEqual(errors, []); assert.equal(attacked, true);
     const tools = new Set(requests.flat());
-    if (enforced) {
+    if (decisions) {
+      assert.ok(permissionRequests.some(request => JSON.stringify(request).includes("ExitPlanMode")), "plan confirmation bypassed the host under approve-all");
+      assert.ok(elicitations.length > 0, "AskUserQuestion did not reach the host");
+      assert.ok(results.some(result => result.tool_use_id === "toolu_decision_3" && !result.is_error), "question answer did not return to Claude");
+    } else if (enforced) {
     for (const tool of ["Read", "Glob", "Grep"]) assert.ok(tools.has(tool), `missing ${tool}`);
     for (const [tool] of attacks.slice(0, 7)) assert.equal(tools.has(tool), false, `advertised ${tool}`);
     assert.equal(foreignMcp, 0);
@@ -110,3 +135,4 @@ async function exerciseBoundary(enforced) {
 
 test("qualified Claude ACP denies execution under approve-all and filters MCP discovery", { timeout: 90_000 }, () => exerciseBoundary(true));
 test("a shared worker retains the qualified Claude native tools without the PM policy", { timeout: 90_000 }, () => exerciseBoundary(false));
+test("real Claude plan confirmation and questions reach the decision bridge under approve-all", { timeout: 90_000 }, () => exerciseBoundary(false, true));

@@ -14,6 +14,30 @@ import { conflict, forbidden, notFound } from "../errors.js";
 import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
+import { assertDelegatedDecisionActor, decisionFingerprint, readDecisionDelegation } from "./delegated-decision-policy.js";
+
+export type ToolReviewActor = { agentId?: string | null; userId?: string | null; runId?: string | null; delegationRevision?: string; reason?: string };
+
+export async function assertDelegatedToolReview(db: Db, interactionId: string | null, companyId: string, actor: ToolReviewActor, rememberAction = false, recovery = false) {
+  if (!actor.agentId) return;
+  if (!interactionId || rememberAction) throw forbidden("Delegated tool reviews cannot grant persistent permissions");
+  const [interaction] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, companyId))).limit(1);
+  const context = interaction?.delegation;
+  if (!interaction || !context || context.level !== "delegate" || !context.requiredScopes.includes("external_writes")) throw forbidden("This tool action is reserved for a human");
+  if (recovery) {
+    const grant = await readDecisionDelegation(db, companyId);
+    if (interaction.status !== "accepted" || interaction.resolvedByAgentId !== actor.agentId || !interaction.resolvedByRunId
+      || !grant || grant.id !== context.grantId || grant.scope.revision !== context.grantRevision
+      || context.recipientAgentId !== actor.agentId || context.reservedReasons.length
+      || !context.requiredScopes.every(scope => grant.scope.scopes.includes(scope))
+      || context.sourceFingerprint !== decisionFingerprint({ kind: interaction.kind, payload: interaction.payload, sourceRunId: interaction.sourceRunId })) throw forbidden("The committed delegated tool decision is no longer authorized");
+    return;
+  }
+  if (!actor.runId || !actor.delegationRevision || !actor.reason?.trim()) throw forbidden("Delegated tool reviews require a current run, revision and reason");
+  await assertDelegatedDecisionActor(db, { companyId, agentId: actor.agentId, runId: actor.runId,
+    revision: actor.delegationRevision, context,
+    fingerprint: decisionFingerprint({ kind: interaction.kind, payload: interaction.payload, sourceRunId: interaction.sourceRunId }) });
+}
 import {
   logActivity,
   publishActivity,
@@ -31,11 +55,9 @@ export async function commitToolActionReview(
     decision: "approved" | "rejected";
     rememberAction?: boolean;
     reason?: string;
-    actor: { agentId?: string | null; userId?: string | null };
+    actor: ToolReviewActor;
   },
 ) {
-  if (input.actor.agentId)
-    throw forbidden("Only a human can resolve a tool review");
   const [source] = await db
     .select()
     .from(toolActionRequests)
@@ -87,7 +109,9 @@ export async function commitToolActionReview(
       )
       .for("update");
     if (!current) throw notFound("Tool action request not found");
+    await assertDelegatedToolReview(tx as unknown as Db, current.interactionId, input.companyId, input.actor, input.rememberAction);
     if (current.status !== "pending") {
+      if (input.actor.agentId && current.decidedByAgentId !== input.actor.agentId) throw conflict("Another actor already resolved this tool request");
       if (
         (input.decision === "approved" &&
           ["approved", "executing", "executed", "failed"].includes(
@@ -134,9 +158,10 @@ export async function commitToolActionReview(
       )
         throw conflict("Tool review context does not match");
       assertIssueThreadInteractionResolverAudience({
-        actor: { type: "user", userId: input.actor.userId ?? "board" },
+        actor: input.actor.agentId ? { type: "agent", agentId: input.actor.agentId, runId: input.actor.runId }
+          : { type: "user", userId: input.actor.userId ?? "board" },
         interaction,
-        governedAction: true,
+        governedAction: !input.actor.agentId,
       });
       if (interaction.status !== "pending")
         throw conflict("This review has already been resolved");
@@ -148,8 +173,10 @@ export async function commitToolActionReview(
       .update(toolActionRequests)
       .set({
         status: input.decision,
-        resolvedByUserId: input.actor.userId ?? "board",
-        decidedByUserId: input.actor.userId ?? "board",
+        resolvedByUserId: input.actor.agentId ? null : input.actor.userId ?? "board",
+        decidedByUserId: input.actor.agentId ? null : input.actor.userId ?? "board",
+        resolvedByAgentId: input.actor.agentId ?? null,
+        decidedByAgentId: input.actor.agentId ?? null,
         decidedAt: now,
         resolvedAt: now,
         updatedAt: now,
@@ -177,7 +204,7 @@ export async function commitToolActionReview(
               status: "denied" as const,
               completedAt: now,
               errorCode: "action_declined",
-              errorMessage: "The human declined this action.",
+              errorMessage: "The assigned decision maker declined this action.",
             }
           : {}),
         updatedAt: now,
@@ -193,7 +220,9 @@ export async function commitToolActionReview(
         .update(issueThreadInteractions)
         .set({
           status: input.decision === "approved" ? "accepted" : "rejected",
-          resolvedByUserId: input.actor.userId ?? "board",
+          resolvedByUserId: input.actor.agentId ? null : input.actor.userId ?? "board",
+          resolvedByAgentId: input.actor.agentId ?? null,
+          resolvedByRunId: input.actor.runId ?? null,
           resolvedAt: now,
           updatedAt: now,
           result:
@@ -225,8 +254,10 @@ export async function commitToolActionReview(
         tx as unknown as Db,
         {
           companyId: input.companyId,
-          actorType: "user",
-          actorId: input.actor.userId ?? "board",
+          actorType: input.actor.agentId ? "agent" : "user",
+          actorId: input.actor.agentId ?? input.actor.userId ?? "board",
+          agentId: input.actor.agentId ?? null,
+          runId: input.actor.runId ?? null,
           action:
             input.decision === "approved"
               ? "issue.thread_interaction_accepted"
@@ -237,6 +268,8 @@ export async function commitToolActionReview(
             interactionId: interaction.id,
             actionRequestId: current.id,
             rememberAction: input.rememberAction === true,
+            delegation: interaction.delegation,
+            reason: input.actor.reason ?? input.reason,
           },
         },
         publications,

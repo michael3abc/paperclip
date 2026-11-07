@@ -175,6 +175,8 @@ async function handleServerRequestBody(
             return {
               success: false,
               contentItems: [{ type: "inputText", text: message }],
+              ...(error instanceof Error && "paperclipPublicToolError" in error && typeof error.paperclipPublicToolError === "string"
+                ? { publicError: { message: boundedText(error.paperclipPublicToolError) } } : {}),
             };
           }
         }

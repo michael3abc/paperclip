@@ -1,4 +1,5 @@
 import type {
+  DelegatedDecisionContext,
   IssueThreadInteractionCanonicalResolverPolicy,
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionPayload,
@@ -54,6 +55,7 @@ export const issueThreadInteractions = pgTable(
     resolvedByUserId: text("resolved_by_user_id"),
     payload: jsonb("payload").$type<IssueThreadInteractionPayload>().notNull(),
     result: jsonb("result").$type<IssueThreadInteractionResult>(),
+    delegation: jsonb("delegation").$type<DelegatedDecisionContext | null>(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
     dismissedByUserId: text("dismissed_by_user_id"),

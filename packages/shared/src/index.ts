@@ -2927,3 +2927,4 @@ export { pmWorkerPolicySchema, savePmWorkerPolicySchema, formatPmWorkerPolicyJso
   type PmWorkerPolicy, type PmWorkerSelection, type PmWorkerCatalogEntry, type PmWorkerPolicyView, type SavePmWorkerPolicy } from "./pm-worker-policy.js";
 
 export type { ProjectSessionRecord, ProjectSessionRecords, ProjectWorkProductRecords } from "./project-execution-records.js";
+export * from "./delegated-decisions.js";

@@ -3163,6 +3163,7 @@ function IssueDetailActivityTab({
             <ApprovalCard
               key={approval.id}
               approval={approval}
+              decisionAgent={agentMap.get(approval.decidedByAgentId ?? approval.delegation?.recipientAgentId ?? "") ?? null}
               requesterAgent={
                 approval.requestedByAgentId
                   ? (agentMap.get(approval.requestedByAgentId) ?? null)

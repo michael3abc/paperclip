@@ -1,3 +1,4 @@
+import { DelegatedDecisionStatus } from "./DelegatedDecisionStatus";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -27,6 +28,7 @@ function statusIcon(status: string) {
 export function ApprovalCard({
   approval,
   requesterAgent,
+  decisionAgent,
   onApprove,
   onReject,
   onOpen,
@@ -36,6 +38,7 @@ export function ApprovalCard({
 }: {
   approval: Approval;
   requesterAgent: Agent | null;
+  decisionAgent?: Agent | null;
   onApprove?: () => void;
   onReject?: () => void;
   onOpen?: () => void;
@@ -48,6 +51,7 @@ export function ApprovalCard({
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalSubject(payload);
   const showResolutionButtons =
+    (!approval.delegation || approval.delegation.level === "human") &&
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
     (approval.status === "pending" || approval.status === "revision_requested");
@@ -103,6 +107,8 @@ export function ApprovalCard({
         />
       </div>
 
+      {approval.delegation && <DelegatedDecisionStatus delegation={approval.delegation} status={approval.status} recipientName={decisionAgent?.name} />}
+      {approval.decidedByAgentId && <p className="text-xs text-muted-foreground">{decisionAgent?.name ?? "代理決策者"} 依委任{approval.status === "approved" ? "批准" : "決議"}</p>}
       {approval.decisionNote && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
           <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}

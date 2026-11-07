@@ -8,6 +8,11 @@ import {
 } from "./permission-policy.js";
 
 describe("ACPX permission policy", () => {
+  it.each(["ExitPlanMode", "AskUserQuestion"])("keeps %s pending even under approve-all", name => {
+    expect(decideAcpxPermission("claude", "approve-all", { raw: { toolCall: { name } } })).toBe("delegate");
+    expect(decideAcpxPermission("claude", "deny-all", { raw: { toolCall: { name } } })).toBe("reject_once");
+    expect(decideAcpxPermission("claude", "approve-all", { raw: { toolCall: { name: "Bash" } } })).toBe("allow_once");
+  });
   it.each(["approve-reads", "approve-paperclip"] as const)("allows assigned canonical live reads, including approval lookup, in %s", mode => {
     const reads = capabilityCanonicalOperationsForSurface("live").filter(action => action.sideEffectClass === "read");
     expect(reads.some(action => action.operationId === "get_approval")).toBe(true);

@@ -834,7 +834,7 @@ describe("Codex ACPX runtime adapter", () => {
       const options = openOptions(fakeCommand());
       options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
       options.launchEnvironment = { PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "http://untrusted.invalid/mcp", PAPERCLIP_PM_TOOL_POLICY: "untrusted inherited policy" };
-      if (binding === "PM") options.toolPolicy = { kind: "project_pm", version: 1, readRoots: ["/workspace"] };
+      if (binding === "PM") options.toolPolicy = { kind: "project_pm", version: 2, readRoots: ["/workspace"] };
       options.mcpServers = binding === "absent" ? [] : [{
         name: "paperclip", url: "http://127.0.0.1:3210/mcp",
         bearerToken: "bridge-secret", runnerOwned: binding === "runner-owned" || binding === "PM",

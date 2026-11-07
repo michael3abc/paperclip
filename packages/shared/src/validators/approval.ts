@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { APPROVAL_TYPES } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { resolveBudgetIncidentSchema } from "./budget.js";
 
 export const createApprovalSchema = z.object({
   type: z.enum(APPROVAL_TYPES),
@@ -13,6 +14,8 @@ export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  delegationRevision: z.string().uuid().optional(),
+  budgetResolution: resolveBudgetIncidentSchema.optional(),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;

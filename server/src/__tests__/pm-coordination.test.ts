@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { and, eq } from "drizzle-orm";
-import { agents, companies, projects, projectWorkspaces, issues, heartbeatRuns, authUsers, companyMemberships, activityLog, principalPermissionGrants, completionContracts, issueThreadInteractions, toolGatewaySessions, createDb } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, projects, projectWorkspaces, issues, heartbeatRuns, authUsers, companyMemberships, activityLog, principalPermissionGrants, completionContracts, issueThreadInteractions, toolGatewaySessions, createDb } from "@paperclipai/db";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { resolveManagedInstructionsRoot, agentInstructionsService } from "../services/agent-instructions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
@@ -29,6 +29,10 @@ import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } 
 import { documentService } from "../services/documents.js";
 import { agentFileStore, snapshotAgentFiles } from "../services/agent-file-store.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { saveDecisionDelegation } from "../services/delegated-decision-policy.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { executePmProjectRead } from "../services/pm-project-read-tools.js";
 
 describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on owned storage and database", (pmHarness) => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>, db: ReturnType<typeof createDb>, home: string;
@@ -106,6 +110,18 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     }
   });
   const reads = async () => { for (const file of PM_BUNDLE_FILES) await readPmBundleFile(db, scope, runId, { path: file }); };
+  it("reads and searches project files while rejecting symlink escape and binaries", async () => {
+    await fs.writeFile(path.join(home, "project-evidence.txt"), "first\nacceptance evidence\nlast\n");
+    await fs.writeFile(path.join(home, "binary-evidence"), Buffer.from([1, 0, 2]));
+    await fs.symlink("/etc/passwd", path.join(home, "escape-link"));
+    expect(await executePmProjectRead(db, scope, runId, "read_project_file", { path: "project-evidence.txt", startLine: 2, maxLines: 1 }))
+      .toMatchObject({ content: "acceptance evidence" });
+    expect(await executePmProjectRead(db, scope, runId, "search_project_files", { path: "project-evidence.txt", text: "acceptance" }))
+      .toMatchObject({ results: [{ path: "project-evidence.txt", line: 2, text: "acceptance evidence" }] });
+    await expect(executePmProjectRead(db, scope, runId, "read_project_file", { path: "escape-link" })).rejects.toThrow("outside");
+    await expect(executePmProjectRead(db, scope, runId, "read_project_file", { path: "binary-evidence" })).rejects.toThrow("Binary");
+    await fs.unlink(path.join(home, "escape-link"));
+  });
   it("rejects guessed execution tools, cross-project reads and generic API escalation", async () => {
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     await expect(buildNativeRuntimeContext({ db, agent: agent!, runId, runtimeConfig: {}, runtimeSkillEntries: [] }))
@@ -169,6 +185,13 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
   });
 
   it("dispatches an independent chat task, returns worker delivery, then accepts the corrected delivery through HTTP", async () => {
+    const delegateId = randomUUID(), delegateRunId = randomUUID(), delegatingOwnerId = randomUUID();
+    await db.insert(authUsers).values({ id: delegatingOwnerId, name: "Delegating Owner", email: `${delegatingOwnerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: delegatingOwnerId, membershipRole: "owner" });
+    await db.insert(agents).values({ id: delegateId, companyId, name: "Decision delegate", adapterType: "process" });
+    await db.insert(heartbeatRuns).values({ id: delegateRunId, companyId, agentId: delegateId, status: "running" });
+    await saveDecisionDelegation(db, { companyId, ownerUserId: delegatingOwnerId, agentId: delegateId,
+      baseRevision: null, enabled: true, allowSelfApproval: true, scopes: ["task_decisions"] });
     await db.update(issues).set({ conversationAgentId: agentId, conversationUserId: userId, conversationState: "active", executionPolicy: null }).where(eq(issues.id, issueId));
     await reads();
     const created = await execute("create_task", { idempotencyKey: "chat-flow", title: "Independent chat work", initialPlan: "Deliver, address review, deliver again.",
@@ -217,6 +240,28 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
         await expect(review.execute({ tool: "resolve_review", callId: "unread", arguments: { decision, reason: "Evidence checked" } })).rejects.toThrow("Read the current bundle");
         for (const file of ["AGENTS.md", "PROJECT.md", "memory/handoff.md", "REVIEW.md"]) await review.execute({ tool: "read_bundle_file", callId: randomUUID(), arguments: { path: file } });
         await expect(review.execute({ tool: "create_task", callId: "review-dispatch", arguments: {} })).rejects.toThrow();
+        if (decision === "reject") {
+          expect(review.definitions().some(tool => tool.name === "request_human_input")).toBe(true);
+          const requested = await review.execute({ tool: "request_human_input", callId: "review-question", arguments: {
+            interactionKind: "questions", idempotencyKey: "review-question", title: "Review tradeoff", prompt: "Which scope applies?",
+            continuationPolicy: "wake_assignee", payload: { questions: [{ id: "scope", prompt: "Scope", selectionMode: "single",
+              options: [{ id: "original", label: "Keep the agreed scope" }], required: true }] },
+          } }) as { interaction: { id: string; delegation: { revision: string; recipientAgentId: string } } };
+          expect(requested.interaction.delegation.recipientAgentId).toBe(delegateId);
+          await issueThreadInteractionService(db).answerQuestions({ id: childId, companyId }, requested.interaction.id,
+            { answers: [{ questionId: "scope", optionIds: ["original"] }], summaryMarkdown: "Existing scope still applies",
+              delegationRevision: requested.interaction.delegation.revision }, { agentId: delegateId, runId: delegateRunId });
+          const wakeup = vi.fn(async (target: string, input: any) => {
+            await db.insert(agentWakeupRequests).values({ companyId, agentId: target, source: "automation", status: "queued",
+              idempotencyKey: input.idempotencyKey, payload: input.payload });
+            return null;
+          });
+          await questionResponseDeliveryService(db, { heartbeat: { wakeup, cancelRun: vi.fn() } }).deliver(requested.interaction.id);
+          expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({ contextSnapshot: expect.objectContaining({
+            ...nativeReview, sourceRunId: workerRunId }) }));
+          const [unclaimed] = await db.select().from(issues).where(eq(issues.id, childId));
+          expect(unclaimed).toMatchObject({ assigneeAgentId: workerId, executionRunId: reviewRunId });
+        }
         expect(await review.execute({ tool: "resolve_review", callId: decision, arguments: { decision,
           reason: `${decision}: checked delivery revision ${deliveryRevision}; ${decision === "reject" ? "add the missing acceptance case" : "acceptance case verified"}` } }))
           .toMatchObject({ status: decision === "accept" ? "accepted" : "rejected" });

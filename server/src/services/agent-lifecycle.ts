@@ -64,10 +64,10 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     transaction: withAccountingTransaction,
     deleteDependencies: deleteAgentDependencies,
     policyBlocks,
-    setAgentBudget: (db, publications, companyId, agentId, amount, userId, isActive) =>
+    setAgentBudget: (db, publications, companyId, agentId, amount, userId, isActive, agentActor) =>
       budgetServiceInTransaction(db, publications).upsertPolicy(companyId, {
         scopeType: "agent", scopeId: agentId, amount, isActive, windowKind: "calendar_month_utc",
-      }, userId),
+      }, userId, agentActor),
     recordCreation: (db, companyId, agentId) => recordResourceCreationEvent(db, companyId, "agent", agentId),
     recordStatus: recordAgentStatusEvent,
     clearPrimary: clearPrimaryAgent,

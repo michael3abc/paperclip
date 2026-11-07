@@ -81,6 +81,24 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  }
 });
 `;
+test("a failed delegated permission handler cannot fall through to approve-all", { timeout: 10000 }, async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "acpx-failed-decision-"));
+  let delivery;
+  const client = new AcpClient({ agentCommand: "fixture", cwd, authPolicy: "skip", permissionMode: "approve-all", fs: false, terminal: false,
+    spawnAgent: () => spawn(process.execPath, ["-e", fixture], { cwd, stdio: ["pipe", "pipe", "pipe"] }),
+    onPermissionRequest: async (_params, context) => {
+      delivery = context.responseDelivery;
+      void delivery.catch(() => {});
+      throw new Error("delegation_revision_changed");
+    },
+  });
+  try {
+    await client.start(); await client.createSession();
+    await assert.rejects(client.prompt("session", "permission"), /delegation_revision_changed/);
+    assert.ok(delivery instanceof Promise);
+    await assert.rejects(delivery);
+  } finally { await client.close(); await rm(cwd, { recursive: true, force: true }); }
+});
 for (const mode of ["extension", "permission", "elicitation"]) {
   test(`real ${mode} request supplies a stream-owned receipt without callback deadlock`, { timeout: 10000 }, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpx-response-delivery-"));

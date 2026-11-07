@@ -609,6 +609,7 @@ const TimelineList = memo(function TimelineList({
             <div id={`approval-${approval.id}`} key={`approval:${approval.id}`} className="py-1.5">
               <ApprovalCard
                 approval={approval}
+              decisionAgent={agentMap?.get(approval.decidedByAgentId ?? approval.delegation?.recipientAgentId ?? "") ?? null}
                 requesterAgent={approval.requestedByAgentId ? agentMap?.get(approval.requestedByAgentId) ?? null : null}
                 onApprove={onApproveApproval ? () => void onApproveApproval(approval.id) : undefined}
                 onReject={onRejectApproval ? () => void onRejectApproval(approval.id) : undefined}

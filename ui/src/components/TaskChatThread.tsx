@@ -1,4 +1,5 @@
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
+import { DelegatedRuntimeInteractions } from "@/components/DelegatedDecisionStatus";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
@@ -2687,6 +2688,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       .filter(
         (interaction) =>
           interaction.status === "pending" &&
+          (!interaction.delegation || interaction.delegation.level === "human") &&
           interaction.kind !== "connection_intent" &&
           !(coordinatorEnabled && interaction.kind === "suggest_tasks") &&
           !shouldHideInteractionCard(interaction),
@@ -3208,6 +3210,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   return (
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
+    <DelegatedRuntimeInteractions.Provider value={interactions ?? []}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
@@ -3544,6 +3547,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
+    </DelegatedRuntimeInteractions.Provider>
     </TaskChatRequestHistoryContext.Provider>
   );
 }

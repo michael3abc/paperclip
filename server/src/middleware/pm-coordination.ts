@@ -1,3 +1,4 @@
+import { getDelegatedRequest } from "../services/delegated-requests.js";
 import type { RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
@@ -64,7 +65,12 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
     if (method === "POST" && tail === "/comments") allowed = Object.keys(body).every(key => key === "body");
     if (method === "PUT" && /^\/documents\/[^/]+$/.test(tail!)) allowed = true;
     if (method === "POST" && tail === "/interactions") allowed = true;
-    if (method === "POST" && /^\/interactions\/[^/]+\/(accept|reject)$/.test(tail!)) {
+    if (method === "POST" && /^\/interactions\/[^/]+\/(accept|reject|respond|verdicts)$/.test(tail!) && typeof body.delegationRevision === "string") {
+      const requestId = tail!.split("/")[2]!;
+      const delegated = await getDelegatedRequest(db, { ...pm, runId: run.id }, "interaction", requestId);
+      allowed = delegated.issueId === issue.id && delegated.revision === body.delegationRevision;
+      operation = "resolve_delegated_request";
+    } else if (method === "POST" && /^\/interactions\/[^/]+\/(accept|reject)$/.test(tail!)) {
       const assignmentContext = readNativeReviewAssignmentContext(run.contextSnapshot);
       const assignment = assignmentContext && await getNativeReviewAssignment(db, { ...pm, issueId: issue.id, actingRunId: run.id, contextSnapshot: assignmentContext });
       allowed = Boolean(assignment && (tail === `/interactions/${assignment.interaction.id}/accept` || tail === `/interactions/${assignment.interaction.id}/reject`)

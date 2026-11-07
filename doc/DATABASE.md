@@ -924,7 +924,7 @@ When authoring migrations or one-time backfills:
 - Create the supporting index for the batch predicate before the backfill loop runs.
 - Bound batches by an indexed key, such as an id range or keyset pagination cursor. Do not use `OFFSET` pagination or a query shape that re-scans already-visited rows each batch.
 - Avoid unbounded full-table `UPDATE` or `DELETE` statements. Add a selective predicate and process rows in bounded batches when table size can be large.
-- Use `CREATE INDEX CONCURRENTLY` for large existing tables when the migration can run outside a transaction and must avoid long write locks.
+- Use `CREATE INDEX CONCURRENTLY` for large existing tables when the migration can run outside a transaction and must avoid long write locks. Migration 0436's new decision namespace is an explicit startup exception: apply under an owned task drain, measure its partial-index scan on the isolated production clone first, and retain transactional rollback.
 - Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
 - Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
 
@@ -1903,3 +1903,25 @@ completed history; an empty queue has no periodic scan.
 Validate on an owned disposable PostgreSQL instance. Production upgrades still
 require backup, published migration-prefix checks and isolated clone upgrade
 before deployment; these migrations do not authorize a production schema change.
+
+### Decision delegation records
+
+`principal_permission_grants` stores the protected company-level
+`company:delegate_decisions` grant: human grantor, delegate agent, activation time,
+scope and revision. Only its Owner endpoint may replace it with a matching base
+revision. The normal permission-replacement service preserves this protected row.
+
+Approvals and issue interactions carry nullable `delegation` context. Null rows
+retain historical behavior; migration never enrolls existing pending requests.
+Context binds the grant and request revisions, source fingerprint/run/project,
+recipient and human-reserved reasons. Escalation rotates the request revision;
+resolution rechecks it and current grant authority under the request lock.
+`approvals.decided_by_agent_id` is nullable and mutually exclusive with
+`decided_by_user_id`. Agent audit entries retain the grant, reason and deciding
+run; do not store a delegate's decision as a human decision.
+
+The partial unique wake index applies only to `delegated-decision:` receipt keys.
+Delegated delivery uses existing wake requests, interaction delivery and activity
+records. It adds no polling service or second task-state store. Preserve exact
+source checkout and request identity across retries; unresolved delivery is never
+an approval. These schema changes are additive and retain old release compatibility.

@@ -1,4 +1,6 @@
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
+import { readDecisionDelegation } from "../delegated-decision-policy.js";
+import { requestLegacyRuntimeDecision } from "../native-runtime/legacy-runtime-decision-bridge.js";
 import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
@@ -838,6 +840,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       if (managedMcpConfig) {
         adapterContext.paperclipManagedMcp = managedMcpConfig;
       }
+      const decisionDelegation = issueRef ? await readDecisionDelegation(db, agent.companyId) : null;
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {
@@ -878,6 +881,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                   issueId,
                 );
               },
+              ...(decisionDelegation && issueRef ? { onRuntimeDecision: (decision: Parameters<NonNullable<AdapterExecutionContext["onRuntimeDecision"]>>[0]) =>
+                requestLegacyRuntimeDecision(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issueRef.id }, decision) } : {}),
               onProviderStopped: collectStoppedInstructions,
               onDispatch: markDispatchStarted,
               signal: executionControl.controller.signal,

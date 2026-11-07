@@ -10,7 +10,7 @@ import { forbidden, unprocessable } from "../errors.js";
 import { agentProjectPmWorkspaceBindingSchema, issueExecutionPolicySchema, taskWorkspaceSelectionSchema } from "@paperclipai/shared";
 
 /** A platform capability boundary, independent of prompts and provider approvals. */
-export const PM_COORDINATION_VERSION = 1 as const;
+export const PM_COORDINATION_VERSION = 2 as const;
 export const PM_BUNDLE_FILES = ["AGENTS.md", "PROJECT.md", "WORKERS.md", "REVIEW.md", "memory/decisions.md", "memory/handoff.md"] as const;
 export const PM_EDITABLE_BUNDLE_FILES = new Set<string>(PM_BUNDLE_FILES.filter(path => path !== "AGENTS.md"));
 export const PM_READ_TOOLS = new Set([
@@ -20,12 +20,14 @@ export const PM_READ_TOOLS = new Set([
   "get_task", "read_task_history", "read_task_document", "list_task_documents",
   "list_approvals", "get_approval", "get_approval_context", "read_tool_result",
   "list_chat_attachments", "read_chat_attachment", "read_bundle_file", "search_api", "call_api",
-  "list_task_attachments", "read_task_attachment",
+  "list_task_attachments", "read_task_attachment", "get_delegated_request", "list_delegated_requests",
+  "read_project_file", "search_project_files",
 ]);
 export const PM_WRITE_TOOLS = new Set([
   "create_task", "reassign_task", "set_dependencies", "set_task_title", "write_document",
   "comment_on_task", "write_task_document", "report_progress", "request_human_input",
   "request_approval", "request_review", "resolve_review", "write_bundle_file",
+  "resolve_delegated_request", "escalate_delegated_request",
   "finish_task", "block_task", "paperclip_finish", "paperclip_block",
 ]);
 

@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { HarnessRuntimeRequestResolution, PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { flushNativeQuestionResponses, projectNativeRuntimeRequest, registerNativeQuestionCommandTarget } from "./native-question-bridge.js";
+import { assertNativeQuestionCommandAuthorized, flushNativeQuestionResponses, projectNativeRuntimeRequest, registerNativeQuestionCommandTarget } from "./native-question-bridge.js";
 import { readPendingNativeRuntimeRequest } from "./runtime-request-resolution-authority.js";
 
 /** The in-process executor must perform the same card projection and response
@@ -28,17 +28,18 @@ export function createLocalNativeQuestionBridge(input: {
           if (type !== "request.resolve" || typeof payload?.requestId !== "string") throw new Error("native_question_command_invalid");
           const requestId = payload.requestId;
           const pending = await readPendingNativeRuntimeRequest(input.db, { ...input.binding, requestId });
-          if (!pending || pending.requestKind !== "runtime") throw new Error("native_question_not_pending");
+          if (!pending || (payload.turnId && pending.turnId !== payload.turnId)) throw new Error("native_question_not_pending");
           const result = await input.resolve({
             runId: input.binding.runId, requestId, turnId: pending.turnId, commandId,
-            resolution: { action: "submit", response: payload.response as never },
+            resolution: payload.resolution as HarnessRuntimeRequestResolution ?? { action: "submit", response: payload.response as never },
             authorizeBeforeDispatch: async () => {
+              await assertNativeQuestionCommandAuthorized(input.db, input.binding, commandId, requestId);
               const current = await readPendingNativeRuntimeRequest(input.db, { ...input.binding, requestId });
               const [run] = await input.db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
                 eq(heartbeatRuns.id, input.binding.runId), eq(heartbeatRuns.companyId, input.binding.companyId),
                 eq(heartbeatRuns.nativeIssueId, input.binding.issueId), eq(heartbeatRuns.agentId, input.binding.agentId),
               )).limit(1);
-              if (run?.status !== "running" || current?.turnId !== pending.turnId || current.requestKind !== "runtime") throw new Error("native_question_not_pending");
+              if (run?.status !== "running" || current?.turnId !== pending.turnId || current.fingerprint !== pending.fingerprint) throw new Error("native_question_not_pending");
             },
           });
           return { commandId: result.commandId, controllerSeq: 0 };
@@ -48,7 +49,7 @@ export function createLocalNativeQuestionBridge(input: {
     },
     async observe(event: PrpEvent) {
       const request = event.payload.request as Record<string, unknown> | undefined;
-      if (event.eventType !== "runtime_request.created" || request?.type !== "input") return;
+      if (event.eventType !== "runtime_request.created" || !["input", "permission"].includes(String(request?.type))) return;
       await projectNativeRuntimeRequest({ db: input.db, binding: input.binding, event });
     },
   };

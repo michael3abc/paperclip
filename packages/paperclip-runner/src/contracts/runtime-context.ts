@@ -32,7 +32,7 @@ export interface NativeRuntimeContextSnapshot {
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
   connectionInstructions?: { text: string; digest: string };
   /** Controller-derived capability restriction; provider approval modes cannot widen it. */
-  toolPolicy?: { kind: "project_pm"; version: 1; readRoots: string[] };
+  toolPolicy?: { kind: "project_pm"; version: 2; readRoots: string[] };
   aggregateDigest: string;
 }
 
@@ -187,11 +187,11 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
 function parseRuntimeToolPolicy(value: unknown): NonNullable<NativeRuntimeContextSnapshot["toolPolicy"]> {
   const policy = object(value, "input.runtimeContext.toolPolicy");
   exact(policy, GENERATED_RUNTIME_CONTEXT_FIELDS.toolPolicy, "input.runtimeContext.toolPolicy");
-  if (policy.kind !== "project_pm" || policy.version !== 1 || !Array.isArray(policy.readRoots)
+  if (policy.kind !== "project_pm" || policy.version !== 2 || !Array.isArray(policy.readRoots)
     || !policy.readRoots.length || policy.readRoots.some(root => typeof root !== "string" || !root.startsWith("/") || root.includes("\0"))) {
     throw new NativeRuntimeContextError("Unsupported runtime tool policy");
   }
-  return { kind: "project_pm", version: 1, readRoots: policy.readRoots as string[] };
+  return { kind: "project_pm", version: 2, readRoots: policy.readRoots as string[] };
 }
 
 function renderInstructionPaths(prompt: string, paths: { rootPath: string; entryPath: string }): string {

@@ -170,7 +170,18 @@ issue documents, attachments and artifact work products, never path scanning.
 Retain separately labelled CC Pocket history and distinguish source errors from
 empty results. New UI settings do not activate agents or deploy changes.
 Review decisions require evidence-linked reasons and the current assigned review;
-they grant no general approval authority. Test the real pinned ACP/SDK under
+they grant no general approval authority. Company decision delegation is a separate
+human-Owner-managed permission grant. New worker questions route through their
+task project's PM; PM questions route to the company delegate via
+`request_human_input`, not by adding the delegate to the worker catalog. Omit
+`resolverPolicy` for ordinary delegated questions; explicit human gates stay human.
+Use the assigned request's current revision with the controlled resolve/escalate
+tools. Preserve worker checkout and the original provider callback. Never replay
+old pending cards or revive cancelled work when enabling delegation. Only the
+granting human may change the grant or resolve a human-reserved request; Markdown
+and an agent's risk label cannot widen it. Record agent decisions as agents with
+grant version, run and reason. A missing delegate or expired provider request is
+an explicit unresolved failure, not consent. Test the real pinned ACP/SDK under
 approve-all as well as HTTP scope, dispatch/review and save/finalization behavior.
 
 2. Keep contracts synchronized.

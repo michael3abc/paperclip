@@ -269,6 +269,10 @@ export interface DurablePrpControlPlaneOptions {
     readonly identity: DurableRecoveryIdentity;
     readonly warmTransitionId: string | null;
   }) => Promise<void>;
+  /** Recheck application authority immediately before each command delivery,
+   * including pending commands released by a reconnect. A denial closes the
+   * connection and retains the unresolved command; it never changes its answer. */
+  beforeCommandDelivery?: (command: Readonly<Pick<DurableRecoveryCoreCommand, "commandId" | "type" | "payload">>) => Promise<void>;
   semanticInputMode?: "dispatch" | "retain_only";
   onSemanticToolInput?: (input: {
     readonly callId: string;
@@ -2014,6 +2018,7 @@ export class DurablePrpControlPlane {
   #semanticInputMode: "dispatch" | "retain_only";
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
+  #beforeCommandDelivery?: DurablePrpControlPlaneOptions["beforeCommandDelivery"];
   #onSemanticResultFailure?: DurablePrpControlPlaneOptions["onSemanticResultFailure"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
@@ -2070,6 +2075,7 @@ export class DurablePrpControlPlane {
     this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#beforeCommandDelivery = options.beforeCommandDelivery;
     this.#onSemanticResultFailure = options.onSemanticResultFailure;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
@@ -2182,7 +2188,7 @@ export class DurablePrpControlPlane {
   }
 
   #sendJson(connection: AuthorityConnection, value: unknown): void {
-    if (!this.#persistCheckpoint) {
+    if (!this.#persistCheckpoint && !this.#beforeCommandDelivery) {
       connection.sendJson(value);
       return;
     }
@@ -2190,6 +2196,17 @@ export class DurablePrpControlPlane {
     const frame = structuredClone(value);
     const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
       .then(() => checkpoint)
+      .then(async () => {
+        if (!this.#beforeCommandDelivery || !isRecord(frame) || !isRecord(frame.payload)) return;
+        const commands = frame.kind === "command" ? [frame.payload]
+          : Array.isArray(frame.payload.pendingCommands) ? frame.payload.pendingCommands : [];
+        for (const command of commands) {
+          if (!isRecord(command) || typeof command.commandId !== "string" || typeof command.type !== "string" || !isRecord(command.payload)) {
+            throw new Error("Command delivery authorization requires a canonical command");
+          }
+          await this.#beforeCommandDelivery({ commandId: command.commandId, type: command.type, payload: command.payload });
+        }
+      })
       .then(() => connection.sendJson(frame))
       .catch(() => connection.close());
     this.#sendQueues.set(connection, sending);

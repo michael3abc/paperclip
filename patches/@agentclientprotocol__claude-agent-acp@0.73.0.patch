@@ -124,7 +124,7 @@ new file mode 100644
 +export function paperclipPmToolPolicy(raw, cwd, mcpServers) {
 +    if (!raw) return null;
 +    const policy = JSON.parse(raw);
-+    if (policy.kind !== "project_pm" || policy.version !== 1 || !Array.isArray(policy.readRoots)
++    if (policy.kind !== "project_pm" || policy.version !== 2 || !Array.isArray(policy.readRoots)
 +        || !policy.readRoots.length || policy.readRoots.some(root => typeof root !== "string" || !path.isAbsolute(root))
 +        || Object.keys(policy).some(key => !["kind", "version", "readRoots"].includes(key))) {
 +        throw new Error("Invalid Paperclip PM tool policy");

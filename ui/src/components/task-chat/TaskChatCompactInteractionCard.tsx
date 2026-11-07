@@ -1,3 +1,4 @@
+import { DelegatedDecisionStatus } from "../DelegatedDecisionStatus";
 import { itemVerdictHref } from "@/lib/item-verdict-links";
 import { Link } from "@/lib/router";
 import {
@@ -1918,6 +1919,10 @@ export function TaskChatCompactInteractionCard({
   mentions,
 }: TaskChatCompactInteractionCardProps) {
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
+  if (interaction.delegation && interaction.delegation.level !== "human") {
+    return <DelegatedDecisionStatus delegation={interaction.delegation} status={interaction.status}
+      recipientName={interaction.delegation.recipientAgentId ? agentMap?.get(interaction.delegation.recipientAgentId)?.name : undefined} />;
+  }
   const creatorLabel = interaction.createdByAgentId
     ? agentMap?.get(interaction.createdByAgentId)?.name
     : interaction.createdByUserId

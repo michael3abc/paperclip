@@ -73,6 +73,7 @@ export {
   type QualifiedAcpxEnvironmentProbe,
 } from "./drivers/acpx/codex-acpx-driver.js";
 export * from "./drivers/acpx/sidecar-protocol.js";
+export { normalizeAcpFormElicitation } from "./drivers/acpx/acp-question-adapter.js";
 export { resolveClaudeEffort } from "./drivers/acpx/claude-effort.js";
 export { resolveGrokEffort } from "./drivers/acpx/grok-effort.js";
 export * from "./drivers/runner-tool-bridge.js";

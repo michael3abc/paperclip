@@ -32,7 +32,7 @@ describe("ACPX recovery identity", () => {
     const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel };
     const unrestricted = await createAcpxRecoveryBinding(input);
     const restricted = await createAcpxRecoveryBinding({ ...input,
-      toolPolicy: { kind: "project_pm", version: 1, readRoots: [fixture.input.workingDirectory] } });
+      toolPolicy: { kind: "project_pm", version: 2, readRoots: [fixture.input.workingDirectory] } });
     expect(restricted.profileSessionKey).not.toBe(unrestricted.profileSessionKey);
     const expected = { ...fixture.expected, profileDigest: unrestricted.commandDigest,
       requestedModel: unrestricted.requestedModel, effectiveModel: unrestricted.effectiveModel };

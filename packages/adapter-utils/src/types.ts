@@ -274,6 +274,9 @@ export interface AdapterExecutionContext {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  /** Server-owned decision bridge, bound to this run and the original provider request. */
+  onRuntimeDecision?: (input: { kind: "permission" | "elicitation"; requestId: string;
+    request: unknown; signal: AbortSignal; responseDelivery?: Promise<void> }) => Promise<Record<string, unknown> | undefined>;
   onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   /**

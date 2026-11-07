@@ -1,3 +1,4 @@
+import { DelegatedDecisionStatus } from "../DelegatedDecisionStatus";
 import type { ComponentProps } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -49,6 +50,10 @@ export function TaskChatInteractionCard({
 }: TaskChatInteractionCardProps) {
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const interaction = item.interaction;
+  if (interaction.delegation && interaction.delegation.level !== "human") {
+    return <DelegatedDecisionStatus delegation={interaction.delegation} status={interaction.status}
+      recipientName={interaction.delegation.recipientAgentId ? cardProps.agentMap?.get(interaction.delegation.recipientAgentId)?.name : undefined} />;
+  }
   if (coordinatorEnabled && interaction.kind === "suggest_tasks" && !shouldHideInteractionCard(interaction)) {
     return <div id={`interaction-${interaction.id}`} data-testid="task-chat-interaction" className="w-full">
       <TaskChatCompactInteractionCard interaction={interaction} presentation={presentation} draftKey={draftKey} {...cardProps} />

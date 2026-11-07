@@ -120,6 +120,7 @@ export function Approvals() {
             <ApprovalCard
               key={approval.id}
               approval={approval}
+              decisionAgent={(agents ?? []).find(a => a.id === (approval.decidedByAgentId ?? approval.delegation?.recipientAgentId)) ?? null}
               requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
               onApprove={() => approveMutation.mutate(approval.id)}
               onReject={() => rejectMutation.mutate(approval.id)}

@@ -1117,7 +1117,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             updatedAt: approvals.updatedAt,
           })
           .from(approvals)
-          .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending"), approvalExecutionIssueCondition()))
+          .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending"), approvalExecutionIssueCondition(),
+            sql`(${approvals.delegation} IS NULL OR ${approvals.delegation}->>'level' = 'human'
+              OR ${approvals.delegation}->>'recipientAgentId' = ${options.actor?.type === "agent" ? options.actor.agentId ?? null : null})`))
           .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
         const readableApprovalIssues = await issueSummaryMap(
@@ -1194,6 +1196,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          sql`(${issueThreadInteractions.delegation} IS NULL OR ${issueThreadInteractions.delegation}->>'level' = 'human'
+            OR ${issueThreadInteractions.delegation}->>'recipientAgentId' = ${options.actor?.type === "agent" ? options.actor.agentId ?? null : null})`,
           questionIssueIds ? inArray(issueThreadInteractions.issueId, [...questionIssueIds]) : undefined,
           questionIssueIds ? eq(issueThreadInteractions.kind, "ask_user_questions") : undefined,
         ))
@@ -1626,6 +1630,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(approvals.companyId, companyId),
             inArray(issueApprovals.issueId, reviewIssueIds),
             eq(approvals.status, "pending"),
+            sql`(${approvals.delegation} IS NULL OR ${approvals.delegation}->>'level' = 'human')`,
           ));
       const pendingApprovalByIssueId = new Map(pendingReviewApprovalRows.map((row) => [row.issueId, row.approvalId]));
       const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([

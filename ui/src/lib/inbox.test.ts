@@ -81,6 +81,7 @@ function makeApproval(status: Approval["status"]): Approval {
     status,
     payload: {},
     decisionNote: null,
+    decidedByAgentId: null, delegation: null,
     decidedByUserId: null,
     decidedAt: null,
     createdAt: new Date("2026-03-11T00:00:00.000Z"),
@@ -336,6 +337,7 @@ describe("inbox helpers", () => {
       },
       {
         ...makeApprovalWithTimestamps("approval-revision", "revision_requested", "2026-03-11T03:00:00.000Z"),
+        decidedByAgentId: null, delegation: null,
         decidedByUserId: "user-1",
       },
     ];
