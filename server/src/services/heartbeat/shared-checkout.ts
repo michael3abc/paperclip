@@ -18,15 +18,19 @@ async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | 
     "Select an existing project development directory.", { reason: "shared_workspace_not_directory" });
   if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_COMMON_DIR) throw new WorkspaceValidationFailure(
     "Clear inherited Git directory overrides before claiming a project workspace.", { reason: "shared_workspace_git_override" });
-  // Ordinary document folders need no Git executable. Any Git metadata, even
-  // a broken/dangling .git entry, keeps Git validation authoritative.
+  // Ordinary document folders need no Git executable. A local .git entry or
+  // ancestor repository metadata keeps Git validation authoritative. Ancestor
+  // ignore-only directories (for example ~/.git/info/exclude) are not repos.
   const entry = async (file: string) => fs.lstat(file).catch(error => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
   let directory = real, git = false;
   for (;;) {
-    if (await entry(path.join(directory, ".git")) ||
+    const marker = path.join(directory, ".git"), metadata = await entry(marker);
+    if ((metadata && (directory === real || !metadata.isDirectory() ||
+        await entry(path.join(marker, "HEAD")) || await entry(path.join(marker, "config")) ||
+        await entry(path.join(marker, "objects")) || await entry(path.join(marker, "refs")))) ||
         (await entry(path.join(directory, "HEAD")) && await entry(path.join(directory, "objects")) &&
           await entry(path.join(directory, "refs")))) { git = true; break; }
     const parent = path.dirname(directory);

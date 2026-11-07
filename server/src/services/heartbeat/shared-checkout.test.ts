@@ -76,6 +76,24 @@ it("does not reinterpret broken Git metadata as an ordinary directory", async ()
   expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.contextSnapshot?.sharedCheckoutClaim).toBeUndefined();
 });
 
+it("ignores ancestor ignore-only .git directories without requiring Git", async () => {
+  const [a] = await fixture(false), parent = a.cwd;
+  await mkdir(join(parent,".git","info"),{ recursive:true });
+  await writeFile(join(parent,".git","info","exclude"),"private-files\n");
+  a.cwd = join(parent,"documents"); await mkdir(a.cwd);
+  vi.stubEnv("PATH",join(root,"no-executables"));
+  try { await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd, kind:"directory" }); }
+  finally { vi.unstubAllEnvs(); }
+  expect(await readFile(join(parent,".git","info","exclude"),"utf8")).toBe("private-files\n");
+});
+
+it("still rejects damaged ancestor repository metadata", async () => {
+  const [a] = await fixture(false), parent = a.cwd;
+  await mkdir(join(parent,".git")); await writeFile(join(parent,".git","HEAD"),"broken\n");
+  a.cwd = join(parent,"documents"); await mkdir(a.cwd);
+  await expect(claimSharedCheckout(db,a)).rejects.toThrow();
+});
+
 it("does not require a Git executable for ordinary directories", async () => {
   const [a] = await fixture(false); vi.stubEnv("PATH", join(root,"no-executables"));
   try { await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd, kind:"directory" }); }

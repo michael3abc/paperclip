@@ -141,6 +141,8 @@ additional writers queue. Explicit parallel work or independent versions may sel
 `managed_isolated`. `requireTaskWorktree=true` remains an explicit isolated-only worker
 restriction; only the Owner may change either flag. Existing runs keep their contract.
 Fixed document/data directories do not require Git or automatic `git init`.
+Ignore-only ancestor directories such as `~/.git/info/exclude` are not repositories;
+local or ancestor repository metadata still requires authoritative Git validation.
 Git metadata, explicit repository/ref settings and isolated worktrees still require
 valid Git sources; damaged metadata must fail visibly. Shared claims use real paths
 and reject overlapping parent/child directories as well as aliases. Serialize the

@@ -4711,7 +4711,9 @@ Existing task continuation keeps its recorded contract.
 Local shared checkout admission records a durable claim on the run under a
 transaction advisory lock per host during bounded admission only. Git sources use
 their canonical checkout; ordinary document/data folders use their real directory
-without invoking Git or initializing a repository. Existing Git metadata and explicit
+without invoking Git or initializing a repository. An ancestor ignore-only directory
+such as `~/.git/info/exclude` is not repository metadata. A local `.git` entry,
+ancestor repository metadata and explicit
 repository/ref settings still require a valid checkout. Damaged Git sources fail;
 `managed_isolated` continues to require Git. Aliases and overlapping parent/child
 paths cannot create a second writer; independent admitted providers remain parallel.
