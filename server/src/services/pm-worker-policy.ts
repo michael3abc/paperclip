@@ -1,16 +1,20 @@
+import { aiConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionService } from "./ai-connections.js";
+import { pmWorkerModels } from "./pm-worker-catalog.js";
+import { HttpError } from "../errors.js";
+import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, activityLog, type Db } from "@paperclipai/db";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy, updatePmWorkerDocument,
   type PmWorkerCatalogEntry, type PmWorkerPolicyView, type SavePmWorkerPolicy } from "@paperclipai/shared";
-import { listAdapterModels } from "../adapters/registry.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { agentFileStore, readAgentFile, fileHash } from "./agent-file-store.js";
 import { materializeInstructionBytes } from "./agent-instruction-files.js";
 import { pmCoordinationScope, pmDelegationSchema } from "./pm-coordination-policy.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
-import { validateWorkerChoices, workerModelChoices, workerPermissionChoices } from "./pm-worker-options.js";
+import { validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
 
 export function pmWorkerPolicyRevision(value: unknown): string | null {
   const canonical = (input: unknown): unknown => Array.isArray(input) ? input.map(canonical)
@@ -18,17 +22,33 @@ export function pmWorkerPolicyRevision(value: unknown): string | null {
   return value == null ? null : createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
 
-export async function pmWorkerCatalog(db: Db, companyId: string): Promise<PmWorkerCatalogEntry[]> {
+export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string | null): Promise<PmWorkerCatalogEntry[]> {
   const workers = await db.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local"])));
   const eligible = workers.filter(worker => worker.runtimeConfig?.requireTaskWorktree === true
     && !["paused", "terminated", "pending_approval"].includes(worker.status));
-  const models = new Map(await Promise.all([...new Set(eligible.map(worker => worker.adapterType))].map(async harness =>
-    [harness, await listAdapterModels(harness)] as const)));
-  return eligible.map(worker => {
+  const connectionService = aiConnectionService(db);
+  const connections = userId ? await connectionService.list(companyId, userId) : [];
+  return Promise.all(eligible.map(async worker => {
     const harness = worker.adapterType as PmWorkerCatalogEntry["harness"];
     const permissions = workerPermissionChoices(worker.adapterConfig ?? {});
-    return { agentId: worker.id, name: worker.name, harness, permissions, models: workerModelChoices(harness, models.get(harness) ?? []) };
-  });
+    const parsedBinding = aiConnectionBindingSchema.safeParse(worker.runtimeConfig?.aiConnection).data;
+    const defaultAiConnection = parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding;
+    const models = await pmWorkerModels(db, worker);
+    for (const connection of connections) {
+      if (connection.status !== "connected" || !isAiConnectionCompatible(connection, harness)) continue;
+      const binding = aiConnectionBindingSchema.parse({ provider: connection.provider, method: connection.method,
+        mode: connection.ownership === "personal" ? "delegated" : "shared", connectionId: connection.id, grantId: connection.grantId });
+      if (isDeepStrictEqual(binding, defaultAiConnection)) continue;
+      try {
+        await connectionService.select({ companyId, userId: userId!, agentId: worker.id, adapterType: harness, binding });
+      } catch (error) {
+        if (error instanceof HttpError && [403, 422].includes(error.status)) continue;
+        throw error;
+      }
+      models.push(...await pmWorkerModels(db, worker, binding));
+    }
+    return { agentId: worker.id, name: worker.name, harness, permissions, models, ...(defaultAiConnection ? { defaultAiConnection } : {}) };
+  }));
 }
 
 export function pmWorkerPolicyService(db: Db) {
@@ -38,7 +58,7 @@ export function pmWorkerPolicyService(db: Db) {
   };
   return {
     read: async (companyId: string, agentId: string, actor: AuthorizationActor): Promise<PmWorkerPolicyView> => {
-      const catalog = await pmWorkerCatalog(db, companyId);
+      const catalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
       return files.locked(companyId, agentId, actor, false, async (_tx, agent, root) => {
         requirePm(agent);
         const bytes = await readAgentFile(root, "WORKERS.md");
@@ -69,7 +89,11 @@ export function pmWorkerPolicyService(db: Db) {
     save: async (companyId: string, agentId: string, input: SavePmWorkerPolicy, actor: AuthorizationActor) => {
       if (actor.type !== "board") throw forbidden("Only an Owner can change PM worker settings");
       const policy = pmWorkerPolicySchema.parse(input.policy);
-      validateWorkerChoices(policy, await pmWorkerCatalog(db, companyId));
+      validateWorkerChoices(policy, await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined));
+      for (const worker of policy.workers) for (const choice of worker.selections) {
+        if (choice.aiConnection) await aiConnectionService(db).select({ companyId, userId: actor.userId ?? null,
+          agentId: worker.agentId, adapterType: worker.harness, model: choice.model, binding: choice.aiConnection });
+      }
       return files.locked(companyId, agentId, actor, true, async (tx, agent, root) => {
         requirePm(agent);
         const previous = await readAgentFile(root, "WORKERS.md");

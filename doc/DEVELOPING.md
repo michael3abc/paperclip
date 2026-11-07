@@ -4678,3 +4678,15 @@ records `reuse_current_workspace` on the new retry receipt. Explicit fresh-works
 requests are preserved; shared workers and unknown or unsettled attempts do not use
 this path. Normal preparation still enforces trust, external-task isolation and
 environment policy. Original failed attempts and issue history remain unchanged.
+
+PM worker options may pin an existing explicit AI connection alongside their model.
+Worker catalogs use that connection's routed models, not a global official-provider
+catalog. Only connections already installed for the worker and available to the
+editing Owner may be selected. Saves validate sharing without reading credentials;
+new tasks persist the selected binding with their adapter overrides and normal
+managed-AI preparation rechecks the actual responsible user's access. The PM review
+must not inherit worker overrides. No connection, grant, secret, or shared worker
+configuration is created or changed by a worker-policy save. Keep the managed JSON
+projection and unique default consistent, retain old task settings and reject
+unavailable connections/models explicitly. Model choices show their connection;
+identical model IDs on different accounts remain distinct choices.

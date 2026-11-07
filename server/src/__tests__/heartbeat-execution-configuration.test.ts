@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments, connectionGrants } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
@@ -623,6 +623,33 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(input?.config).toMatchObject({ model: "issue-model", env: { SHARED_VALUE: "project", AGENT_ONLY: "agent-only", PROJECT_ONLY: "project-only" } });
     expect(input?.context.paperclipSecrets).toBeUndefined();
     expect(JSON.stringify(input?.context.paperclipWake)).not.toContain("untrusted wake instructions");
+  });
+
+  it.each(["valid", "revoked", "foreign"] as const)("uses a task-pinned AI account with current authorization: %s", async state => {
+    const f = await seed(true);
+    const target = state === "foreign" ? await seed(true) : f;
+    const taskCredential = `owned-task-fixture-${randomUUID()}`;
+    const account = await aiConnectionService(db).save(target.companyId, target.userId, {
+      provider: "openai", method: "api_key", ownership: "personal", name: "Task account", apiKey: taskCredential, agentIds: [], allAgents: true,
+    }, taskCredential);
+    const binding = { provider: "openai" as const, method: "api_key" as const, mode: "delegated" as const, connectionId: account.connectionId, grantId: account.grantId };
+    const [before] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    await db.update(issues).set({ assigneeAdapterOverrides: { aiConnection: binding, adapterConfig: { model: "issue-model" } } }).where(eq(issues.id, f.issueId));
+    if (state === "revoked") await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    let providerHome: string | undefined;
+    inspect.set(f.agentId, async input => {
+      const env = input.config.env as Record<string, string>; providerHome = env.CODEX_HOME;
+      expect(env.OPENAI_API_KEY).toBe(taskCredential); expect(env.OPENAI_API_KEY).not.toBe(f.credential);
+    });
+    const { finished, input } = await execute(f);
+    if (state === "valid") {
+      expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+      expect(input?.context.aiConnection).toMatchObject({ connectionId: account.connectionId, grantId: account.grantId });
+      expect(input?.config.model).toBe("issue-model");
+      await expect(access(providerHome!)).rejects.toMatchObject({ code: "ENOENT" });
+    } else { expect(finished.status).toBe("failed"); expect(input).toBeUndefined(); }
+    const [after] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(after!.runtimeConfig).toEqual(before!.runtimeConfig);
   });
 
   it("delivers the selected credential in an isolated home and removes it after completion", async () => {

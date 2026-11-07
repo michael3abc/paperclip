@@ -149,6 +149,7 @@ export interface IssueCreationSource {
 
 export interface IssueAssigneeAdapterOverrides {
   workerSelectionId?: string;
+  aiConnection?: import("../ai-connections.js").AiConnectionBinding;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }

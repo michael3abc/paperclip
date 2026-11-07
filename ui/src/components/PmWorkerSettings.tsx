@@ -7,6 +7,9 @@ import { NativeSelect } from "./ui/select";
 import { Input } from "./ui/input";
 
 type Row = PmWorkerSelection & { agentId: string; harness: "claude_local" | "codex_local" };
+const modelKey = (id: string, binding?: PmWorkerSelection["aiConnection"]) => binding
+  ? `${id}::${binding.mode}:${binding.connectionId}:${binding.grantId}` : id;
+
 export function PmWorkerSettings({ agentId }: { agentId: string }) {
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["pm-worker-policy", agentId], queryFn: () => agentsApi.workerPolicy(agentId), retry: false, refetchOnWindowFocus: false });
@@ -45,7 +48,7 @@ function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial:
   }
   const validRows = rows.every(row => {
     const worker = base.catalog.find(item => item.agentId === row.agentId);
-    const model = worker?.models.find(item => item.id === row.model);
+    const model = worker?.models.find(item => modelKey(item.id, item.aiConnection) === modelKey(row.model, row.aiConnection ?? worker.defaultAiConnection));
     return model && (row.thinking === null || model.thinking.includes(row.thinking))
       && worker?.permissions.includes(row.permission) && model.speeds.includes(row.speed);
   });
@@ -54,7 +57,7 @@ function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial:
     <fieldset disabled={busy} className="space-y-4">
       {rows.map((row, index) => {
         const catalog = base.catalog.find(worker => worker.agentId === row.agentId);
-        const model = catalog?.models.find(model => model.id === row.model);
+        const model = catalog?.models.find(model => modelKey(model.id, model.aiConnection) === modelKey(row.model, row.aiConnection ?? catalog.defaultAiConnection));
         return <div key={row.id} className="space-y-3 rounded-md border border-border p-4">
           <div className="flex items-center justify-between gap-3">
             <label className="flex items-center gap-2"><input type="radio" name={`default-worker-${agentId}`} checked={defaultId === row.id} onChange={() => { setDefaultId(row.id); setSaved(false); }} />Default</label>
@@ -63,12 +66,15 @@ function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial:
           <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
             <label>Harness<NativeSelect aria-label={`Worker ${index + 1} harness`} value={row.agentId} onChange={event => {
               const worker = base.catalog.find(worker => worker.agentId === event.target.value)!;
-              change(row.id, { agentId: worker.agentId, harness: worker.harness, model: "", thinking: null, permission: "" as Row["permission"], speed: "standard" });
+              change(row.id, { agentId: worker.agentId, harness: worker.harness, aiConnection: undefined, model: "", thinking: null, permission: "" as Row["permission"], speed: "standard" });
             }}><option value="" disabled>Choose harness</option>{base.catalog.map(worker => <option key={worker.agentId} value={worker.agentId}>{worker.harness === "claude_local" ? "Claude" : "Codex"} · {worker.name}</option>)}
               {row.agentId && !catalog && <option value={row.agentId}>Unavailable worker</option>}</NativeSelect></label>
-            <label>Model<NativeSelect aria-label={`Worker ${index + 1} model`} value={row.model} onChange={event => change(row.id, { model: event.target.value, thinking: null, speed: "standard" })}>
-              <option value="" disabled>Choose model</option>{catalog?.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
-              {row.model && !model && <option value={row.model}>{row.model} · Unavailable</option>}</NativeSelect></label>
+            <label>Model<NativeSelect aria-label={`Worker ${index + 1} model`} value={modelKey(row.model, row.aiConnection ?? catalog?.defaultAiConnection)} onChange={event => {
+              const selected = catalog?.models.find(item => modelKey(item.id, item.aiConnection) === event.target.value);
+              if (selected) change(row.id, { model: selected.id, aiConnection: selected.aiConnection, thinking: null, speed: "standard" });
+            }}>
+              <option value="" disabled>Choose model</option>{catalog?.models.map(model => <option key={modelKey(model.id, model.aiConnection)} value={modelKey(model.id, model.aiConnection)}>{model.label}</option>)}
+              {row.model && !model && <option value={modelKey(row.model, row.aiConnection ?? catalog?.defaultAiConnection)}>{row.model} · Unavailable</option>}</NativeSelect></label>
             <label>Thinking<NativeSelect aria-label={`Worker ${index + 1} thinking`} value={row.thinking ?? ""} disabled={!model?.thinking.length} onChange={event => change(row.id, { thinking: event.target.value || null })}>
               <option value="">Auto</option>{model?.thinking.map(value => <option key={value}>{value}</option>)}
               {row.thinking && !model?.thinking.includes(row.thinking) && <option value={row.thinking}>{row.thinking} · Unavailable</option>}</NativeSelect></label>

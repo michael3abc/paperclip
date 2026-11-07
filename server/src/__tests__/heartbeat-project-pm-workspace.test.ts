@@ -204,6 +204,23 @@ suite("project PM role and workspace at claim", () => {
     }
   }, 60_000);
 
+  it("does not inherit a worker task connection during PM review", async () => {
+    const pm = await seedPm({ workerSlots: 1 });
+    const workerId = randomUUID(), childId = randomUUID();
+    await db.update(agents).set({ adapterConfig: { cwd: pm.agentHome, model: "pm-model", modelReasoningEffort: "high" } }).where(eq(agents.id, pm.agentId));
+    await db.insert(agents).values({ id: workerId, companyId: pm.companyId, name: "Worker", status: "idle", adapterType: "codex_local" });
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent", agentId: pm.agentId }] }] })!;
+    const transition = applyIssueExecutionPolicyTransition({ issue: { status: "in_progress", assigneeAgentId: workerId }, policy,
+      requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: workerId }, commentBody: "Deliver" });
+    const aiConnection = { mode: "delegated" as const, provider: "anthropic" as const, method: "api_key" as const, connectionId: randomUUID(), grantId: randomUUID() };
+    await db.insert(issues).values({ id: childId, companyId: pm.companyId, projectId: pm.projectId, parentId: pm.inboxIssueId, title: "Review", assigneeAgentId: workerId,
+      executionPolicy: { ...policy }, assigneeAdapterOverrides: { aiConnection, adapterConfig: { model: "worker-model" } }, ...transition.patch });
+    const review = await runToEnd(pm.agentId, { issueId: childId });
+    expect({ status: review.run.status, error: review.run.error }).toEqual({ status: "succeeded", error: null });
+    expect(review.calls[0]![0].config.model).toBe("pm-model");
+    expect(review.calls[0]![0].context.aiConnection).toBeUndefined();
+  }, 60_000);
+
   it.each(["review", "approval"] as const)("keeps a dual-role %s stage in the PM home and restores worker overrides after revision", async (type) => {
     // Legacy dual-role compatibility. Zero-slot PMs use the qualified native
     // review route exercised by pm-coordination.test.ts.

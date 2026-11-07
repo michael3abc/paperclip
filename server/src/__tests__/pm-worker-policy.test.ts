@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { eq } from "drizzle-orm";
-import { agents, companies, projects, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb } from "@paperclipai/db";
+import { agents, companies, projects, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb, toolApplications, toolConnections, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import type { PmWorkerPolicy } from "@paperclipai/shared";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
@@ -126,4 +126,38 @@ describe("PM worker policy with owned database and real files", () => {
     expect(result.pms).toEqual([{ id: pmId, name: "PM" }]);
     expect((await projectSessionRecords(db, randomUUID(), projectId, actor)).records).toEqual([]);
   });
+  it("saves connection-bound Sonnet/Qwen options, dispatches exact bindings and rejects revoked or uninstalled routes", async () => {
+    const appId = randomUUID();
+    await db.insert(toolApplications).values({ id: appId, companyId, name: "Owned model routes", type: "rest_api" });
+    const routes = [];
+    for (const [index, model] of ["compass-sonnet5.5", "Qwen3.8_RTX2080ti_Strata", "uninstalled-model"].entries()) {
+      const connectionId = randomUUID(), grantId = randomUUID();
+      const binding = { mode: "delegated" as const, provider: "anthropic" as const, method: "api_key" as const, connectionId, grantId };
+      await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId: appId, name: model, uid: model, transport: "runtime_auth", connectionPurpose: "ai", enabled: true, status: "active", healthStatus: "ok",
+        config: { ai: { provider: "anthropic", method: "api_key", routing: { kind: index === 0 ? "gateway" : "local", protocol: "messages", baseUrl: "http://127.0.0.1:8790", auth: "bearer", models: [{ id: model }] } } } });
+      await db.insert(connectionGrants).values({ id: grantId, companyId, connectionId, kind: "user", subjectUserId: userId, status: "active" });
+      if (index < 2) await db.insert(toolConnectionInstalls).values({ companyId, connectionId, targetType: "agent", targetId: workerId });
+      routes.push({ model, binding });
+    }
+    await db.update(agents).set({ adapterType: "claude_local", runtimeConfig: { requireTaskWorktree: true, aiConnection: routes[0]!.binding } }).where(eq(agents.id, workerId));
+    const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
+    const catalog = before.catalog.find(item => item.agentId === workerId)!;
+    expect(catalog.models.map(item => item.id).sort()).toEqual(["Qwen3.8_RTX2080ti_Strata", "compass-sonnet5.5"]);
+    const selections = routes.slice(0, 2).map(route => ({ id: randomUUID(), model: route.model, aiConnection: route.binding, thinking: "high", permission: "approve-all" as const, speed: "standard" as const }));
+    const routed: PmWorkerPolicy = { version: 2, defaultSelectionId: selections[0]!.id, workers: [{ agentId: workerId, harness: "claude_local", selections }] };
+    await svc.save(companyId, pmId, { policy: routed, baseRevision: before.revision, baseHash: before.documentHash }, actor);
+    const after = await svc.read(companyId, pmId, actor);
+    expect(after.policy).toEqual(routed); expect(after.warnings).toEqual([]);
+    for (const choice of selections) {
+      const dispatched = await assertPmDispatch(db, await scope(), { projectId, assigneeAdapterOverrides: { workerSelectionId: choice.id } });
+      expect(dispatched.assigneeAdapterOverrides).toMatchObject({ aiConnection: choice.aiConnection, adapterConfig: { model: choice.model, effort: "high", permissionMode: "approve-all" } });
+    }
+    expect((await db.select().from(agents).where(eq(agents.id, workerId)))[0]!.runtimeConfig?.aiConnection).toEqual(routes[0]!.binding);
+    await expect(assertPmDispatch(db, await scope(), { projectId, assigneeAdapterOverrides: { workerSelectionId: selections[0]!.id, aiConnection: routes[1]!.binding } })).rejects.toThrow("connection differs");
+    const wrongRoute = structuredClone(routed); wrongRoute.workers[0]!.selections[0]!.aiConnection = routes[1]!.binding;
+    await expect(svc.save(companyId, pmId, { policy: wrongRoute, baseRevision: after.revision, baseHash: after.documentHash }, actor)).rejects.toThrow("not supported");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, routes[1]!.binding.grantId));
+    await expect(assertPmDispatch(db, await scope(), { projectId, assigneeAdapterOverrides: { workerSelectionId: selections[1]!.id } })).rejects.toThrow("unavailable or not installed");
+  });
+
 });

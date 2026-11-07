@@ -1,3 +1,4 @@
+import { aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import type {
   ExecutionWorkspaceMode,
   ExecutionWorkspaceStrategy,
@@ -395,6 +396,7 @@ export function resolveExecutionWorkspaceMode(input: {
 }
 
 interface ParsedIssueAssigneeAdapterOverrides {
+  aiConnection?: AiConnectionBinding;
   adapterConfig: Record<string, unknown> | null;
   useProjectWorkspace: boolean | null;
 }
@@ -412,10 +414,12 @@ export function parseIssueAssigneeAdapterOverrides(
     typeof parsed.useProjectWorkspace === "boolean"
       ? parsed.useProjectWorkspace
       : null;
-  if (!adapterConfig && useProjectWorkspace === null) return null;
+  const aiConnection = parsed.aiConnection === undefined ? undefined : aiConnectionBindingSchema.parse(parsed.aiConnection);
+  if (!adapterConfig && useProjectWorkspace === null && !aiConnection) return null;
   return {
     adapterConfig,
     useProjectWorkspace,
+    ...(aiConnection ? { aiConnection } : {}),
   };
 }
 

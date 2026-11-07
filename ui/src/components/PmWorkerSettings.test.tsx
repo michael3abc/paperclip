@@ -96,4 +96,21 @@ describe("PM worker settings", () => {
     await vi.waitFor(() => expect(container.querySelector('[role=alert]')?.textContent).toContain("changed after saving"));
     expect(container.textContent).not.toContain("WORKERS.md saved.");
   });
+  it("pins the selected model's connection and retains it in the saved JSON", async () => {
+    const binding = { mode: "delegated" as const, provider: "anthropic" as const, method: "api_key" as const,
+      connectionId: "10000000-0000-4000-8000-000000000003", grantId: "10000000-0000-4000-8000-000000000004" };
+    const data = fixture(); data.catalog[0]!.harness = "claude_local";
+    data.catalog[0]!.models = [{ id: "Qwen3.8_RTX2080ti_Strata", label: "Qwen · Local", thinking: ["high"], speeds: ["standard"], aiConnection: binding }];
+    api.workerPolicy.mockResolvedValue(data);
+    await render(); await click(button("Add worker option")); await select("harness", workerId);
+    await select("model", `Qwen3.8_RTX2080ti_Strata::delegated:${binding.connectionId}:${binding.grantId}`);
+    await select("thinking", "high"); await select("permission", "approve-reads");
+    await click(container.querySelector("input[type=radio]")!);
+    expect(button("Save workers").disabled).toBe(false);
+    expect(preview().workers[0].selections[0]).toMatchObject({ model: "Qwen3.8_RTX2080ti_Strata", aiConnection: binding });
+    await select("harness", workerId);
+    expect(preview().workers[0].selections[0].aiConnection).toBeUndefined();
+    expect(button("Save workers").disabled).toBe(true);
+  });
+
 });

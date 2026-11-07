@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, normalizeCodexModel } from "@paperclipai/adapter-codex-local";
 import type { PmWorkerCatalogEntry, PmWorkerPolicy, PmWorkerSelection } from "@paperclipai/shared";
@@ -35,7 +36,7 @@ export function validateWorkerChoices(policy: PmWorkerPolicy, catalog: PmWorkerC
     const available = catalog.find(entry => entry.agentId === worker.agentId && entry.harness === worker.harness);
     if (!available) throw unprocessable("The selected shared worker is unavailable", { code: "PM_WORKER_UNAVAILABLE", agentId: worker.agentId });
     for (const choice of worker.selections) {
-      const model = available.models.find(model => model.id === choice.model);
+      const model = available.models.find(model => model.id === choice.model && isDeepStrictEqual(model.aiConnection, choice.aiConnection ?? available.defaultAiConnection));
       if (!model || (choice.thinking !== null && !model.thinking.includes(choice.thinking))
         || !model.speeds.includes(choice.speed) || !available.permissions.includes(choice.permission)) {
         throw unprocessable("Worker selection is not supported by the current harness/model catalog", { code: "PM_WORKER_SELECTION_UNAVAILABLE", selectionId: choice.id });

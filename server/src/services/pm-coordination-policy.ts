@@ -1,5 +1,7 @@
+import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { isDeepStrictEqual } from "node:util";
-import { workerSelectionOverrides, workerPermissionChoices, workerModelChoices, validateWorkerChoices } from "./pm-worker-options.js";
+import { workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { agents, issues, issueApprovals, heartbeatRuns, projectWorkspaces, executionWorkspaces, type Db } from "@paperclipai/db";
@@ -80,7 +82,7 @@ export async function assertPmIssue(db: Db, scope: PmCoordinationScope, issueId:
 
 export function assertPmWorkerSelection(scope: PmCoordinationScope, agentId: unknown, overrides: unknown) {
   if (scope.delegation?.version === 2) {
-    const input = z.object({ workerSelectionId: z.string().uuid().optional(), adapterConfig: z.record(z.string(), z.unknown()).optional() }).strict().safeParse(overrides ?? {});
+    const input = z.object({ aiConnection: aiConnectionBindingSchema.optional(), workerSelectionId: z.string().uuid().optional(), adapterConfig: z.record(z.string(), z.unknown()).optional() }).strict().safeParse(overrides ?? {});
     if (!input.success) throw forbidden("Choose a worker selection; arbitrary task overrides are not allowed", { code: "PM_MODEL_DENIED" });
     const choices = scope.delegation.workers.flatMap(worker => worker.selections.map(choice => ({ worker, choice })));
     const selected = input.data.workerSelectionId
@@ -91,7 +93,8 @@ export function assertPmWorkerSelection(scope: PmCoordinationScope, agentId: unk
     if (!selected || (agentId != null && agentId !== selected.worker.agentId)) throw forbidden("Select an authorized shared worker", { code: "PM_WORKER_DENIED" });
     const adapterConfig = workerSelectionOverrides(selected.worker.harness, selected.choice);
     if (input.data.adapterConfig && !isDeepStrictEqual(adapterConfig, input.data.adapterConfig)) throw forbidden("Task overrides differ from the selected worker policy", { code: "PM_MODEL_DENIED" });
-    return { adapterConfig, workerSelectionId: selected.choice.id };
+    if (input.data.aiConnection && !isDeepStrictEqual(input.data.aiConnection, selected.choice.aiConnection)) throw forbidden("Task connection differs from the Owner-selected worker option", { code: "PM_MODEL_DENIED" });
+    return { adapterConfig, workerSelectionId: selected.choice.id, ...(selected.choice.aiConnection ? { aiConnection: selected.choice.aiConnection } : {}) };
   }
   const worker = scope.delegation?.workers.find(worker => worker.agentId === agentId);
   if (!worker) throw forbidden("Select a shared worker from the Owner-approved delegation policy", { code: "PM_WORKER_DENIED" });
@@ -144,10 +147,11 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   if (scope.delegation?.version === 2) {
     const group = scope.delegation.workers.find(item => item.agentId === worker.id)!;
     const choice = group.selections.find(item => item.id === (overrides as { workerSelectionId?: string }).workerSelectionId)!;
-    const { listAdapterModels } = await import("../adapters/registry.js");
+
+    const parsedBinding = aiConnectionBindingSchema.safeParse(worker.runtimeConfig?.aiConnection).data;
     validateWorkerChoices({ version: 2, defaultSelectionId: choice.id, workers: [{ ...group, selections: [choice] }] }, [{
       agentId: worker.id, name: worker.name, harness: group.harness,
-      permissions: workerPermissionChoices(worker.adapterConfig ?? {}), models: workerModelChoices(group.harness, await listAdapterModels(group.harness)),
+      permissions: workerPermissionChoices(worker.adapterConfig ?? {}), defaultAiConnection: parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding, models: await pmWorkerModels(db, worker, choice.aiConnection),
     }]);
     if (group.harness !== worker.adapterType || !workerPermissionChoices(worker.adapterConfig ?? {}).includes(choice.permission)) {
       throw forbidden("Shared worker harness or permission support changed; review its worker settings");

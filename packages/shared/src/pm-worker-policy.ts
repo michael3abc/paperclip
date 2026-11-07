@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { aiConnectionBindingSchema } from "./ai-connections.js";
 
 export const pmWorkerSelectionSchema = z.object({
   id: z.string().uuid(),
@@ -6,6 +7,7 @@ export const pmWorkerSelectionSchema = z.object({
   thinking: z.string().min(1).max(40).nullable(),
   permission: z.enum(["default", "full-access", "approve-all", "approve-reads", "deny-all"]),
   speed: z.enum(["standard", "fast"]),
+  aiConnection: aiConnectionBindingSchema.refine(binding => binding.mode !== "responsible_user", "Choose an explicit connection").optional(),
   purpose: z.string().trim().max(500).optional(),
 }).strict();
 
@@ -41,7 +43,8 @@ export interface PmWorkerCatalogEntry {
   name: string;
   harness: "claude_local" | "codex_local";
   permissions: PmWorkerSelection["permission"][];
-  models: { id: string; label: string; thinking: string[]; speeds: PmWorkerSelection["speed"][] }[];
+  defaultAiConnection?: PmWorkerSelection["aiConnection"];
+  models: { aiConnection?: PmWorkerSelection["aiConnection"]; id: string; label: string; thinking: string[]; speeds: PmWorkerSelection["speed"][] }[];
 }
 export interface PmWorkerPolicyView {
   policy: PmWorkerPolicy | null;

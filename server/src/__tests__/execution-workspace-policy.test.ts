@@ -23,6 +23,11 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  it("retains explicit task connection identities and rejects malformed bindings", () => {
+    const aiConnection = { mode: "delegated", provider: "anthropic", method: "api_key", connectionId: "10000000-0000-4000-8000-000000000001", grantId: "10000000-0000-4000-8000-000000000002" };
+    expect(parseIssueAssigneeAdapterOverrides({ aiConnection, adapterConfig: { model: "Qwen3.8_RTX2080ti_Strata" } })).toEqual({ aiConnection, adapterConfig: { model: "Qwen3.8_RTX2080ti_Strata" }, useProjectWorkspace: null });
+    expect(() => parseIssueAssigneeAdapterOverrides({ aiConnection: { ...aiConnection, grantId: "invalid" } })).toThrow();
+  });
   it("ignores operator-owned homeMode in stored task overrides while retaining task settings", () => {
     expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { homeMode: "preconfigured", model: "task-model" } }))
       .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });

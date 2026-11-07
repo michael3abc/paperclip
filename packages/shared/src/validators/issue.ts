@@ -1,3 +1,4 @@
+import { aiConnectionBindingSchema } from "../ai-connections.js";
 import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
@@ -307,6 +308,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
     workerSelectionId: z.string().uuid().optional(),
+    aiConnection: aiConnectionBindingSchema.optional(),
     adapterConfig: z.record(z.string(), z.unknown())
       .refine(config => !Object.prototype.hasOwnProperty.call(config, "homeMode"), "homeMode must be set by an operator on the agent, not on a task")
       .refine(config => !config.env || typeof config.env !== "object" || !Object.keys(config.env).some(key => key.toUpperCase() === "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"), "Prepared harness homes must be provisioned by the execution environment, not on a task")

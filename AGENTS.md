@@ -348,3 +348,15 @@ A change is done when all are true:
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
 
 PM Retry may reuse its task-owned home only after a settled pre-provider setup failure and an unchanged zero-slot PM binding. Never reinterpret an explicit fresh-workspace request or relax worker isolation; preserve original failed runs and recheck trust and environment restrictions during preparation.
+
+PM worker options may pin an existing explicit AI connection alongside their model.
+Worker catalogs use that connection's routed models, not a global official-provider
+catalog. Only connections already installed for the worker and available to the
+editing Owner may be selected. Saves validate sharing without reading credentials;
+new tasks persist the selected binding with their adapter overrides and normal
+managed-AI preparation rechecks the actual responsible user's access. The PM review
+must not inherit worker overrides. No connection, grant, secret, or shared worker
+configuration is created or changed by a worker-policy save. Keep the managed JSON
+projection and unique default consistent, retain old task settings and reject
+unavailable connections/models explicitly. Model choices show their connection;
+identical model IDs on different accounts remain distinct choices.

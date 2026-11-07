@@ -3799,14 +3799,14 @@ const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uui
 registry.registerPath({
   method: "get", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
   summary: "Read a project PM's worker policy, document revision and available worker choices",
-  description: "Requires agent configuration read access. Returns warnings for legacy or out-of-sync policies without migrating or dispatching work.",
+  description: "Requires agent configuration read access. Returns warnings for legacy or out-of-sync policies without migrating or dispatching work. Model choices identify existing installed AI connections and use their routed catalogs.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 registry.registerPath({
   method: "put", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
   summary: "Save a project PM's worker choices and managed instruction block",
-  description: "Requires board access and agent/instruction management authority. Compares the policy revision and document hash; preserves existing tasks, sessions and holds.",
+  description: "Requires board access and agent/instruction management authority. Compares the policy revision and document hash; preserves existing tasks, sessions and holds. Worker options may pin an existing explicit AI connection; sharing and installation are checked without creating credentials or grants.",
   request: { params: z.object({ id: z.string() }), body: jsonBody(savePmWorkerPolicySchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
 });
