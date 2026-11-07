@@ -1,4 +1,5 @@
 import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
+import { setTimeout as realTimeout } from "node:timers";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { resolveCommittedNativeRecoveryNotices, pendingNativeRecoveryNotices } from "../services/native-runtime/native-recovery-notices.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
@@ -16681,16 +16682,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         inArray(chatSdkState.endpointId, ids), eq(chatSdkState.stateKey, "paperclip:github-webhook-recovery:v1")));
       const errors: unknown[] = [];
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
-      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
       try {
         await first.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const startedAt = Date.now();
         const initial = await windows();
         expect(initial).toHaveLength(5);
         expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
-        await vi.waitFor(async () => {
-          await vi.advanceTimersByTimeAsync(1000);
-          expect(await windows()).toHaveLength(106);
-        }, { timeout: 10_000 });
+        // Advance only the scheduler's next deadline. Polling PostgreSQL must
+        // not advance fake time past the unrelated 60-second provider scan.
+        const completedBy = performance.now() + 10_000;
+        while (performance.now() < completedBy && (await windows()).length < 106) {
+          const next = coordinator.nextWakeAt();
+          expect(next).not.toBeNull();
+          expect(next!).toBeLessThan(startedAt + 60_000);
+          await vi.advanceTimersByTimeAsync(Math.max(1, next! - Date.now()));
+          while (coordinator.nextWakeAt() === null) {
+            if (performance.now() >= completedBy) throw new Error("GitHub recovery batch did not settle");
+            await new Promise(resolve => realTimeout(resolve, 10));
+          }
+        }
+        expect(await windows()).toHaveLength(106);
         expect(first.requests).toEqual([]); expect(second.requests).toEqual([]); expect(errors).toEqual([]);
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
@@ -64774,6 +64786,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(waiting.result).toMatchObject({ attemptCount: 0, identityContentionCount: 1,
         identityContentionDeadlineAt: deadline });
       expect(Date.parse(String(waiting.result?.retryAt))).toBeLessThanOrEqual(Date.parse(deadline));
+      // Keep duplicate requests before the saved due time even on a loaded test host.
+      // Expiry below is driven explicitly; this test does not exercise retry backoff.
+      waiting.result = { ...waiting.result, retryAt: deadline };
+      await db.update(chatActions).set({ result: waiting.result }).where(eq(chatActions.id, saved.id));
       for (const value of [body, { ...body, idempotencyKey: randomUUID() }]) {
         const duplicate = await request(f.app).post(`/api/issues/${f.issueId}/retry`).send(value);
         expect(duplicate.status, JSON.stringify(duplicate.body)).toBe(202);
@@ -65588,6 +65604,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       } finally { await f.service.shutdown(); }
     },
+    // The backlog cases persist and verify 52 inputs plus a second retry.
+    // Their whole-fixture budget is separate from the 10-second admission check.
+    30_000,
   );
 
   it("leaves saved GitHub input pending when a persisted Retry wait loses board authority", async () => {
@@ -83163,9 +83182,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 "lossless-long-board-send",
                 "owner-user",
               );
-          for (let drain = 0; drain < 20; drain++)
-            await service.processPendingPublications();
           expect(publication?.commentId).toBeTruthy();
+          for (let drain = 0; drain < 20; drain++) {
+            await service.processPendingPublications();
+            const delivered = await orderedBatch(publication!.commentId!);
+            if (delivered.length > 0 && delivered.every(row => row.state === "published")) break;
+          }
           const expectedText = provider === "slack" && source === "new" ? `**Owner User (via Paperclip)**\n\n${body}` : body;
           const rows = await orderedBatch(publication!.commentId!);
           expect(rows.every((row) => row.state === "published")).toBe(true);

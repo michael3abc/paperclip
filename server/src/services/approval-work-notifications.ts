@@ -1,3 +1,4 @@
+import { enqueuePushSource } from "./web-push-events.js";
 import { and, eq } from "drizzle-orm";
 import { approvals, issueApprovals, type Db } from "@paperclipai/db";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
@@ -27,6 +28,12 @@ export async function notifyApprovalWork(transaction: object, companyId: string,
 export function writeApprovalChange<T>(db: Db, companyId: string, write: (transaction: Db) => Promise<T>, scope?: ApprovalChangeScope): Promise<T> {
   return db.transaction(async tx => {
     await notifyApprovalWork(tx, companyId, scope);
-    return write(tx as unknown as Db);
+    const result = await write(tx as unknown as Db);
+    const row = result as typeof approvals.$inferSelect | null;
+    if (process.env.PAPERCLIP_WEB_PUSH_CONFIG_FILE && row?.id && row.status === "pending") await enqueuePushSource(tx as unknown as Db, {
+      companyId, eventKey: `approval:${row.id}:${row.updatedAt.toISOString()}`, sourceKind: "approval",
+      sourceId: row.id, category: "approval", actorUserId: row.requestedByUserId,
+    });
+    return result;
   });
 }

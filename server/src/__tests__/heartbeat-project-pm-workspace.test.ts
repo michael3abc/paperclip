@@ -154,7 +154,7 @@ suite("project PM role and workspace at claim", () => {
       adapterType: "codex_local", adapterConfig: { model: "default-model" },
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 20 }, requireTaskWorktree: true } });
     const taskIds = [randomUUID(), randomUUID(), randomUUID()];
-    const sessionIds = new Map(taskIds.map(id => [id, randomUUID()]));
+    const sessionIds = new Map<string, string>(taskIds.map(id => [id, randomUUID()]));
     const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent", agentId: pm.agentId }] }] })!;
     for (const [i, id] of taskIds.entries()) await db.insert(issues).values({ id, companyId: pm.companyId,
       projectId: i === 2 ? other.otherProjectId : pm.projectId, parentId: i === 2 ? null : pm.inboxIssueId,

@@ -164,3 +164,70 @@ self.addEventListener("fetch", (event) => {
       })
   );
 });
+
+// Separate IndexedDB store: build-cache invalidation must not erase account
+// binding. Never fetch protected API data just to display a push.
+function pushBindingStore(mode, value) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("paperclip-push", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("binding");
+    request.onerror = () => reject(new Error("Push binding storage unavailable"));
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("binding", mode);
+      const store = transaction.objectStore("binding");
+      const operation = mode === "readonly" ? store.get("current") : value ? store.put(value, "current") : store.delete("current");
+      transaction.oncomplete = () => { const result = operation.result; db.close(); resolve(result); };
+      transaction.onerror = () => { db.close(); reject(new Error("Push binding storage failed")); };
+      transaction.onabort = transaction.onerror;
+    };
+  });
+}
+self.addEventListener("message", event => {
+  if (event.data?.type !== "paperclip.push.bind") return;
+  const binding = event.data.binding;
+  if (binding && (typeof binding.userId !== "string" || typeof binding.subscriptionId !== "string")) {
+    event.ports[0]?.postMessage({ ok: false }); return;
+  }
+  event.waitUntil(pushBindingStore("readwrite", binding).then(async () => {
+    if (!binding) for (const notification of await self.registration.getNotifications()) notification.close();
+    event.ports[0]?.postMessage({ ok: true });
+  },
+    () => event.ports[0]?.postMessage({ ok: false })));
+});
+function pushTarget(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return null;
+  const url = new URL(value, self.location.origin);
+  return url.origin === self.location.origin ? url.href : null;
+}
+self.addEventListener("push", event => {
+  event.waitUntil((async () => {
+    const binding = await pushBindingStore("readonly");
+    const payload = event.data?.json();
+    if (!binding || payload?.subscriptionId !== binding.subscriptionId) return;
+    const url = pushTarget(payload.url);
+    if (!url || typeof payload.title !== "string" || typeof payload.body !== "string" || typeof payload.tag !== "string") return;
+    await self.registration.showNotification(payload.title, {
+      body: payload.body, icon: "/android-chrome-192x192.png", tag: `paperclip:${payload.tag}`,
+      data: { url, subscriptionId: binding.subscriptionId },
+    });
+  })());
+});
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const binding = await pushBindingStore("readonly");
+    if (!binding || event.notification.data?.subscriptionId !== binding.subscriptionId) return;
+    const raw = event.notification.data.url;
+    const parsed = new URL(raw);
+    const url = parsed.origin === self.location.origin ? pushTarget(parsed.pathname + parsed.search + parsed.hash) : null;
+    if (!url) return;
+    const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of clients) {
+      if (new URL(client.url).origin !== self.location.origin) continue;
+      const navigated = await client.navigate(url);
+      if (navigated) { await navigated.focus(); return; }
+    }
+    await self.clients.openWindow(url);
+  })());
+});

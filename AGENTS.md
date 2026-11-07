@@ -92,6 +92,21 @@ pnpm dev
 
 ## 5. Core Engineering Rules
 
+Web Push uses account-owned preferences/subscriptions and company-scoped delivery
+receipts. Keep `/api/push` restricted to authenticated human sessions; local-board
+and agent keys are not subscription identities. Producers must enqueue inside
+their persistence transaction and use the existing delivery coordinator. Preserve
+source-event/device idempotency, current task/decision authorization, fixed
+coalescing windows and idle zero-polling. Never log endpoints, encryption keys or
+notification content. See `doc/DEVELOPING.md` (Web Push) and `doc/DATABASE.md`.
+Keep the human-only OpenAPI registrations aligned with shared push request
+validators. Unrelated audit writes retain their existing caller transaction.
+Use owned disposable databases and dedicated test notifications; do not wake real
+agents. Non-Git workspace tests require a clean owned temporary root with no
+ancestor Git metadata. Chromium injection tests do not qualify APNs or physical iPhone delivery.
+Database-backed scheduler tests must separate fake deadline advancement from
+wall-time batch completion and join execution cleanup before fixture teardown.
+
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.
 

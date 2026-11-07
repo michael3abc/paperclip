@@ -79,3 +79,17 @@ quiet until the server provides eligibility.
 See [`inbox-search/toasts`](../maps/feature-map/inbox-search.md#toasts) for the
 two-user browser recipe and linked regression suites. The map describes coverage;
 it is not evidence that a particular deployment passed that journey.
+
+## Web Push
+
+Push is a separate durable delivery surface in personal settings. It reuses task
+participation and authorization but works with the browser closed; foreground
+WebSocket toast suppression is not a push unsubscribe. Approval/question/completed/
+problem/chat default on, progress/subtask off, and every device requires explicit
+enrollment. Account category changes cancel pending work across devices.
+
+Progress/subtask updates merge for 30 seconds from the first event; other categories
+are immediately due. Notification title/summary come from stored visible content
+with existing redaction and plain-text conversion. Dedicated test notifications
+create no task and wake no agent. See the implementation spec and development
+Web Push section for receipt semantics, account isolation and device verification.

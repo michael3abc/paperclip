@@ -2205,8 +2205,9 @@ Chat list/detail responses use per-user read state before human participation;
 the foreground chat marks rendered messages read through an optional comment
 cutoff, retaining unseen concurrent arrivals. Existing navigation ordering is
 preserved with accessible unread dots and an aggregate Chat indicator.
-`enableAgentChat` gates delivery; external channels, push/email and private-chat
-redesign are outside this contract.
+`enableAgentChat` gates chat delivery; external channels, email and private-chat
+redesign are outside this contract. Human Web Push for persisted chat messages
+is a separate opt-in device delivery surface described below.
 
 Project PM Chat creation includes the agent's workspace-binding projectId. POST
 adopts a previously unbound owner conversation before dispatch; it rejects an
@@ -2897,3 +2898,42 @@ The agent performs authorized setup, reuses saved accounts and drafts, and hands
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
+
+### Human Web Push notifications
+
+Personal settings expose account-wide enabled/category preferences, browser device
+enrollment/revocation, device names, a dedicated test and recent delivery receipts.
+Approval, question, completed, problem and chat categories default on; progress
+and subtask default off. No device enrolls without a user gesture and browser
+permission. HTTPS and a supported browser are required; iPhone users install the
+Web App on the Home Screen first. Unsupported, denied and registration failures
+remain visible. No Apple developer subscription is required by this Web Push path.
+
+Only persisted human-visible source changes enqueue work, in the same transaction
+as comments, task status, requests, approvals or decisions. No transcript deltas,
+tool logs, WebSocket viewer state or model-generated summaries participate.
+Current task access and canonical human participation determine recipients; pending
+decisions/requests require their human audience. Optional descendants add relevance
+only, never access. Recheck these conditions at send time and exclude own actions.
+
+Important events/chat are due immediately. Progress/subtask updates on one task
+and device share a fixed 30-second first-event window. Dedicated status/question
+events do not also become progress events. Opt-outs cancel unsent receipts and
+neither enrollment nor re-enabling backfills history. A stable notification ID
+survives retries; at most one receipt exists per source event and device.
+
+Payloads contain a redacted plain-text title, at most 160 characters of summary,
+a same-origin internal destination and subscription identity. The Service Worker
+never fetches protected APIs to display them. It retains account binding in
+IndexedDB across asset-cache updates, rejects stale bindings/external destinations,
+and opens the destination through the existing authentication redirect. Explicit
+sign-out revokes the local account subscription; session expiry alone does not.
+Account switches remove the previous browser binding before re-enrollment.
+
+The persistent coordinator restores due work after restart, uses real deadlines
+and does not poll an empty queue. HTTPS sends time out after 10 seconds, never
+follow redirects and permit only browser push services resolving to public IPs.
+404/410 revoke subscriptions; 429/5xx/network errors allow three retries after the
+first attempt, with backoff, Retry-After and a one-hour expiry. Configuration errors
+are terminal. Receipts say submitted to push service, never received by phone.
+VAPID credentials are private external configuration, absent from logs/audits.

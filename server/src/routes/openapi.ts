@@ -10,6 +10,7 @@ import {
 import { Router } from "express";
 import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
 import { z } from "zod";
+import { pushRequestContextSchema, pushPreferencesRequestSchema, pushSubscribeRequestSchema } from "@paperclipai/shared";
 import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
@@ -1408,6 +1409,7 @@ const PUBLIC_OPERATIONS = new Set([
 ]);
 
 const BOARD_ONLY_PREFIXES = [
+  "/api/push",
   "/api/companies/{companyId}/accounting/",
   "/api/announcements/",
   "/api/auth/",
@@ -1785,7 +1787,7 @@ function applyDocumentFixups(document: any): any {
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
 
-      if (isVoiceSessionOperation(path)) {
+      if (isVoiceSessionOperation(path) || path === "/api/push" || path.startsWith("/api/push/")) {
         operation.security = [{[BOARD_SESSION_AUTH_SCHEME]: []}];
         operation["x-paperclip-authorization"] = {actor: "board", sessionBound: true};
       }
@@ -6963,6 +6965,20 @@ registerCurrentRoute({
     404: r.notFound,
   },
 });
+
+for (const [method, routePath, summary, body, success] of [
+  ["get", "/api/push", "Read your account push settings, safe device list and recent delivery receipts", undefined, 200],
+  ["put", "/api/push/preferences", "Update account categories and cancel matching unsent notifications", pushPreferencesRequestSchema, 200],
+  ["post", "/api/push/subscriptions", "Enroll this browser for the authenticated account (maximum 20 active devices)", pushSubscribeRequestSchema, 201],
+  ["delete", "/api/push/subscriptions/{id}", "Revoke your own device, including after company membership loss", pushRequestContextSchema, 204],
+  ["post", "/api/push/subscriptions/{id}/test", "Queue a dedicated test notification (one per device per 30 seconds)", pushRequestContextSchema, 202],
+] as const) {
+  registerCurrentRoute({
+    method, path: routePath, tags: ["push"], summary, body,
+    description: "Authenticated human session or cloud tenant only; board keys, agent keys and local implicit identities are denied. Mutations must match expectedUserId to the current account. Company access is required except for revoking your own device. No endpoint or subscription encryption keys are returned. Submitted means accepted by the push service, not confirmed receipt on a phone.",
+    responses: { [success]: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
 
 registerCurrentRoute({
   method: "get",

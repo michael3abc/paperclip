@@ -1,3 +1,4 @@
+import { PushAccountBinding } from "./PushAccountBinding";
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { CoordinatorChatReferencesProvider } from "./coordinator/CoordinatorChatReferences";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
@@ -585,6 +586,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <CoordinatorPresentation.Provider value={coordinatorWorkspaceEnabled}>
     <CoordinatorChatReferencesProvider enabled={coordinatorWorkspaceEnabled}>
     <ChatSetupSidebarProvider>
+      <PushAccountBinding />
       <div
       ref={mobileViewportRef}
       data-mobile={isMobile ? "true" : undefined}

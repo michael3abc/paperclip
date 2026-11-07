@@ -45,7 +45,10 @@ describe("Dot assigned-task attachment reading", () => {
     expect(f.authority.definitions().map(t => t.name)).not.toContain("workspace_run");
     const off = await fixture(Buffer.from("disabled"), false);
     expect(off.authority.definitions().map(t => t.name)).not.toContain("read_task_attachment");
-    await expect(off.call("read_task_attachment", { attachmentId: off.attachment.id })).rejects.toThrow("not enabled");
+    await expect(off.call("read_task_attachment", { attachmentId: off.attachment.id })).resolves.toEqual({
+      outcome: "failed", code: "paperclip_runner_read_failed",
+      message: "The requested read failed or is not authorized for this run. Check the current task and tool scope before continuing.",
+    });
     expect(off.getObject).not.toHaveBeenCalled();
   });
   it("reads verified file contents without paths or storage keys and audits metadata only", async () => {

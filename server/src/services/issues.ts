@@ -7,6 +7,7 @@ import { notifyDeferredExecutionEligibility } from "./deferred-execution-notific
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { enqueuePushSource } from "./web-push-events.js";
 import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyMergeConfirmationWork } from "./merged-pr-confirmation-notifications.js";
@@ -11792,6 +11793,12 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (updated.status !== receiptExisting.status) {
+          await enqueuePushSource(tx as unknown as Db, { companyId: updated.companyId, issueId: updated.id,
+            sourceKind: "issue", sourceId: updated.id, eventKey: `status:${updated.id}:${updated.statusVersion}:${updated.status}`,
+            category: updated.status === "done" ? "completed" : updated.status === "blocked" ? "problem" : "progress",
+            actorUserId });
+        }
         if (updated.status === "done") {
           await completeTerminalCaseHandoffsForIssue(tx, { companyId: updated.companyId, issueId: updated.id,
             publications: activityPublications });

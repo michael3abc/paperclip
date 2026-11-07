@@ -98,6 +98,7 @@ const apiPrefixes: Record<string, string> = {
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
+  "web-push.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -526,6 +527,25 @@ describe("openapi routes", () => {
     expect(test.responses["409"]).toBeDefined();
     expect(JSON.stringify(settings.get.responses)).not.toMatch(/credentialsSecretId|ciphertext|apiKey/);
     expect(test.responses["200"].content["application/json"].schema.properties.source).toMatchObject({ enum: ["control_plane"] });
+  });
+
+  it("documents push as human-session-only with account-bound mutation bodies", () => {
+    const spec = buildOpenApiSpec() as any;
+    for (const [path, method] of [
+      ["/api/push", "get"], ["/api/push/preferences", "put"],
+      ["/api/push/subscriptions", "post"], ["/api/push/subscriptions/{id}", "delete"],
+      ["/api/push/subscriptions/{id}/test", "post"],
+    ]) {
+      const operation = spec.paths[path][method];
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", sessionBound: true });
+      if (method !== "get") {
+        const body = operation.requestBody.content["application/json"].schema;
+        expect(body.required).toContain("expectedUserId");
+        expect(body.required).toContain("companyId");
+        expect(body.additionalProperties).toBe(false);
+      }
+    }
   });
 
   it("documents personal board-only announcements and private responses", () => {

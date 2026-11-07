@@ -46,6 +46,17 @@ const SECRET_SENSITIVE_HTTP_PATHS = [
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
+/** Subscription endpoints and encryption keys are capability-bearing data. */
+export function isPrivateWebPushHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  let pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  for (let depth = 0; depth < 4; depth++) {
+    if (/^\/api\/push(?:\/|$)/i.test(pathname)) return true;
+    try { const decoded = decodeURIComponent(pathname); if (decoded === pathname) break; pathname = decoded; } catch { break; }
+  }
+  return false;
+}
+
 /** Free-form agent feedback must never be copied into HTTP diagnostics. */
 export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): boolean {
   if (!url) return false;
@@ -106,6 +117,7 @@ export function isSecretSensitiveHttpRequest(
   method: string | undefined,
   url: string | undefined,
 ): boolean {
+  if (isPrivateWebPushHttpRequest(url)) return true;
   if (isPrivateWebhookHttpRequest(method, url) || isPrivateMuseHttpRequest(url)) return true;
   if (url && normalizePath(url).startsWith("/mcp/files/")) return true;
   if (isPrivateAgentCommentaryHttpRequest(url)) return true;

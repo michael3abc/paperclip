@@ -206,3 +206,38 @@ losing authorized cache updates. Deny revoked membership and private task access
 Confirm relevance lookup failure yields a quiet authorized event.
 
 Gaps: Browser recipes and regression sources are not deployment acceptance proof.
+
+## `web-push`
+
+Capability ID: `inbox-search/web-push`.
+
+Review: `baseline`.
+
+API: `present` — GET /api/push; PUT /api/push/preferences;
+POST /api/push/subscriptions; DELETE /api/push/subscriptions/{id};
+POST /api/push/subscriptions/{id}/test.
+
+Agent access: `restricted` — authenticated human board sessions (`session` or
+`cloud_tenant`) only. Agent keys, board keys and local implicit identities cannot
+read or mutate human subscriptions. Browser permission is a direct human gesture;
+there is no agent delegation path to enable another person's notifications.
+
+Policy: Server-owned account identity, expected-user guard on every mutation,
+own-subscription access and current company access for enrollment/preferences/test.
+Own-device revocation remains available after membership loss; company audit is
+written only while company access remains. At most 20 active devices per account;
+test interval at least 30 seconds. GET returns no endpoint/encryption key. Event
+selection and delivery recheck company/task/decision authority and participation.
+
+Evidence: `source-only` — [routes](../../server/src/routes/web-push.ts),
+[audience](../../server/src/services/web-push-audience.ts),
+[delivery](../../server/src/services/web-push-delivery.ts).
+
+Verification: `not-run` for deployed credentials/physical delivery. Isolated
+[regressions](../../server/src/__tests__/web-push.test.ts) exercise allowed human
+operations, forbidden agent/key identities, ownership, membership revocation,
+rollback, deduplication and retries. They do not prove live agent admission or
+physical notification delivery. Follow the companion browser recipe with owned data.
+
+Gaps: Physical iPhone/APNs and Access reauthentication acceptance remain required;
+there is intentionally no agent-authorized human device management operation.

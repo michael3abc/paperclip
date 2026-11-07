@@ -1,0 +1,1 @@
+ALTER TABLE "push_deliveries" ADD COLUMN "notification_id" uuid;

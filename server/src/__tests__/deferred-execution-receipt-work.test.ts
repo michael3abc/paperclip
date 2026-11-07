@@ -219,11 +219,13 @@ describe("deferred receipt durable dispatch", () => {
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, occupant.id));
     await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await waitForReal(async () => {
-      await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
       expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
     }, { timeout: 15_000 });
+    // Observe the requested run before joining all background cleanup. A
+    // global drain inside the poll can hide its state until the deadline.
+    await heartbeat.drainActiveRunExecutions();
     expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
       .where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`)).toHaveLength(1);
     await finish(f.issue.id);
