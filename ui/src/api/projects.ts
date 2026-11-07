@@ -1,3 +1,4 @@
+import type { ProjectSessionRecords, ProjectWorkProductRecords } from "@paperclipai/shared";
 import type {
   Project,
   ProjectAccessMember,
@@ -21,6 +22,8 @@ function projectPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const projectsApi = {
+  workProducts: (id: string, offset = 0) => api.get<ProjectWorkProductRecords>(`/projects/${id}/work-products?offset=${offset}`),
+  sessions: (id: string, offset = 0) => api.get<ProjectSessionRecords>(projectPath(id, undefined, `/sessions?offset=${offset}`)),
   gitAuthorization: (id: string) => api.get<ProjectGitAuthorization>(projectPath(id, undefined, "/git-authorization")),
   setGitAuthorization: (id: string, grantId: string | null) => api.put<ProjectGitAuthorization>(projectPath(id, undefined, "/git-authorization"), { grantId }),
   repositoryOptions: (companyId: string) => api.get<ProjectRepositoryOptions>(`/companies/${companyId}/project-repositories`),

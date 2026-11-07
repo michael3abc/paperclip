@@ -1,3 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
+import { workerSelectionOverrides, workerPermissionChoices, workerModelChoices, validateWorkerChoices } from "./pm-worker-options.js";
+import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { agents, issues, issueApprovals, heartbeatRuns, projectWorkspaces, executionWorkspaces, type Db } from "@paperclipai/db";
 import { z } from "zod";
@@ -31,10 +34,11 @@ const selection = z.object({
   fastMode: z.boolean().optional(),
 }).strict();
 /** Owner-maintained copy of the accepted model table; editable Markdown never grants authority. */
-export const pmDelegationSchema = z.object({
+const legacyPmDelegationSchema = z.object({
   version: z.literal(1),
   workers: z.array(z.object({ agentId: z.string().uuid(), selections: z.array(selection).min(1) }).strict()).min(1).max(2),
 }).strict();
+export const pmDelegationSchema = z.union([legacyPmDelegationSchema, pmWorkerPolicySchema]);
 export type PmDelegation = z.infer<typeof pmDelegationSchema>;
 type Agent = { id: string; companyId: string; runtimeConfig: Record<string, unknown> | null };
 export type PmCoordinationScope = { agentId: string; companyId: string; projectId: string; workerRoot: string; delegation: PmDelegation | null };
@@ -75,6 +79,20 @@ export async function assertPmIssue(db: Db, scope: PmCoordinationScope, issueId:
 }
 
 export function assertPmWorkerSelection(scope: PmCoordinationScope, agentId: unknown, overrides: unknown) {
+  if (scope.delegation?.version === 2) {
+    const input = z.object({ workerSelectionId: z.string().uuid().optional(), adapterConfig: z.record(z.string(), z.unknown()).optional() }).strict().safeParse(overrides ?? {});
+    if (!input.success) throw forbidden("Choose a worker selection; arbitrary task overrides are not allowed", { code: "PM_MODEL_DENIED" });
+    const choices = scope.delegation.workers.flatMap(worker => worker.selections.map(choice => ({ worker, choice })));
+    const selected = input.data.workerSelectionId
+      ? choices.find(item => item.choice.id === input.data.workerSelectionId)
+      : input.data.adapterConfig
+        ? choices.find(item => item.worker.agentId === agentId && isDeepStrictEqual(workerSelectionOverrides(item.worker.harness, item.choice), input.data.adapterConfig))
+        : choices.find(item => item.choice.id === (scope.delegation as import("@paperclipai/shared").PmWorkerPolicy).defaultSelectionId);
+    if (!selected || (agentId != null && agentId !== selected.worker.agentId)) throw forbidden("Select an authorized shared worker", { code: "PM_WORKER_DENIED" });
+    const adapterConfig = workerSelectionOverrides(selected.worker.harness, selected.choice);
+    if (input.data.adapterConfig && !isDeepStrictEqual(adapterConfig, input.data.adapterConfig)) throw forbidden("Task overrides differ from the selected worker policy", { code: "PM_MODEL_DENIED" });
+    return { adapterConfig, workerSelectionId: selected.choice.id };
+  }
   const worker = scope.delegation?.workers.find(worker => worker.agentId === agentId);
   if (!worker) throw forbidden("Select a shared worker from the Owner-approved delegation policy", { code: "PM_WORKER_DENIED" });
   const wrapper = z.object({ adapterConfig: selection }).strict().safeParse(overrides);
@@ -88,9 +106,21 @@ export function assertPmWorkerSelection(scope: PmCoordinationScope, agentId: unk
 export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input: {
   projectId?: unknown; assigneeAgentId?: unknown; assigneeUserId?: unknown; assigneeAdapterOverrides?: unknown;
   executionWorkspaceSettings?: unknown; workspaceSelection?: unknown;
-}) {
+}, options: { existingTask?: boolean } = {}) {
+  if (!options.existingTask && scope.delegation?.version !== 2) throw unprocessable("Configure PM worker settings before new dispatch; historical worker lists are not a dispatch fallback", { code: "PM_WORKER_MIGRATION_REQUIRED" });
   if (input.projectId !== scope.projectId || input.assigneeUserId != null) throw forbidden("PM execution tasks must remain in their project and use a shared worker", { code: "PM_DISPATCH_DENIED" });
   const overrides = assertPmWorkerSelection(scope, input.assigneeAgentId, input.assigneeAdapterOverrides);
+  if (scope.delegation?.version === 2) {
+    const { agentInstructionsService } = await import("./agent-instructions.js");
+    const [owner] = await db.select().from(agents).where(and(eq(agents.id, scope.agentId), eq(agents.companyId, scope.companyId)));
+    if (!owner || !isDeepStrictEqual(owner.runtimeConfig?.pmDelegation, scope.delegation)) throw forbidden("PM worker policy changed; read current settings before dispatch");
+    const document = await agentInstructionsService(db).readFile(owner, "WORKERS.md");
+    if (pmWorkerManagedBlock(document.content ?? "") !== renderPmWorkerPolicy(scope.delegation)) throw unprocessable("WORKERS.md and worker policy are out of sync; save the policy before dispatch", { code: "PM_WORKER_DOCUMENT_OUT_OF_SYNC" });
+    const selected = scope.delegation.workers.find(worker => worker.selections.some(choice => choice.id === (overrides as { workerSelectionId?: string }).workerSelectionId))!;
+    input.assigneeAgentId = selected.agentId;
+    input.assigneeAdapterOverrides = overrides;
+  }
+
   if (input.executionWorkspaceSettings != null && Object.keys(input.executionWorkspaceSettings).some(key => !["mode", "sharedWorkspaceConcurrency"].includes(key))) {
     throw forbidden("PM dispatch may select a configured workspace, but cannot change runtime, environment or network grants", { code: "PM_WORKSPACE_POLICY_DENIED" });
   }
@@ -111,7 +141,19 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     || ["paused", "terminated", "pending_approval"].includes(worker.status)) {
     throw forbidden("The selected shared worker is unavailable; inspect its recorded status", { code: "PM_WORKER_UNAVAILABLE" });
   }
-  return overrides;
+  if (scope.delegation?.version === 2) {
+    const group = scope.delegation.workers.find(item => item.agentId === worker.id)!;
+    const choice = group.selections.find(item => item.id === (overrides as { workerSelectionId?: string }).workerSelectionId)!;
+    const { listAdapterModels } = await import("../adapters/registry.js");
+    validateWorkerChoices({ version: 2, defaultSelectionId: choice.id, workers: [{ ...group, selections: [choice] }] }, [{
+      agentId: worker.id, name: worker.name, harness: group.harness,
+      permissions: workerPermissionChoices(worker.adapterConfig ?? {}), models: workerModelChoices(group.harness, await listAdapterModels(group.harness)),
+    }]);
+    if (group.harness !== worker.adapterType || !workerPermissionChoices(worker.adapterConfig ?? {}).includes(choice.permission)) {
+      throw forbidden("Shared worker harness or permission support changed; review its worker settings");
+    }
+  }
+  return { assigneeAgentId: String(input.assigneeAgentId), assigneeAdapterOverrides: overrides };
 }
 
 /** Preserve source gates; PM-provided workflow settings cannot grant execution authority. */

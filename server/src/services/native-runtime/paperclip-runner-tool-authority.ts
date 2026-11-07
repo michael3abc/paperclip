@@ -1782,15 +1782,16 @@ export class PaperclipRunnerToolAuthority {
       .parse(Object.fromEntries(executionKeys.filter(key => input[key] !== undefined).map(key => [key, input[key]])));
     const pm = await currentPmCoordinationScope(this.db, this.binding);
     if (pm && (typeof input.initialPlan !== "string" || !input.initialPlan.trim())) throw badRequest("PM dispatch requires the remaining plan in initialPlan");
-    if (pm) await assertPmDispatch(this.db, pm, { ...executionOptions, projectId: input.projectId ?? pm.projectId,
-      assigneeAgentId: input.assigneeActorId, assigneeUserId: input.assigneeUserId });
+    const pmSelection = pm ? await assertPmDispatch(this.db, pm, { ...executionOptions, projectId: input.projectId ?? pm.projectId,
+      assigneeAgentId: input.assigneeActorId, assigneeUserId: input.assigneeUserId }) : null;
+    if (pmSelection) executionOptions.assigneeAdapterOverrides = pmSelection.assigneeAdapterOverrides;
     const idempotencyKey = requiredString(input.idempotencyKey);
     if (input.status !== undefined && input.status !== "backlog" && input.status !== "todo") {
       throw new Error("paperclip_runner_tool_input_invalid");
     }
     const assigneeUserId = input.assigneeUserId == null ? null : requiredString(input.assigneeUserId);
     if (assigneeUserId && input.assigneeActorId != null) throw badRequest("Choose one agent or person assignee");
-    const assigneeAgentId = assigneeUserId ? null : input.assigneeActorId == null ? this.binding.agentId : requiredString(input.assigneeActorId);
+    const assigneeAgentId = assigneeUserId ? null : pmSelection?.assigneeAgentId ?? (input.assigneeActorId == null ? this.binding.agentId : requiredString(input.assigneeActorId));
     if (assigneeAgentId) {
       const assignee = await agentService(this.db).getById(assigneeAgentId);
       if (!assignee || assignee.companyId !== this.binding.companyId) throw new Error("paperclip_runner_agent_not_found");
@@ -2042,7 +2043,7 @@ export class PaperclipRunnerToolAuthority {
       if (!target) throw new Error("paperclip_runner_task_not_found");
       const pm = await currentPmCoordinationScope(tx, this.binding);
       if (pm) await assertPmDispatch(tx, pm, { projectId: target.projectId, assigneeAgentId, assigneeUserId,
-        assigneeAdapterOverrides: target.assigneeAdapterOverrides });
+        assigneeAdapterOverrides: target.assigneeAdapterOverrides }, { existingTask: true });
       const actor = this.#privacyActor(run);
       for (const action of ["issue:read", "tasks:assign"] as const) {
         const decision = await authorizationService(tx).decide({ actor, action, resource: {

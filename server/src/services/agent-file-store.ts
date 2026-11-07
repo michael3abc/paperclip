@@ -1,3 +1,4 @@
+import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { cachedAgentFileManifest, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
@@ -234,6 +235,12 @@ export function agentFileStore(db: Db) {
       locked(input.companyId, input.agentId, actor, input.ownWorkflow ? { ownWorkflowPath: agentFilePath(input.path) } : input.ownMemory ? { ownMemoryPath: agentFilePath(input.path) } : true, async (tx, agent, root, bound) => {
         if (input.ownWorkflow && (!input.changeReason?.trim() || input.bytes === null)) throw unprocessable("PM workflow saves require content and a change reason");
         const relative = agentFilePath(input.path);
+        const workerPolicy = pmWorkerPolicySchema.safeParse(agent.runtimeConfig?.pmDelegation);
+        if (relative === "WORKERS.md" && workerPolicy.success
+          && pmWorkerManagedBlock(input.bytes?.toString("utf8") ?? "") !== renderPmWorkerPolicy(workerPolicy.data)) {
+          throw unprocessable("The managed worker table must be changed through the worker-policy API");
+        }
+
         if (input.bytes) assertFileSize(input.bytes.length, relative);
         const previous = await inspectAgentFile(root, relative);
         const currentHash = previous?.hash ?? null;

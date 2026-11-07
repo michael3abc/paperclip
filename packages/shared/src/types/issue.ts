@@ -148,6 +148,7 @@ export interface IssueCreationSource {
 }
 
 export interface IssueAssigneeAdapterOverrides {
+  workerSelectionId?: string;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }

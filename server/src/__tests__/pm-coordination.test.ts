@@ -1,3 +1,5 @@
+import { renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
+import { workerSelectionOverrides } from "../services/pm-worker-options.js";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import express from "express";
 import { createServer, type Server } from "node:http";
@@ -36,7 +38,10 @@ describe("PM capabilities on owned storage and database", () => {
   let root: string, localRoot: string, authority: PaperclipRunnerToolAuthority, scope: NonNullable<ReturnType<typeof pmCoordinationScope>>;
   let server: Server, apiUrl: string;
   const wakes: Array<{agentId: string; key: string | undefined}> = [];
-  const override = { adapterConfig: { model: "gpt-5.4", modelReasoningEffort: "high" } };
+  const selectionId = randomUUID();
+  const selection = { id: selectionId, model: "gpt-5.4", thinking: "high", permission: "approve-reads" as const, speed: "standard" as const };
+  const policy: PmWorkerPolicy = { version: 2, defaultSelectionId: selectionId, workers: [{ agentId: workerId, harness: "codex_local", selections: [selection] }] };
+  const override = { workerSelectionId: selectionId, adapterConfig: workerSelectionOverrides("codex_local", selection) };
   const execute = (tool: string, args: unknown, callId = randomUUID()) => authority.execute({ tool, arguments: args, callId });
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "owned-pm-capabilities-test-key");
@@ -48,7 +53,7 @@ describe("PM capabilities on owned storage and database", () => {
     await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     root = resolveManagedInstructionsRoot({ id: agentId, companyId, name: "PM", adapterConfig: {} });
     const runtimeConfig = { workspaceBinding: { mode: "project_pm", projectId, workerRoot: home, workerSlots: 0, workerIsolation: "shared" },
-      pmDelegation: { version: 1, workers: [{ agentId: workerId, selections: [override.adapterConfig] }] } };
+      pmDelegation: policy };
     await db.insert(agents).values([
       { id: agentId, companyId, name: "PM", status: "active", adapterType: "claude_local", runtimeConfig,
         adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" } },
@@ -66,6 +71,7 @@ describe("PM capabilities on owned storage and database", () => {
       responsibleUserId: userId, invocationSource: "assignment", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     for (const file of PM_BUNDLE_FILES) { await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true }); await fs.writeFile(path.join(root, file), `# ${file}\nOwner baseline\n`); }
+    await fs.appendFile(path.join(root, "WORKERS.md"), renderPmWorkerPolicy(policy));
     const copy = (await agentInstructionWorkingCopyService(db).prepare({ companyId, agentId, runId, cwd: home }))!;
     localRoot = copy.localRoot;
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId)); scope = pmCoordinationScope(agent!)!;
@@ -121,12 +127,13 @@ describe("PM capabilities on owned storage and database", () => {
       assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection: { kind: "task_directory" } };
     await expect(execute("create_task", args)).rejects.toThrow("Read the current bundle");
     await reads();
-    await expect(execute("create_task", { ...args, assigneeActorId: undefined })).rejects.toThrow("shared worker");
+    await expect(execute("create_task", { ...args, assigneeActorId: agentId })).rejects.toThrow("shared worker");
     const otherWorkspaceId = randomUUID();
     await db.insert(projectWorkspaces).values({ id: otherWorkspaceId, companyId, projectId: otherProjectId, name: "Other source", cwd: home });
     await expect(execute("create_task", { ...args, workspaceSelection: { kind: "configured_source", projectWorkspaceId: otherWorkspaceId, mode: "managed_isolated" } })).rejects.toThrow("outside");
     await expect(execute("create_task", { ...args, executionPolicy: { authorizationPolicy: {} } })).rejects.toThrow();
-    const created = await execute("create_task", args) as { task: { id: string } };
+    const defaultArgs = { idempotencyKey: args.idempotencyKey, title: args.title, initialPlan: args.initialPlan, workspaceSelection: args.workspaceSelection };
+    const created = await execute("create_task", defaultArgs) as { task: { id: string } };
     expect(created).toMatchObject({ task: { parentId: issueId, assigneeActorId: workerId } });
     const [task] = await db.select().from(issues).where(eq(issues.id, created.task.id));
     expect(task?.assigneeAdapterOverrides).toEqual(override);
@@ -134,7 +141,7 @@ describe("PM capabilities on owned storage and database", () => {
       expect.objectContaining({ type: "approval", participants: [expect.objectContaining({ type: "user", userId })] }),
       expect.objectContaining({ type: "review", participants: [expect.objectContaining({ type: "agent", agentId })] }),
     ]));
-    await execute("create_task", args);
+    await execute("create_task", defaultArgs);
     expect(wakes.every(wake => wake.agentId === workerId)).toBe(true);
     expect(new Set(wakes.map(wake => wake.key))).toEqual(new Set([`created-child:${created.task.id}`]));
     expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toHaveLength(1);

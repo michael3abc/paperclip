@@ -1,3 +1,4 @@
+import { projectSessionRecords, projectWorkProductRecords } from "../services/project-execution-records.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
@@ -364,6 +365,20 @@ export function projectRoutes(db: Db) {
     if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     res.json(project);
+  });
+
+  router.get("/projects/:id/work-products", async (req, res) => {
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    const offset = z.coerce.number().int().min(0).max(1000000).parse(req.query.offset ?? 0);
+    res.json(await projectWorkProductRecords(db, project.companyId, project.id, req.actor, offset));
+  });
+
+  router.get("/projects/:id/sessions", async (req, res) => {
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    const offset = z.coerce.number().int().min(0).max(1000000).parse(req.query.offset ?? 0);
+    res.json(await projectSessionRecords(db, project.companyId, project.id, req.actor, offset));
   });
 
   router.get("/projects/:id/external-object-summary", async (req, res) => {

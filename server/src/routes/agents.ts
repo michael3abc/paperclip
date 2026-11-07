@@ -1,3 +1,5 @@
+import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
+import { savePmWorkerPolicySchema } from "@paperclipai/shared";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { pmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { readPmBundleFile, writePmBundleFile } from "../services/pm-bundle-tools.js";
@@ -5164,6 +5166,23 @@ export function agentRoutes(
       adapterConfigKey,
       path: pathValue,
     });
+  });
+
+  router.get("/agents/:id/worker-policy", async (req, res) => {
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanReadConfigurations(req, agent.companyId);
+    res.json(await pmWorkerPolicyService(db).read(agent.companyId, agent.id, req.actor));
+  });
+
+  router.put("/agents/:id/worker-policy", validate(savePmWorkerPolicySchema), async (req, res) => {
+    assertBoard(req);
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    await assertCanManageInstructionsPath(req, agent);
+    assertExternalInstructionsAdmin(req, agent);
+    res.json(await pmWorkerPolicyService(db).save(agent.companyId, agent.id, req.body, req.actor));
   });
 
   router.get("/agents/:id/instructions-bundle", async (req, res) => {

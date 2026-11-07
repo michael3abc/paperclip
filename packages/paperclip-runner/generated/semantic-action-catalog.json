@@ -3311,7 +3311,7 @@
         },
         "assigneeAdapterOverrides": {
           "additionalProperties": true,
-          "description": "Issue-scoped model selection. For a project PM, supply adapterConfig with an exact authorized model/effort combination from list_agents.delegation; never change shared worker defaults.",
+          "description": "Issue-scoped model selection. For a project PM, select assigneeAdapterOverrides.workerSelectionId from list_agents.delegation (v2), or omit the selection and assignee to use its saved default. Historical v1 policies require explicit Owner migration before new dispatch. Never change shared worker defaults.",
           "type": "object"
         },
         "assigneeUserId": {
