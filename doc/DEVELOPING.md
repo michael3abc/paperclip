@@ -4667,3 +4667,14 @@ permission, test with the screen locked and app closed, expire Access login and
 follow a task/chat/decision notification back through login, update the Service
 Worker, then sign out and switch accounts. Record physical receipt separately
 from provider submission. Never claim end-to-end acceptance before this run.
+
+### PM Retry workspace preparation
+
+A zero-slot PM retains its task-owned local home when a deliberate Retry follows
+a settled `fixed_workspace_policy_conflict` before any provider execution. The
+continuation resolver verifies current PM identity/home, task ownership, no provider
+receipts or leases for the failed attempt, and cleanup of earlier home users. It
+records `reuse_current_workspace` on the new retry receipt. Explicit fresh-workspace
+requests are preserved; shared workers and unknown or unsettled attempts do not use
+this path. Normal preparation still enforces trust, external-task isolation and
+environment policy. Original failed attempts and issue history remain unchanged.

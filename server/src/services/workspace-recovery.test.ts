@@ -6,7 +6,7 @@ import { recoveryService } from "./recovery/index.js";
 import { inspectWorkspaceSource } from "./workspace-source-inspection.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { heartbeatRunEvents } from "@paperclipai/db";
+import { heartbeatRunEvents, projects } from "@paperclipai/db";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { recordRequiredWorkspaceRestoreFailure, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
@@ -645,6 +645,54 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);
   }, 30_000);
+
+  it.each(["codex", "claude", "worker", "changed_slots", "moved_home", "provider_started", "foreign_task", "missing_settlement", "explicit_fresh"] as const)(
+    "retains a proven unstarted PM home on Retry without relaxing worker isolation: %s", async mode => {
+    const companyId = randomUUID(), projectId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(),
+      sourceRunId = randomUUID(), successorRunId = randomUUID(), requestId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "PM retry", issuePrefix: `P${companyId.slice(0, 6)}` });
+    fixtureCompanyIds.add(companyId);
+    await db.insert(projects).values({ id: projectId, companyId, name: "PM project",
+      executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace", allowIssueOverride: false,
+        workspaceStrategy: { type: "git_worktree" } } });
+    const cwd = await materializeIsolatedTaskDirectory({ companyId, issueId });
+    const pm = { version: 1, role: "pm", issueId, projectId, cwd, agentHome: cwd,
+      workerRoot: "/project", workerSlots: mode === "worker" ? 1 : 0, workerIsolation: "shared", inboxIssueId: null };
+    await db.insert(agents).values({ id: agentId, companyId, name: "PM", adapterType: "paperclip_runner",
+      adapterConfig: { provider: mode === "claude" ? "claude" : "codex" }, runtimeConfig: { workspaceBinding: {
+        mode: "project_pm", projectId, agentHome: mode === "moved_home" ? cwd + "-changed" : cwd,
+        workerRoot: pm.workerRoot, workerSlots: mode === "changed_slots" ? 1 : pm.workerSlots, workerIsolation: "shared", inboxIssueId: null } } });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "PM conversation", status: "blocked", assigneeAgentId: agentId });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, projectId,
+      sourceIssueId: mode === "foreign_task" ? null : issueId, mode: "shared_workspace", strategyType: "project_primary",
+      providerType: "local_fs", name: "PM home", cwd }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id }).where(eq(issues.id, issueId));
+    const error = "This task requires an isolated workspace or branch, conflicting with the fixed working directory.";
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, issueId, runtimeMode: "legacy",
+      status: "failed", finishedAt: new Date(), errorCode: "workspace_validation_failed", error, executionStage: "preparing",
+      contextSnapshot: { issueId, paperclipPmWorkspace: pm }, runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: mode === "provider_started" },
+        workspaceValidation: { reason: "fixed_workspace_policy_conflict" } } });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "error", stream: "system", level: "error", message: error });
+    if (mode !== "missing_settlement") await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId,
+      eventType: "lifecycle", stream: "system", level: "info", message: "task.run.measured",
+      payload: { phase: "task.run.measured", outcome: "failed", durationMs: 1, durableSettlement: true } });
+    const [successor] = await db.insert(heartbeatRuns).values({ id: successorRunId, companyId, agentId, issueId, status: "queued",
+      contextSnapshot: { issueId, previousRunId: sourceRunId, taskRetryRequestId: requestId } }).returning();
+    await db.insert(agentWakeupRequests).values({ id: requestId, companyId, agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "coalesced", runId: successor.id, requestedByActorType: "user", requestedByActorId: "local-board",
+      idempotencyKey: `task-retry:${randomUUID()}`, payload: { issueId, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: requestId, sourceRunId, actorId: "local-board", actorSource: "session",
+        strategy: mode === "explicit_fresh" ? "fresh_isolated_workspace" : "evaluate" } } });
+    const readiness = await readFreshWorkspaceReadiness(db, successor);
+    expect(readiness).toMatchObject(mode === "codex" || mode === "claude"
+      ? { mode: "reuse_current_workspace", retryIntentId: requestId, sourceRunId, workspaceId: workspace.id, cwd }
+      : { mode: "fresh_isolated_workspace", retryIntentId: requestId, sourceRunId });
+    const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+    expect((saved.payload?.taskRetry as { strategy: string }).strategy).toBe(
+      mode === "codex" || mode === "claude" ? "continue" : "fresh_isolated_workspace");
+    expect((await run(sourceRunId)).status).toBe("failed");
+  });
 
   it.each(["plain", "unsupported_warning", "warning_presentation", "provider_warning", "measurement"] as const)(
     "keeps the existing-directory readiness settlement contract: %s", async mode => {

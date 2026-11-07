@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
-import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { readWorkspaceBinding } from "./agent-workspace-binding.js";
 import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -9,7 +10,7 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
-import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { agentProjectPmWorkspaceBindingSchema, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 
 export type ContinuationReadiness =
@@ -57,11 +58,12 @@ export async function canSelectFreshWorkspace(input: {
 async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof heartbeatRuns.$inferSelect, issueId: string) {
   const validation = source.resultJson?.workspaceValidation as Record<string, unknown> | undefined;
   const recovery = source.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  const pmHomeConflict = validation?.reason === "fixed_workspace_policy_conflict";
   if (source.status !== "failed" || !source.finishedAt || source.runtimeMode !== "legacy" ||
       source.errorCode !== "workspace_validation_failed" || source.executionStage !== "preparing" ||
-      validation?.reason !== "git_worktree_base_not_git_checkout" || validation.issueId !== issueId ||
+      (!pmHomeConflict && (validation?.reason !== "git_worktree_base_not_git_checkout" || validation.issueId !== issueId ||
       validation.resolvedWorkspaceSource !== "task_session" || validation.requestedExecutionWorkspaceMode !== "isolated_workspace" ||
-      validation.issueExecutionWorkspacePreference !== "reuse_existing" || recovery?.kind !== "bootstrap" ||
+      validation.issueExecutionWorkspacePreference !== "reuse_existing")) || recovery?.kind !== "bootstrap" ||
       recovery.providerWorkStarted !== false || Object.keys(recovery).some(key => !["kind", "providerWorkStarted"].includes(key)) ||
       source.resultJson?.stopReason !== "adapter_failed" ||
       adapterExecutionControls.has(source.id) || (source.controllerLeaseExpiresAt && source.controllerLeaseExpiresAt > new Date()) ||
@@ -85,13 +87,34 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
     or exists(select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.companyId} = ${source.companyId} and ${nativeRunFinalizations.runId} = ${source.id}) as present`);
   if (executionEvidence?.present !== false) return null;
   const [task] = await db.select().from(issues).where(and(eq(issues.companyId, source.companyId), eq(issues.id, issueId)));
-  if (!task || task.assigneeAgentId !== source.agentId || task.executionWorkspacePreference !== "reuse_existing" ||
-      task.executionWorkspaceId !== validation.issueExecutionWorkspaceId || task.projectId !== validation.issueProjectId ||
-      task.projectWorkspaceId !== validation.issueProjectWorkspaceId) return null;
+  if (!task || task.assigneeAgentId !== source.agentId || !task.executionWorkspaceId) return null;
   const [workspace] = await db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, source.companyId), eq(executionWorkspaces.id, task.executionWorkspaceId!),
   ));
-  if (!workspace || workspace.cwd !== validation.resolvedWorkspaceCwd || !await isBoundIsolatedTaskDirectory({
+  if (!workspace) return null;
+  if (pmHomeConflict) {
+    // Retry's generic fresh-worktree fallback is incompatible with a zero-slot
+    // PM's home. Reuse only the same task-owned home after proven pre-provider
+    // failure; current trust/environment checks still run during preparation.
+    const [agent] = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents).where(and(
+      eq(agents.companyId, source.companyId), eq(agents.id, source.agentId),
+    ));
+    const currentBinding = agentProjectPmWorkspaceBindingSchema.safeParse(agent?.runtimeConfig?.workspaceBinding);
+    if (!currentBinding.success || currentBinding.data.workerSlots !== 0) return null;
+    let binding;
+    try { binding = readWorkspaceBinding(agent?.runtimeConfig ?? undefined, source.contextSnapshot ?? {}); }
+    catch { return null; }
+    const pm = binding?.projectPm;
+    if (!pm || pm.role !== "pm" || pm.workerSlots !== 0 || pm.issueId !== issueId ||
+        pm.projectId !== task.projectId || pm.cwd !== pm.agentHome ||
+        workspace.sourceIssueId !== issueId || workspace.projectId !== pm.projectId ||
+        workspace.cwd !== pm.agentHome || workspace.mode !== "shared_workspace" ||
+        workspace.strategyType !== "project_primary" || workspace.providerType !== "local_fs" ||
+        workspace.status !== "active" || readRemoteWorkspaceAuthority(workspace.metadata)) return null;
+  } else if (!validation || task.executionWorkspacePreference !== "reuse_existing" ||
+      task.executionWorkspaceId !== validation.issueExecutionWorkspaceId || task.projectId !== validation.issueProjectId ||
+      task.projectWorkspaceId !== validation.issueProjectWorkspaceId ||
+      workspace.cwd !== validation.resolvedWorkspaceCwd || !await isBoundIsolatedTaskDirectory({
     companyId: source.companyId, issueId, workspaceId: task.executionWorkspaceId, workspace: toExecutionWorkspace(workspace) })) return null;
   const prior = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, source.companyId), eq(environmentLeases.executionWorkspaceId, workspace.id),
