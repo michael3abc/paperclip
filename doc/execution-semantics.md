@@ -3512,7 +3512,9 @@ The adapter retains its current-run helper until a later admitted turn replaces 
 ## Managed project PM follow-through
 
 Reusing a saved project Recovery copy validates its persisted physical strategy
-before restoration. An isolated local directory does not become a Git worktree
+before restoration only with matching company/project/task ownership and the
+server-owned copy-only receipt. Source-free Retry validation stays unchanged.
+An isolated local directory does not become a Git worktree
 because current configuration defaults to one. Retain the original task binding
 and files, fail missing directories explicitly, and preserve Git-required worker
 constraints. New admission and configuration-drift reporting still use current

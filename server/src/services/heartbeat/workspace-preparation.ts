@@ -618,7 +618,17 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     // Validate that same strategy; today's isolated default must not turn an
     // existing local directory into a Git worktree before restoration is reached.
     // Keep latest configuration intact for drift diagnostics and new admissions.
-    config: requestedShouldReuseExisting && reusableExistingExecutionWorkspace && !fresh
+    config: requestedShouldReuseExisting && !fresh && issueRef?.projectId && issueRef.projectWorkspaceId &&
+      reusableExistingExecutionWorkspace?.sourceIssueId === issueId &&
+      reusableExistingExecutionWorkspace.companyId === agent.companyId &&
+      reusableExistingExecutionWorkspace.projectId === issueRef.projectId &&
+      reusableExistingExecutionWorkspace.projectWorkspaceId === issueRef.projectWorkspaceId &&
+      reusableExistingExecutionWorkspace.mode === "isolated_workspace" &&
+      reusableExistingExecutionWorkspace.providerType === "local_fs" &&
+      reusableExistingExecutionWorkspace.strategyType === "project_primary" &&
+      reusableExistingExecutionWorkspace.metadata?.[CONTROLLER_PROVISION_COPY_ONLY] === true &&
+      !reusableExistingExecutionWorkspace.repoUrl && !reusableExistingExecutionWorkspace.baseRef &&
+      !reusableExistingExecutionWorkspace.branchName
       ? { ...hostExecutionWorkspaceConfig, workspaceStrategy: {
           ...parseObject(hostExecutionWorkspaceConfig.workspaceStrategy),
           type: reusableExistingExecutionWorkspace.strategyType,

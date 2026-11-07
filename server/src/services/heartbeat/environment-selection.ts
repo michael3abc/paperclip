@@ -510,6 +510,9 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const savedRecoveryDirectory = !controllerOnly && !fresh && !nativeRecoveryExecutionWorkspaceId &&
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
     issueId !== null && issueRef !== null &&
+    issueRef.projectId !== null && issueRef.projectWorkspaceId !== null &&
+    reusableExistingExecutionWorkspace?.projectId === issueRef.projectId &&
+    reusableExistingExecutionWorkspace.projectWorkspaceId === issueRef.projectWorkspaceId &&
     reusableExistingExecutionWorkspace?.metadata?._controllerProvisionCopyOnly === true &&
     await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
       workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace });

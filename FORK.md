@@ -136,4 +136,6 @@ default before their saved project_primary restoration. Base validation now foll
 the same persisted strategy as restoration, retaining drift diagnostics and current
 admission/ownership checks. Assembled heartbeat regression preserves the original
 delivery and workspace through provider execution; negative cases cover foreign
-ownership, missing directories and Git-required workers. No migration is added.
+ownership, missing directories and Git-required workers. Scope is limited to
+project-bound copies with matching ownership and the copy-only receipt; source-free
+Retry retains its existing explicit Git, path and recovery validation. No migration is added.

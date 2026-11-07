@@ -250,7 +250,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (kind === "shared_strategy") input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/requires a project task with an isolated Git worktree/);
   });
-  it.each(["foreign_owner", "git_required", "missing_directory"] as const)("rejects invalid retained Recovery reuse: %s", async scenario => {
+  it.each(["foreign_owner", "git_required", "missing_directory", "no_copy_receipt"] as const)("rejects invalid retained Recovery reuse: %s", async scenario => {
     const { input, source, issue } = await fixture(true);
     await rm(join(source, ".git"), { recursive: true });
     input.agent.runtimeConfig = { requireProjectWorkspace: true, requireTaskWorktree: scenario === "git_required" };
@@ -259,14 +259,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       sourceIssueId: scenario === "foreign_owner" ? null : issue.id, name: "Retained Recovery directory",
       cwd: scenario === "missing_directory" ? join(home, "missing-directory") : source,
       mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", status: "idle",
-      metadata: { source: "project_primary", _controllerProvisionCopyOnly: true },
+      metadata: { source: "project_primary", _controllerProvisionCopyOnly: scenario !== "no_copy_receipt" },
     }).returning();
     await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issue.id));
     await reuse(input, toExecutionWorkspace(saved));
     const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
       scenario === "foreign_owner" ? /must reuse only this task/
-        : scenario === "git_required" ? /isolated Git worktree/ : /could not be restored/,
+        : scenario === "git_required" ? /isolated Git worktree/
+        : scenario === "no_copy_receipt" ? /not a git checkout/ : /could not be restored/,
     );
     expect(acquire).not.toHaveBeenCalled();
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");

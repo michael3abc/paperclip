@@ -454,8 +454,10 @@ outcomes must inspect the original continuation receipt; a wake alone is not com
 Formal review retains current stage, participant and policy bindings. Keep human gates,
 manual holds and completed/cancelled work intact. Saved Recovery directory realization
 and ownership govern reuse, even for a configured non-Git source.
-Base validation must use the saved strategy before restoring a reused workspace;
-keep current configuration separately for drift diagnostics and fresh admission.
+Base validation uses the saved strategy only for a same-company/project/task
+local Recovery copy with its server-owned copy-only receipt; source-free task
+Retry validation stays intact. Keep current configuration separately for drift
+diagnostics and fresh admission.
 Exercise the assembled heartbeat path for project-bound non-Git Recovery reuse,
 including preserved files, provider execution and task ownership rejection.
 Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
