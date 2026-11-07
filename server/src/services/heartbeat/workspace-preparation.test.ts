@@ -42,6 +42,7 @@ import { createLocalDiskStorageProvider } from "../../storage/local-disk-provide
 import { createStorageService } from "../../storage/service.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { selectHeartbeatEnvironment } from "./environment-selection.js";
+import * as environmentSelection from "./environment-selection.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
 import { projectService } from "../projects.js";
@@ -128,7 +129,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
-  it.each([false, true])("keeps a worker task worktree binding when a native PM prepares its review home (cached sibling sources: %s)", async cachedSibling => {
+  it.each(["fresh", "cached", "worker_bound"])("keeps a worker task worktree binding when a native PM prepares its review home (%s)", async scenario => {
     const { input, source, issue } = await fixture();
     const pmHome = join(home, `pm-${input.agent.id}`); await mkdir(pmHome);
     const workerCwd = join(home, `worker-${issue.id}`);
@@ -144,7 +145,10 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.task.context.paperclipPmWorkspace = { version: 1, role: "pm", projectId: issue.projectId, workerRoot: source, agentHome: pmHome,
       workerSlots: 0, workerIsolation: "shared", cwd: pmHome, issueId: issue.id };
     await db.update(agents).set({ adapterType: input.agent.adapterType, runtimeConfig: input.agent.runtimeConfig }).where(eq(agents.id, input.agent.id));
-    if (cachedSibling) {
+    if (scenario === "worker_bound") {
+      await reuse(input, toExecutionWorkspace(workerWorkspace));
+    }
+    if (scenario === "cached") {
       await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId!,
         name: "Sibling repository", repoUrl: pathToFileURL(source).href });
       const [cached] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId,
@@ -166,6 +170,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(access(join(pmHome, ".paperclip-repositories"))).rejects.toMatchObject({ code: "ENOENT" });
     const after = await readIssue(issue.id);
     expect(after.executionWorkspaceId).toBe(workerWorkspace.id);
+    expect(await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workerWorkspace.id))
+      .toMatchObject({ status: workerWorkspace.status, cwd: workerCwd, sourceIssueId: issue.id,
+        metadata: workerWorkspace.metadata, updatedAt: workerWorkspace.updatedAt });
     expect(after.executionWorkspaceSettings).toEqual(before.executionWorkspaceSettings);
     expect(after.executionWorkspacePreference).toBe(before.executionWorkspacePreference);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
@@ -189,10 +196,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
     await expect(access(join(source,".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it.each([false, true])("starts and settles a document worker through heartbeat without a Git repository (retained Recovery: %s)", async retained => {
+  it.each(["source", "retained", "canonical_active", "canonical_idle", "canonical_pm_overlap"])("starts and settles a document worker through heartbeat without a Git repository (%s)", async scenario => {
+    const retained = scenario !== "source";
+    const canonical = scenario.startsWith("canonical_");
     const { input, source, issue } = await fixture();
     await rm(join(source,".git"),{ recursive:true });
-    const cwd = retained ? join(home, `recovery-${issue.id}`) : source;
+    const cwd = canonical
+      ? join(await materializeIsolatedTaskDirectory({ companyId: issue.companyId, issueId: issue.id, attemptId: input.run.id }), "workspace")
+      : retained ? join(home, `recovery-${issue.id}`) : source;
     if (retained) {
       await mkdir(cwd);
       await writeFile(join(cwd, "README.md"), "source content\n");
@@ -201,8 +212,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const workspace = retained ? (await db.insert(executionWorkspaces).values({
       companyId: issue.companyId, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
       sourceIssueId: issue.id, name: "Retained Recovery directory", cwd, mode: "isolated_workspace",
-      strategyType: "project_primary", providerType: "local_fs", status: "idle",
-      metadata: { source: "project_primary", _controllerProvisionCopyOnly: true },
+      strategyType: "project_primary", providerType: "local_fs", status: canonical && scenario !== "canonical_idle" ? "active" : "idle",
+      metadata: { source: canonical ? "task_session" : "project_primary", _controllerProvisionCopyOnly: true },
     }).returning())[0] : null;
     const userId = `document-owner-${randomUUID()}`;
     await db.insert(authUsers).values({ id:userId,name:"Document owner",email:`${userId}@example.test`,createdAt:new Date(),updatedAt:new Date() });
@@ -213,8 +224,38 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       executionWorkspaceId: workspace?.id ?? null, executionWorkspacePreference: workspace ? "reuse_existing" : null,
       executionWorkspaceSettings:{ mode: retained ? "isolated_workspace" : "shared_workspace" },
       workspaceSelection:{ version:1,source:"explicit",selection:{ kind:"configured_source",mode:"shared",projectWorkspaceId:issue.projectWorkspaceId! } } }).where(eq(issues.id,issue.id));
-    await db.update(agents).set({ status:"idle",runtimeConfig:{ requireProjectWorkspace:true,heartbeat:{ enabled:false,wakeOnDemand:true } } }).where(eq(agents.id,input.agent.id));
-    const originalAdapter = getServerAdapter("process");
+    const adapterType = canonical ? "claude_local" : "process";
+    await db.update(agents).set({ adapterType, status:"idle",runtimeConfig:{ requireProjectWorkspace:true,heartbeat:{ enabled:false,wakeOnDemand:true } } }).where(eq(agents.id,input.agent.id));
+    const originalAdapter = getServerAdapter(adapterType);
+    if (scenario === "canonical_pm_overlap") {
+      const select = environmentSelection.selectHeartbeatEnvironment;
+      vi.spyOn(environmentSelection, "selectHeartbeatEnvironment").mockImplementationOnce(async (...args) => {
+        const selection = await select(...args);
+        expect(selection.useIsolatedTaskDirectory).toBe(true);
+        const pmHome = join(home, `pm-${issue.id}`); await mkdir(pmHome);
+        const [pm] = await db.insert(agents).values({ companyId: issue.companyId, name: "Coordination PM",
+          adapterType: "paperclip_runner", runtimeConfig: { workspaceBinding: { mode: "project_pm",
+            projectId: issue.projectId, workerRoot: source, agentHome: pmHome, workerSlots: 0, workerIsolation: "shared" } } }).returning();
+        const [child] = await db.insert(issues).values({ companyId: issue.companyId, projectId: issue.projectId,
+          projectWorkspaceId: issue.projectWorkspaceId, title: "Watch original work", parentId: issue.id,
+          originKind: "task_watchdog", originId: issue.id, assigneeAgentId: pm.id,
+          executionWorkspaceId: workspace!.id, executionWorkspacePreference: "reuse_existing" }).returning();
+        const [pmRun] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId, agentId: pm.id,
+          issueId: child.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+        const pmInput: HeartbeatWorkspacePreparationInput = { ...input, agent: pm, run: pmRun,
+          task: { ...input.task, issueId: child.id, issueRef: child, context: { issueId: child.id,
+            paperclipPmWorkspace: { version: 1, role: "pm", projectId: issue.projectId, workerRoot: source,
+              agentHome: pmHome, workerSlots: 0, workerIsolation: "shared", cwd: pmHome, issueId: child.id } } },
+          reuse: { ...input.reuse, requestedShouldReuseExisting: true,
+            existingExecutionWorkspace: toExecutionWorkspace(workspace!), reusableExistingExecutionWorkspace: toExecutionWorkspace(workspace!),
+            workspaceReuseRequest: resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: workspace!.id,
+              issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: "active" }) } };
+        const preparedPm = await prepareHeartbeatWorkspace(db, pmInput);
+        expect(preparedPm.executionWorkspace.cwd).toBe(pmHome);
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, pmRun.id));
+        return selection;
+      });
+    }
     const executed = vi.fn(async (execution: AdapterExecutionContext) => {
       const [lease] = await leases(execution.runId);
       const workspace = await input.services.executionWorkspacesSvc.getStoredById(issue.companyId,lease.executionWorkspaceId!);
@@ -223,15 +264,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       await db.update(issues).set({ status:"done" }).where(eq(issues.id,issue.id));
       return { exitCode:0,signal:null,timedOut:false,summary:"Document work completed" };
     });
-    registerServerAdapter({ ...originalAdapter,type:"process",supportsLocalAgentJwt:false,execute:executed,
-      testEnvironment:async()=>({ adapterType:"process",status:"pass",checks:[],testedAt:new Date().toISOString() }) });
+    registerServerAdapter({ ...originalAdapter,type:adapterType,supportsLocalAgentJwt:false,execute:executed,
+      testEnvironment:async()=>({ adapterType,status:"pass",checks:[],testedAt:new Date().toISOString() }) });
     const heartbeat = heartbeatService(db);
     try {
       const run = await heartbeat.wakeup(input.agent.id,{ source:"on_demand",triggerDetail:"manual",reason:"manual",
         requestedByActorType:"user",requestedByActorId:userId,payload:{ issueId:issue.id },contextSnapshot:{ issueId:issue.id } });
       await heartbeat.drainActiveRunExecutions();
-      expect(run).not.toBeNull(); expect(executed).toHaveBeenCalledOnce();
+      expect(run).not.toBeNull();
       expect(await readRun(run!.id)).toMatchObject({ status:"succeeded",errorCode:null });
+      expect(executed).toHaveBeenCalledOnce();
       expect(await readFile(join(cwd,"completed.txt"),"utf8")).toBe("document worker ran\n");
       if (workspace) {
         expect((await readIssue(issue.id)).executionWorkspaceId).toBe(workspace.id);

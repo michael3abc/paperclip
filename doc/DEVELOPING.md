@@ -4932,6 +4932,13 @@ controller copy-only receipt can be reused under its exact company/task ownershi
 Validate its canonical existing directory, including attempt/workspace layouts;
 never recreate missing files, reinterpret it as today's git_worktree default, or use
 another issue's path. The original configured source still has its access checks.
+PM coordination/review preparation may receive that same saved worker binding.
+The PM home is separate coordination storage, not a replacement workspace: skip
+retiring the borrowed row as well as rebinding the original task. Otherwise a
+PM watchdog can change active to idle between the worker's environment selection
+and directory ownership recheck. Cover this interleaving through assembled
+heartbeat with the canonical attempt/workspace layout and Claude launch guard,
+preserved delivery files, provider execution, and unchanged worker ownership.
 The environment-selection input includes the issue's projectId; narrow the saved
 workspace from null before checking its project and configured-source binding.
 Workspace preparation validates the persisted strategy before restoration for a

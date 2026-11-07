@@ -1255,6 +1255,9 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
   }));
   if (
+    // A PM home is coordination storage, not a replacement for the borrowed
+    // worker workspace. Retiring that workspace races the worker's admission.
+    !pmCoordination &&
     reusableExistingExecutionWorkspace &&
     persistedExecutionWorkspace &&
     reusableExistingExecutionWorkspace.id !==

@@ -172,3 +172,10 @@ deliberately rolled-back producer left uncertainty on the suite's shared client,
 although its rows had been truncated. A two-case reproduction confirms the leak.
 Give each test a fresh client owner and close it after joined cleanup; preserve
 the production transaction-reconciliation path and the exact startup deadline.
+
+HOM-240's next live continuation exposed a PM/worker preparation race: creating
+the watchdog's PM home marked its borrowed active worker directory idle between
+environment selection and binding validation. PM coordination no longer retires
+that row. Preserve the original task, workspace and stop evidence; regressions
+cover unchanged worker metadata and an assembled Claude continuation with PM
+preparation interleaved before the canonical Recovery-directory recheck.

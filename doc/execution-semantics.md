@@ -3527,6 +3527,9 @@ tasks require explicit registration. The original issue remains the progress rec
 A reusable task_watchdog child is a coordination assignment only when its persisted
 watchdog, original task, project and current PM agree. It runs in PM home. Caller wake
 context cannot grant this role or take the worker checkout.
+Preparing its PM home must also leave the worker workspace status and metadata
+unchanged. A separate coordination home does not supersede the original task
+directory, including while a worker continuation is being prepared.
 
 Existing issue/run/review/decision/recovery producers append durable watchdog events
 in their transaction, without locking shared watchdog rows. Shared recovery

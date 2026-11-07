@@ -453,6 +453,10 @@ run or caller payload, and never reopen blocked tasks during binding.
 PM coordination homes must skip both task repository admission and configured
 sibling-repository synchronization, including reuse of a cached PM workspace.
 Keep the original worker task binding; do not weaken repository publication checks.
+Preparing a PM home must not retire or update a borrowed worker workspace. Its
+active status and metadata remain unchanged while the worker admits or executes.
+Exercise coordination preparation between worker environment selection and the
+saved-directory recheck; a sequential helper-only test cannot prove this boundary.
 
 Managed PM follow-through uses one original-task watchdog with taskTracking enabled,
 intervalSec=300 and maxRecoveryAttempts=2. Append issue_watchdog_events in producer transactions;
