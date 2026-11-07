@@ -11,9 +11,7 @@ export const ARTIFACT_KIND_FILTERS: { value: ArtifactKindFilter; label: string }
   { value: "all", label: "All" },
   { value: "image", label: "Images" },
   { value: "video", label: "Videos" },
-  { value: "document", label: "Documents" },
-  { value: "text", label: "Text" },
-  { value: "file", label: "Files" },
+  { value: "file", label: "Audio & PDF" },
 ];
 
 export const ARTIFACT_GROUP_OPTIONS: { value: ArtifactGroupBy; label: string }[] = [

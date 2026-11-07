@@ -189,6 +189,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: undefined,
+        mediaOnly: true,
         limit: 30,
         cursor: undefined,
       });
@@ -235,6 +236,7 @@ describe("Artifacts page", () => {
         q: "launch",
         groupBy: "task",
         groupIssueId: undefined,
+        mediaOnly: true,
         limit: 30,
         cursor: undefined,
       });
@@ -292,6 +294,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "none",
         groupIssueId: undefined,
+        mediaOnly: true,
         limit: 30,
         cursor: "cursor-2",
       });
@@ -332,6 +335,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "none",
         groupIssueId: undefined,
+        mediaOnly: true,
         limit: 30,
         cursor: undefined,
       });
@@ -360,6 +364,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: undefined,
+        mediaOnly: true,
         limit: 30,
         cursor: undefined,
       });
@@ -393,6 +398,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: "issue-1",
+        mediaOnly: true,
         limit: 30,
         cursor: undefined,
       });
@@ -424,6 +430,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: undefined,
+        mediaOnly: true,
         limit: 30,
         cursor: undefined,
       });
@@ -534,5 +541,41 @@ describe("Artifacts page — Artifacts V1 (Settings > Experimental)", () => {
     expect(container.querySelector('[data-testid="artifact-stack-back"]')).not.toBeNull();
     expect(radio("Tasks")?.getAttribute("aria-checked")).toBe("true");
     flushSync(() => root.unmount());
+  });
+  it("offers only media views and always requests the media-only projection", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [sampleGroup()], nextCursor: null });
+    const { root } = renderArtifacts(container);
+    await waitForAssertion(() => {
+      expect(radio("Images")).not.toBeNull();
+    });
+    const labels = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]')).map((el) => el.textContent?.trim());
+    expect(labels).toEqual(["Tasks", "All files", "Images", "Videos", "Audio & PDF"]);
+    expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ mediaOnly: true }));
+    flushSync(() => root.unmount());
+  });
+
+  it("falls back to all media when a stale URL asks for the removed document or text kinds", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], nextCursor: null });
+    const { root } = renderArtifacts(container, ["/artifacts?kind=document&groupBy=none"]);
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ kind: "all", groupBy: "none", mediaOnly: true }));
+    });
+    expect(radio("All files")?.getAttribute("aria-checked")).toBe("true");
+    flushSync(() => root.unmount());
+  });
+
+  it("explains the media-only empty state for the tasks and flat views", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [], nextCursor: null });
+    const { root } = renderArtifacts(container);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("No media artifact stacks yet.");
+    });
+    flushSync(() => root.unmount());
+
+    const flat = renderArtifacts(container, ["/artifacts?groupBy=none"]);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("No media artifacts yet.");
+    });
+    flushSync(() => flat.root.unmount());
   });
 });

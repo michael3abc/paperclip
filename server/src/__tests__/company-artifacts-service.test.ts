@@ -518,6 +518,102 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(afterPrimaryCursor.artifacts.map((artifact) => artifact.title)).toEqual(["notes.txt"]);
   });
 
+  it("lists only media files in mediaOnly mode and keeps pagination consistent", async () => {
+    const { companyId, otherCompanyId, projectId, issueId } = await seedArtifacts();
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const extraAssets = [
+      { id: "21212121-2121-4121-8121-212121212121", key: "voice.mp3", type: "audio/mpeg", name: "voice.mp3" },
+      { id: "22222222-2222-4222-8222-222222222223", key: "brief.pdf", type: "application/pdf", name: "brief.pdf" },
+      { id: "23232323-2323-4232-8232-232323232323", key: "shot.bin", type: "application/octet-stream", name: "Shot.PNG" },
+      { id: "24242424-2424-4242-8242-242424242424", key: "clip.bin", type: "", name: "clip.mov" },
+      { id: "25252525-2525-4252-8252-252525252525", key: "worker-state.json", type: "application/json", name: "worker-state.png" },
+      { id: "26262626-2626-4262-8262-262626262626", key: "state.bin", type: "application/octet-stream", name: "state.json" },
+      { id: "27272727-2727-4272-8272-272727272727", key: "session.log", type: "application/octet-stream", name: "session.log" },
+    ];
+    await db.insert(assets).values(extraAssets.map((asset) => ({
+      id: asset.id,
+      companyId,
+      provider: "local_disk",
+      objectKey: asset.key,
+      contentType: asset.type,
+      byteSize: 10,
+      sha256: `sha256-${asset.key}`,
+      originalFilename: asset.name,
+      createdByAgentId: agentId,
+    })));
+    await db.insert(issueAttachments).values(extraAssets.map((asset, index) => ({
+      companyId,
+      issueId,
+      assetId: asset.id,
+      updatedAt: new Date(`2026-02-0${index + 1}T00:00:00.000Z`),
+    })));
+    await db.insert(issueWorkProducts).values({
+      id: "28282828-2828-4282-8282-282828282828",
+      companyId,
+      projectId,
+      issueId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Worker state snapshot",
+      status: "ready_for_review",
+      summary: "internal state",
+      metadata: { openPath: "/state" },
+      updatedAt: new Date("2026-03-01T00:00:00.000Z"),
+    });
+
+    const service = companyArtifactsService(db, createStorageService());
+    const all = await service.list(companyId, { mediaOnly: true, limit: 50 });
+    expect(all.artifacts.map((artifact) => artifact.title).sort()).toEqual([
+      "Primary Cut",
+      "Shot.PNG",
+      "brief.pdf",
+      "clip.mov",
+      "direct-video.mp4",
+      "voice.mp3",
+    ]);
+    expect(all.artifacts.every((artifact) => artifact.source !== "document")).toBe(true);
+    expect(all.artifacts.find((artifact) => artifact.title === "Shot.PNG")?.mediaKind).toBe("image");
+    expect(all.artifacts.find((artifact) => artifact.title === "clip.mov")?.mediaKind).toBe("video");
+    expect(all.artifacts.find((artifact) => artifact.title === "voice.mp3")?.mediaKind).toBe("file");
+
+    const images = await service.list(companyId, { mediaOnly: true, kind: "image", limit: 50 });
+    expect(images.artifacts.map((artifact) => artifact.title)).toEqual(["Shot.PNG"]);
+    const videos = await service.list(companyId, { mediaOnly: true, kind: "video", limit: 50 });
+    expect(videos.artifacts.map((artifact) => artifact.title).sort()).toEqual(["Primary Cut", "clip.mov", "direct-video.mp4"]);
+    const audioAndPdf = await service.list(companyId, { mediaOnly: true, kind: "file", limit: 50 });
+    expect(audioAndPdf.artifacts.map((artifact) => artifact.title).sort()).toEqual(["brief.pdf", "voice.mp3"]);
+    expect((await service.list(companyId, { mediaOnly: true, kind: "text", limit: 50 })).artifacts).toEqual([]);
+    expect((await service.list(companyId, { mediaOnly: true, kind: "document", limit: 50 })).artifacts).toEqual([]);
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const result = await service.list(companyId, { mediaOnly: true, limit: 2, cursor });
+      seen.push(...result.artifacts.map((artifact) => artifact.id));
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
+    }
+    expect(seen).toHaveLength(6);
+    expect(new Set(seen).size).toBe(6);
+    expect(seen).toEqual(all.artifacts.map((artifact) => artifact.id));
+
+    const grouped = await service.list(companyId, { mediaOnly: true, groupBy: "task", limit: 10 });
+    expect(grouped.groups).toHaveLength(1);
+    expect(grouped.groups?.[0]?.count).toBe(6);
+    expect(grouped.groups?.[0]?.mediaKinds.sort()).toEqual(["file", "image", "video"]);
+    expect(grouped.groups?.[0]?.href).toContain("mediaOnly=true");
+
+    // The default listing still shows documents, text and state-like entries.
+    const unfiltered = await service.list(companyId, { limit: 100 });
+    expect(unfiltered.artifacts.map((artifact) => artifact.title)).toEqual(
+      expect.arrayContaining(["Review Notes", "notes.txt", "Worker state snapshot", "state.json", "worker-state.png"]),
+    );
+
+    // Company with only a document yields an empty media view.
+    const other = await service.list(otherCompanyId, { mediaOnly: true, limit: 10 });
+    expect(other).toEqual({ artifacts: [], nextCursor: null });
+  });
+
   it("filters every artifact source by the agent it is attributed to", async () => {
     const { companyId } = await seedArtifacts();
     const writerId = "21212121-2121-4121-8121-212121212121";

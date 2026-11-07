@@ -33,6 +33,13 @@ describe("companyArtifactsQuerySchema", () => {
     });
   });
 
+  it("defaults mediaOnly to false and parses string booleans", () => {
+    expect(companyArtifactsQuerySchema.parse({}).mediaOnly).toBe(false);
+    expect(companyArtifactsQuerySchema.parse({ mediaOnly: "true" }).mediaOnly).toBe(true);
+    expect(companyArtifactsQuerySchema.parse({ mediaOnly: "false" }).mediaOnly).toBe(false);
+    expect(() => companyArtifactsQuerySchema.parse({ mediaOnly: "yes" })).toThrow();
+  });
+
   it("accepts grouped artifact query parameters", () => {
     expect(
       companyArtifactsQuerySchema.parse({

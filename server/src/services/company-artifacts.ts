@@ -133,6 +133,67 @@ function contentTypeKindCondition(contentTypeExpression: SQL<string>, kind: Comp
   return undefined;
 }
 
+const GENERIC_CONTENT_TYPES = ["application/octet-stream", "binary/octet-stream"];
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg", "heic", "heif", "tif", "tiff"];
+const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov", "webm", "mkv", "avi"];
+const AUDIO_EXTENSIONS = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "oga", "opus", "aif", "aiff"];
+const PDF_EXTENSIONS = ["pdf"];
+
+function extensionOf(filename: string | null | undefined) {
+  return filename?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? null;
+}
+
+function isGenericContentType(contentType: string | null | undefined) {
+  const normalized = (contentType ?? "").trim().toLowerCase();
+  return !normalized || GENERIC_CONTENT_TYPES.includes(normalized);
+}
+
+/**
+ * Media-only view: images, videos, audio and PDF. The content type decides first;
+ * the file extension is consulted only when the type is missing or generic, so a
+ * JSON/Markdown file named like media is never admitted.
+ */
+function classifyMediaOnlyKind(
+  contentType: string | null | undefined,
+  filename: string | null | undefined,
+): CompanyArtifactMediaKind | null {
+  const normalized = (contentType ?? "").trim().toLowerCase();
+  if (normalized.startsWith("image/")) return "image";
+  if (normalized.startsWith("video/")) return "video";
+  if (normalized.startsWith("audio/") || normalized === "application/pdf") return "file";
+  if (!isGenericContentType(normalized)) return null;
+  const ext = extensionOf(filename);
+  if (!ext) return null;
+  if (IMAGE_EXTENSIONS.includes(ext)) return "image";
+  if (VIDEO_EXTENSIONS.includes(ext)) return "video";
+  if (AUDIO_EXTENSIONS.includes(ext) || PDF_EXTENSIONS.includes(ext)) return "file";
+  return null;
+}
+
+function extensionPattern(extensions: string[]) {
+  return `\\.(${extensions.join("|")})$`;
+}
+
+function mediaOnlyCondition(
+  contentTypeExpression: SQL<string>,
+  filenameExpression: SQL<string>,
+  kind: CompanyArtifactsQuery["kind"],
+) {
+  if (kind === "text" || kind === "document") return sql`false`;
+  const imageType = sql`${contentTypeExpression} ILIKE 'image/%'`;
+  const videoType = sql`${contentTypeExpression} ILIKE 'video/%'`;
+  const audioPdfType = sql`(${contentTypeExpression} ILIKE 'audio/%' OR lower(${contentTypeExpression}) = 'application/pdf')`;
+  const generic = sql`(${contentTypeExpression} = '' OR lower(${contentTypeExpression}) IN ('application/octet-stream', 'binary/octet-stream'))`;
+  const ext = (extensions: string[]) => sql`(${generic} AND ${filenameExpression} ~* ${extensionPattern(extensions)})`;
+  const image = sql`(${imageType} OR ${ext(IMAGE_EXTENSIONS)})`;
+  const video = sql`(${videoType} OR ${ext(VIDEO_EXTENSIONS)})`;
+  const audioPdf = sql`(${audioPdfType} OR ${ext([...AUDIO_EXTENSIONS, ...PDF_EXTENSIONS])})`;
+  if (kind === "image") return image;
+  if (kind === "video") return video;
+  if (kind === "file") return audioPdf;
+  return sql`(${image} OR ${video} OR ${audioPdf})`;
+}
+
 function buildIssueHref(companyPrefix: string, identifier: string, anchor: string) {
   return `/${encodeURIComponent(companyPrefix)}/issues/${encodeURIComponent(identifier)}#${anchor}`;
 }
@@ -147,6 +208,7 @@ function buildArtifactsGroupHref(
   params.set("groupBy", groupBy);
   params.set("groupIssueId", groupIssueId);
   if (query.kind !== "all") params.set("kind", query.kind);
+  if (query.mediaOnly) params.set("mediaOnly", "true");
   if (query.projectId) params.set("projectId", query.projectId);
   if (query.agentId) params.set("agentId", query.agentId);
   if (query.q) params.set("q", query.q);
@@ -352,7 +414,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
 
-      if (query.kind === "all" || query.kind === "document") {
+      if (!query.mediaOnly && (query.kind === "all" || query.kind === "document")) {
         const createdAgent = alias(agents, "document_created_agent");
         const updatedAgent = alias(agents, "document_updated_agent");
         const documentArtifactId = sql<string>`concat('document:', ${documents.id})`;
@@ -491,7 +553,16 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const workProductCursor = groupBy
           ? undefined
           : cursorCondition(sql<Date>`${issueWorkProducts.updatedAt}`, workProductArtifactId, cursor);
-        const workProductKind = contentTypeKindCondition(workProductContentType, query.kind);
+        const workProductFilename = sql<string>`coalesce(${issueWorkProducts.metadata}->>'originalFilename', '')`;
+        const workProductKind = query.mediaOnly
+          ? mediaOnlyCondition(workProductContentType, workProductFilename, query.kind)
+          : contentTypeKindCondition(workProductContentType, query.kind);
+        if (query.mediaOnly) {
+          // Only files stored as attachments are media; other work products carry no file.
+          const attachmentBacked = sql`${issueWorkProducts.metadata}->>'attachmentId' IS NOT NULL`;
+          workProductBaseConditions.push(attachmentBacked);
+          workProductConditions.push(attachmentBacked);
+        }
         if (workProductCursor) workProductConditions.push(workProductCursor);
         if (groupBy === "task" && query.groupIssueId) {
           const selectedIssueCondition = eq(issues.id, query.groupIssueId);
@@ -599,10 +670,14 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           }
           const contentType = attachmentMetadata?.contentType ?? null;
           const identifier = row.issueIdentifier ?? row.issueId;
+          const mediaKind = query.mediaOnly
+            ? classifyMediaOnlyKind(contentType, attachmentMetadata?.originalFilename)
+            : classifyMediaKind(contentType, attachmentMetadata ? "file" : "empty");
+          if (!mediaKind) continue;
           artifacts.push({
             id: row.artifactId,
             source: "work_product",
-            mediaKind: classifyMediaKind(contentType, attachmentMetadata ? "file" : "empty"),
+            mediaKind,
             title: row.title,
             previewText: normalizePreviewText(row.summary),
             contentType,
@@ -630,7 +705,13 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const attachmentCursor = groupBy
           ? undefined
           : cursorCondition(sql<Date>`${issueAttachments.updatedAt}`, attachmentArtifactId, cursor);
-        const attachmentKind = contentTypeKindCondition(sql<string>`${assets.contentType}`, query.kind);
+        const attachmentKind = query.mediaOnly
+          ? mediaOnlyCondition(
+            sql<string>`coalesce(${assets.contentType}, '')`,
+            sql<string>`coalesce(${assets.originalFilename}, '')`,
+            query.kind,
+          )
+          : contentTypeKindCondition(sql<string>`${assets.contentType}`, query.kind);
         if (attachmentCursor) attachmentConditions.push(attachmentCursor);
         if (groupBy === "task" && query.groupIssueId) attachmentConditions.push(eq(issues.id, query.groupIssueId));
         if (attachmentKind) attachmentConditions.push(attachmentKind);
@@ -697,7 +778,10 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
 
         const attachmentArtifacts = await Promise.all(attachmentRows.map(async (row): Promise<CompanyArtifact | null> => {
           if (workProductAttachmentIds.has(row.attachmentId)) return null;
-          const mediaKind = classifyMediaKind(row.contentType);
+          const mediaKind = query.mediaOnly
+            ? classifyMediaOnlyKind(row.contentType, row.originalFilename)
+            : classifyMediaKind(row.contentType);
+          if (!mediaKind) return null;
           const contentPath = attachmentContentPath(row.attachmentId);
           const identifier = row.issueIdentifier ?? row.issueId;
           return {

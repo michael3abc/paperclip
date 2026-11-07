@@ -41,6 +41,8 @@ export interface ListArtifactsParams {
   groupBy?: CompanyArtifactGroupBy;
   /** When grouping, selects a single stack to expand into its artifacts. */
   groupIssueId?: string;
+  /** Only images, videos, audio and PDF; excludes documents, text and state files. */
+  mediaOnly?: boolean;
   limit?: number;
   cursor?: string;
 }
@@ -53,6 +55,7 @@ function buildArtifactsQuery(params?: ListArtifactsParams): string {
   if (params?.q) search.set("q", params.q);
   if (params?.groupBy && params.groupBy !== "none") search.set("groupBy", params.groupBy);
   if (params?.groupIssueId) search.set("groupIssueId", params.groupIssueId);
+  if (params?.mediaOnly) search.set("mediaOnly", "true");
   if (params?.limit != null) search.set("limit", String(params.limit));
   if (params?.cursor) search.set("cursor", params.cursor);
   const qs = search.toString();

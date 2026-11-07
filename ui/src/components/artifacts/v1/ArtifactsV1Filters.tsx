@@ -3,7 +3,8 @@ import { TabFilters, type TabBarItem } from "@/components/TabBar";
 
 /**
  * The Artifacts page's one row of views (mock node 2129:133457): Tasks —
- * one tile per task, the default — then every file flat, by type. Grouping
+ * one tile per task, the default — then every media file flat, by type
+ * (images, videos, audio and PDF; documents, text and worker state are not listed). Grouping
  * and the kind filter are still two URL parameters; a view maps onto both.
  */
 export type ArtifactsV1View = "tasks" | Exclude<ArtifactKindFilter, never>;
@@ -13,9 +14,7 @@ export const ARTIFACTS_V1_VIEWS: TabBarItem<ArtifactsV1View>[] = [
   { value: "all", label: "All files" },
   { value: "image", label: "Images" },
   { value: "video", label: "Videos" },
-  { value: "document", label: "Documents" },
-  { value: "text", label: "Text" },
-  { value: "file", label: "Files" },
+  { value: "file", label: "Audio & PDF" },
 ];
 
 /** Any grouping reads as the Tasks view; flat views are named by their kind. */

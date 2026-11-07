@@ -557,6 +557,7 @@ export const queryKeys = {
       q?: string,
       groupBy?: string,
       groupIssueId?: string,
+      mediaOnly?: boolean,
     ) =>
       [
         "artifacts",
@@ -565,6 +566,7 @@ export const queryKeys = {
         q ?? "",
         groupBy ?? "none",
         groupIssueId ?? "",
+        mediaOnly ? "media-only" : "all-sources",
       ] as const,
     byAgent: (companyId: string, agentId: string) =>
       ["artifacts", companyId, "by-agent", agentId] as const,
