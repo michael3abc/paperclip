@@ -1,4 +1,6 @@
 import { getDelegatedRequest } from "../services/delegated-requests.js";
+import { and, eq } from "drizzle-orm";
+import { heartbeatRuns, runnerApiResponseReservations } from "@paperclipai/db";
 import type { RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
@@ -29,6 +31,16 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
       allowed = typeof file === "string" && (read ? PM_BUNDLE_FILES.includes(file as typeof PM_BUNDLE_FILES[number])
         : method === "PUT" && PM_EDITABLE_BUNDLE_FILES.has(file) && typeof body.changeReason === "string"
           && !!body.changeReason.trim() && body.clearLegacyPromptTemplate !== true);
+    }
+  } else if ((match = path.match(/^\/assets\/([^/]+)\/content$/))) {
+    // Only an already-authorized API response captured by this PM on this task.
+    // Asset content routes retain their company/responsible-user/read checks.
+    if (read && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(match[1]!)) {
+      const [capture] = await db.select({ id: runnerApiResponseReservations.id })
+        .from(runnerApiResponseReservations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, runnerApiResponseReservations.runId))
+        .where(and(eq(runnerApiResponseReservations.assetId, match[1]!), eq(runnerApiResponseReservations.companyId, pm.companyId),
+          eq(heartbeatRuns.companyId, pm.companyId), eq(heartbeatRuns.agentId, pm.agentId), eq(heartbeatRuns.nativeIssueId, source.id))).limit(1);
+      allowed = Boolean(capture);
     }
   } else if ((match = path.match(/^\/projects\/([^/]+)(?:\/(workspaces|repositories|sessions))?$/))) {
     allowed = read && match[1] === pm.projectId;

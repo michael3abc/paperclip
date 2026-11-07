@@ -4714,6 +4714,12 @@ tri-state provider-start evidence, confirmed/not-started/unknown stop evidence a
 a fixed recovery summary. Raw errors/results/logs are never returned. A terminal
 run or absent PID alone is not stop proof. PM dispatch errors preserve public
 domain codes, including `PM_ISOLATED_WORKSPACE_REQUIRED`.
+When an API response is externalized, PM asset reads require a response reservation
+from the same company, PM and task; existing content authorization still applies.
+Unknown, other-agent and other-task assets remain denied. A PM review can persist
+its own home for run recovery, but must not rebind the implementation task or
+prepare its repositories in that home. The original worker worktree remains the
+task workspace across review and subsequent revision.
 
 ### Delegated decisions
 

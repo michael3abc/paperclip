@@ -98,6 +98,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `d6d2c8c0d7` fix: synchronize delegated decision contracts and validation fixtures
 
 Current change: PM dispatch live schema, bounded readiness/session diagnostics, and pre-creation isolated-workspace admission.
+Acceptance follow-up: scoped saved-response asset reads and preservation of task worktree bindings during PM review.
 
 ## Release
 

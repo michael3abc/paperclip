@@ -158,6 +158,9 @@ reject shared directories and existing-task worktrees before task creation. PM
 `list_agents.dispatchReadiness` reports current policy/document/selection metadata;
 it is not provider acceptance. PMs may read only their project's sessions endpoint
 for bounded failure and stop evidence, never full worker configuration or raw logs.
+Captured response assets may be read only by their originating PM on the same
+task; large API responses retain the same authorization as their capture. PM
+review homes are run-scoped and must never replace a worker task workspace binding.
 Use `read_bundle_file` receipts and `write_bundle_file` CAS saves for PM support
 files; protect AGENTS.md and synchronize the registered run baseline on every save.
 PM Agent settings own `pmDelegation` version 2: one default and explicit harness,

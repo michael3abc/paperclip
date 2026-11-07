@@ -127,6 +127,33 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
+  it("keeps a worker task worktree binding when a native PM prepares its review home", async () => {
+    const { input, source, issue } = await fixture();
+    const pmHome = join(home, `pm-${input.agent.id}`); await mkdir(pmHome);
+    const workerCwd = join(home, `worker-${issue.id}`);
+    await execFile("git", ["-C", source, "worktree", "add", "-b", "worker-task", workerCwd]);
+    const [workerWorkspace] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId,
+      projectWorkspaceId: issue.projectWorkspaceId, sourceIssueId: issue.id, name: "Worker task", cwd: workerCwd,
+      mode: "isolated_workspace", strategyType: "git_worktree", providerType: "git_worktree", branchName: "worker-task" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workerWorkspace.id, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+    const before = await readIssue(issue.id); input.task.issueRef = before;
+    input.agent.adapterType = "paperclip_runner";
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "project_pm", projectId: issue.projectId, workerRoot: source, agentHome: pmHome, workerSlots: 0, workerIsolation: "shared" } };
+    input.task.context.paperclipPmWorkspace = { version: 1, role: "pm", projectId: issue.projectId, workerRoot: source, agentHome: pmHome,
+      workerSlots: 0, workerIsolation: "shared", cwd: pmHome, issueId: issue.id };
+    await db.update(agents).set({ adapterType: input.agent.adapterType, runtimeConfig: input.agent.runtimeConfig }).where(eq(agents.id, input.agent.id));
+    const bind = vi.spyOn(input.services.executionWorkspacesSvc, "bindTaskWorkspace");
+    const result = await prepareHeartbeatWorkspace(db, input);
+    expect(result.executionWorkspace.cwd).toBe(pmHome);
+    expect(result.persistedExecutionWorkspace?.cwd).toBe(pmHome);
+    expect(bind).not.toHaveBeenCalled();
+    const after = await readIssue(issue.id);
+    expect(after.executionWorkspaceId).toBe(workerWorkspace.id);
+    expect(after.executionWorkspaceSettings).toEqual(before.executionWorkspaceSettings);
+    expect(after.executionWorkspacePreference).toBe(before.executionWorkspacePreference);
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
+  });
   it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("refuses a shared worker without a task worktree: %s", async kind => {
     const { input } = await fixture(true);
     input.agent.runtimeConfig = { requireTaskWorktree: true };

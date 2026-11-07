@@ -88,7 +88,7 @@ import type {
   resolveExecutionWorkspaceReuseRequestForIssue,
 } from "./workspaces.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
-import { readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask } from "../agent-workspace-binding.js";
+import { readPaperclipPmWorkspaceContext, readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask } from "../agent-workspace-binding.js";
 import type {
   ParsedExecutionWorkspaceMode,
   ExecutionWorkspaceEnvironmentResolution,
@@ -182,6 +182,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";
   const timeWorkspace = createHeartbeatPreparationTiming(run.id);
   const fixedBinding = readWorkspaceBinding(agent.runtimeConfig, input.task.context);
+  const pmCoordination = fixedBinding !== null && (agent.runtimeConfig?.workspaceBinding as { mode?: string } | undefined)?.mode === "project_pm"
+    && readPaperclipPmWorkspaceContext(input.task.context.paperclipPmWorkspace)?.role === "pm";
   const {
     issueRef,
     issueId,
@@ -925,7 +927,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const bindIssueToPersistedExecutionWorkspace = async (
     workspace: ExecutionWorkspace | null,
   ) => {
-    if (controllerOnly || !issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+    if (controllerOnly || pmCoordination || !issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
       return;
     }
     const nextIssueWorkspaceMode =
@@ -1229,7 +1231,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const projectRepositoryPaths: string[] = [];
   if (remoteAuthority) projectRepositoryPaths.push(...(remoteSourceState.value?.source.repositories ?? [])
     .filter(repository => !repository.readOnly).map(repository => repository.relativePath));
-  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !controllerOnly && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
+  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !controllerOnly && !pmCoordination && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const taskRepositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
         issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
@@ -1489,7 +1491,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       if (wake) wake.executionContinuation = continuation;
     }
   }
-  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !controllerOnly && issueId && (persistedNativeExecutionInput || nativeRecoveryExecutionWorkspaceId)
+  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !controllerOnly && !pmCoordination && issueId && (persistedNativeExecutionInput || nativeRecoveryExecutionWorkspaceId)
       && !(executionTarget?.kind === "remote" && (executionTarget.transport === "ssh"
         || (executionTarget.transport === "sandbox" && executionTarget.runnerTask)))) {
     const workspaceId = persistedNativeExecutionInput?.binding.executionWorkspaceId ?? nativeRecoveryExecutionWorkspaceId!;

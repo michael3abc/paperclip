@@ -10,7 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, companies, projects, projectWorkspaces, issues, heartbeatRuns, authUsers, companyMemberships, activityLog, principalPermissionGrants, completionContracts, issueThreadInteractions, toolGatewaySessions, createDb } from "@paperclipai/db";
+import { assets, runnerApiResponseReservations, agents, agentWakeupRequests, companies, projects, projectWorkspaces, issues, heartbeatRuns, authUsers, companyMemberships, activityLog, principalPermissionGrants, completionContracts, issueThreadInteractions, toolGatewaySessions, createDb } from "@paperclipai/db";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { resolveManagedInstructionsRoot, agentInstructionsService } from "../services/agent-instructions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
@@ -144,6 +144,20 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     for (const [method, target] of [["PATCH", `/agents/${agentId}`], ["PUT", `/agents/${workerId}/instructions-bundle/file`], ["POST", "/approvals/anything/approve"], ["GET", `/issues/${otherIssueId}`], ["GET", `/companies/${companyId}/issues`]]) {
       await expect(assertPmApiRequest(db, scope, { method: method!, path: target!, query: {}, body: {}, runId })).rejects.toThrow();
     }
+  });
+  it("reads only captured API assets from this PM and this task", async () => {
+    const ownAsset = randomUUID(), foreignAsset = randomUUID(), workerAsset = randomUUID(), uncapturedAsset = randomUUID(), otherRun = randomUUID(), workerRun = randomUUID();
+    await db.insert(assets).values([ownAsset, foreignAsset, workerAsset, uncapturedAsset].map(id => ({ id, companyId, provider: "local_disk", objectKey: id, contentType: "application/json", byteSize: 2, sha256: "a".repeat(64), createdByAgentId: agentId })));
+    await db.insert(heartbeatRuns).values({ id: otherRun, companyId, agentId, nativeIssueId: otherIssueId, status: "succeeded", runtimeMode: "native" });
+    await db.insert(heartbeatRuns).values({ id: workerRun, companyId, agentId: workerId, nativeIssueId: issueId, status: "succeeded", runtimeMode: "native" });
+    await db.insert(runnerApiResponseReservations).values([{ companyId, runId, assetId: ownAsset, reservedBytes: 2 }, { companyId, runId: otherRun, assetId: foreignAsset, reservedBytes: 2 }, { companyId, runId: workerRun, assetId: workerAsset, reservedBytes: 2 }]);
+    const request = (asset: string) => ({ method: "GET", path: `/assets/${asset}/content`, query: {}, body: {}, runId });
+    await expect(assertPmApiRequest(db, scope, request(ownAsset))).resolves.toBeUndefined();
+    for (const denied of [foreignAsset, workerAsset, uncapturedAsset, "not-a-uuid"]) {
+      await expect(assertPmApiRequest(db, scope, request(denied))).rejects.toThrow("outside the PM");
+    }
+    await expect(assertPmApiRequest(db, scope, request(randomUUID()))).rejects.toThrow("outside the PM");
+    await expect(assertPmApiRequest(db, scope, { ...request(ownAsset), method: "DELETE" })).rejects.toThrow("outside the PM");
   });
   it("requires read receipts before dispatch, preserves Owner gates, and wakes only the explicit worker once", async () => {
     const args = { idempotencyKey: "dispatch", title: "Bounded worker task", initialPlan: "Inspect, implement, verify, deliver evidence.",
