@@ -325,7 +325,10 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
     skills,
     mcp,
     ...(pm ? { toolPolicy: { kind: "project_pm" as const, version: 2 as const,
-      readRoots: [...new Set([pm.workerRoot, instructions.bundle.rootPath, ...(input.instructionWorkingCopy ? [input.instructionWorkingCopy.rootPath] : [])])] } } : {}),
+      // Source reads use read_project_file/search_project_files, which check
+      // current project ownership, including nested projects and symlink aliases.
+      // A provider-native recursive reader cannot enforce those dynamic bounds.
+      readRoots: [...new Set([instructions.bundle.rootPath, ...(input.instructionWorkingCopy ? [input.instructionWorkingCopy.rootPath] : [])])] } } : {}),
     ...(input.runtimeConfig.paperclipConnectionInstructions ? {
       connectionInstructions: input.runtimeConfig.paperclipConnectionInstructions as { text: string; digest: string },
     } : {}),

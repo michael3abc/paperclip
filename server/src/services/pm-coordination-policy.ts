@@ -222,6 +222,7 @@ export async function assertPmRun(db: Db, scope: PmCoordinationScope, runId: str
     eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.agentId, scope.agentId))).limit(1);
   if (!run || run.status !== "running" || !run.nativeIssueId) throw forbidden("PM operation requires its current running task", { code: "PM_RUN_DENIED" });
   const issue = await assertPmIssue(db, scope, run.nativeIssueId);
+  if (issue.executionRunId !== run.id) throw forbidden("PM operation requires the current task execution lock", { code: "PM_RUN_DENIED" });
   return { run, issue };
 }
 

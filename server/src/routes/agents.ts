@@ -1,7 +1,7 @@
 import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
 import { savePmWorkerPolicySchema } from "@paperclipai/shared";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
-import { pmCoordinationScope } from "../services/pm-coordination-policy.js";
+import { pmCoordinationScope, currentPmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { readPmBundleFile, writePmBundleFile } from "../services/pm-bundle-tools.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
@@ -4226,6 +4226,11 @@ export function agentRoutes(
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
     if (!(await assertAgentReadAllowed(req, res, agent))) return;
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.companyId
+      && await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId })) {
+      res.json(await buildAgentDetail(agent, { restricted: true }));
+      return;
+    }
     const isSelf = req.actor.type === "agent" && req.actor.agentId === id;
     if (isSelf) {
       const trustPreset = await resolveAgentSelfTrustPreset(req, agent);

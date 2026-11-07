@@ -3,6 +3,11 @@ import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { describe, expect, it, vi } from "vitest";
 import { projectNativeRuntimeRequest } from "./native-question-bridge.js";
 
+vi.mock("../delegated-decision-policy.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../delegated-decision-policy.js")>(),
+  routeDelegatedDecision: vi.fn(async () => null),
+}));
+
 const binding = {
   companyId: "company-1", issueId: "issue-1", runId: "run-1", agentId: "agent-1",
   normalizedSessionId: "session-1", runnerSourceInstanceId: "runner-1",

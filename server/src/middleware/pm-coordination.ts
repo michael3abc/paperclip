@@ -1,12 +1,17 @@
 import { getDelegatedRequest } from "../services/delegated-requests.js";
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, runnerApiResponseReservations } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { heartbeatRuns, runnerApiResponseReservations, issueAttachments, issues } from "@paperclipai/db";
 import type { RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
 import { currentPmCoordinationScope, assertPmIssue, assertPmDispatch, assertPmRun, assertPmApproval, pmDispatchExecutionPolicy, PM_BUNDLE_FILES, PM_EDITABLE_BUNDLE_FILES, type PmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { requirePmBundleReads } from "../services/pm-bundle-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
+import { readNativeExecutionReviewAssignment } from "../services/native-runtime/native-execution-review.js";
+import { boundRunIssueIdSql } from "../services/run-task-binding.js";
+
+// Explicit read routes: a new GET route is not automatically execution-free.
+const ISSUE_READ_PATH = /^(?:|\/(?:recent-comments|comments(?:\/[^/]+)?|documents(?:\/[^/]+(?:\/(?:revisions(?:\/[^/]+)?|annotations(?:\/[^/]+)?))?)?|approvals|interactions|work-products|attachments|workspace|runner-goal|heartbeat-context|diagnostics\/(?:blockers|wakes|subtree)|watchdog|recovery-actions|external-objects|external-object-summary|accepted-plan-decompositions|privacy-constraints|access-grants|queued-comments|chat-handoffs|pending-questions|decision-receipts|feedback-votes|feedback-traces|tree-control\/state|tree-holds(?:\/[^/]+)?|cases|activity|runs|live-runs|execution|active-run|cost-summary))$/;
 
 /** Closed API surface shared by generic API calls and direct authenticated HTTP. */
 export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, request: {
@@ -18,6 +23,7 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
   if (!request.runId) deny();
   const { run, issue: source } = await assertPmRun(db, pm, request.runId!);
   const read = method === "GET";
+  if (!read && readNativeExecutionReviewAssignment(run.contextSnapshot)) deny();
   if (!read && readNativeReviewAssignmentContext(run.contextSnapshot) && !/^\/issues\/[^/]+\/interactions\/[^/]+\/(accept|reject)$/.test(path)) deny();
   let operation = "api_update";
   let allowed = false;
@@ -33,16 +39,26 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
           && !!body.changeReason.trim() && body.clearLegacyPromptTemplate !== true);
     }
   } else if ((match = path.match(/^\/assets\/([^/]+)\/content$/))) {
-    // Only an already-authorized API response captured by this PM on this task.
-    // Asset content routes retain their company/responsible-user/read checks.
+    // Project attachments and captured responses retain the underlying asset,
+    // issue privacy and responsible-user checks, regardless of producing worker.
     if (read && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(match[1]!)) {
       const [capture] = await db.select({ id: runnerApiResponseReservations.id })
         .from(runnerApiResponseReservations).innerJoin(heartbeatRuns, eq(heartbeatRuns.id, runnerApiResponseReservations.runId))
+        .innerJoin(issues, sql`${issues.id}::text = ${boundRunIssueIdSql()}`)
         .where(and(eq(runnerApiResponseReservations.assetId, match[1]!), eq(runnerApiResponseReservations.companyId, pm.companyId),
-          eq(heartbeatRuns.companyId, pm.companyId), eq(heartbeatRuns.agentId, pm.agentId), eq(heartbeatRuns.nativeIssueId, source.id))).limit(1);
-      allowed = Boolean(capture);
+          eq(heartbeatRuns.companyId, pm.companyId), eq(issues.companyId, pm.companyId), eq(issues.projectId, pm.projectId))).limit(1);
+      const [attachment] = await db.select({ id: issueAttachments.id }).from(issueAttachments)
+        .innerJoin(issues, eq(issues.id, issueAttachments.issueId)).where(and(eq(issueAttachments.assetId, match[1]!),
+          eq(issueAttachments.companyId, pm.companyId), eq(issues.companyId, pm.companyId), eq(issues.projectId, pm.projectId))).limit(1);
+      allowed = Boolean(capture || attachment);
     }
-  } else if ((match = path.match(/^\/projects\/([^/]+)(?:\/(workspaces|repositories|sessions))?$/))) {
+  } else if ((match = path.match(/^\/heartbeat-runs\/([^/]+)(?:\/(events|log|workspace-operations))?$/))) {
+    if (read) {
+      const [target] = await db.select({ issueId: boundRunIssueIdSql() }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, match[1]!), eq(heartbeatRuns.companyId, pm.companyId))).limit(1);
+      if (target?.issueId) { await assertPmIssue(db, pm, target.issueId); allowed = true; }
+    }
+  } else if ((match = path.match(/^\/projects\/([^/]+)(?:\/(workspaces|repositories|sessions|work-products|external-object-summary|access-members))?$/))) {
     allowed = read && match[1] === pm.projectId;
   } else if ((match = path.match(/^\/companies\/([^/]+)\/adapters\/(claude_local|codex_local)\/models$/))) {
     allowed = read && match[1] === pm.companyId;
@@ -54,8 +70,16 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
       for (const id of body.issueIds) await assertPmIssue(db, pm, String(id));
       allowed = true;
     }
-  } else if ((match = path.match(/^\/approvals\/([^/]+)(?:\/(issues|comments))?$/))) {
-    if (read) { await assertPmApproval(db, pm, match[1]!); allowed = true; }
+  } else if ((match = path.match(/^\/approvals\/([^/]+)(?:\/(issues|comments|approve|reject))?$/))) {
+    await assertPmApproval(db, pm, match[1]!);
+    if (read && !["approve", "reject"].includes(match[2] ?? "")) allowed = true;
+    if (method === "POST" && ["approve", "reject"].includes(match[2] ?? "")
+      && typeof body.delegationRevision === "string" && typeof body.decisionNote === "string" && body.decisionNote.trim()
+      && Object.keys(body).every(key => ["delegationRevision", "decisionNote"].includes(key))) {
+      const delegated = await getDelegatedRequest(db, { ...pm, runId: run.id }, "approval", match[1]!);
+      allowed = delegated.revision === body.delegationRevision;
+      operation = "resolve_delegated_request";
+    }
   } else if ((match = path.match(/^\/companies\/([^/]+)\/issues$/))) {
     if (match[1] !== pm.companyId) deny();
     if (read) allowed = query.projectId === pm.projectId;
@@ -73,8 +97,8 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
   } else if ((match = path.match(/^\/issues\/([^/]+)(.*)$/))) {
     const issue = await assertPmIssue(db, pm, match[1]!);
     const tail = match[2];
-    allowed = read && /^(?:|\/comments|\/documents(?:\/[^/]+(?:\/revisions)?)?|\/approvals|\/interactions|\/work-products|\/attachments|\/workspace)$/.test(tail!);
-    if (method === "POST" && tail === "/comments") allowed = Object.keys(body).every(key => key === "body");
+    allowed = read && ISSUE_READ_PATH.test(tail!);
+    if (method === "POST" && tail === "/comments") allowed = Object.keys(body).every(key => ["body", "clientRequestId"].includes(key));
     if (method === "PUT" && /^\/documents\/[^/]+$/.test(tail!)) allowed = true;
     if (method === "POST" && tail === "/interactions") allowed = true;
     if (method === "POST" && /^\/interactions\/[^/]+\/(accept|reject|respond|verdicts)$/.test(tail!) && typeof body.delegationRevision === "string") {

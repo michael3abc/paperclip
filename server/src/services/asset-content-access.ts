@@ -4,6 +4,8 @@ import { isUuidLike } from "@paperclipai/shared";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { canActorReadHeartbeatRun } from "./heartbeat-run-privacy.js";
 import { canActorReadCase } from "./case-access.js";
+import { currentPmCoordinationScope } from "./pm-coordination-policy.js";
+import { boundRunIssueId } from "./run-task-binding.js";
 
 type Asset = Pick<typeof assets.$inferSelect, "id" | "companyId" | "objectKey" | "createdByAgentId" | "createdByUserId">;
 
@@ -38,8 +40,17 @@ export async function canActorReadAssetContent(db: Db, actor: AuthorizationActor
     .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, runnerApiResponseReservations.runId))
     .where(and(eq(runnerApiResponseReservations.assetId, asset.id), eq(runnerApiResponseReservations.companyId, asset.companyId)));
   if (namespace(asset) === "runner-api" && !captures.length) return false;
+  const pm = captures.length && actor.type === "agent" && actor.agentId && actor.companyId
+    ? await currentPmCoordinationScope(db, { agentId: actor.agentId, companyId: actor.companyId }) : null;
   for (const { run } of captures) {
-    const owns = run && (actor.type === "agent"
+    let projectRead = false;
+    const sourceIssueId = run && boundRunIssueId(run);
+    if (pm && run && sourceIssueId && (!run.responsibleUserId || actor.onBehalfOfUserId === run.responsibleUserId)) {
+      projectRead = Boolean((await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, sourceIssueId), eq(issues.companyId, pm.companyId), eq(issues.projectId, pm.projectId))).limit(1))[0]);
+    }
+    if (pm && !projectRead) return false;
+    const owns = projectRead || run && (actor.type === "agent"
       ? actor.agentId === run.agentId && (!run.responsibleUserId || actor.onBehalfOfUserId === run.responsibleUserId)
       : actor.type === "board" && (actor.source === "local_implicit" || actor.isInstanceAdmin
         || (Boolean(actor.userId) && actor.userId === run.responsibleUserId)));

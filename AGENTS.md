@@ -148,7 +148,8 @@ checkout. Never silently fall back to a PM home or reuse another task's worktree
 Zero-slot project PMs use the server-owned coordination capability policy in every
 chat, task and review run. The qualified local Claude ACP and isolated Codex
 Runner paths enforce it; reject unsupported runtimes or stale unrestricted sessions.
-Claude uses Read/Grep/Glob plus PreToolUse. Codex uses a read-only profile, disabled
+Claude uses Read/Grep/Glob for instruction bundles plus PreToolUse; project files
+use the server-owned read_project_file/search_project_files tools. Codex uses a read-only profile, disabled
 shell/host tools and an exact-catalog PreToolUse guard. Admit only that generated
 hook's exact hash in its disposable runtime home and confirm trust before a thread
 opens/resumes; never disable hook trust or trust host/project/plugin hooks. Codex
@@ -170,10 +171,19 @@ terminal reaper: preserve results and history, verify clean files, stopped proce
 released leases/services and branch ancestry, then remove the directory and merged
 branch without force. Keep the existing cooldown and failed-cleanup receipts. PM
 `list_agents.dispatchReadiness` reports current policy/document/selection metadata;
-it is not provider acceptance. PMs may read only their project's sessions endpoint
-for bounded failure and stop evidence, never full worker configuration or raw logs.
-Captured response assets may be read only by their originating PM on the same
-task; large API responses retain the same authorization as their capture. PM
+it is not provider acceptance. PMs may read their own project's tasks, recent/single comments, document revisions,
+sessions, diagnostics and issue-bound run metadata/events/logs. Preserve company,
+project, issue privacy, responsible-user and existing response-redaction checks.
+Every PM API/tool request must retain its current run and task execution lock.
+Project file reads include dotfiles, .env, credential files and Git configuration;
+never copy credential values into reports, comments or repository changes. Select
+one projectWorkspaceId or executionWorkspaceId to read a configured source or task
+checkout. Deny foreign registered projects nested beneath a broad project root,
+including symlink aliases and commit reads; native provider reads cover only the
+instruction bundle so they cannot bypass current ownership checks. Shared-worker
+management configuration stays hidden. Captured responses and registered attachments
+are readable for the same project, including another task/worker's output; unbound
+assets and foreign project captures remain denied. PM
 review homes are run-scoped and must never replace a worker task workspace binding.
 Workspace-only issue PATCHes preserve status, assignment and pending review state;
 maintenance cannot normalize a blocked task into review or wake its reviewer.
@@ -211,7 +221,11 @@ reviewer's execution lock. Only successful run/workspace finalization may commit
 that decision, audit/comment and the original task's next wake atomically. Recheck
 the saved scope under row locks; preserve later human stages and independent
 approval cards. Generic status PATCH and board-only stalled-review APIs remain
-unavailable to PMs. Completion-review interactions keep their existing route.
+unavailable to PMs. During an execution-policy review, generic HTTP mutations
+are also denied; hiding create_task from the tool catalog alone is insufficient.
+Completion-review interactions keep their existing route. Formal delegated approval
+POSTs require a current assigned request revision, an evidence-linked decision note
+and the independent Owner grant; generic API access never bypasses those checks.
 Company decision delegation remains a separate
 human-Owner-managed permission grant. Outside an independently authorized project,
 new worker questions route through their task project's PM; PM questions route to the company delegate via

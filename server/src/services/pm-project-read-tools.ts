@@ -4,25 +4,39 @@ import path from "node:path";
 import { z } from "zod";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { projectWorkspaces, type Db } from "@paperclipai/db";
+import { agents, executionWorkspaces, projectWorkspaces, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { forbidden, unprocessable } from "../errors.js";
 import { assertPmRun, type PmCoordinationScope } from "./pm-coordination-policy.js";
+import { authorizationService } from "./authorization.js";
 
 const execFile = promisify(execFileCallback);
-const read = z.object({ path: z.string().min(1).max(4096), projectWorkspaceId: z.string().uuid().optional(), commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/).optional(), startLine: z.number().int().min(1).default(1),
+const read = z.object({ path: z.string().min(1).max(4096), projectWorkspaceId: z.string().uuid().optional(), executionWorkspaceId: z.string().uuid().optional(), commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/).optional(), startLine: z.number().int().min(1).default(1),
   maxLines: z.number().int().min(1).max(500).default(200) }).strict();
-const search = z.object({ text: z.string().min(1).max(500), projectWorkspaceId: z.string().uuid().optional(), path: z.string().max(4096).default("."),
+const search = z.object({ text: z.string().min(1).max(500), projectWorkspaceId: z.string().uuid().optional(), executionWorkspaceId: z.string().uuid().optional(), path: z.string().max(4096).default("."),
   maxResults: z.number().int().min(1).max(100).default(50) }).strict();
 export const PM_PROJECT_READ_TOOLS = [
-  { name: "read_project_file", description: "Read a bounded text file within your assigned project repository. For a fixed-version review, supply the full commit SHA; this reads Git objects without changing the checkout or creating a worktree. Paths are relative to the PM project root. This cannot execute commands or read outside your project.", inputSchema: z.toJSONSchema(read) },
-  { name: "search_project_files", description: "Search for literal text within your assigned project repository, with bounded results. Symlinks, binary files, Git metadata and dependencies are excluded. Narrow the path when the scan limit is reached.", inputSchema: z.toJSONSchema(search) },
+  { name: "read_project_file", description: "Read project text files, including dotfiles, .env and credentials authorized by the Owner. Use this for project source reads; provider-native readers cover only your instruction bundle. Paths are relative to your project root or selected projectWorkspaceId / executionWorkspaceId. For fixed-version review supply a full commit SHA without changing the checkout. Other projects, including nested projects, are denied. Do not copy credentials into reports, comments or repository changes.", inputSchema: z.toJSONSchema(read) },
+  { name: "search_project_files", description: "Search literal text in your project's files, including .env and dotfiles. Other registered projects and symlink escapes are denied. Recursive scans skip Git metadata and dependencies; an explicit file can be read with read_project_file. Binary content is unsupported. Narrow the path when the bounded scan limit is reached. Do not reproduce credentials in reports or comments.", inputSchema: z.toJSONSchema(search) },
 ];
 
 export async function executePmProjectRead(db: Db, scope: PmCoordinationScope, runId: string, name: string, input: unknown) {
-  await assertPmRun(db, scope, runId);
+  const { run } = await assertPmRun(db, scope, runId);
   const request = name === "read_project_file" ? read.parse(input) : search.parse(input);
+  if (request.projectWorkspaceId && request.executionWorkspaceId) throw unprocessable("Select one configured source or task workspace");
   let selectedRoot = scope.workerRoot;
+  if (request.executionWorkspaceId) {
+    const [workspace] = await db.select().from(executionWorkspaces).where(and(
+      eq(executionWorkspaces.id, request.executionWorkspaceId), eq(executionWorkspaces.companyId, scope.companyId),
+      eq(executionWorkspaces.projectId, scope.projectId)));
+    if (!workspace?.cwd) throw forbidden("The task workspace is outside this PM's project or unavailable");
+    if (workspace.sourceIssueId && !(await authorizationService(db).decide({
+      actor: { type: "agent", source: "agent_jwt", agentId: scope.agentId, companyId: scope.companyId,
+        runId, onBehalfOfUserId: run.responsibleUserId ?? undefined },
+      action: "issue:read", resource: { type: "issue", companyId: scope.companyId, issueId: workspace.sourceIssueId },
+    })).allowed) throw forbidden("The task workspace is outside this PM's readable tasks");
+    selectedRoot = workspace.cwd;
+  }
   if (request.projectWorkspaceId) {
     const [source] = await db.select({ cwd: projectWorkspaces.cwd }).from(projectWorkspaces).where(and(
       eq(projectWorkspaces.id, request.projectWorkspaceId), eq(projectWorkspaces.companyId, scope.companyId),
@@ -31,10 +45,37 @@ export async function executePmProjectRead(db: Db, scope: PmCoordinationScope, r
     selectedRoot = source.cwd;
   }
   const root = await fs.realpath(selectedRoot);
+  // The home project can contain other registered projects. Root containment
+  // alone is not project authorization. Resolve once per request, never per file.
+  const [sources, workspaces, bindings] = await Promise.all([
+    db.select({ projectId: projectWorkspaces.projectId, cwd: projectWorkspaces.cwd }).from(projectWorkspaces),
+    db.select({ projectId: executionWorkspaces.projectId, cwd: executionWorkspaces.cwd }).from(executionWorkspaces),
+    db.select({ runtimeConfig: agents.runtimeConfig }).from(agents),
+  ]);
+  const foreignPaths = [...sources, ...workspaces, ...bindings.flatMap(({ runtimeConfig }) => {
+    const binding = runtimeConfig?.workspaceBinding as { projectId?: string; workerRoot?: string } | undefined;
+    return binding?.projectId && binding.workerRoot ? [{ projectId: binding.projectId, cwd: binding.workerRoot }] : [];
+  })].filter(source => source.projectId && source.projectId !== scope.projectId && source.cwd).map(source => source.cwd!);
+  const within = (parent: string, child: string) => {
+    const relative = path.relative(parent, child);
+    return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  };
+  const excluded = new Set<string>();
+  for (const configured of new Set(foreignPaths)) {
+    const lexical = path.resolve(configured);
+    if (within(root, lexical)) excluded.add(lexical);
+    try { const resolved = await fs.realpath(configured); if (within(root, resolved)) excluded.add(resolved); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  function assertProjectPath(candidate: string) {
+    if (!within(root, candidate) || [...excluded].some(foreign => within(foreign, candidate))) {
+      throw forbidden("The requested path is outside this PM's project");
+    }
+  }
   async function contained(relative: string) {
+    assertProjectPath(path.resolve(root, relative));
     const candidate = await fs.realpath(path.resolve(root, relative));
-    const rel = path.relative(root, candidate);
-    if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) throw forbidden("The requested path is outside this PM's project");
+    assertProjectPath(candidate);
     return candidate;
   }
   async function text(file: string) {
@@ -56,6 +97,7 @@ export async function executePmProjectRead(db: Db, scope: PmCoordinationScope, r
       if (path.isAbsolute(args.path) || args.path.split(/[\\/]/).some(part => !part || part === "." || part === "..") || args.path.includes(":")) {
         throw forbidden("Use a relative repository file path");
       }
+      assertProjectPath(path.resolve(root, args.path));
       const git = async (argv: string[]) => (await execFile("git", ["--no-pager", "-C", root, ...argv],
         { timeout: 10_000, maxBuffer: 512 * 1024 })).stdout;
       const repoRoot = await fs.realpath((await git(["rev-parse", "--show-toplevel"])).trim());
@@ -87,6 +129,7 @@ export async function executePmProjectRead(db: Db, scope: PmCoordinationScope, r
     if (stat.isDirectory()) {
       for (const entry of await fs.readdir(file)) {
         if ([".git", "node_modules", ".venv"].includes(entry)) continue;
+        if ([...excluded].some(foreign => within(foreign, path.join(file, entry)))) continue;
         await visit(path.join(file, entry));
         if (results.length >= args.maxResults) break;
       }

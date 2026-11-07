@@ -20,6 +20,10 @@ import { PM_BUNDLE_FILES, pmCoordinationScope } from "../services/pm-coordinatio
 import { readPmBundleFile, writePmBundleFile } from "../services/pm-bundle-tools.js";
 import { assertPmApiRequest, pmCoordinationMiddleware } from "../middleware/pm-coordination.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { approvalRoutes } from "../routes/approvals.js";
+import { agentRoutes } from "../routes/agents.js";
+import { projectRoutes } from "../routes/projects.js";
+import { assetRoutes } from "../routes/assets.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import type { StorageService } from "../storage/types.js";
@@ -80,7 +84,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
         executionPolicy: { mode: "normal", stages: [{ type: "approval", approvalsNeeded: 1, participants: [{ type: "user", userId }] }] } },
       { id: otherIssueId, companyId, projectId: otherProjectId, issueNumber: 2, identifier: "PMC-2", title: "Unrelated", status: "todo" },
     ]);
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId,
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId, issueId, scopeKind: "issue",
       responsibleUserId: userId, invocationSource: "assignment", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     for (const file of PM_BUNDLE_FILES) { await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true }); await fs.writeFile(path.join(root, file), `# ${file}\nOwner baseline\n`); }
@@ -90,6 +94,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId)); scope = pmCoordinationScope(agent!)!;
     const runtimeContext = await buildNativeRuntimeContext({ db, agent: agent!, runId, runtimeConfig: {}, runtimeSkillEntries: [],
       instructionWorkingCopy: { rootPath: localRoot, entryPath: "AGENTS.md", kind: "agent_files" } });
+    expect(runtimeContext.toolPolicy!.readRoots).not.toContain(home);
     authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, runId, issueId, workMode: "standard", runtimeContext,
       enqueueWakeup: async (id, options) => { wakes.push({agentId: id, key: options.idempotencyKey}); return null; } });
     const app = express(); app.use(express.json());
@@ -101,7 +106,9 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
         onBehalfOfMemberships: [{ companyId, status: "active", membershipRole: "operator" }] };
       next();
     });
-    app.use("/api", pmCoordinationMiddleware(db)); app.use("/api", issueRoutes(db, {} as StorageService)); app.use(errorHandler);
+    app.use("/api", pmCoordinationMiddleware(db)); app.use("/api", issueRoutes(db, {} as StorageService));
+    app.use("/api", approvalRoutes(db)); app.use("/api", agentRoutes(db)); app.use("/api", projectRoutes(db));
+    app.use("/api", assetRoutes(db, {} as StorageService)); app.use(errorHandler);
     server = createServer(app); await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     apiUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   }, 90_000);
@@ -119,6 +126,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     }
   });
   const reads = async () => { for (const file of PM_BUNDLE_FILES) await readPmBundleFile(db, scope, runId, { path: file }); };
+
   it("reads and searches project files while rejecting symlink escape and binaries", async () => {
     await fs.writeFile(path.join(home, "project-evidence.txt"), "first\nacceptance evidence\nlast\n");
     await fs.writeFile(path.join(home, "binary-evidence"), Buffer.from([1, 0, 2]));
@@ -162,15 +170,22 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
       await expect(assertPmApiRequest(db, scope, { method: method!, path: target!, query: {}, body: {}, runId })).rejects.toThrow();
     }
   });
-  it("reads only captured API assets from this PM and this task", async () => {
+  it("reads project captured responses and rejects foreign or unbound assets", async () => {
     const ownAsset = randomUUID(), foreignAsset = randomUUID(), workerAsset = randomUUID(), uncapturedAsset = randomUUID(), otherRun = randomUUID(), workerRun = randomUUID();
     await db.insert(assets).values([ownAsset, foreignAsset, workerAsset, uncapturedAsset].map(id => ({ id, companyId, provider: "local_disk", objectKey: id, contentType: "application/json", byteSize: 2, sha256: "a".repeat(64), createdByAgentId: agentId })));
-    await db.insert(heartbeatRuns).values({ id: otherRun, companyId, agentId, nativeIssueId: otherIssueId, status: "succeeded", runtimeMode: "native" });
-    await db.insert(heartbeatRuns).values({ id: workerRun, companyId, agentId: workerId, nativeIssueId: issueId, status: "succeeded", runtimeMode: "native" });
+    await db.insert(heartbeatRuns).values({ id: otherRun, companyId, agentId, nativeIssueId: otherIssueId, issueId: otherIssueId, scopeKind: "issue", status: "succeeded", runtimeMode: "native" });
+    await db.insert(heartbeatRuns).values({ id: workerRun, companyId, agentId: workerId, nativeIssueId: issueId, issueId, scopeKind: "issue", status: "succeeded", runtimeMode: "native" });
     await db.insert(runnerApiResponseReservations).values([{ companyId, runId, assetId: ownAsset, reservedBytes: 2 }, { companyId, runId: otherRun, assetId: foreignAsset, reservedBytes: 2 }, { companyId, runId: workerRun, assetId: workerAsset, reservedBytes: 2 }]);
     const request = (asset: string) => ({ method: "GET", path: `/assets/${asset}/content`, query: {}, body: {}, runId });
     await expect(assertPmApiRequest(db, scope, request(ownAsset))).resolves.toBeUndefined();
-    for (const denied of [foreignAsset, workerAsset, uncapturedAsset, "not-a-uuid"]) {
+    await expect(assertPmApiRequest(db, scope, request(workerAsset))).resolves.toBeUndefined();
+    const { canActorReadAssetContent } = await import("../services/asset-content-access.js");
+    const actor = { type: "agent" as const, source: "agent_jwt" as const, companyId, agentId, runId, onBehalfOfUserId: userId };
+    const [captured] = await db.select().from(assets).where(eq(assets.id, workerAsset));
+    expect(await canActorReadAssetContent(db, actor, captured!)).toBe(true);
+    const [foreign] = await db.select().from(assets).where(eq(assets.id, foreignAsset));
+    expect(await canActorReadAssetContent(db, actor, foreign!)).toBe(false);
+    for (const denied of [foreignAsset, uncapturedAsset, "not-a-uuid"]) {
       await expect(assertPmApiRequest(db, scope, request(denied))).rejects.toThrow("outside the PM");
     }
     await expect(assertPmApiRequest(db, scope, request(randomUUID()))).rejects.toThrow("outside the PM");
@@ -195,6 +210,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     const otherWorkspaceId = randomUUID();
     await db.insert(projectWorkspaces).values({ id: otherWorkspaceId, companyId, projectId: otherProjectId, name: "Other source", cwd: home });
     await expect(execute("create_task", { ...args, workspaceSelection: { kind: "configured_source", projectWorkspaceId: otherWorkspaceId, mode: "managed_isolated" } })).rejects.toThrow("outside");
+    await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, otherWorkspaceId));
     await expect(execute("create_task", { ...args, executionPolicy: { authorizationPolicy: {} } })).rejects.toThrow();
     const defaultArgs = { idempotencyKey: args.idempotencyKey, title: args.title, initialPlan: args.initialPlan, workspaceSelection: args.workspaceSelection };
     const created = await execute("create_task", defaultArgs) as { task: { id: string } };
@@ -406,6 +422,190 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
       await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/issues/${reviewIssueId}/stalled-review-decision`,
         query: {}, body: { action: "request_changes" }, runId: reviewRunId })).rejects.toMatchObject({ details: { code: "PM_API_DENIED" } });
     } finally { review.close(); }
+  });
+
+  // Temporary audit probes: use only owned databases and synthetic files.
+  it.each(["comments", "recent-comments"])("own-task %s is reachable through the actual API", async tail => {
+    const live = new PaperclipRunnerToolAuthority(db, { ...authority.binding, apiUrl });
+    try {
+      const response = await live.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: `GET /api/issues/{id}/${tail}`, pathParams: { id: issueId },
+      } }) as any;
+      expect(response.status).toBe(200);
+    } finally { live.close(); }
+  });
+  it.each(["list_projects", "list_project_repositories"])("advertised %s reaches its authorized project scope", async tool => {
+    const live = new PaperclipRunnerToolAuthority(db, { ...authority.binding, apiUrl });
+    try {
+      expect(live.definitions().some(definition => definition.name === tool)).toBe(true);
+      await expect(live.execute({ tool, callId: randomUUID(), arguments: {} })).resolves.toBeDefined();
+    } finally { live.close(); }
+  });
+  it.each(["read_project_file", "search_project_files"])("%s reads project credentials under the Owner-authorized read scope", async tool => {
+    const file = path.join(home, "source", ".env.audit");
+    await fs.writeFile(file, "AUDIT_ONLY_CREDENTIAL=synthetic-not-a-real-secret\n");
+    try {
+      const result = await executePmProjectRead(db, scope, runId, tool, {
+        projectWorkspaceId: sourceId, path: ".env.audit", ...(tool === "search_project_files" ? { text: "AUDIT_ONLY_CREDENTIAL" } : {}),
+      });
+      expect(JSON.stringify(result)).toContain("synthetic-not-a-real-secret");
+    } finally { await fs.unlink(file); }
+  });
+  it("project reads include its Git configuration", async () => {
+    await expect(executePmProjectRead(db, scope, runId, "read_project_file", {
+      projectWorkspaceId: sourceId, path: ".git/config",
+    })).resolves.toMatchObject({ content: expect.stringContaining("[core]") });
+  });
+  it("a broad workerRoot cannot read another registered project's files", async () => {
+    const sibling = path.join(home, "other-project-audit");
+    await fs.mkdir(sibling); await fs.writeFile(path.join(sibling, "evidence.txt"), "OTHER_PROJECT_AUDIT_EVIDENCE");
+    const otherSource = randomUUID();
+    await db.insert(projectWorkspaces).values({ id: otherSource, companyId, projectId: otherProjectId, name: "Other scoped source", cwd: sibling });
+    try {
+      await expect(executePmProjectRead(db, scope, runId, "read_project_file", { path: "other-project-audit/evidence.txt" })).rejects.toThrow();
+    } finally {
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, otherSource));
+      await fs.rm(sibling, { recursive: true });
+    }
+  });
+  it("scoped general approval resolves through its real PM tool and HTTP middleware", async () => {
+    const { saveProjectPmDecisionAuthority } = await import("../services/delegated-decision-policy.js");
+    const { approvalRecords } = await import("../services/approvals.js");
+    const { issueApprovalService } = await import("../services/issue-approvals.js");
+    const { executeDelegatedDecisionTool } = await import("../services/native-runtime/delegated-decision-tools.js");
+    const { createLocalAgentJwt } = await import("../agent-auth-jwt.js");
+    await reads();
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, userId)));
+    const grant = await saveProjectPmDecisionAuthority(db, { companyId, ownerUserId: userId, baseRevision: null, enabled: true,
+      allowSelfApproval: true, projectIds: [projectId], scopes: ["task_decisions", "ordinary_operations", "general_approvals"], reason: "Owned audit fixture" });
+    try {
+      const approval = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: agentId,
+        payload: { proposal: "Owned test-only ordinary operation" } }, { runId });
+      await issueApprovalService(db).linkManyForApproval(approval!.id, [issueId], { agentId });
+      expect(approval!.delegation).toMatchObject({ authority: "project_pm", level: "pm", recipientAgentId: agentId });
+      const token = createLocalAgentJwt(agentId, companyId, pmHarness, runId, userId);
+      await expect(executeDelegatedDecisionTool({ db, actor: { companyId, agentId, runId }, name: "resolve_delegated_request", apiUrl, token: token!,
+        arguments: { kind: "approval", requestId: approval!.id, revision: approval!.delegation!.revision, action: "accept", reason: "Within this test's grant" },
+      })).resolves.toBeDefined();
+    } finally {
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
+      await db.update(companyMemberships).set({ membershipRole: "operator" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, userId)));
+    }
+  });
+  it.each([
+    ["GET", "/companies/COMPANY/projects", {}],
+    ["GET", "/companies/COMPANY/project-repositories", {}],
+  ] as const)("restricted generic read surface %s %s", async (method, target, query) => {
+    const route = target.replace("COMPANY", companyId).replace("ISSUE", issueId);
+    await expect(assertPmApiRequest(db, scope, { method, path: route, query, body: {}, runId })).rejects.toThrow();
+  });
+
+  it("execution-review run cannot dispatch through generic API", async () => {
+    const reviewIssueId = randomUUID(), reviewRunId = randomUUID();
+    const reviewPolicy = normalizeIssueExecutionPolicy({ mode: "normal", stages: [{ type: "review", approvalsNeeded: 1,
+      participants: [{ type: "agent", agentId }] }] })!;
+    const transition = applyIssueExecutionPolicyTransition({ issue: { status: "in_progress", assigneeAgentId: workerId },
+      policy: reviewPolicy, requestedStatus: "done", requestedAssigneePatch: {}, actor: { agentId: workerId }, commentBody: "Delivery" });
+    const state = parseIssueExecutionState(transition.patch.executionState)!;
+    await db.insert(issues).values({ id: reviewIssueId, companyId, projectId, title: "Policy stage review", status: "in_review",
+      assigneeAgentId: agentId, executionPolicy: { ...reviewPolicy }, executionState: { ...state } });
+    await db.insert(heartbeatRuns).values({ id: reviewRunId, companyId, agentId, nativeIssueId: reviewIssueId, runtimeMode: "native",
+      status: "running", responsibleUserId: userId, contextSnapshot: { issueId: reviewIssueId, wakeReason: "execution_review_requested",
+        executionStage: { stageId: state.currentStageId, stageType: "review", wakeRole: "reviewer", currentParticipant: state.currentParticipant,
+          allowedActions: ["approve", "request_changes"] } } });
+    await db.update(issues).set({ executionRunId: reviewRunId }).where(eq(issues.id, reviewIssueId));
+    const cwd = path.join(home, reviewRunId); await fs.mkdir(cwd);
+    const copy = (await agentInstructionWorkingCopyService(db).prepare({ companyId, agentId, runId: reviewRunId, cwd }))!;
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const runtimeContext = await buildNativeRuntimeContext({ db, agent: agent!, runId: reviewRunId, runtimeConfig: {}, runtimeSkillEntries: [],
+      instructionWorkingCopy: { rootPath: copy.localRoot, entryPath: "AGENTS.md", kind: "agent_files" } });
+    const executionReview = (await prepareNativeExecutionReview(db, { companyId, agentId, runId: reviewRunId, issueId: reviewIssueId }))!;
+    const review = new PaperclipRunnerToolAuthority(db, { companyId, agentId, runId: reviewRunId, issueId: reviewIssueId, runtimeContext, executionReview, apiUrl });
+    try {
+      for (const file of PM_BUNDLE_FILES) await review.execute({ tool: "read_bundle_file", callId: file, arguments: { path: file } });
+      expect(review.definitions().map(tool => tool.name)).not.toContain("create_task");
+      const result = await review.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "POST /api/companies/{companyId}/issues", pathParams: { companyId },
+        body: { projectId, parentId: reviewIssueId, title: "no execution during review", initialPlan: "Synthetic fixture only",
+          assigneeAgentId: workerId, assigneeAdapterOverrides: override, workspaceSelection, idempotencyKey: randomUUID() },
+      } }) as any;
+      expect(result.status).toBe(403);
+    } finally { review.close(); }
+  });
+
+  it("a single own-task comment can be read through the actual API", async () => {
+    const { issueComments } = await import("@paperclipai/db");
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorAgentId: agentId, body: "Owned audit comment" }).returning();
+    const live = new PaperclipRunnerToolAuthority(db, { ...authority.binding, apiUrl });
+    try {
+      const result = await live.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/issues/{id}/comments/{commentId}", pathParams: { id: issueId, commentId: comment!.id },
+      } }) as any;
+      expect(result.status).toBe(200);
+    } finally { live.close(); }
+  });
+  it("comment writes accept the native idempotency field", async () => {
+    await reads();
+    const commentIssueId = randomUUID();
+    await db.insert(issues).values({ id: commentIssueId, companyId, projectId, title: "Worker task comment",
+      status: "todo", assigneeAgentId: workerId });
+    const live = new PaperclipRunnerToolAuthority(db, { ...authority.binding, apiUrl });
+    try {
+      const result = await live.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "POST /api/issues/{id}/comments", pathParams: { id: commentIssueId },
+        body: { body: "Owned audit comment", clientRequestId: randomUUID() },
+      } }) as any;
+      expect(result, JSON.stringify(result)).toMatchObject({ status: 201 });
+    } finally { live.close(); }
+  });
+  it("reads an own-project task workspace but rejects other projects and conflicting roots", async () => {
+    const { executionWorkspaces } = await import("@paperclipai/db");
+    const cwd = path.join(home, "task-workspace"); await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, ".env"), "SYNTHETIC_TOKEN=owned-workspace-fixture");
+    const ownId = randomUUID(), foreignId = randomUUID();
+    await db.insert(executionWorkspaces).values([
+      { id: ownId, companyId, projectId, sourceIssueId: issueId, cwd, mode: "git_worktree", strategyType: "git", name: "Owned task checkout" },
+      { id: foreignId, companyId, projectId: otherProjectId, sourceIssueId: otherIssueId, cwd: path.join(home, "not-created-other"), mode: "git_worktree", strategyType: "git", name: "Other checkout" },
+    ]);
+    try {
+      expect(await executePmProjectRead(db, scope, runId, "read_project_file", { executionWorkspaceId: ownId, path: ".env" }))
+        .toMatchObject({ content: "SYNTHETIC_TOKEN=owned-workspace-fixture" });
+      await expect(executePmProjectRead(db, scope, runId, "read_project_file", { executionWorkspaceId: foreignId, path: ".env" })).rejects.toThrow("outside");
+      await expect(executePmProjectRead(db, scope, runId, "read_project_file", { executionWorkspaceId: ownId, projectWorkspaceId: sourceId, path: ".env" })).rejects.toThrow("Select one");
+    } finally { await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, ownId)); await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, foreignId)); }
+  });
+
+  it("reads project sessions, run events and diagnostics through real HTTP with foreign-project denial", async () => {
+    const { createLocalAgentJwt } = await import("../agent-auth-jwt.js");
+    const token = createLocalAgentJwt(agentId, companyId, pmHarness, runId, userId)!;
+    const get = async (route: string) => {
+      const response = await fetch(apiUrl + "/api" + route, { headers: { Authorization: `Bearer ${token}` } });
+      return { status: response.status, body: await response.json() };
+    };
+    for (const tail of ["recent-comments", "comments", "recovery-actions", "diagnostics/blockers", "diagnostics/wakes", "execution", "live-runs"]) {
+      const response = await get(`/issues/${issueId}/${tail}`);
+      expect(response, tail + JSON.stringify(response)).toMatchObject({ status: 200 });
+      expect((await get(`/issues/${otherIssueId}/${tail}`)).status).toBe(403);
+    }
+    expect(await get(`/projects/${projectId}/sessions`)).toMatchObject({ status: 200 });
+    expect((await get(`/projects/${otherProjectId}/sessions`)).status).toBe(403);
+    expect(await get(`/heartbeat-runs/${runId}/events`)).toMatchObject({ status: 200 });
+    const staleRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: staleRunId, companyId, agentId, nativeIssueId: issueId,
+      issueId, scopeKind: "issue", status: "running", runtimeMode: "native", responsibleUserId: userId });
+    const staleToken = createLocalAgentJwt(agentId, companyId, pmHarness, staleRunId, userId)!;
+    expect((await fetch(apiUrl + `/api/issues/${issueId}/comments`, { headers: { Authorization: `Bearer ${staleToken}` } })).status).toBe(403);
+    const foreignRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: foreignRunId, companyId, agentId: workerId, nativeIssueId: otherIssueId,
+      issueId: otherIssueId, scopeKind: "issue", status: "succeeded", runtimeMode: "native" });
+    for (const tail of ["", "/events", "/log", "/workspace-operations"]) {
+      expect((await get(`/heartbeat-runs/${foreignRunId}${tail}`)).status).toBe(403);
+    }
+    const detail = await get(`/agents/${workerId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.adapterConfig).toEqual({});
+    expect(detail.body.runtimeConfig).toEqual({});
+    expect((await get(`/agents/${workerId}/configuration`)).status).toBe(403);
   });
 
   it("does not let run-end collection overwrite a newer canonical support-file save", async () => {

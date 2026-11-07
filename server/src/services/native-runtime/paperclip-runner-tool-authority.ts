@@ -941,7 +941,11 @@ export class PaperclipRunnerToolAuthority {
           companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
           conversation: Boolean(context.issue.conversationAgentId) });
       }
-      case "search_api": return searchRunnerApi(call.arguments);
+      case "search_api": {
+        const result = searchRunnerApi(call.arguments);
+        if (!pmScope) return result;
+        return { ...result, guidance: `${result.guidance} Project PM scope: ${pmScope.projectId}. Read this project's tasks, comments (including recent and single comments), documents/revisions, sessions, diagnostics and bound heartbeat-run events/logs with call_api. Read project source and task checkout files with read_project_file/search_project_files. Use list_agents for current worker options; full shared-worker configuration and company management APIs are not project reads. Use resolve_review or resolve_delegated_request for assigned decisions. Reading never authorizes restarting a failed run or changing permissions.` };
+      }
       case "hire_agent": {
         return hireAgentResult(await this.#callApi(call.callId, hireAgentApiRequest(input, this.binding)), context.actor.adapterConfig?.provider);
       }

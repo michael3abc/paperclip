@@ -4721,7 +4721,15 @@ managed remote storage keeps its own existing writer reservation.
 
 Read-only source tools share the source without writer ownership. For fixed-version
 review, `read_project_file` accepts a full `commit` SHA and reads a bounded regular
-Git blob without changing HEAD, files or Git index. A provider that has write tools
+Git blob without changing HEAD, files or Git index. PM read tools also accept
+one `projectWorkspaceId` or `executionWorkspaceId`, checked against the same company
+and project; task-workspace reads retain issue privacy. Owner-authorized project
+reads include `.env`, dotfiles, credential files and Git configuration. Never copy
+credential values into reports, comments or repository changes. The reader resolves
+registered project/source/task roots once per request, rejects foreign nested roots
+and aliases, and rechecks the opened inode. Native provider readers cover instruction
+bundles only; project content uses the server-owned tools so a broad home root cannot
+bypass project ownership. A provider that has write tools
 still counts as a writer even when its prompt calls the task read-only.
 Merged task worktrees use the existing terminal reaper/cooldown. It verifies delivery
 ancestry, retained results, clean files, closed task trees and released execution
@@ -4736,12 +4744,20 @@ does not claim a provider has started. Private worker configuration remains hidd
 Use `GET /api/projects/{id}/sessions` for own-project, issue-authorized execution
 diagnostics. Its additive `diagnostics` projection contains a failure category,
 tri-state provider-start evidence, confirmed/not-started/unknown stop evidence and
-a fixed recovery summary. Raw errors/results/logs are never returned. A terminal
+a fixed recovery summary. That summary endpoint does not return raw errors/results/logs.
+For full project context, PMs can read recent/single comments, document revisions,
+recovery and blocker/wake diagnostics, issue execution, and bound heartbeat-run
+metadata/events/logs through their existing GET routes. Underlying issue privacy,
+company access and response redaction still apply. These reads grant no recovery,
+restart, service control or management writes. `search_api` includes this scope and
+points to the available source/decision tools instead of management configuration. A terminal
 run or absent PID alone is not stop proof. PM dispatch errors preserve public
 domain codes, including `PM_PROJECT_WORKSPACE_REQUIRED` and `PM_WORKSPACE_POLICY_CONFLICT`.
 When an API response is externalized, PM asset reads require a response reservation
-from the same company, PM and task; existing content authorization still applies.
-Unknown, other-agent and other-task assets remain denied. A PM review can persist
+bound to the same company/project and retain issue/responsible-user authorization.
+Registered project attachments and other same-project workers' captured results
+are readable. Foreign-project and unbound assets remain denied; the content service
+rechecks captured-run project ownership even when the PM originally made the capture. A PM review can persist
 its own home for run recovery, but must not rebind the implementation task or
 prepare its repositories in that home. This includes configured sibling sources
 when a cached PM home retains project/source metadata: skip their preparation,
@@ -4768,7 +4784,12 @@ independent interaction/approval gates. Model overrides and the worker workspace
 are preserved. A stale stage/policy, failed finalization or missing decision does
 not advance the review. Existing native completion-review interactions continue
 through their own `resolve_review` route. Neither path authorizes generic task
-status PATCH or the board-only `stalled-review-decision` endpoint. Regression
+status PATCH or the board-only `stalled-review-decision` endpoint. An execution-policy
+review also rejects generic HTTP mutations, including direct task creation; tool
+catalog filtering is not authorization. The formal delegated approval bridge admits
+only approve/reject with the current assigned delegation revision and a decision
+note; the existing approval service rechecks the grant and reserved human decisions.
+Regression
 coverage is in `native-execution-review.test.ts` and `pm-coordination.test.ts`.
 
 ### Delegated decisions

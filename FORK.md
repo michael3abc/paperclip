@@ -97,7 +97,8 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `2c6666f7cd` feat: route project decisions through PM and Owner-delegated agent
 - `d6d2c8c0d7` fix: synchronize delegated decision contracts and validation fixtures
 
-Current change: PM dispatch live schema, bounded readiness/session diagnostics, and pre-creation isolated-workspace admission.
+Current change: audited PM project reads, formal decision routing and execution-review API boundaries.
+Earlier dispatch repair: live schema, readiness/session diagnostics and pre-creation workspace admission.
 Acceptance follow-up: scoped saved-response asset reads and preservation of task worktree bindings during PM review.
 PM autonomy follow-up: native assigned-review decisions, independent Owner-scoped project PM authority, exclusive development checkouts with queued writers, commit-pinned reads and safe worktree reclamation; workspace maintenance preserves review state.
 
@@ -111,3 +112,8 @@ Preserve prior release for rollback and historical tasks/sessions; new dispatch 
 - Native review recovery binds the current server-owned pending stage for recovery/Owner wakes that lack the original stage envelope; preserves status, run and reviewer checks.
 
 - Cached PM review homes skip configured sibling repository synchronization; worker repository publication keeps its existing binding checks.
+
+- PM permission audit follow-up: own-project comments, sessions/run diagnostics and
+  captured worker output; Owner-authorized .env/source/task-workspace reads with
+  nested-project isolation; formal delegated approval HTTP routing; execution-review
+  generic mutation denial. Preserve shared-worker management and human gates.
