@@ -5288,7 +5288,7 @@ for (const [suffix, summary] of [
 ] as const) {
   registry.registerPath({
     method: "get", path: `/api/projects/{id}/${suffix}`, tags: ["projects"], summary,
-    description: "Requires project read access; each task record is filtered by current issue authorization. Returns records and nextOffset for pages of up to 50 entries.",
+    description: "Requires project read access; each task record is filtered by current issue authorization. Returns records and nextOffset for pages of up to 50 entries." + (suffix === "sessions" ? " Coordination-only PMs may read only their own project. Each record includes diagnostics with failureCategory (workspace, configuration, execution or null), providerWorkStarted (boolean or null), processStop (confirmed, not_started or unknown), and recoverySummary. Unknown evidence is not success or proof of stopping. Raw errors, logs, credentials and worker configuration are omitted. This read does not retry work." : ""),
     request: { params: z.object({ id: z.string() }), query: z.object({ offset: z.coerce.number().int().min(0).max(1000000).optional() }) },
     responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
   });

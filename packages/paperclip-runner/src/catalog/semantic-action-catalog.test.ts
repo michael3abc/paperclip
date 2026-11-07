@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import { createTaskAction } from "../protocol-actions/create-task.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../semantic-tools/catalog.js";
 import { createProjectAction } from "../protocol-actions/create-project.js";
 import { readDocumentAction } from "../protocol-actions/read-document.js";
 import { writeDocumentAction } from "../protocol-actions/write-document.js";
@@ -115,6 +116,27 @@ describe("semantic action catalog", () => {
         "https://github.com/org/repo#fragment", "https://github.com/org/repo/tree/main",
         "https://github.com/../repo", "https://github.com/org/..",
       ]) expect(validate({ ...input, repositoryUrls: [url] }), url).toBe(false);
+    }
+  });
+
+  it("accepts PM dispatch inputs in the actual provider catalog and documented contract", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    const input = {
+      idempotencyKey: "pm-dispatch", title: "Verify authorized service access",
+      projectId: "project-1", assigneeActorId: "worker-1", initialPlan: "Inspect and report.",
+      assigneeAdapterOverrides: { workerSelectionId: "selection-1" },
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [{ type: "review", approvalsNeeded: 1, participants: [{ type: "agent", agentId: "pm-1" }] }] },
+      workspaceSelection: { kind: "configured_source", projectWorkspaceId: "source-1", mode: "managed_isolated" },
+      executionWorkspacePreference: "isolated_workspace", executionWorkspaceSettings: {},
+    };
+    for (const schema of [CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === "create_task")!.inputSchema,
+      paperclipSemanticAction("create_task")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
+      for (const field of ["assigneeAdapterOverrides", "executionPolicy", "workspaceSelection", "executionWorkspaceSettings"]) {
+        expect(validate({ ...input, [field]: "invalid" }), field).toBe(false);
+      }
+      expect(validate({ ...input, undeclaredField: true })).toBe(false);
     }
   });
 

@@ -1,7 +1,8 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, issueWorkProducts, issueExecutionDecisions, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, issueWorkProducts, issueExecutionDecisions, agentInstructionWorkingCopies, type Db } from "@paperclipai/db";
 import type { ProjectSessionRecords, ProjectWorkProductRecords } from "@paperclipai/shared";
 import { issueReadSqlCondition, authorizationService, type AuthorizationActor } from "./authorization.js";
+import { projectRunDiagnostics } from "./project-run-diagnostics.js";
 
 /** Runs belong to their recorded task, never to the shared worker's current project. */
 export async function projectSessionRecords(db: Db, companyId: string, projectId: string, actor: AuthorizationActor, offset = 0): Promise<ProjectSessionRecords> {
@@ -10,16 +11,24 @@ export async function projectSessionRecords(db: Db, companyId: string, projectId
     title: issues.title, agentId: agents.id, agentName: agents.name, status: heartbeatRuns.status,
     sessionId: sql<string | null>`coalesce(${heartbeatRuns.sessionIdAfter}, ${heartbeatRuns.sessionIdBefore}, ${heartbeatRuns.nativeSessionId}::text)`,
     startedAt: heartbeatRuns.startedAt, finishedAt: heartbeatRuns.finishedAt,
+    errorCode: heartbeatRuns.errorCode,
+    providerWorkStarted: sql<unknown>`${heartbeatRuns.resultJson} #> '{executionRecovery,providerWorkStarted}'`,
+    recoveryKind: sql<unknown>`${heartbeatRuns.resultJson} #>> '{executionRecovery,kind}'`,
+    processStoppedAt: agentInstructionWorkingCopies.processStoppedAt,
   }).from(heartbeatRuns)
     .innerJoin(issues, and(eq(issues.companyId, heartbeatRuns.companyId), sql`${issues.id}::text = coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`))
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
+    .leftJoin(agentInstructionWorkingCopies, and(eq(agentInstructionWorkingCopies.runId, heartbeatRuns.id),
+      eq(agentInstructionWorkingCopies.companyId, heartbeatRuns.companyId), eq(agentInstructionWorkingCopies.agentId, heartbeatRuns.agentId)))
     .where(and(eq(issues.companyId, companyId), eq(issues.projectId, projectId), isNull(issues.hiddenAt), readable))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).offset(offset).limit(51);
   const pms = await db.select({ id: agents.id, name: agents.name }).from(agents).where(and(eq(agents.companyId, companyId),
     sql`${agents.runtimeConfig}->'workspaceBinding'->>'mode' = 'project_pm'`,
     sql`${agents.runtimeConfig}->'workspaceBinding'->>'projectId' = ${projectId}`));
   const decisions = await authorizationService(db).decideReads(actor, rows.slice(0, 50).map(row => ({ type: "issue" as const, companyId, issueId: row.issueId, projectId })));
-  return { records: rows.slice(0, 50).filter((_row, index) => decisions[index]?.allowed).map(row => ({ ...row, startedAt: row.startedAt?.toISOString() ?? null, finishedAt: row.finishedAt?.toISOString() ?? null })),
+  return { records: rows.slice(0, 50).filter((_row, index) => decisions[index]?.allowed).map(({ errorCode, providerWorkStarted, recoveryKind, processStoppedAt, ...row }) => ({ ...row,
+    diagnostics: projectRunDiagnostics({ errorCode, providerWorkStarted, recoveryKind, processStoppedAt }),
+    startedAt: row.startedAt?.toISOString() ?? null, finishedAt: row.finishedAt?.toISOString() ?? null })),
     nextOffset: rows.length > 50 ? offset + 50 : null, pms };
 }
 

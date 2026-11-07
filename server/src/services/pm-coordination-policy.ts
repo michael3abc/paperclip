@@ -110,10 +110,11 @@ export function assertPmWorkerSelection(scope: PmCoordinationScope, agentId: unk
 
 export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input: {
   projectId?: unknown; assigneeAgentId?: unknown; assigneeUserId?: unknown; assigneeAdapterOverrides?: unknown;
-  executionWorkspaceSettings?: unknown; workspaceSelection?: unknown;
+  executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown; workspaceSelection?: unknown;
 }, options: { existingTask?: boolean } = {}) {
   if (!options.existingTask && scope.delegation?.version !== 2) throw unprocessable("Configure PM worker settings before new dispatch; historical worker lists are not a dispatch fallback", { code: "PM_WORKER_MIGRATION_REQUIRED" });
   if (input.projectId !== scope.projectId || input.assigneeUserId != null) throw forbidden("PM execution tasks must remain in their project and use a shared worker", { code: "PM_DISPATCH_DENIED" });
+  if (!options.existingTask) assertPmDispatchWorkspace(input);
   const overrides = assertPmWorkerSelection(scope, input.assigneeAgentId, input.assigneeAdapterOverrides);
   if (scope.delegation?.version === 2) {
     const { agentInstructionsService } = await import("./agent-instructions.js");
@@ -160,6 +161,17 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     }
   }
   return { assigneeAgentId: String(input.assigneeAgentId), assigneeAdapterOverrides: overrides };
+}
+
+/** Reject unlaunchable new dispatches before saving a task or waking a worker. */
+export function assertPmDispatchWorkspace(input: { workspaceSelection?: unknown; executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown }) {
+  const selected = taskWorkspaceSelectionSchema.safeParse(input.workspaceSelection);
+  const settings = input.executionWorkspaceSettings as Record<string, unknown> | null | undefined;
+  if (!selected.success || selected.data.kind !== "configured_source" || selected.data.mode !== "managed_isolated"
+    || (settings?.mode != null && settings.mode !== "isolated_workspace")
+    || (input.executionWorkspacePreference != null && input.executionWorkspacePreference !== "isolated_workspace")) {
+    throw unprocessable("Select this project's configured_source repository with mode managed_isolated; shared directories, PM homes and existing task worktrees cannot launch new shared-worker tasks.", { code: "PM_ISOLATED_WORKSPACE_REQUIRED" });
+  }
 }
 
 /** Preserve source gates; PM-provided workflow settings cannot grant execution authority. */

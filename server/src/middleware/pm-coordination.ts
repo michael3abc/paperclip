@@ -30,7 +30,7 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
         : method === "PUT" && PM_EDITABLE_BUNDLE_FILES.has(file) && typeof body.changeReason === "string"
           && !!body.changeReason.trim() && body.clearLegacyPromptTemplate !== true);
     }
-  } else if ((match = path.match(/^\/projects\/([^/]+)(?:\/(workspaces|repositories))?$/))) {
+  } else if ((match = path.match(/^\/projects\/([^/]+)(?:\/(workspaces|repositories|sessions))?$/))) {
     allowed = read && match[1] === pm.projectId;
   } else if ((match = path.match(/^\/companies\/([^/]+)\/adapters\/(claude_local|codex_local)\/models$/))) {
     allowed = read && match[1] === pm.companyId;

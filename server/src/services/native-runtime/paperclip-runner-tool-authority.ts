@@ -6,6 +6,7 @@ import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestToo
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { requiredQualityReviewSchema, createIssueInputSchema } from "@paperclipai/shared";
 import { PM_READ_TOOLS, PM_WRITE_TOOLS, currentPmCoordinationScope, assertPmTool, assertPmIssue, assertPmRun, assertPmDispatch, pmDispatchExecutionPolicy, assertPmApproval } from "../pm-coordination-policy.js";
+import { pmDispatchDiagnostics } from "../pm-dispatch-diagnostics.js";
 import { PM_BUNDLE_TOOLS, readPmBundleFile, writePmBundleFile, requirePmBundleReads } from "../pm-bundle-tools.js";
 import { PM_PROJECT_READ_TOOLS, executePmProjectRead } from "../pm-project-read-tools.js";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
@@ -595,7 +596,8 @@ export class PaperclipRunnerToolAuthority {
       // Public domain validation is actionable for dispatch; preserve its
       // original diagnostic without exposing arbitrary internal exceptions.
       if (call.tool === "create_task" && error instanceof HttpError && error.status >= 400 && error.status < 500) {
-        Object.assign(error, { paperclipPublicToolError: error.message.slice(0, 2000) });
+        const code = record(error.details).code;
+        Object.assign(error, { paperclipPublicToolError: `${typeof code === "string" && /^PM_[A-Z_]+$/.test(code) ? `${code}: ` : ""}${error.message}`.slice(0, 2000) });
       }
       throw error;
     }
@@ -1058,7 +1060,7 @@ export class PaperclipRunnerToolAuthority {
       }
       case "write_document": return this.#writeDocument(input);
       case "list_agents":
-        return { actors: (await agentService(this.db).list(this.binding.companyId)).filter(agent => !pmScope || agent.id === pmScope.agentId || pmScope.delegation?.workers.some(worker => worker.agentId === agent.id)).map(redactedActor), ...(pmScope ? { delegation: pmScope.delegation } : {}) };
+        return { actors: (await agentService(this.db).list(this.binding.companyId)).filter(agent => !pmScope || agent.id === pmScope.agentId || pmScope.delegation?.workers.some(worker => worker.agentId === agent.id)).map(redactedActor), ...(pmScope ? { delegation: pmScope.delegation, dispatchReadiness: await pmDispatchDiagnostics(this.db, pmScope) } : {}) };
       case "get_agent": {
         const actor = await agentService(this.db).getById(requiredString(input.actorId));
         if (!actor || actor.companyId !== this.binding.companyId) throw new Error("paperclip_runner_agent_not_found");

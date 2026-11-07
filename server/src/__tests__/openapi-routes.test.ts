@@ -323,6 +323,12 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("advertises the project-scoped session diagnostic API to Runner discovery", () => {
+    const route = buildOpenApiSpec().paths["/api/projects/{id}/sessions"]?.get;
+    expect(route?.description).toContain("providerWorkStarted");
+    expect(route?.description).toContain("Raw errors, logs, credentials");
+  });
+
   it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
     const spec = buildOpenApiSpec();
     const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;

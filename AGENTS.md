@@ -150,6 +150,14 @@ connector names or read-only annotations are never grants. Keep the Owner-owned
 `runtimeConfig.pmDelegation` model/worker table separate from editable Markdown.
 PM dispatch selects a stable worker option ID or its unique default and persists plan,
 source, workspace and review before waking that worker. Preserve source Owner gates.
+Keep these dispatch fields in the live `protocol-actions/create-task.ts` schema
+as well as the documentation catalog. Test the exported provider catalog; a field
+present only in the documentation catalog is rejected before server authorization.
+New PM dispatch requires a same-project configured source in managed-isolated mode;
+reject shared directories and existing-task worktrees before task creation. PM
+`list_agents.dispatchReadiness` reports current policy/document/selection metadata;
+it is not provider acceptance. PMs may read only their project's sessions endpoint
+for bounded failure and stop evidence, never full worker configuration or raw logs.
 Use `read_bundle_file` receipts and `write_bundle_file` CAS saves for PM support
 files; protect AGENTS.md and synchronize the registered run baseline on every save.
 PM Agent settings own `pmDelegation` version 2: one default and explicit harness,

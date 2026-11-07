@@ -2,6 +2,8 @@ import { renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
 import { workerSelectionOverrides } from "../services/pm-worker-options.js";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import express from "express";
+import { execFileSync } from "node:child_process";
+import { projectSessionRecords } from "../services/project-execution-records.js";
 import { createServer, type Server } from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -42,7 +44,8 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
   let root: string, localRoot: string, authority: PaperclipRunnerToolAuthority, scope: NonNullable<ReturnType<typeof pmCoordinationScope>>;
   let server: Server, apiUrl: string;
   const wakes: Array<{agentId: string; key: string | undefined}> = [];
-  const selectionId = randomUUID();
+  const selectionId = randomUUID(), sourceId = randomUUID();
+  const workspaceSelection = { kind: "configured_source", projectWorkspaceId: sourceId, mode: "managed_isolated" } as const;
   const selection = { id: selectionId, model: "gpt-5.4", thinking: "high", permission: "approve-reads" as const, speed: "standard" as const };
   const policy: PmWorkerPolicy = { version: 2, defaultSelectionId: selectionId, workers: [{ agentId: workerId, harness: "codex_local", selections: [selection] }] };
   const override = { workerSelectionId: selectionId, adapterConfig: workerSelectionOverrides("codex_local", selection) };
@@ -54,6 +57,10 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     database = await startRecoveryPostgres("pm-capabilities-db-"); db = createDb(database.connectionString);
     await db.insert(companies).values({ id: companyId, name: "PM isolation", issuePrefix: "PMC", issueCounter: 2 });
     await db.insert(projects).values([{ id: projectId, companyId, name: "PM project" }, { id: otherProjectId, companyId, name: "Other project" }]);
+    const repo = path.join(home, "source"); await fs.mkdir(repo);
+    execFileSync("git", ["init", repo], { stdio: "ignore" });
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "Fixture"], { stdio: "ignore" });
+    await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Owned Git source", cwd: repo, isPrimary: true });
     await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     root = resolveManagedInstructionsRoot({ id: agentId, companyId, name: "PM", adapterConfig: {} });
     const runtimeConfig = { workspaceBinding: { mode: "project_pm", projectId, workerRoot: home, workerSlots: 0, workerIsolation: "shared" },
@@ -140,9 +147,19 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
   });
   it("requires read receipts before dispatch, preserves Owner gates, and wakes only the explicit worker once", async () => {
     const args = { idempotencyKey: "dispatch", title: "Bounded worker task", initialPlan: "Inspect, implement, verify, deliver evidence.",
-      assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection: { kind: "task_directory" } };
+      assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection };
     await expect(execute("create_task", args)).rejects.toThrow("Read the current bundle");
     await reads();
+    for (const selection of [undefined, { kind: "task_directory" }, { kind: "existing", workspaceId: randomUUID() }, { ...workspaceSelection, mode: "shared" }]) {
+      await expect(execute("create_task", { ...args, workspaceSelection: selection })).rejects.toMatchObject({
+        details: { code: "PM_ISOLATED_WORKSPACE_REQUIRED" }, paperclipPublicToolError: expect.stringContaining("PM_ISOLATED_WORKSPACE_REQUIRED"),
+      });
+    }
+    await expect(execute("create_task", { ...args, executionWorkspaceSettings: { mode: "shared_workspace" } })).rejects.toThrow("managed_isolated");
+    await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/companies/${companyId}/issues`, query: {}, runId,
+      body: { title: args.title, initialPlan: args.initialPlan, projectId, parentId: issueId, assigneeAgentId: workerId, workspaceSelection: { kind: "task_directory" } } })).rejects.toThrow("managed_isolated");
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toHaveLength(0);
+    expect(wakes).toHaveLength(0);
     await expect(execute("create_task", { ...args, assigneeActorId: agentId })).rejects.toThrow("shared worker");
     const otherWorkspaceId = randomUUID();
     await db.insert(projectWorkspaces).values({ id: otherWorkspaceId, companyId, projectId: otherProjectId, name: "Other source", cwd: home });
@@ -161,6 +178,35 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     expect(wakes.every(wake => wake.agentId === workerId)).toBe(true);
     expect(new Set(wakes.map(wake => wake.key))).toEqual(new Set([`created-child:${created.task.id}`]));
     expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toHaveLength(1);
+  });
+  it("reports current dispatch metadata without exposing worker configuration", async () => {
+    const listed = await execute("list_agents", {}) as any;
+    expect(listed.dispatchReadiness).toMatchObject({ version: 2, defaultSelectionId: selectionId, documentSynchronized: true, blockers: [],
+      selections: [{ id: selectionId, agentId: workerId, ready: true }] });
+    expect(listed.actors.find((a: any) => a.id === workerId)).not.toHaveProperty("adapterConfig");
+    const original = await fs.readFile(path.join(root, "WORKERS.md"), "utf8");
+    await fs.writeFile(path.join(root, "WORKERS.md"), "# out of sync");
+    try { expect((await execute("list_agents", {}) as any).dispatchReadiness).toMatchObject({ documentSynchronized: false, blockers: ["PM_WORKER_DOCUMENT_OUT_OF_SYNC"] }); }
+    finally { await fs.writeFile(path.join(root, "WORKERS.md"), original); }
+    const [saved] = await db.select().from(agents).where(eq(agents.id, agentId));
+    await db.update(agents).set({ runtimeConfig: { ...saved!.runtimeConfig, pmDelegation: { version: 1, workers: [{ agentId: workerId, selections: [{ model: "old", effort: "high" }] }] } } }).where(eq(agents.id, agentId));
+    try { expect((await execute("list_agents", {}) as any).dispatchReadiness).toMatchObject({ version: 1, blockers: ["PM_WORKER_MIGRATION_REQUIRED"] }); }
+    finally { await db.update(agents).set({ runtimeConfig: saved!.runtimeConfig }).where(eq(agents.id, agentId)); }
+  });
+  it("allows only own-project session diagnostics and projects no raw failure payload", async () => {
+    await expect(assertPmApiRequest(db, scope, { method: "GET", path: `/projects/${projectId}/sessions`, query: {}, body: {}, runId })).resolves.toBeUndefined();
+    await expect(assertPmApiRequest(db, scope, { method: "GET", path: `/projects/${otherProjectId}/sessions`, query: {}, body: {}, runId })).rejects.toThrow();
+    await expect(assertPmApiRequest(db, scope, { method: "GET", path: `/agents/${workerId}/config`, query: {}, body: {}, runId })).rejects.toThrow();
+    const failedId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: failedId, companyId, agentId: workerId, status: "failed", issueId,
+      errorCode: "workspace_validation_failed", error: "secret fixture must not escape", contextSnapshot: { issueId },
+      resultJson: { secret: "private", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    const records = await projectSessionRecords(db, companyId, projectId, { type: "board", source: "session", userId });
+    const record = records.records.find(row => row.runId === failedId)!;
+    expect(record.diagnostics).toMatchObject({ failureCategory: "workspace", providerWorkStarted: false, processStop: "not_started" });
+    expect(JSON.stringify(record)).not.toContain("secret");
+    expect(record).not.toHaveProperty("resultJson");
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, failedId));
   });
   it("rejects discovery and execution through a previously issued connector session", async () => {
     const token = `owned-pm-test-${randomUUID()}`;
@@ -195,7 +241,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     await db.update(issues).set({ conversationAgentId: agentId, conversationUserId: userId, conversationState: "active", executionPolicy: null }).where(eq(issues.id, issueId));
     await reads();
     const created = await execute("create_task", { idempotencyKey: "chat-flow", title: "Independent chat work", initialPlan: "Deliver, address review, deliver again.",
-      assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection: { kind: "task_directory" } }) as { task: { id: string; parentId: string | null } };
+      assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection }) as { task: { id: string; parentId: string | null } };
     expect(created.task.parentId).toBeNull();
     const childId = created.task.id, contractId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId, issueId: childId, revision: 1,

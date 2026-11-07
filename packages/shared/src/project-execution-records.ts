@@ -9,6 +9,12 @@ export interface ProjectSessionRecord {
   sessionId: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  diagnostics?: {
+    failureCategory: "workspace" | "configuration" | "execution" | null;
+    providerWorkStarted: boolean | null;
+    processStop: "confirmed" | "not_started" | "unknown";
+    recoverySummary: string | null;
+  };
 }
 export interface ProjectSessionRecords {
   records: ProjectSessionRecord[];

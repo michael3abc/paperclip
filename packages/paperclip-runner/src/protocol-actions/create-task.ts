@@ -158,7 +158,21 @@ export const createTaskAction = {
             ],
             "maxLength": 200000,
             "description": "Relevant markdown plan saved on the new task before execution starts."
-          }
+          },
+          "assigneeAdapterOverrides": {
+            "type": "object", "additionalProperties": true,
+            "description": "Issue-scoped model selection. For a project PM, select assigneeAdapterOverrides.workerSelectionId from list_agents.delegation (v2), or omit the selection and assignee to use its saved default. Historical v1 policies require explicit Owner migration before new dispatch. Never change shared worker defaults."
+          },
+          "executionPolicy": {
+            "type": "object", "additionalProperties": true,
+            "description": "Existing issue review policy. PM dispatch always retains a review by the issuing PM and existing Owner gates."
+          },
+          "executionWorkspacePreference": {
+            "type": ["string", "null"],
+            "description": "Existing issue workspace preference; the project's required isolated worktree policy remains authoritative."
+          },
+          "executionWorkspaceSettings": { "type": "object", "additionalProperties": true },
+          "workspaceSelection": { "type": "object", "additionalProperties": true }
         },
         "required": [
           "idempotencyKey",

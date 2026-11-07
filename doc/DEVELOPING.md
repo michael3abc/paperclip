@@ -4691,6 +4691,30 @@ projection and unique default consistent, retain old task settings and reject
 unavailable connections/models explicitly. Model choices show their connection;
 identical model IDs on different accounts remain distinct choices.
 
+PM `create_task` dispatch carries `assigneeAdapterOverrides`, `executionPolicy`,
+`workspaceSelection`, `executionWorkspacePreference` and `executionWorkspaceSettings`
+through the live protocol action schema. Keep that schema aligned with the semantic
+action documentation catalog and test the actual exported provider catalog. These
+fields still pass the server's issue validators, PM worker selection, project/workspace
+scope and review enforcement; advertising them does not grant additional authority.
+
+New PM tasks require `workspaceSelection.kind=configured_source` and
+`mode=managed_isolated` for their own project's source. The same dispatch admission
+rejects omitted/shared/existing-task selections and conflicting preferences through
+both native tools and HTTP before a task is saved or a worker wakes. Existing
+task continuation keeps its recorded contract.
+
+PM `list_agents` includes `dispatchReadiness`: policy revision/version, current
+default, managed document synchronization and bounded per-selection readiness.
+It reads current saved metadata on demand, performs no background polling and
+does not claim a provider has started. Private worker configuration remains hidden.
+Use `GET /api/projects/{id}/sessions` for own-project, issue-authorized execution
+diagnostics. Its additive `diagnostics` projection contains a failure category,
+tri-state provider-start evidence, confirmed/not-started/unknown stop evidence and
+a fixed recovery summary. Raw errors/results/logs are never returned. A terminal
+run or absent PID alone is not stop proof. PM dispatch errors preserve public
+domain codes, including `PM_ISOLATED_WORKSPACE_REQUIRED`.
+
 ### Delegated decisions
 
 The existing interaction/approval services own decision effects. The company
