@@ -1,3 +1,5 @@
+import { registerWebPushDelivery } from "./services/web-push-delivery.js";
+import { loadWebPushConfig, createWebPushSender } from "./services/web-push-transport.js";
 import { registerNativeCancellationDelivery } from "./services/native-runtime/native-cancellation-delivery.js";
 import { registerNativeRuntimeResponseDelivery } from "./services/native-runtime/native-runtime-response-delivery.js";
 import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
@@ -1012,6 +1014,8 @@ async function startServerWithDatabaseTeardown(
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
 
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
+  const webPushConfig = loadWebPushConfig();
+  if (webPushConfig) registerWebPushDelivery(db as any, deliveryWork, createWebPushSender(webPushConfig));
   const deploymentHints = deploymentListenUrl !== null
     ? deploymentNotifications(db as any, deliveryWork, {
       directDatabaseUrl: deploymentListenUrl, isWarmStandby,

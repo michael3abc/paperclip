@@ -1,3 +1,4 @@
+import { disableWebPush } from "@/lib/web-push";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { authApi } from "@/api/auth";
 import { navigateTopLevel } from "@/lib/browserNavigation";
@@ -47,6 +48,7 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
 
   return useMutation({
     mutationFn: async () => {
+      await disableWebPush();
       if (cloud) {
         invalidateAccountScope(queryClient);
         onSignedOut?.();

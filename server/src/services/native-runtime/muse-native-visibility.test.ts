@@ -10,6 +10,9 @@ import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.
 import { documentService } from "../documents.js";
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 
+const deniedRead = { outcome: "failed", code: "paperclip_runner_read_failed",
+  message: "The requested read failed or is not authorized for this run. Check the current task and tool scope before continuing." };
+
 describe("Muse native visibility intersection", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -319,13 +322,13 @@ describe("Muse native visibility intersection", () => {
     await db.update(companyMemberships).set({ status: "inactive" })
       .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
     for (const tool of ["read_document", "list_documents", "list_document_revisions", "get_task_context"]) {
-      await expect(f.authority.execute({ tool, callId: tool, arguments: { key: "report" } })).rejects.toThrow("no longer available");
+      await expect(f.authority.execute({ tool, callId: tool, arguments: { key: "report" } })).resolves.toEqual(deniedRead);
     }
     const foreign = new PaperclipRunnerToolAuthority(db, { companyId: randomUUID(), agentId: f.agentId,
       issueId: f.issue.id, runId: f.runId, museRuntime: true, externalAuthorizingUserId: f.authorizer,
       assertBridgeAuthority: async () => {} });
     await expect(foreign.execute({ tool: "read_document", callId: "foreign", arguments: { key: "report" } }))
-      .rejects.toThrow("binding_not_authorized");
+      .resolves.toEqual(deniedRead);
   });
 
   it.each(["enforce", "shadow", "off"])("filters direct and paginated reads before data leaves the DB in %s mode", async mode => {
@@ -368,7 +371,7 @@ describe("Muse native visibility intersection", () => {
     expect(result).toMatchObject({ tasks: [{ id: f.issue.id }] });
     expect(JSON.stringify(result)).not.toContain(hidden.id);
     await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.authorizer)));
-    await expect(authority.execute({ tool: "search_tasks", callId: "search-again", arguments: {} })).rejects.toThrow("no longer available");
+    await expect(authority.execute({ tool: "search_tasks", callId: "search-again", arguments: {} })).resolves.toEqual(deniedRead);
   });
 
   it.each(["create_task", "reassign_task"])("intersects native %s with current authorizer assignment scope before writes or wakes", async tool => {
@@ -458,9 +461,12 @@ describe("Muse native visibility intersection", () => {
     const names = authority.definitions().map(tool => tool.name);
     expect(names).toContain("get_identity"); expect(names).toContain("get_task_context"); expect(names).toContain("write_document");
     for (const excluded of ["search_api", "call_api", "request_human_input", "connections_search", "workspace_command", "read_workspace_file", "register_deliverable", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository"]) expect(names).not.toContain(excluded);
-    for (const tool of ["get_workspace", "list_workspaces", "select_workspace", "prepare_repository"]) {
+    for (const tool of ["get_workspace", "list_workspaces"]) {
+      await expect(authority.execute({ tool, callId: tool, arguments: {} })).resolves.toEqual(deniedRead);
+    }
+    for (const tool of ["select_workspace", "prepare_repository"]) {
       await expect(authority.execute({ tool, callId: tool, arguments: {} })).rejects.toThrow("first-party runtime profile");
     }
-    await expect(authority.execute({ tool: "get_task_context", callId: "test", arguments: {} })).rejects.toThrow("authorizer");
+    await expect(authority.execute({ tool: "get_task_context", callId: "test", arguments: {} })).resolves.toEqual(deniedRead);
   });
 });

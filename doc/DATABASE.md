@@ -1878,3 +1878,28 @@ pre-upgrade database transactions before enabling independent writers. Do not ru
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
 Rollback must use a compatible version that reads the ledger and retains the
 durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+### Web Push receipts
+
+Additive migrations `0434_sturdy_maestro.sql` and `0435_giant_thunderbird.sql` add
+`push_preferences` (one per auth user), `push_subscriptions` (account-owned encrypted
+transport material and a unique endpoint hash), and `push_deliveries` (company,
+source identity, category, due/expiry time, attempts, lease and stable notification
+ID). Foreign keys remove account data on user deletion. Subscription endpoint/key
+columns are capability-bearing secrets: never include them in API projections,
+audit details or database-query error logs. Database backups require the same
+protection as other application secrets. Notification bodies are derived from
+current stored visible source records and are not copied into the delivery ledger.
+
+Producers insert receipts and notify the existing database work protocol inside
+the source transaction. Outer rollback produces neither deliveries nor dispatch.
+A unique `(subscription_id,event_key)` prevents duplicate enrollment of one event.
+Preference/subscription locks prevent racing opt-outs from leaving new pending
+work; opt-outs also cancel claimed-but-unsent receipts. The coordinator leases
+work for 60 seconds, restores overdue leases on restart, and preserves merged
+notification IDs across retries. The partial pending deadline index excludes
+completed history; an empty queue has no periodic scan.
+
+Validate on an owned disposable PostgreSQL instance. Production upgrades still
+require backup, published migration-prefix checks and isolated clone upgrade
+before deployment; these migrations do not authorize a production schema change.

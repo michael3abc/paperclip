@@ -1,3 +1,4 @@
+import { enqueuePushSource } from "../web-push-events.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
@@ -1079,7 +1080,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
-      return write(tx);
+      const result = await write(tx);
+      if (previous && previous.status !== status && ["failed", "timed_out"].includes(status)) {
+        await enqueuePushSource(tx, { companyId: previous.companyId, issueId: previous.nativeIssueId ?? previous.issueId,
+          sourceKind: "run", sourceId: previous.id, category: "problem", eventKey: `run:${previous.id}:${status}` });
+      }
+      return result;
     });
   }
 

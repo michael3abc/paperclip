@@ -19,6 +19,7 @@ Agent access: [companion](../agent-access-map/inbox-search.md).
 - `decisions`: `inbox-search/decisions` — open the source of a decision and act in the right context.
 - `search`: `inbox-search/search` — query company work and follow a result to its original record.
 - `toasts`: `inbox-search/toasts` — receive live task notifications only for personal participation or explicit mentions.
+- `web-push`: `inbox-search/web-push` — manage account categories and subscribed browser devices for background notifications.
 
 ## How to get to it (user POV)
 
@@ -188,3 +189,27 @@ Scope: ui
 Storybook: Eligible live task toast, explicit mention, quiet unrelated event, own-action/visible-task suppression, dedupe and company/account switch.
 Production: Persisted participation and mentions determine per-viewer socket eligibility; quiet events still refresh caches; reload retains eligibility, unauthorized resources remain denied.
 Sources: Source: [ToastViewport.tsx](../../ui/src/components/ToastViewport.tsx), [ToastContext.tsx](../../ui/src/context/ToastContext.tsx), [LiveUpdatesProvider.tsx](../../ui/src/context/LiveUpdatesProvider.tsx), [task-toast-eligibility.ts](../../server/src/realtime/task-toast-eligibility.ts). Tests: [ToastContext.test.tsx](../../ui/src/context/ToastContext.test.tsx), [ToastViewport.test.tsx](../../ui/src/components/ToastViewport.test.tsx), [LiveUpdatesProvider.hook.test.tsx](../../ui/src/context/LiveUpdatesProvider.hook.test.tsx), [task-toast-eligibility.test.ts](../../server/src/__tests__/task-toast-eligibility.test.ts), [live-events-toast.test.ts](../../server/src/__tests__/live-events-toast.test.ts), [multi-user-authenticated.spec.ts](../../tests/e2e/multi-user-authenticated.spec.ts)
+
+### `web-push`
+
+Open **Personal settings → 推播通知**. Use an authenticated human account on HTTPS;
+on iPhone first add the app to the Home Screen. Enable this device with a user
+click, grant permission and send a test. Compare queued/submitted/failed receipts
+with the actual device notification. Subscription defaults are approval, question,
+completed, problem and chat on; progress and subtask off.
+
+Verify two devices share account preferences and turning a category off cancels
+queued delivery without replay on re-enable. Exercise unrelated/private tasks,
+revoked membership, own actions, dedicated decisions, fixed 30-second coalescing,
+and same-origin task/chat/decision navigation. Denied permission and unavailable
+server/browser configuration must show actionable messages. Sign out and switch
+accounts; old subscriptions must not display for the new account.
+
+Sources: [settings](../../ui/src/components/PushNotificationSettings.tsx),
+[API and isolated PostgreSQL tests](../../server/src/__tests__/web-push.test.ts),
+[browser enrollment](../../ui/src/lib/web-push.test.ts),
+[Service Worker Chromium journey](../../ui/src/lib/web-push.browser.test.ts).
+Chromium injects push arrival; it is not live provider delivery. Physical iPhone
+acceptance additionally requires locked/closed-app receipt, Access login expiry
+and destination restoration, plus a Service Worker update retaining enrollment.
+No real agent run is needed; use dedicated test notifications and disposable data.

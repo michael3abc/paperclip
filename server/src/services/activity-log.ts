@@ -15,6 +15,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { enqueuePushActivity } from "./web-push-events.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -179,14 +180,18 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
-  const [activity] = input.entityType === "issue"
-    ? await db.transaction(async tx => {
+  // Preserve the caller's audit write boundary for unrelated resources. Only
+  // issue/decision events need a new transactional notification obligation.
+  const [activity] = input.entityType === "issue" || input.action === "decision.created" ? await db.transaction(async tx => {
+    if (input.entityType === "issue") {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${input.entityId}`);
       if (input.runId && input.action === "issue.updated" && ["done", "cancelled"].includes(String(input.details?.status)))
         await notifyActiveRunSilence(tx, { companyId: input.companyId, runId: input.runId });
-      return insert(tx as unknown as Db);
-    })
-    : await insert(db);
+    }
+    const rows = await insert(tx as unknown as Db);
+    await enqueuePushActivity(tx as unknown as Db, rows[0].id, input);
+    return rows;
+  }) : await insert(db);
 
   const payload = {
     issueId: input.issueId ?? (input.entityType === "issue" ? input.entityId : null),

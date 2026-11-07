@@ -1148,6 +1148,12 @@ does not follow symlinks or change permissions in a developer's runtime.
 After fixture-only corrections, retain the original full-check receipt and
 record targeted reruns for every failed file, including worker teardown errors.
 Do not label a failed lane as passed without explicit recovery evidence.
+When fake timers drive database-backed schedulers, advance to the next deadline
+and await the batch using wall time. Do not advance fake time on every database
+poll: slow I/O can accidentally make unrelated provider scans due. Poll the
+specific run's persisted result before joining global execution cleanup; retain
+the cleanup join before fixture teardown. Give large backlog fixtures a separate
+bounded setup budget without relaxing their admission assertions.
 
 Run standalone checks without inherited provider credentials or endpoint
 overrides. Filesystem fixtures expect the normal `022` umask; keep private logs
@@ -1156,6 +1162,10 @@ in a protected parent directory instead of imposing `077` on test processes.
 The stable test runner defaults to `/tmp` on Unix and the OS temporary directory
 on Windows. Set `PAPERCLIP_TEST_TMP_ROOT` to an existing writable absolute directory
 (for example `/var/tmp`) when that filesystem lacks space, inodes, or user quota.
+For non-Git workspace fixtures, also require a root without ancestor `.git` or
+bare-repository metadata. Shared temporary-directory residue can correctly trigger
+fail-closed workspace validation; select a clean owned root instead of deleting
+unrelated residue.
 Each Vitest invocation receives a unique canonical directory containing its
 isolated Paperclip home and `TMPDIR`; symlink aliases are resolved. Keep the parent
 path short for Unix socket fixtures. Invalid settings fail without falling back.
@@ -4599,3 +4609,50 @@ one-time config-file seed preserves existing choices, then later starts use the
 database without loading home `.env` files or repairing worktree config. See
 [Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
 secret handling, initialization order and migration interfaces.
+
+## Web Push
+
+Request validators live in `packages/shared/src/push.ts`; the mounted routes and
+human-only OpenAPI registrations reuse them. Notification producers preserve the
+existing audit transaction boundary for unrelated resource writes.
+
+Set `PAPERCLIP_WEB_PUSH_CONFIG_FILE` to a private JSON file outside the repository
+and service-management directory: `{ "publicKey": "<VAPID public key>",
+"privateKey": "<VAPID private key>", "subject": "mailto:<operator address>" }`.
+Use a P-256 VAPID key pair from the pinned `web-push` library and write directly
+to a mode-0600 file; do not print private keys. The server validates permissions,
+key pairing and subject at startup. Missing configuration disables producers and
+enrollment; invalid configuration fails visibly. Configuration is loaded once;
+rotation requires a controlled restart and device re-enrollment. Existing private
+config paths belong in the host service manifest, never secret values.
+
+The existing delivery coordinator owns Web Push; no new service or polling loop
+is required. Provider allowlist: `*.push.apple.com`, `fcm.googleapis.com`,
+`updates.push.services.mozilla.com`; HTTPS only, public DNS answers only, no
+redirects. Outbound HTTPS must be permitted. Cloudflare Access does not need a
+public API exception: complete notification content is encrypted in the payload.
+Notification links use the normal same-origin login/return flow.
+
+`GET /api/push` returns safe settings/device/status projections and the public
+VAPID key. `PUT /api/push/preferences` takes company audit context and the complete
+preference object. `POST /api/push/subscriptions` takes company context, expected
+user ID and browser subscription; the server determines ownership. DELETE
+`/api/push/subscriptions/:id` revokes only the caller's device, including after
+company membership loss (company audit is written only while access remains).
+POST to the same path plus `/test` queues a rate-limited dedicated test. Every mutation requires the expected user ID to reject stale-account writes.
+All are human-session only; agent keys, board keys and local implicit identities fail.
+Responses and logs never expose subscription endpoint or encryption keys.
+
+Targeted sources: `server/src/__tests__/web-push.test.ts`, browser enrollment/UI
+tests, and `ui/src/lib/web-push.browser.test.ts`. Run through the owned PostgreSQL
+wrapper `node --import ./server/node_modules/tsx/dist/loader.mjs
+packages/db/src/test-postgres-command.ts -- pnpm exec vitest run <test paths>`
+with provider/production variables removed. Chromium must be installed with
+`pnpm exec playwright install chromium`. Its Service Worker tests inject arrival
+but use real browser IndexedDB/notification APIs; they do not prove remote push.
+
+Acceptance additionally requires an iPhone Home Screen installation: grant/deny
+permission, test with the screen locked and app closed, expire Access login and
+follow a task/chat/decision notification back through login, update the Service
+Worker, then sign out and switch accounts. Record physical receipt separately
+from provider submission. Never claim end-to-end acceptance before this run.

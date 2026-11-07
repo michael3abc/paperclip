@@ -10,6 +10,8 @@ import {
 import { Router } from "express";
 import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
 import { z } from "zod";
+import { pushRequestContextSchema, pushPreferencesRequestSchema, pushSubscribeRequestSchema } from "@paperclipai/shared";
+import { savePmWorkerPolicySchema } from "@paperclipai/shared";
 import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
@@ -1408,6 +1410,7 @@ const PUBLIC_OPERATIONS = new Set([
 ]);
 
 const BOARD_ONLY_PREFIXES = [
+  "/api/push",
   "/api/companies/{companyId}/accounting/",
   "/api/announcements/",
   "/api/auth/",
@@ -1429,6 +1432,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PUT /api/agents/{id}/worker-policy",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -1785,7 +1789,7 @@ function applyDocumentFixups(document: any): any {
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
 
-      if (isVoiceSessionOperation(path)) {
+      if (isVoiceSessionOperation(path) || path === "/api/push" || path.startsWith("/api/push/")) {
         operation.security = [{[BOARD_SESSION_AUTH_SCHEME]: []}];
         operation["x-paperclip-authorization"] = {actor: "board", sessionBound: true};
       }
@@ -3793,6 +3797,20 @@ registry.registerPath({
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
 registry.registerPath({
+  method: "get", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
+  summary: "Read a project PM's worker policy, document revision and available worker choices",
+  description: "Requires agent configuration read access. Returns warnings for legacy or out-of-sync policies without migrating or dispatching work.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registry.registerPath({
+  method: "put", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
+  summary: "Save a project PM's worker choices and managed instruction block",
+  description: "Requires board access and agent/instruction management authority. Compares the policy revision and document hash; preserves existing tasks, sessions and holds.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(savePmWorkerPolicySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+registry.registerPath({
   method: "get",
   path: "/api/agents/{id}/project-access",
   tags: ["agents"],
@@ -5262,6 +5280,18 @@ registry.registerPath({
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
+
+for (const [suffix, summary] of [
+  ["sessions", "List readable task execution sessions and project PMs"],
+  ["work-products", "List readable non-file work products and review decisions"],
+] as const) {
+  registry.registerPath({
+    method: "get", path: `/api/projects/{id}/${suffix}`, tags: ["projects"], summary,
+    description: "Requires project read access; each task record is filtered by current issue authorization. Returns records and nextOffset for pages of up to 50 entries.",
+    request: { params: z.object({ id: z.string() }), query: z.object({ offset: z.coerce.number().int().min(0).max(1000000).optional() }) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
 
 registry.registerPath({
   method: "get",
@@ -6963,6 +6993,20 @@ registerCurrentRoute({
     404: r.notFound,
   },
 });
+
+for (const [method, routePath, summary, body, success] of [
+  ["get", "/api/push", "Read your account push settings, safe device list and recent delivery receipts", undefined, 200],
+  ["put", "/api/push/preferences", "Update account categories and cancel matching unsent notifications", pushPreferencesRequestSchema, 200],
+  ["post", "/api/push/subscriptions", "Enroll this browser for the authenticated account (maximum 20 active devices)", pushSubscribeRequestSchema, 201],
+  ["delete", "/api/push/subscriptions/{id}", "Revoke your own device, including after company membership loss", pushRequestContextSchema, 204],
+  ["post", "/api/push/subscriptions/{id}/test", "Queue a dedicated test notification (one per device per 30 seconds)", pushRequestContextSchema, 202],
+] as const) {
+  registerCurrentRoute({
+    method, path: routePath, tags: ["push"], summary, body,
+    description: "Authenticated human session or cloud tenant only; board keys, agent keys and local implicit identities are denied. Mutations must match expectedUserId to the current account. Company access is required except for revoking your own device. No endpoint or subscription encryption keys are returned. Submitted means accepted by the push service, not confirmed receipt on a phone.",
+    responses: { [success]: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
 
 registerCurrentRoute({
   method: "get",

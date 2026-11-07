@@ -1,3 +1,4 @@
+import { enqueuePushSource } from "./web-push-events.js";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { canonicalExecutionUuid } from "./execution-identity.js";
@@ -55,19 +56,25 @@ export async function deliverExecutionStatuses(
         },
       });
       options.failpoint?.("published");
-      await db
-        .update(heartbeatRuns)
-        .set({ executionStatusDeliveryId: null })
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, run.companyId),
-            eq(heartbeatRuns.id, run.id),
-            eq(
-              heartbeatRuns.executionStatusDeliveryId,
-              run.executionStatusDeliveryId!,
+      await db.transaction(async tx => {
+        if (["failed", "timed_out"].includes(run.status)) await enqueuePushSource(tx as unknown as Db, {
+          companyId: run.companyId, issueId: run.issueId, eventKey: `run:${run.id}:${run.status}`,
+          sourceKind: "run", sourceId: run.id, category: "problem",
+        });
+        await tx
+          .update(heartbeatRuns)
+          .set({ executionStatusDeliveryId: null })
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.id, run.id),
+              eq(
+                heartbeatRuns.executionStatusDeliveryId,
+                run.executionStatusDeliveryId!,
+              ),
             ),
-          ),
-        );
+          );
+      });
       delivered += 1;
     } catch (error) {
       if (options.failpoint) throw error;
