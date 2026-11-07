@@ -366,9 +366,12 @@ adapter parameters onto the new issue without changing shared worker defaults or
 previous tasks. Missing, legacy or invalid settings block new dispatch. Existing
 legacy task reassignment still validates its original exact selection.
 
-The PM's Runtime settings read/write `/agents/:id/worker-policy`. PUT requires
-`{policy,baseRevision,baseHash}`, existing agent/configuration and instruction-file
-authorization, and a board actor. It returns policy revision and document hash.
+The PM's Runtime settings read/write `/agents/:id/worker-policy`. These operations
+and the project session/work-product read APIs are registered in OpenAPI, using
+the shared policy validator and existing route authorization contracts.
+PUT takes `{policy,baseRevision,baseHash}` and requires existing agent/configuration
+and instruction-file authorization and a board actor. It returns policy revision
+and document hash.
 Catalog entries use existing shared workers and harness model capabilities; unsupported
 models, thinking, permission or speed combinations are rejected, never substituted.
 CLI permissions are explicit `default`/`full-access`; ACP permissions are explicit

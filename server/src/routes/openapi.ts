@@ -11,6 +11,7 @@ import { Router } from "express";
 import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { pushRequestContextSchema, pushPreferencesRequestSchema, pushSubscribeRequestSchema } from "@paperclipai/shared";
+import { savePmWorkerPolicySchema } from "@paperclipai/shared";
 import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
@@ -1431,6 +1432,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PUT /api/agents/{id}/worker-policy",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -3795,6 +3797,20 @@ registry.registerPath({
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
 registry.registerPath({
+  method: "get", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
+  summary: "Read a project PM's worker policy, document revision and available worker choices",
+  description: "Requires agent configuration read access. Returns warnings for legacy or out-of-sync policies without migrating or dispatching work.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registry.registerPath({
+  method: "put", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
+  summary: "Save a project PM's worker choices and managed instruction block",
+  description: "Requires board access and agent/instruction management authority. Compares the policy revision and document hash; preserves existing tasks, sessions and holds.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(savePmWorkerPolicySchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+registry.registerPath({
   method: "get",
   path: "/api/agents/{id}/project-access",
   tags: ["agents"],
@@ -5264,6 +5280,18 @@ registry.registerPath({
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
+
+for (const [suffix, summary] of [
+  ["sessions", "List readable task execution sessions and project PMs"],
+  ["work-products", "List readable non-file work products and review decisions"],
+] as const) {
+  registry.registerPath({
+    method: "get", path: `/api/projects/{id}/${suffix}`, tags: ["projects"], summary,
+    description: "Requires project read access; each task record is filtered by current issue authorization. Returns records and nextOffset for pages of up to 50 entries.",
+    request: { params: z.object({ id: z.string() }), query: z.object({ offset: z.coerce.number().int().min(0).max(1000000).optional() }) },
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
 
 registry.registerPath({
   method: "get",

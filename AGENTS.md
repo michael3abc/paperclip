@@ -101,6 +101,8 @@ coalescing windows and idle zero-polling. Never log endpoints, encryption keys o
 notification content. See `doc/DEVELOPING.md` (Web Push) and `doc/DATABASE.md`.
 Keep the human-only OpenAPI registrations aligned with shared push request
 validators. Unrelated audit writes retain their existing caller transaction.
+Keep PM worker-policy and project execution-record OpenAPI operations aligned
+with mounted routes, shared policy validators and existing access controls.
 Use owned disposable databases and dedicated test notifications; do not wake real
 agents. Non-Git workspace tests require a clean owned temporary root with no
 ancestor Git metadata. Chromium injection tests do not qualify APNs or physical iPhone delivery.
