@@ -3309,6 +3309,11 @@
             "null"
           ]
         },
+        "assigneeAdapterOverrides": {
+          "additionalProperties": true,
+          "description": "Issue-scoped model selection. For a project PM, supply adapterConfig with an exact authorized model/effort combination from list_agents.delegation; never change shared worker defaults.",
+          "type": "object"
+        },
         "assigneeUserId": {
           "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId.",
           "maxLength": 200,
@@ -3334,6 +3339,23 @@
             "string",
             "null"
           ]
+        },
+        "executionPolicy": {
+          "additionalProperties": true,
+          "description": "Existing issue review policy. PM dispatch always retains a review by the issuing PM and existing Owner gates.",
+          "type": "object"
+        },
+        "executionWorkspacePreference": {
+          "description": "Existing issue workspace preference; the project's required isolated worktree policy remains authoritative.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executionWorkspaceSettings": {
+          "additionalProperties": true,
+          "type": "object"
         },
         "idempotencyKey": {
           "description": "Caller-stable retry key.",
@@ -3417,6 +3439,10 @@
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
+        },
+        "workspaceSelection": {
+          "additionalProperties": true,
+          "type": "object"
         }
       },
       "required": [

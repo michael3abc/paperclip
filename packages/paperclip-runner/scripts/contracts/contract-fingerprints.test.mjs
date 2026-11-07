@@ -123,16 +123,21 @@ test("a parser that reads another key changes the digest even when other code re
   assert.equal(digestWith(path, s => s.replaceAll("verify_open_response", "verify_session_open_response")), baseline);
 });
 
-test("the Runner's ACPX patch binds the pack for every ACPX harness; other patches do not", () => {
-  const version = JSON.parse(sources.read(`${R}/package.json`)).dependencies.acpx;
+test("the qualified ACPX and Claude policy patches bind the pack; unrelated patches do not", () => {
+  const dependencies = JSON.parse(sources.read(`${R}/package.json`)).dependencies;
+  const version = dependencies.acpx;
   const runnerPatch = `patches/acpx@${version}.patch`;
+  const claudePatch = `patches/@agentclientprotocol__claude-agent-acp@${dependencies["@agentclientprotocol/claude-agent-acp"]}.patch`;
   assert.notEqual(digestWith(runnerPatch, s => `${s}\n`), baseline);
-  const others = sources.list("patches").filter(path => path.endsWith(".patch") && path !== runnerPatch);
+  assert.notEqual(digestWith(claudePatch, s => `${s}\n`), baseline);
+  const others = sources.list("patches").filter(path => path.endsWith(".patch") && path !== runnerPatch && path !== claudePatch);
   assert.ok(others.some(path => path.startsWith("patches/acpx@")), "another package pins another ACPX version");
   for (const path of others) assert.equal(digestWith(path, s => `${s}\n`), baseline, path);
   // A build context without the Runner's patch fails instead of dropping the contract.
   assert.throws(() => packContractDigest(root, { read: p => p === runnerPatch ? null : sources.read(p),
     list: dir => sources.list(dir).filter(p => p !== runnerPatch) }), /Registered contract source is missing: acpx-patch/);
+  assert.throws(() => packContractDigest(root, { read: p => p === claudePatch ? null : sources.read(p),
+    list: dir => sources.list(dir).filter(p => p !== claudePatch) }), /Registered contract source is missing: claude-acp-patch/);
 });
 
 test("recursive serde types resolve", () => {

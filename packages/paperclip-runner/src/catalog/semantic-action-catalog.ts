@@ -545,6 +545,11 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         title: text("Task title.", 500),
         projectId: nullableText("Project ID from list_projects. Set the requested project in this creation call so the task does not inherit a different project."),
         initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
+        assigneeAdapterOverrides: { ...openObject, description: "Issue-scoped model selection. For a project PM, supply adapterConfig with an exact authorized model/effort combination from list_agents.delegation; never change shared worker defaults." },
+        executionPolicy: { ...openObject, description: "Existing issue review policy. PM dispatch always retains a review by the issuing PM and existing Owner gates." },
+        executionWorkspacePreference: nullableText("Existing issue workspace preference; the project's required isolated worktree policy remains authoritative."),
+        executionWorkspaceSettings: openObject,
+        workspaceSelection: openObject,
         description: nullableText("Child task description."),
         requiredQualityReview: object({
           version: { const: 1 },

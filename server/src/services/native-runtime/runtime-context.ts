@@ -9,6 +9,7 @@ import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { restConnectorFor } from "../connectors/rest-registry.js";
 import { createHash, randomUUID } from "node:crypto";
+import { pmCoordinationScope } from "../pm-coordination-policy.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -37,7 +38,7 @@ import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
-type RuntimeAgent = { id: string; companyId: string; name: string; adapterType?: string | null; adapterConfig: unknown };
+type RuntimeAgent = { id: string; companyId: string; name: string; adapterType?: string | null; adapterConfig: unknown; runtimeConfig?: Record<string, unknown> | null };
 type AssetFile = { path: string; content: Buffer; mode: number };
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -308,7 +309,10 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
 }
 
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
+  const pm = pmCoordinationScope({ ...input.agent, runtimeConfig: input.agent.runtimeConfig ?? null });
   const preconfigured = input.runtimeConfig.homeMode === "preconfigured";
+  if (pm && preconfigured) throw new Error("PM coordination requires the isolated Claude ACP runtime context");
+  if (pm && input.instructionWorkingCopy?.kind !== "agent_files") throw new Error("PM coordination requires a registered agent-directory working copy for controlled bundle reads and saves");
   const emptyMcpDigest = sha256("preconfigured");
   const [instructions, skills, mcp] = await Promise.all([
     measureRunPhase("runtime_context.instructions", () => materializeInstructionBundle(input.db, input.agent, input.instructionWorkingCopy?.kind === "agent_files")),
@@ -320,6 +324,8 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
     instructions: { ...instructions, ...(input.instructionWorkingCopy ? { workingCopy: input.instructionWorkingCopy } : {}) },
     skills,
     mcp,
+    ...(pm ? { toolPolicy: { kind: "project_pm" as const, version: 1 as const,
+      readRoots: [...new Set([pm.workerRoot, instructions.bundle.rootPath, ...(input.instructionWorkingCopy ? [input.instructionWorkingCopy.rootPath] : [])])] } } : {}),
     ...(input.runtimeConfig.paperclipConnectionInstructions ? {
       connectionInstructions: input.runtimeConfig.paperclipConnectionInstructions as { text: string; digest: string },
     } : {}),

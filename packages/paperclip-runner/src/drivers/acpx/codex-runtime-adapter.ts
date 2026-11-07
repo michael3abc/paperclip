@@ -486,6 +486,8 @@ export async function openQualifiedAcpxRuntime(
             PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
               (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
             )?.url ?? "",
+            // Always overwrite inherited values; only the admitted runtime context sets policy.
+            PAPERCLIP_PM_TOOL_POLICY: options.toolPolicy ? JSON.stringify(options.toolPolicy) : "",
           }
         : {}),
     }),

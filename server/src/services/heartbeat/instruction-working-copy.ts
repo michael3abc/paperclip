@@ -13,6 +13,7 @@ import { supportsNativeWarmFiles } from "../native-runtime/native-warm-capabilit
 import type { HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
+import { pmCoordinationScope } from "../pm-coordination-policy.js";
 
 type Copies = ReturnType<typeof agentInstructionWorkingCopyService>;
 type Selection = HeartbeatRuntimeSelectionInput;
@@ -218,7 +219,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
             agentHomeForPermissions: workspace.agentHome,
           };
         }
-        const guidance = instructionWorkingCopyGuidance(instructionCopy);
+        const guidance = instructionWorkingCopyGuidance(instructionCopy, Boolean(pmCoordinationScope(agent)));
         for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact"]) {
           context[key] = [readNonEmptyString(context[key]), guidance].filter(Boolean).join("\n\n");
         }

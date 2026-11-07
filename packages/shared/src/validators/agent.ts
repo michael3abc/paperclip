@@ -38,6 +38,7 @@ export const upsertAgentInstructionsFileSchema = z.object({
   content: z.string().max(1024 * 1024),
   baseRevisionId: z.string().uuid().nullable().optional(),
   baseHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  changeReason: z.string().trim().min(1).max(2000).optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
 }).strict();
 

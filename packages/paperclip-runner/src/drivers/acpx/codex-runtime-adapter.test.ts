@@ -817,6 +817,7 @@ describe("Codex ACPX runtime adapter", () => {
         PATH: "/verified/bin",
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "",
+        PAPERCLIP_PM_TOOL_POLICY: "",
       });
       expect(runtime.ensureSession).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -827,15 +828,16 @@ describe("Codex ACPX runtime adapter", () => {
     },
   );
 
-  it.each(["runner-owned", "unowned", "absent"])(
+  it.each(["runner-owned", "unowned", "absent", "PM"])(
     "pins Claude completion authority to the %s task bridge",
     async (binding) => {
       const options = openOptions(fakeCommand());
       options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
-      options.launchEnvironment = { PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "http://untrusted.invalid/mcp" };
+      options.launchEnvironment = { PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: "http://untrusted.invalid/mcp", PAPERCLIP_PM_TOOL_POLICY: "untrusted inherited policy" };
+      if (binding === "PM") options.toolPolicy = { kind: "project_pm", version: 1, readRoots: ["/workspace"] };
       options.mcpServers = binding === "absent" ? [] : [{
         name: "paperclip", url: "http://127.0.0.1:3210/mcp",
-        bearerToken: "bridge-secret", runnerOwned: binding === "runner-owned",
+        bearerToken: "bridge-secret", runnerOwned: binding === "runner-owned" || binding === "PM",
       }];
       let runtimeOptions: AcpRuntimeOptions | undefined;
       await openCodexAcpxRuntime(options, {
@@ -848,7 +850,8 @@ describe("Codex ACPX runtime adapter", () => {
       });
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
-        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
+        PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" || binding === "PM" ? "http://127.0.0.1:3210/mcp" : "",
+        PAPERCLIP_PM_TOOL_POLICY: options.toolPolicy ? JSON.stringify(options.toolPolicy) : "",
       });
     },
   );

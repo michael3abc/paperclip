@@ -1344,6 +1344,7 @@ export const suggestTasksResultSchema = z.object({
     .max(50)
     .optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
+  acceptanceReason: z.string().trim().max(4000).nullable().optional(),
 });
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
@@ -2175,6 +2176,7 @@ export type CreateIssueThreadInteractionInput = z.input<
 
 export const acceptIssueThreadInteractionSchema = z
   .object({
+    reason: z.string().trim().min(1).max(4000).optional(),
     rememberAction: z.boolean().optional(),
     selectedClientKeys: z
       .array(z.string().trim().min(1).max(120))
