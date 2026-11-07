@@ -4912,6 +4912,10 @@ relation rather than trusting contextSnapshot. Tests must use owned databases an
 join all scheduler work before teardown; advance fake deadlines separately from real
 PostgreSQL completion. Cover empty/terminal quiet, lost events, restart, drain, repeated
 faults, duplicate operations, current PM scope and formal review finalization.
+When pumping fake timers to settle PostgreSQL I/O, compare the saved absolute
+deadline after reconstruction instead of adding a fixed elapsed interval. Exercise
+delayed startup, retain exact-deadline assertions across restart, and observe both
+ordinary queries and transactional event reads when proving idle silence.
 The timing-only recovery fixture uses real Drizzle query builders and substitutes
 only execution for its legacy-watchdog rows. Keep event-table reads and producer
 SQL explicit, preserve the idle/deadline assertions, and verify durable event

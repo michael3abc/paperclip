@@ -255,9 +255,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(after.lastCheckOutcome).toBe('terminal');
   });
 
-  it('reconstructs five-minute deadlines, preserves drain work and stops SQL after terminal settlement', async () => {
+  it.each([0, 2000])('reconstructs five-minute deadlines, preserves drain work and stops SQL after terminal settlement (startup delay %i ms)', async startupDelayMs => {
     const f = await fixture();
-    await db.update(issueWatchdogs).set({ nextCheckAt: new Date(Date.now() + 300_000) }).where(eq(issueWatchdogs.id, f.watchdog.id));
+    const firstDeadline = Date.now() + 300_000;
+    await db.update(issueWatchdogs).set({ nextCheckAt: new Date(firstDeadline) }).where(eq(issueWatchdogs.id, f.watchdog.id));
     let drained = false;
     const errors: unknown[] = [], passes = new Set<Promise<unknown>>();
     const reconcile = vi.fn(async () => { await f.check(); return { incomplete: 0 }; });
@@ -266,6 +267,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     // PostgreSQL batches writes on timers after I/O. Pump those short timers
     // while joining a real DB pass instead of awaiting it with a frozen clock.
+    // This also advances business time; deadline assertions must use the saved
+    // absolute timestamp, not assume startup consumed a fixed number of ticks.
     const join = async (promise: Promise<unknown>) => {
       let settled = false;
       void promise.finally(() => { settled = true; }).catch(() => {});
@@ -275,11 +278,22 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await promise;
     };
     const select = vi.spyOn(db, 'select');
+    const transaction = vi.spyOn(db, 'transaction');
     const start = async () => {
       coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !drained, onError: e => errors.push(e) });
       const register = coordinator.register.bind(coordinator);
+      let initializing = true;
       coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
-        const pass = task.run(signal); passes.add(pass);
+        const pass = (async () => {
+          if (initializing) {
+            initializing = false;
+            // Model slow reconstruction so the old relative-time assumption
+            // fails deterministically, without requiring host contention.
+            if (startupDelayMs) await new Promise(resolve => setTimeout(resolve, startupDelayMs));
+          }
+          return task.run(signal);
+        })();
+        passes.add(pass);
         void pass.then(() => passes.delete(pass), () => passes.delete(pass)); return pass;
       } });
       worker = registerTaskWatchdogWork(db, coordinator, { enabled: async () => true, reconcile: async input => {
@@ -295,25 +309,40 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await join(Promise.all([...passes]));
       await immediate();
     };
+    const advanceTo = async (at: number) => {
+      expect(at).toBeGreaterThanOrEqual(Date.now());
+      await advance(at - Date.now());
+    };
     try {
-      await start(); await advance(1000);
+      await start();
+      expect(coordinator!.nextWakeAt()).toBe(firstDeadline);
+      await advance(1000);
       expect(reconcile).not.toHaveBeenCalled();
       await worker!.stop(); await coordinator!.stop();
-      await start(); await advance(298_000);
+      await start();
+      expect(coordinator!.nextWakeAt()).toBe(firstDeadline);
+      await advanceTo(firstDeadline - 1000);
+      expect(Date.now()).toBeLessThan(firstDeadline);
       expect(reconcile).not.toHaveBeenCalled();
-      drained = true; await advance(2000);
+      drained = true; await advanceTo(firstDeadline + 1000);
       expect(reconcile).not.toHaveBeenCalled();
       drained = false; worker!.wake(); await advance(1000);
       expect(reconcile).toHaveBeenCalledTimes(1);
       f.source.status = 'done';
-      await advance(300_000); await advance(1000);
+      const nextDeadline = coordinator!.nextWakeAt();
+      expect(nextDeadline).not.toBeNull();
+      await advanceTo(nextDeadline!);
       expect(reconcile).toHaveBeenCalledTimes(2);
-      const calls = select.mock.calls.length;
+      const calls = select.mock.calls.length, transactions = transaction.mock.calls.length;
       await advance(3_600_000);
       expect(select.mock.calls.length).toBe(calls);
+      expect(transaction.mock.calls.length).toBe(transactions);
       expect(coordinator!.nextWakeAt()).toBeNull();
       expect(errors).toEqual([]);
-    } finally { await worker?.stop(); await coordinator?.stop(); vi.useRealTimers(); select.mockRestore(); }
+    } finally {
+      try { await join((async () => { await worker?.stop(); await coordinator?.stop(); })()); }
+      finally { vi.useRealTimers(); select.mockRestore(); transaction.mockRestore(); }
+    }
   });
 
   it('denies foreign tasks, stale PM runs and forged continuation actors', async () => {

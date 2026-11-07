@@ -160,3 +160,9 @@ preserve idle/deadline invariants and the PostgreSQL event-consumption coverage.
 Assert the watchdog's one-second event coalescing separately from other recovery
 scopes' thirty-second reconstruction, without moving the existing lease deadline.
 Keep the failed qualification receipt alongside the corrected scoped rerun.
+
+The next scoped run exposed a separate timing assumption in the PostgreSQL
+deadline test: pumping I/O advanced its fake clock before a fixed 298-second
+jump. A controlled startup delay reproduces the early-call assertion failure.
+Use the persisted absolute deadline across restart, retain drain/resume checks,
+and verify both query and transaction silence after terminal settlement.
