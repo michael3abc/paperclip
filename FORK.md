@@ -103,9 +103,11 @@ PM autonomy follow-up: native assigned-review decisions, independent Owner-scope
 
 ## Release
 
-Develop on a dedicated `michael/<topic>` worktree; merge into `michael/main` before building.
+Develop on `michael/<topic>` with exclusive use of the project development checkout; create an additional worktree only for parallel work or an independent version. Merge into `michael/main` before building.
 Run only related tests, with commit/baseline-bound selection; never fall back to a full suite.
 Use the managed build/cutover procedures in `/home/michael/services/README.md`: build integrity, DB backup/history, required isolated upgrade, owned cutover and readiness.
 Preserve prior release for rollback and historical tasks/sessions; new dispatch is not a retry of old work.
 
 - Native review recovery binds the current server-owned pending stage for recovery/Owner wakes that lack the original stage envelope; preserves status, run and reviewer checks.
+
+- Cached PM review homes skip configured sibling repository synchronization; worker repository publication keeps its existing binding checks.

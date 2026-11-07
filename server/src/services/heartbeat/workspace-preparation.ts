@@ -1257,7 +1257,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         agentId: agent.id, runId: run.id, responsibleUserId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
-  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && executionWorkspace.projectId
+  if (!pmCoordination && !pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && executionWorkspace.projectId
     && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
     && !resolvedWorkspace.baseCwdFallback && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(

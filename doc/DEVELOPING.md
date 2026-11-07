@@ -4743,7 +4743,9 @@ When an API response is externalized, PM asset reads require a response reservat
 from the same company, PM and task; existing content authorization still applies.
 Unknown, other-agent and other-task assets remain denied. A PM review can persist
 its own home for run recovery, but must not rebind the implementation task or
-prepare its repositories in that home. The original worker worktree remains the
+prepare its repositories in that home. This includes configured sibling sources
+when a cached PM home retains project/source metadata: skip their preparation,
+not the worker publication authorization. The original worker worktree remains the
 task workspace across review and subsequent revision.
 
 Execution-policy review stages and native completion-review interactions have

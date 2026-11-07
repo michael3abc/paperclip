@@ -127,7 +127,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
-  it("keeps a worker task worktree binding when a native PM prepares its review home", async () => {
+  it.each([false, true])("keeps a worker task worktree binding when a native PM prepares its review home (cached sibling sources: %s)", async cachedSibling => {
     const { input, source, issue } = await fixture();
     const pmHome = join(home, `pm-${input.agent.id}`); await mkdir(pmHome);
     const workerCwd = join(home, `worker-${issue.id}`);
@@ -143,11 +143,26 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.task.context.paperclipPmWorkspace = { version: 1, role: "pm", projectId: issue.projectId, workerRoot: source, agentHome: pmHome,
       workerSlots: 0, workerIsolation: "shared", cwd: pmHome, issueId: issue.id };
     await db.update(agents).set({ adapterType: input.agent.adapterType, runtimeConfig: input.agent.runtimeConfig }).where(eq(agents.id, input.agent.id));
+    if (cachedSibling) {
+      await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId!,
+        name: "Sibling repository", repoUrl: pathToFileURL(source).href });
+      const [cached] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId,
+        projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId, sourceIssueId: issue.id,
+        name: "PM review home", cwd: pmHome, mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" }).returning();
+      input.reuse.existingExecutionWorkspace = toExecutionWorkspace(cached);
+      input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(cached);
+      input.reuse.requestedShouldReuseExisting = true;
+      input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: cached.id,
+        issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: "active" });
+    }
+    const publish = vi.spyOn(input.services.executionWorkspacesSvc, "assertTaskRepositoryPublicationAllowed");
     const bind = vi.spyOn(input.services.executionWorkspacesSvc, "bindTaskWorkspace");
     const result = await prepareHeartbeatWorkspace(db, input);
     expect(result.executionWorkspace.cwd).toBe(pmHome);
     expect(result.persistedExecutionWorkspace?.cwd).toBe(pmHome);
     expect(bind).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    await expect(access(join(pmHome, ".paperclip-repositories"))).rejects.toMatchObject({ code: "ENOENT" });
     const after = await readIssue(issue.id);
     expect(after.executionWorkspaceId).toBe(workerWorkspace.id);
     expect(after.executionWorkspaceSettings).toEqual(before.executionWorkspaceSettings);

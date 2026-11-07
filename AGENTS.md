@@ -418,3 +418,7 @@ Native execution-review recovery and explicit Owner wakes bind the current locke
 issue stage even without an old executionStage envelope. Require the same active
 run/assignee, pending review stage and policy; never infer authority from a prior
 run or caller payload, and never reopen blocked tasks during binding.
+
+PM coordination homes must skip both task repository admission and configured
+sibling-repository synchronization, including reuse of a cached PM workspace.
+Keep the original worker task binding; do not weaken repository publication checks.
