@@ -1,4 +1,4 @@
-import { and, asc, eq, gt } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, isNotNull, or } from "drizzle-orm";
 import { issueWatchdogs, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -20,7 +20,7 @@ export function registerTaskWatchdogWork(
   let enabled = false;
   return registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
     queue: DELIVERY_QUEUES.taskWatchdogs,
-    reconstructionIntervalMs: 30_000,
+    reconstructionIntervalMs: 1_000,
     beforePass: async () => { enabled = await owner.enabled(); },
     decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint) as IssueRecoveryScope,
     matches: (entry, scope) => !scope || entry.companyId === scope.companyId,
@@ -28,14 +28,15 @@ export function registerTaskWatchdogWork(
       const key = scope?.companyId ?? "*";
       if (!enabled) { cursors.delete(key); return []; }
       const cursor = cursors.get(key);
-      const rows = await db.select({ id: issueWatchdogs.id, companyId: issueWatchdogs.companyId })
+      const rows = await db.select({ id: issueWatchdogs.id, companyId: issueWatchdogs.companyId, nextCheckAt: issueWatchdogs.nextCheckAt })
         .from(issueWatchdogs).where(and(eq(issueWatchdogs.status, "active"),
+          or(isNull(issueWatchdogs.checkIntervalSec), isNotNull(issueWatchdogs.nextCheckAt)),
           scope ? eq(issueWatchdogs.companyId, scope.companyId) : undefined,
           cursor ? gt(issueWatchdogs.id, cursor) : undefined))
         .orderBy(asc(issueWatchdogs.id)).limit(100);
       const complete = rows.length < 100;
       if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
-      return { rows: rows.map(row => ({ ...row, dueAt: Date.now() })), complete };
+      return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId, dueAt: row.nextCheckAt?.getTime() ?? Date.now() })), complete };
     },
     check: async entry => {
       if (!enabled) return null;

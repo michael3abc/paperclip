@@ -1,4 +1,5 @@
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
+import { assertIssueContinuationWake } from "../issue-continuations.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -2339,6 +2340,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       ? { id: receiptRequest.id, requestedAt: receiptRequest.requestedAt }
       : {};
     const existingDurableReceipt = async (queryDb: Db) => {
+      const trackedKey = opts.idempotencyKey;
+      if (!receiptRequest && (trackedKey?.startsWith("issue-continue:") || trackedKey?.startsWith("pm-followthrough:"))) {
+        const [receipt] = await queryDb.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.idempotencyKey, trackedKey))).limit(1);
+        if (receipt && (receipt.agentId !== agentId || receipt.payload?.issueId !== issueId))
+          throw conflict("Tracked wake receipt identity changed");
+        return receipt ?? null;
+      }
       if (!receiptRequest) return null;
       const receipt = await queryDb
         .select()
@@ -3125,6 +3134,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             })) return { kind: "deferred" as const };
           }
           const issueStateGuard = opts.issueStateGuard;
+          await assertIssueContinuationWake(tx as unknown as Db, { companyId: agent.companyId, agentId, issueId: issue.id,
+            key: opts.idempotencyKey, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId });
           const activeMonitorRun = issueStateGuard?.monitorNextCheckAt === undefined ? null
             : await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.nativeIssueId, issue.id),

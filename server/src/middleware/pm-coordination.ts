@@ -9,6 +9,8 @@ import { requirePmBundleReads } from "../services/pm-bundle-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { readNativeExecutionReviewAssignment } from "../services/native-runtime/native-execution-review.js";
 import { boundRunIssueIdSql } from "../services/run-task-binding.js";
+import { assertPmContinuation } from "../services/issue-continuations.js";
+import { continueIssueSchema } from "@paperclipai/shared";
 
 // Explicit read routes: a new GET route is not automatically execution-free.
 const ISSUE_READ_PATH = /^(?:|\/(?:recent-comments|comments(?:\/[^/]+)?|documents(?:\/[^/]+(?:\/(?:revisions(?:\/[^/]+)?|annotations(?:\/[^/]+)?))?)?|approvals|interactions|work-products|attachments|workspace|runner-goal|heartbeat-context|diagnostics\/(?:blockers|wakes|subtree)|watchdog|recovery-actions|external-objects|external-object-summary|accepted-plan-decompositions|privacy-constraints|access-grants|queued-comments|chat-handoffs|pending-questions|decision-receipts|feedback-votes|feedback-traces|tree-control\/state|tree-holds(?:\/[^/]+)?|cases|activity|runs|live-runs|execution|active-run|cost-summary))$/;
@@ -98,6 +100,11 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
     const issue = await assertPmIssue(db, pm, match[1]!);
     const tail = match[2];
     allowed = read && ISSUE_READ_PATH.test(tail!);
+    if (read && /^\/continuations\/[^/]+$/.test(tail!)) allowed = true;
+    if (method === "POST" && tail === "/continue") {
+      await assertPmContinuation(db, pm, issue.id, continueIssueSchema.parse(body), run.id);
+      allowed = true; operation = "dispatch";
+    }
     if (method === "POST" && tail === "/comments") allowed = Object.keys(body).every(key => ["body", "clientRequestId"].includes(key));
     if (method === "PUT" && /^\/documents\/[^/]+$/.test(tail!)) allowed = true;
     if (method === "POST" && tail === "/interactions") allowed = true;

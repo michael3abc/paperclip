@@ -108,10 +108,15 @@ export type PmIntakeLookup =
   | { status: "found"; commentId: string; issueId: string; createdAt: string }
   | { status: "not_found" };
 
-/** `POST /api/issues/:id/continue` (202): the wake run, if one was queued, and the issue status after the call. */
+/** Durable continuation receipt; scheduled/running requires a real run ID. Settled is a run outcome, not task completion. */
 export interface IssueContinueResult {
   runId: string | null;
   status: IssueStatus;
+  outcome: "scheduled" | "running" | "waiting_dependency" | "blocked" | "pending" | "settled";
+  runStatus?: string;
+  receiptId: string;
+  wakeupRequestId?: string | null;
+  reason?: string;
 }
 
 export type AgentRuntimeConfig = Record<string, unknown> & {

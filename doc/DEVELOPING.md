@@ -4878,3 +4878,30 @@ Native execution-review recovery and explicit Owner wakes bind the current locke
 issue stage even without an old executionStage envelope. Require the same active
 run/assignee, pending review stage and policy; never infer authority from a prior
 run or caller payload, and never reopen blocked tasks during binding.
+
+## PM task follow-through and retained Recovery directories
+
+The task-watchdogs service owns managed follow-through and its stopped-subtree
+classifier; task-watchdog-followthrough applies PM policy, bounded recovery and
+receipt observation. task-watchdog-work registers only actual persisted deadlines
+with the existing recovery coordinator. issue-recovery-notifications is the shared
+transactional producer boundary, also reached through run-dispatch notifications.
+No new daemon, timer unit or generic Runner heartbeat is required.
+
+issue-continuations owns operation identity and the original receipt. HTTP and Runner
+call_api use the same admission route; heartbeat queue rechecks persisted authority
+and enforces scoped wake uniqueness. PM watchdog role selection reads the persisted
+relation rather than trusting contextSnapshot. Tests must use owned databases and
+join all scheduler work before teardown; advance fake deadlines separately from real
+PostgreSQL completion. Cover empty/terminal quiet, lost events, restart, drain, repeated
+faults, duplicate operations, current PM scope and formal review finalization.
+
+A Recovery copy recorded as isolated_workspace/project_primary/local_fs with the
+controller copy-only receipt can be reused under its exact company/task ownership.
+Validate its canonical existing directory, including attempt/workspace layouts;
+never recreate missing files, reinterpret it as today's git_worktree default, or use
+another issue's path. The original configured source still has its access checks.
+Task delivery instructions follow the run's runtimeMode. Legacy workers use the
+installed upload helper and run-authenticated task API; native workers use current
+register_deliverable/paperclip_finish tools. Missing native tools do not require a
+new credential or a worker-agent replacement in a legacy lane.

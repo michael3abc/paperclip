@@ -3508,3 +3508,39 @@ non-retryable continuation failures. Recovery records a visible source-scoped
 blocker without launching another run. An operator must reconcile the original
 session/receipt and explicitly resume; an absent ACK is never permission to resend.
 The adapter retains its current-run helper until a later admitted turn replaces it.
+
+## Managed project PM follow-through
+
+A project PM with zero worker slots can own durable tracking of an authorized task.
+The Owner enables runtimeConfig.taskTracking with enabled=true, intervalSec=300 and
+maxRecoveryAttempts=2. New PM dispatch registers its watchdog transactionally; existing
+tasks require explicit registration. The original issue remains the progress record.
+A reusable task_watchdog child is a coordination assignment only when its persisted
+watchdog, original task, project and current PM agree. It runs in PM home. Caller wake
+context cannot grant this role or take the worker checkout.
+
+Existing issue/run/review/decision/recovery producers save nextCheckAt and increment
+obligationVersion in their transaction. Shared recovery scheduling consumes those
+hints and reconstructs saved deadlines on startup/resume. A live worker or formal
+human/dependency wait remains due in five minutes without another model invocation.
+A wake receipt remains an outstanding obligation until an actual run, formal wait or
+terminal disposition is observed. Uncertain wakes retain their original key. Two
+recoveries of an unchanged stop fingerprint create one source-scoped board Recovery
+notice (or preserve the existing recovery owner). Terminal, unauthorized backlog and
+manual pause states have no tracking deadline. Retained history alone creates no
+periodic SQL or network scan.
+
+POST /api/issues/:id/continue accepts the current project PM's active run credential
+and exact authorized worker selection, without a momo prerequisite. PM requests supply
+idempotencyKey, observedStatusVersion and observedRunId (explicit null is meaningful).
+The server rejects stale observations and reopening done/cancelled/backlog tasks.
+It retains budget, pause, dependency, responsible-user, execution-stop and human gates.
+Working stages return to the original worker; pending policy reviews go to the current
+formal reviewer with the existing stage/participant/policy admission and resolve_review
+finalization contract. Ordinary conversation review does not finalize a task.
+
+A continuation returns receiptId, outcome and the observed runId. Only scheduled/running
+with a real run uses HTTP 202. Pending is unresolved; waiting_dependency and blocked
+name the gate. GET /api/issues/:id/continuations/:receiptId reads the original result
+without dispatch. A settled run exposes runStatus and current task status separately;
+run succeeded never implies task done. Same-key calls do not replay the mutation.

@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { PaperclipPmWorkspaceContext, ProjectPmRole } from "@paperclipai/shared";
+import { verifiedPmWatchdogSql } from "../task-watchdog-scope.js";
 import {
   buildProjectPmRoleContext,
   readPaperclipPmWorkspaceContext,
@@ -67,6 +68,7 @@ export async function loadProjectPmRoleCapacity(db: Db, input: {
         assigneeAgentId: issues.assigneeAgentId,
         status: issues.status,
         executionState: issues.executionState,
+        verifiedPmWatchdog: verifiedPmWatchdogSql(),
       })
       .from(issues)
       .where(and(eq(issues.companyId, agent.companyId), inArray(issues.id, issueIds)));

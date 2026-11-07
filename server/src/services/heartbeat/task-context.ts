@@ -25,7 +25,7 @@ type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 type IssueContext = NonNullable<Awaited<ReturnType<RunPreparation["getIssueExecutionContext"]>>>;
 
 export interface HeartbeatTaskContextInput {
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id"> & Partial<Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode">>;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig">;
   task: {
     issueRef: Pick<IssueContext,
@@ -266,7 +266,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     slackCommand: issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatSlackCommand
       : null,
-    nativeRunner: agent.adapterType === "paperclip_runner",
+    nativeRunner: run.runtimeMode === "native" || (run.runtimeMode == null && agent.adapterType === "paperclip_runner"),
     interaction: {
       kind: readNonEmptyString(context.interactionKind),
       status: readNonEmptyString(context.interactionStatus),

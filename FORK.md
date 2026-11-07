@@ -120,3 +120,12 @@ Preserve prior release for rollback and historical tasks/sessions; new dispatch 
   captured worker output; Owner-authorized .env/source/task-workspace reads with
   nested-project isolation; formal delegated approval HTTP routing; execution-review
   generic mutation denial. Preserve shared-worker management and human gates.
+
+### PM follow-through repair (2026-11-07)
+
+The michael/pm-task-followthrough change adds durable five-minute PM tracking,
+versioned continuation receipts, verified coordination-child authority, retained
+non-Git Recovery reuse and runtime-specific worker delivery guidance. Release from
+michael/main only, with additive migrations 0437/0438 and scoped related-test receipts.
+Enable tracking after readiness for the five current PMs and register only explicitly
+selected historical tasks. Keep completed/cancelled work and the prior release.

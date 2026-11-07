@@ -3046,6 +3046,20 @@
       "when": 1794031943445,
       "tag": "0436_woozy_blizzard",
       "breakpoints": true
+    },
+    {
+      "idx": 437,
+      "version": "7",
+      "when": 1794071892748,
+      "tag": "0437_sparkling_puma",
+      "breakpoints": true
+    },
+    {
+      "idx": 438,
+      "version": "7",
+      "when": 1794072626233,
+      "tag": "0438_curved_luckman",
+      "breakpoints": true
     }
   ]
 }

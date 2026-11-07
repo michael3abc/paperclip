@@ -27,6 +27,7 @@ import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssu
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { currentPmCoordinationScope } from "../services/pm-coordination-policy.js";
+import { assertPmContinuation, issueContinuationService } from "../services/issue-continuations.js";
 import {
   childCreatedByRequest,
   loadCreationSourceAgent,
@@ -6999,7 +7000,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1],
-    options: { resumeIntent?: boolean } = {},
+    options: { resumeIntent?: boolean; authorizedPmId?: string } = {},
   ) {
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -7075,6 +7076,8 @@ export function issueRoutes(
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
+    // Only the continue route supplies this after assertPmContinuation.
+    if (options.authorizedPmId === actorAgentId) return true;
     if (
       await hasActiveCheckoutManagementOverride(
         actorAgentId,
@@ -9690,6 +9693,7 @@ export function issueRoutes(
         issue.id,
         {
           agentId: req.body.agentId,
+          checkIntervalSec: req.body.checkIntervalSec,
           instructions: req.body.instructions,
           actor: {
             agentId: actor.agentId,
@@ -18777,10 +18781,13 @@ export function issueRoutes(
     });
   }
 
-  // PM v2 "continue original worker": one explicit, awaited call that reopens a
-  // closed issue and wakes its assignee, returning the wake run. The comment
-  // route's `resume: true` does the same, but its wake is fire-and-forget after
-  // the response, so the caller cannot see whether a run was queued.
+  router.get("/issues/:id/continuations/:receiptId", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue) return;
+    res.json(await issueContinuationService(db).inspect(req.params.receiptId as string, issue.id));
+  });
+
+  // A repeated operation reads its durable receipt; it never repeats dispatch.
   router.post(
     "/issues/:id/continue",
     validate(continueIssueSchema),
@@ -18792,12 +18799,15 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      const body = req.body as { commentId?: string; reason?: string };
+      const body = req.body as import("@paperclipai/shared").ContinueIssue;
+      const pm = req.actor.type === "agent" && req.actor.agentId && req.actor.companyId
+        ? await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId }) : null;
       if (req.actor.type === "agent") {
         const runId = requireAgentRunId(req, res);
         if (!runId) return;
         const actorAgentId = req.actor.agentId;
-        if (!actorAgentId || actorAgentId !== issue.assigneeAgentId) {
+        if (pm) await assertPmContinuation(db, pm, issue.id, body, runId);
+        if (!actorAgentId || (!pm && actorAgentId !== issue.assigneeAgentId)) {
           res.status(403).json({
             error: "Only the issue's assignee agent or a board user can continue this issue",
             details: { issueId: issue.id, assigneeAgentId: issue.assigneeAgentId, actorAgentId: actorAgentId ?? null },
@@ -18845,9 +18855,29 @@ export function issueRoutes(
           return;
         }
       }
+      const continuation = issueContinuationService(db);
+      const operation = await continuation.begin(issue, req.actor.agentId ?? req.actor.userId ?? "local-board", body, req.actor.runId ?? null);
+      if (operation.replay) { res.json(await continuation.inspect(operation.receipt.id)); return; }
+      const receiptId = operation.receipt.id;
+      const pause = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
+      const dependencies = await svc.getDependencyReadiness(issue.id);
+      if (pause || dependencies.unresolvedBlockerCount > 0) {
+        res.status(409).json(await continuation.settle(receiptId, { runId: null, status: issue.status as IssueContinueResult["status"],
+          outcome: pause ? "blocked" : "waiting_dependency",
+          reason: pause ? "Task has an active pause hold" : "Waiting for required dependencies" })); return;
+      }
+      if (operation.issue.executionRunId) {
+        const [active] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, operation.issue.executionRunId),
+          eq(heartbeatRuns.companyId, issue.companyId), inArray(heartbeatRuns.status, ["running", "queued", "scheduled_retry"])));
+        if (active) { res.json(await continuation.settle(receiptId, { runId: active.id, status: issue.status as IssueContinueResult["status"],
+          outcome: active.status === "running" ? "running" : "scheduled" })); return; }
+      }
       // Same gate as a comment with `resume: true`: low-trust actors, subtree
       // pause holds, unresolved blockers and non-resumable statuses are refused.
-      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true }))) return;
+      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true, authorizedPmId: pm?.agentId }))) {
+        await continuation.settle(receiptId, { status: issue.status as IssueContinueResult["status"], runId: null, outcome: "blocked", reason: "Current resume admission refused this operation" });
+        return;
+      }
       if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "update"))) return;
 
       const actor = getActorInfo(req);
@@ -18877,7 +18907,8 @@ export function issueRoutes(
       const reopened = isClosed || isBlocked;
       const reopenedFrom = reopened ? issue.status : null;
       if (reopened) {
-        const updated = await svc.update(issue.id, { status: "todo" });
+        const updated = await svc.update(issue.id, { status: "todo", continuationObservation: {
+          statusVersion: operation.receipt.observedStatusVersion, runId: operation.receipt.observedRunId } });
         if (!updated) {
           res.status(404).json({ error: "Issue not found" });
           return;
@@ -18921,6 +18952,8 @@ export function issueRoutes(
         taskId: currentIssue.id,
         ...(body.commentId ? { commentId: body.commentId, wakeCommentId: body.commentId } : {}),
         source: "issue.continue",
+        continuationReceiptId: receiptId,
+        continuationStatusVersion: currentIssue.statusVersion,
         wakeReason: "pm_continue",
         resumeIntent: true,
         followUpRequested: true,
@@ -18934,6 +18967,9 @@ export function issueRoutes(
           source: "automation",
           triggerDetail: "system",
           reason: "pm_continue",
+          idempotencyKey: "issue-continue:" + receiptId,
+          issueStateGuard: { statuses: [currentIssue.status], assigneeAgentId: issue.assigneeAgentId,
+            statusVersion: currentIssue.statusVersion },
           payload: {
             issueId: currentIssue.id,
             ...(body.commentId ? { commentId: body.commentId } : {}),
@@ -18976,10 +19012,12 @@ export function issueRoutes(
         },
       });
       if (wakeError) {
-        res.status(503).json({ error: "The issue was updated, but its assignee could not be woken. Retry continue." });
+        res.status(503).json({ ...(await continuation.inspect(receiptId)), error: "Continuation outcome is unresolved. Inspect this original receipt; do not submit a new operation." });
         return;
       }
-      res.status(202).json({ runId: wakeRunId, status: currentIssue.status as IssueContinueResult["status"] } satisfies IssueContinueResult);
+      const result = await continuation.inspect(receiptId);
+      if (result.outcome !== "pending") await continuation.settle(receiptId, result);
+      res.status(result.outcome === "scheduled" || result.outcome === "running" ? 202 : 200).json(result);
     },
   );
 

@@ -4721,23 +4721,31 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Continue an issue with its assignee agent",
   description:
-    "Reopens a done or cancelled issue to todo (a blocked issue without unresolved blockers also returns to todo) " +
-    "and wakes the assignee agent with reason pm_continue. Callable by the assignee agent's active run credential or a board user. " +
-    "Responds 202 with the wake run id (null when the wake was coalesced or skipped) and the issue status.",
+    "Continues the original task assignee or current formal reviewer. The current project PM must send idempotencyKey, observedStatusVersion and observedRunId and cannot reopen completed/cancelled/backlog tasks. " +
+    "Board and assignee access retain their existing gates. Returns a durable receipt: 202 only for a real scheduled/running run; pending does not mean execution started. " +
+    "On an unknown outcome, GET the original receipt; do not submit another operation.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(continueIssueSchema),
   },
   responses: {
-    202: r.ok(z.object({ runId: z.string().nullable(), status: z.string() })),
+    200: r.ok(),
+    202: r.ok(z.object({ runId: z.string(), status: z.string(), receiptId: z.string(), outcome: z.enum(["scheduled", "running"]) })),
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
     422: r.unprocessable,
     429: r.tooManyRequests,
-    503: { description: "The issue was updated but the assignee could not be woken; retry" },
+    503: { description: "Outcome unresolved; inspect the original continuation receipt" },
   },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/issues/{id}/continuations/{receiptId}", tags: ["issues"],
+  summary: "Inspect an original continuation receipt without replay",
+  request: { params: z.object({ id: z.string(), receiptId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

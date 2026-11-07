@@ -41,10 +41,12 @@ export async function materializeIsolatedTaskDirectory(input: {
   let namespace = input.attemptId ? "isolated-workspace-attempts" : "isolated-workspaces";
   if (input.reuseCwd) {
     const segments = path.relative(cwd, input.reuseCwd).split(path.sep);
+    const stable = segments[0] === "isolated-workspaces" && segments.length === 3;
+    const attempt = segments[0] === "isolated-workspace-attempts" && /^[a-zA-Z0-9_-]+$/.test(segments[3] ?? "") &&
+      (segments.length === 4 || (segments.length === 5 && segments[4] === "workspace"));
     if (input.attemptId || path.resolve(input.reuseCwd) !== input.reuseCwd ||
         segments[1] !== input.companyId || segments[2] !== input.issueId ||
-        !((segments[0] === "isolated-workspaces" && segments.length === 3) ||
-          (segments[0] === "isolated-workspace-attempts" && segments.length === 4 && /^[a-zA-Z0-9_-]+$/.test(segments[3])))) {
+        !(stable || attempt)) {
       throw new Error("Isolated task workspace path is not this task's directory");
     }
     namespace = segments[0];

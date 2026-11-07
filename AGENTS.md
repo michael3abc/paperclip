@@ -443,3 +443,16 @@ run or caller payload, and never reopen blocked tasks during binding.
 PM coordination homes must skip both task repository admission and configured
 sibling-repository synchronization, including reuse of a cached PM workspace.
 Keep the original worker task binding; do not weaken repository publication checks.
+
+Managed PM follow-through uses one original-task watchdog with taskTracking enabled,
+intervalSec=300 and maxRecoveryAttempts=2. Persist obligations in producer transactions;
+use the shared deadline scheduler, never a generic PM heartbeat or idle SQL polling.
+Only persisted watchdog provenance permits a zero-slot PM coordination child; execute
+it in PM home and preserve the original worker workspace. Continue requires current
+project/worker authority, an idempotency key and observed task/run versions. Unknown
+outcomes must inspect the original continuation receipt; a wake alone is not completion.
+Formal review retains current stage, participant and policy bindings. Keep human gates,
+manual holds and completed/cancelled work intact. Saved Recovery directory realization
+and ownership govern reuse, even for a configured non-Git source. Delivery guidance
+must match the actual runtime: native tools for Runner, authenticated Paperclip skill
+and task APIs for legacy adapters. Never require a native-only tool in a legacy run.

@@ -1,9 +1,28 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issues, issueWatchdogs } from "@paperclipai/db";
 
 const MAX_WATCHDOG_SCOPE_ANCESTRY_DEPTH = 100;
 export const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
+
+/** Persisted provenance only; caller-supplied wake context never grants a role. */
+export function verifiedPmWatchdogSql() {
+  // Keep qualifiers explicit inside correlated subqueries in Drizzle projections.
+  return sql<boolean>`"issues"."origin_kind" = 'task_watchdog' AND EXISTS (
+    SELECT 1 FROM issue_watchdogs w JOIN issues source ON source.id = w.issue_id
+    JOIN agents pm ON pm.id = w.watchdog_agent_id AND pm.company_id = w.company_id
+    WHERE w.company_id = "issues"."company_id" AND w.status = 'active'
+      AND w.check_interval_sec = 300 AND w.watchdog_issue_id = "issues"."id"
+      AND w.watchdog_agent_id = "issues"."assignee_agent_id"
+      AND pm.runtime_config->'workspaceBinding'->>'mode' = 'project_pm'
+      AND pm.runtime_config->'workspaceBinding'->>'workerSlots' = '0'
+      AND pm.runtime_config->'workspaceBinding'->>'projectId' = source.project_id::text
+      AND pm.runtime_config->'taskTracking'->>'enabled' = 'true'
+      AND source.company_id = "issues"."company_id" AND source.project_id = "issues"."project_id"
+      AND source.id = "issues"."parent_id" AND source.id::text = "issues"."origin_id"
+      AND source.status NOT IN ('done', 'cancelled', 'backlog')
+  )`;
+}
 
 type AgentRunActor = {
   type: string;

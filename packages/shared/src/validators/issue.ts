@@ -892,6 +892,7 @@ export type CreateIssue = z.infer<typeof createIssueSchema>;
 export const upsertIssueWatchdogSchema = z
   .object({
     agentId: z.string().guid(),
+    checkIntervalSec: z.literal(300).optional(),
     instructions: multilineTextSchema.optional().nullable(),
   })
   .strict();
@@ -1160,6 +1161,9 @@ export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 export const continueIssueSchema = z.object({
   commentId: z.string().uuid().optional(),
   reason: z.string().trim().min(1).max(500).optional(),
+  idempotencyKey: z.string().uuid().optional(),
+  observedStatusVersion: z.number().int().nonnegative().optional(),
+  observedRunId: z.string().uuid().nullable().optional(),
 }).strict();
 
 export type ContinueIssue = z.infer<typeof continueIssueSchema>;

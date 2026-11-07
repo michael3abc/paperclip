@@ -243,6 +243,37 @@ suite("issue comment wakes and continue for project PM children", () => {
   });
 
   describe("POST /api/issues/:id/continue", () => {
+    it("allows the zero-slot project PM to continue its original worker once with an inspectable receipt", async () => {
+      const f = await seed();
+      const workerId = randomUUID();
+      await db.insert(agents).values({ id: workerId, companyId: f.companyId, name: "Shared worker",
+        status: "idle", adapterType: "codex_local", adapterConfig: { cwd: f.workerRoot } });
+      await db.update(agents).set({ runtimeConfig: { workspaceBinding: { mode: "project_pm", projectId: f.projectId,
+        workerRoot: f.workerRoot, workerSlots: 0 }, pmDelegation: { version: 1,
+        workers: [{ agentId: workerId, selections: [{ model: "test" }] }] } } }).where(eq(agents.id, f.pmId));
+      const pmRun = await f.runFor(f.pmId);
+      await db.update(heartbeatRuns).set({ nativeIssueId: f.inboxIssueId }).where(eq(heartbeatRuns.id, pmRun));
+      await db.update(issues).set({ executionRunId: pmRun }).where(eq(issues.id, f.inboxIssueId));
+      const childId = await f.child("blocked");
+      await db.update(issues).set({ assigneeAgentId: workerId, assigneeAdapterOverrides: { adapterConfig: { model: "test" } } }).where(eq(issues.id, childId));
+      const app = appFor(agentActor(f, f.pmId, pmRun));
+      const [observed] = await db.select().from(issues).where(eq(issues.id, childId));
+      const body = { idempotencyKey: randomUUID(), observedStatusVersion: observed.statusVersion, observedRunId: observed.executionRunId };
+      const response = await continueIssue(app, childId, body);
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      expect(response.body).toMatchObject({ runId: expect.any(String), receiptId: expect.any(String) });
+      expect(["scheduled", "running"]).toContain(response.body.outcome);
+      const again = await continueIssue(app, childId, body);
+      expect(again.body.receiptId).toBe(response.body.receiptId);
+      expect(again.body.runId).toBe(response.body.runId);
+      const receipt = await request(app).get(`/api/issues/${childId}/continuations/${response.body.receiptId}`);
+      expect(receipt.status).toBe(200);
+      expect(receipt.body.runId).toBe(response.body.runId);
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, "issue-continue:" + response.body.receiptId));
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0].agentId).toBe(workerId);
+    }, 60_000);
+
     it("wakes the assignee of an open child with pm_continue from its own run credential", async () => {
       const f = await seed();
       const pmApp = appFor(agentActor(f, f.pmId, await f.runFor(f.pmId)));

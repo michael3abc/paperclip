@@ -81,6 +81,27 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     return { input, issue, project, workspace, recover };
   }
 
+  it("continues the saved non-Git Recovery copy of a configured source without reinterpreting it as a worktree", async () => {
+    const { input, issue, project } = await fixture();
+    const cwd = join(resolvePaperclipInstanceRoot(), "isolated-workspace-attempts", issue.companyId, issue.id, randomUUID(), "workspace");
+    await mkdir(cwd, { recursive: true });
+    const [source] = await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: project.id,
+      name: "Document folder", sourceType: "local_path", cwd: home, isPrimary: true }).returning();
+    const saved = await executionWorkspaceService(db).create({ companyId: issue.companyId, projectId: project.id,
+      sourceIssueId: issue.id, projectWorkspaceId: source.id, name: "Recovery copy", mode: "isolated_workspace",
+      strategyType: "project_primary", cwd, providerRef: cwd, providerType: "local_fs", metadata: { _controllerProvisionCopyOnly: true } });
+    input.task.issueRef = { ...issue, projectWorkspaceId: source.id, executionWorkspaceId: saved!.id, executionWorkspacePreference: "reuse_existing" };
+    await db.update(issues).set({ projectWorkspaceId: source.id, executionWorkspaceId: saved!.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issue.id));
+    input.task.workspaceProjectContext = { hasWorkspace: true };
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.projectExecutionWorkspacePolicy = { enabled: true, workspaceStrategy: { type: "git_worktree" } };
+    const result = await selectHeartbeatEnvironment(db, input);
+    expect(result.reusableExistingExecutionWorkspace?.id).toBe(saved!.id);
+    expect(result.useIsolatedTaskDirectory).toBe(true);
+    await executionWorkspaceService(db).update(saved!.id, { sourceIssueId: null });
+    expect((await selectHeartbeatEnvironment(db, input)).useIsolatedTaskDirectory).toBe(false);
+  });
+
   it("preserves compatible fixed executions and refuses a different cwd or host", async () => {
     const { input, workspace, recover } = await fixture();
     const original = await workspace();

@@ -232,6 +232,7 @@ import type {
 import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
+  trackNewPmTask,
 } from "./task-watchdogs.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
@@ -10833,6 +10834,7 @@ export function issueService(db: Db) {
             },
           });
         }
+        await trackNewPmTask(tx, issue, actorRunId ?? null);
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -11212,6 +11214,7 @@ export function issueService(db: Db) {
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
         expectedStatusVersion?: number;
+        continuationObservation?: { statusVersion: number; runId: string | null };
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -11263,6 +11266,7 @@ export function issueService(db: Db) {
         workspaceSelectionActor,
         expectedExecutionPolicy,
         expectedStatusVersion,
+        continuationObservation,
         ...issueData
       } = data;
       if (expectedStatusVersion !== undefined && (
@@ -11547,6 +11551,10 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (continuationObservation && (receiptExisting.statusVersion !== continuationObservation.statusVersion ||
+          receiptExisting.executionRunId !== continuationObservation.runId)) {
+          throw conflict("Task changed before continuation", { code: "CONTINUE_OBSERVATION_STALE" });
+        }
         if (issueData.executionPolicy !== undefined) assertQualityReviewPolicyMutation({ previousPolicy: receiptExisting.executionPolicy, nextPolicy: issueData.executionPolicy, actorAgentId, actorUserId });
         if ((patch.status ?? receiptExisting.status) === "done" &&
             (receiptExisting.status !== "done" || issueData.executionPolicy !== undefined)) {

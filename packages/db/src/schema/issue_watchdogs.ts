@@ -22,6 +22,17 @@ export const issueWatchdogs = pgTable(
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
     triggerCount: integer("trigger_count").notNull().default(0),
+    checkIntervalSec: integer("check_interval_sec"),
+    nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    obligationVersion: integer("obligation_version").notNull().default(0),
+    lastCheckOutcome: text("last_check_outcome"),
+    waitingReason: text("waiting_reason"),
+    recoveryFingerprint: text("recovery_fingerprint"),
+    recoveryAttempts: integer("recovery_attempts").notNull().default(0),
+    lastWakeupKey: text("last_wakeup_key"),
+    lastWakeupRunId: uuid("last_wakeup_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    recoveryNotifiedAt: timestamp("recovery_notified_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     createdByUserId: text("created_by_user_id"),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -34,6 +45,8 @@ export const issueWatchdogs = pgTable(
   (table) => ({
     companyIssueIdx: uniqueIndex("issue_watchdogs_company_issue_uq").on(table.companyId, table.issueId),
     companyStatusIdx: index("issue_watchdogs_company_status_idx").on(table.companyId, table.status),
+    nextCheckIdx: index("issue_watchdogs_next_check_idx").on(table.nextCheckAt)
+      .where(sql`${table.status} = 'active' AND ${table.nextCheckAt} IS NOT NULL`),
     companyAgentIdx: index("issue_watchdogs_company_agent_idx").on(table.companyId, table.watchdogAgentId),
     companyWatchdogIssueIdx: uniqueIndex("issue_watchdogs_company_watchdog_issue_uq")
       .on(table.companyId, table.watchdogIssueId)

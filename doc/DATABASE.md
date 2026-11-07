@@ -1925,3 +1925,21 @@ Delegated delivery uses existing wake requests, interaction delivery and activit
 records. It adds no polling service or second task-state store. Preserve exact
 source checkout and request identity across retries; unresolved delivery is never
 an approval. These schema changes are additive and retain old release compatibility.
+
+## PM follow-through persistence
+
+issue_watchdogs retains its one-row-per-company/issue identity. Additive fields store
+check_interval_sec, next_check_at, last_checked_at, obligation_version,
+last_check_outcome, waiting_reason, recovery_fingerprint, recovery_attempts,
+last_wakeup_key, last_wakeup_run_id and recovery_notified_at. Only managed rows with
+an actual next_check_at participate in deadline reconstruction. Producers register
+the work signal and update the obligation in their persistence transaction.
+
+issue_continuations stores company/issue/idempotency key, original actor and run,
+request hash, observed status/run version and a result receipt. Its scoped unique key
+serializes retries; source-row locking rejects competing unresolved operations.
+agent_wakeup_requests has a partial unique index for issue-continue and pm-followthrough
+keys, including skipped/failed receipts. Unknown delivery must be inspected, never
+replayed with a fresh key. Migration 0437 adds the tracking/receipt structure; 0438
+adds originating run identity and wake uniqueness. Published SQL/journal entries are
+preserved; snapshot pruning follows the five-newest-snapshots rule.

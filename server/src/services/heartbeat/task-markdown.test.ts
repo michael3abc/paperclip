@@ -8,6 +8,16 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it("selects the authenticated delivery contract for the actual execution lane", () => {
+    const legacy = buildPaperclipTaskMarkdown({ issue, nativeRunner: false });
+    expect(legacy).toContain("This is a legacy adapter task");
+    expect(legacy).toContain("paperclip-upload-artifact.sh");
+    expect(legacy).toContain("X-Paperclip-Run-Id");
+    const native = buildPaperclipTaskMarkdown({ issue, nativeRunner: true });
+    expect(native).toContain("This is a native Runner task");
+    expect(native).not.toContain("PATCH the original issue");
+    expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: true, coordinationOnly: true })).not.toContain("Current task delivery contract");
+  });
   it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
     const markdown = buildPaperclipTaskMarkdown({
       issue: { ...issue, description: "Write a blog post about our launch." },

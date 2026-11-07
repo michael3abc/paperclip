@@ -14,6 +14,7 @@ import {
 import { HttpError } from "../errors.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { isPendingExecutionReviewForAgent } from "./issue-execution-policy.js";
+import { verifiedPmWatchdogSql } from "./task-watchdog-scope.js";
 
 /**
  * The binding every workspace call site consumes. A `project_pm` binding is
@@ -173,6 +174,7 @@ export type ProjectPmIssueFacts = {
   assigneeAgentId: string | null;
   status?: string;
   executionState?: unknown;
+  verifiedPmWatchdog?: boolean;
 };
 
 export type ProjectPmRoleDecision =
@@ -201,7 +203,7 @@ export function resolveProjectPmRole(input: {
       message: `Issue ${issue.id} is outside the PM agent's project; project PM agents only work on issues of project ${input.binding.projectId}.`,
     };
   }
-  if (issue.parentId && issue.assigneeAgentId === input.agentId && !isPendingExecutionReviewForAgent(issue, input.agentId)) {
+  if (issue.parentId && issue.assigneeAgentId === input.agentId && !issue.verifiedPmWatchdog && !isPendingExecutionReviewForAgent(issue, input.agentId)) {
     if (input.binding.workerSlots === 0) return {
       outcome: "out_of_bounds",
       message: "This PM only coordinates and reviews. Assign implementation to a separate worker agent.",
@@ -252,6 +254,7 @@ export async function loadProjectPmIssueFacts(db: Db, companyId: string, issueId
     assigneeAgentId: issues.assigneeAgentId,
     status: issues.status,
     executionState: issues.executionState,
+    verifiedPmWatchdog: verifiedPmWatchdogSql(),
   }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
   return issue ?? "missing";
 }

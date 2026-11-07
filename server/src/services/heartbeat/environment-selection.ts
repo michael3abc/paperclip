@@ -505,6 +505,14 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     ...(reusableExistingExecutionWorkspace?.providerType === "adapter_managed" ? [config.workspaceStrategy] : []),
     issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
     projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
+  // Recovery may materialize a configured source as a task-owned directory.
+  // Its saved realization, not today's project default, governs continuation.
+  const savedRecoveryDirectory = !controllerOnly && !fresh && !nativeRecoveryExecutionWorkspaceId &&
+    requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
+    issueId !== null && issueRef !== null &&
+    reusableExistingExecutionWorkspace?.metadata?._controllerProvisionCopyOnly === true &&
+    await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
+      workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace });
   const boundTaskDirectory = !controllerOnly && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
     !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
@@ -518,11 +526,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
           owner: { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
             pluginKey: parseObject(selectedEnvironmentForConfig.config).pluginKey ?? null,
             driverKey: parseObject(selectedEnvironmentForConfig.config).driverKey ?? null } })));
-  const reuseTaskDirectory = boundTaskDirectory && explicitDirectoryStrategies.every(value => {
+  const reuseTaskDirectory = savedRecoveryDirectory || boundTaskDirectory && explicitDirectoryStrategies.every(value => {
     const strategy = parseObject(value);
     return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
   });
-  if (retainedDirectory && !boundTaskDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
+  if (retainedDirectory && !boundTaskDirectory && !savedRecoveryDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
     workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
   });
   const useIsolatedTaskDirectory = !controllerOnly && issueRef !== null && (reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({

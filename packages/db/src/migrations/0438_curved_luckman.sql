@@ -1,0 +1,3 @@
+ALTER TABLE "issue_continuations" ADD COLUMN "actor_run_id" uuid;--> statement-breakpoint
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Additive startup migration runs under an owned task drain with no active runs. These new receipt namespaces contain no historical work; measure index scan duration on the isolated production clone before deployment and preserve transactional migration atomicity.
+CREATE UNIQUE INDEX "agent_wakeup_requests_pm_followthrough_uq" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'issue-continue:%' OR "agent_wakeup_requests"."idempotency_key" LIKE 'pm-followthrough:%';

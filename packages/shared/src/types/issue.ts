@@ -832,6 +832,14 @@ export interface IssueWatchdogSummary {
   lastTriggeredAt: Date | null;
   lastCompletedAt: Date | null;
   triggerCount: number;
+  checkIntervalSec?: number | null;
+  nextCheckAt?: Date | null;
+  lastCheckedAt?: Date | null;
+  lastCheckOutcome?: string | null;
+  waitingReason?: string | null;
+  recoveryAttempts?: number;
+  lastWakeupRunId?: string | null;
+  recoveryNotifiedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -25,6 +25,8 @@ import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import { reconcilePmFollowthrough, pmTaskTrackingEnabled } from "./task-watchdog-followthrough.js";
+import { pmCoordinationScope } from "./pm-coordination-policy.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -49,6 +51,7 @@ type ActorFields = {
 
 export type IssueWatchdogUpsertInput = {
   agentId: string;
+  checkIntervalSec?: 300;
   instructions?: string | null;
   actor?: ActorFields;
 };
@@ -254,6 +257,14 @@ export function summarizeIssueWatchdog(row: IssueWatchdogRow): IssueWatchdogSumm
     lastTriggeredAt: row.lastTriggeredAt,
     lastCompletedAt: row.lastCompletedAt,
     triggerCount: row.triggerCount,
+    checkIntervalSec: row.checkIntervalSec,
+    nextCheckAt: row.nextCheckAt,
+    lastCheckedAt: row.lastCheckedAt,
+    lastCheckOutcome: row.lastCheckOutcome,
+    waitingReason: row.waitingReason,
+    recoveryAttempts: row.recoveryAttempts,
+    lastWakeupRunId: row.lastWakeupRunId,
+    recoveryNotifiedAt: row.recoveryNotifiedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -823,6 +834,7 @@ async function updateIssueWatchdogRow(
       watchdogAgentId: input.agentId,
       instructions: normalizeInstructions(input.instructions),
       status: "active",
+      ...(input.checkIntervalSec ? { checkIntervalSec: input.checkIntervalSec, nextCheckAt: now } : {}),
       updatedByAgentId: input.actor?.agentId ?? null,
       updatedByUserId: input.actor?.userId ?? null,
       updatedByRunId: input.actor?.runId ?? null,
@@ -841,6 +853,15 @@ async function upsertIssueWatchdogInTransaction(
 ): Promise<{ watchdog: IssueWatchdog; created: boolean }> {
   await assertWatchedIssue(dbOrTx, companyId, issueId);
   await assertWatchdogAgentInvokable(dbOrTx, companyId, input.agentId);
+  if (input.checkIntervalSec) {
+    const [pm] = await dbOrTx.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, companyId)));
+    const [source] = await dbOrTx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+    const scope = pm && pmCoordinationScope(pm);
+    if (!scope || scope.projectId !== source?.projectId || source?.conversationAgentId ||
+      source?.originKind === TASK_WATCHDOG_ORIGIN_KIND || !pmTaskTrackingEnabled(pm.runtimeConfig)) {
+      throw conflict("Managed tracking requires the current enabled project PM and an original project task");
+    }
+  }
 
   const now = new Date();
   const existing = await dbOrTx
@@ -863,6 +884,8 @@ async function upsertIssueWatchdogInTransaction(
       watchdogAgentId: input.agentId,
       instructions: normalizeInstructions(input.instructions),
       status: "active",
+      checkIntervalSec: input.checkIntervalSec ?? null,
+      nextCheckAt: input.checkIntervalSec ? now : null,
       createdByAgentId: input.actor?.agentId ?? null,
       createdByUserId: input.actor?.userId ?? null,
       createdByRunId: input.actor?.runId ?? null,
@@ -895,6 +918,16 @@ export function upsertIssueWatchdogForIssue(
   input: IssueWatchdogUpsertInput,
 ): Promise<{ watchdog: IssueWatchdog; created: boolean }> {
   return dbOrTx.transaction(tx => upsertIssueWatchdogInTransaction(tx, companyId, issueId, input));
+}
+
+export async function trackNewPmTask(db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0], issue: IssueRow, actorRunId: string | null) {
+  if (!issue.createdByAgentId || !issue.projectId || issue.conversationAgentId || issue.originKind === TASK_WATCHDOG_ORIGIN_KIND) return;
+  const [agent] = await db.select().from(agents).where(and(eq(agents.id, issue.createdByAgentId), eq(agents.companyId, issue.companyId)));
+  const pm = agent && pmCoordinationScope(agent);
+  if (!pm || pm.projectId !== issue.projectId || !pmTaskTrackingEnabled(agent.runtimeConfig)) return;
+  await upsertIssueWatchdogForIssue(db, issue.companyId, issue.id, { agentId: pm.agentId, checkIntervalSec: 300,
+    instructions: "Follow this original authorized task through delivery and formal review. Inspect current runs and receipts; use continue with an idempotency key and observed versions. Leave a live run, a formal wait with an owner and release condition, or a terminal task. Never duplicate tasks, replay unknown operations, release manual holds, or treat run success as task completion.",
+    actor: { agentId: pm.agentId, runId: actorRunId } });
 }
 
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
@@ -1462,7 +1495,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         originId: input.sourceIssue.id,
         originFingerprint: input.classification.stopFingerprint,
         billingCode: input.sourceIssue.billingCode,
-        inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
+        ...(input.watchdog.checkIntervalSec ? {} : { inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id }),
       })
       .catch(async (error: unknown) => {
         if (!isActiveTaskWatchdogUniqueConflict(error)) throw error;
@@ -1494,7 +1527,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null; onDeferredDeadline?: (at: number) => void } = {}) {
-    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+    const watchdog = row.checkIntervalSec ? row : await markTerminalWatchdogIssueReviewed(row, opts);
     const sourceIssue = await db
       .select()
       .from(issues)
@@ -1502,6 +1535,29 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       .then((rows) => rows[0] ?? null);
     if (!sourceIssue || sourceIssue.originKind === TASK_WATCHDOG_ORIGIN_KIND) {
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
+    }
+    if (watchdog.checkIntervalSec === 300) {
+      await reconcilePmFollowthrough(db, watchdog, sourceIssue, {
+        classify: async () => {
+          const input = await collectClassifierInput(watchdog.companyId, watchdog);
+          input.watchdog = { ...input.watchdog, lastReviewedFingerprint: null, lastReviewedStopSnapshot: null };
+          return classifyTaskWatchdogSubtree(input);
+        },
+        ensureChild: classification => ensureReusableWatchdogIssue({ watchdog, sourceIssue, classification }),
+        wake: async (target, classification, key) => {
+          if (!deps.enqueueWakeup) throw new Error("Task tracking wake dispatcher is unavailable");
+          const context = target.id === sourceIssue.id
+            ? { issueId: sourceIssue.id, taskId: sourceIssue.id, source: "pm_followthrough_review",
+                wakeReason: "pm_followthrough_review" }
+            : watchdogWakeContext({ watchdog, watchdogIssue: target, sourceIssue, classification });
+          return deps.enqueueWakeup(watchdog.watchdogAgentId, { source: "automation", triggerDetail: "system",
+            reason: target.id === sourceIssue.id ? "pm_followthrough_review" : "task_watchdog_stopped_subtree",
+            payload: context, contextSnapshot: context, idempotencyKey: key,
+            requestedByActorType: "system", requestedByActorId: null });
+        },
+        onDeferredDeadline: opts.onDeferredDeadline,
+      });
+      return { state: "managed" as const };
     }
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);

@@ -192,6 +192,11 @@ export function buildPaperclipTaskMarkdown(input: {
     }
   };
   if (issue) {
+    if (!issue.conversationAgentId && !input.coordinationOnly) {
+      lines.push("", "Current task delivery contract:", input.nativeRunner
+        ? "This is a native Runner task. Register current task files with the advertised register_deliverable tool and submit the result with paperclip_finish. Use the current tool schema; the server owns review handoff. A successful run alone does not complete the task. Do not substitute shell HTTP calls for native result submission."
+        : "This is a legacy adapter task. Its supported delivery path is the installed Paperclip skill and scripts/paperclip-upload-artifact.sh, authenticated with this run’s PAPERCLIP_API_URL, PAPERCLIP_API_KEY and PAPERCLIP_RUN_ID. Mutations require X-Paperclip-Run-Id. Register existing artifacts/work products, then PATCH the original issue with a completion comment and status done; the server applies its existing review policy. This authenticated task API is the intended path, not a permission bypass. Native-only register_deliverable and paperclip_finish are not required in this lane. Do not use resource/prompt enumeration to obtain them. A 401/403 must be reported with the original receipt and no secret values; do not obtain another credential or repeat an unknown upload.");
+    }
     lines.push("", "Task question guidance:", TASK_QUESTION_GUIDANCE);
     if (input.nativeRunner && !issue.conversationAgentId) {
       lines.push(
