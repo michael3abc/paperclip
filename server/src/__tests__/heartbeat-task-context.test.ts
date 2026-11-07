@@ -129,13 +129,23 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
       body: "selected wake canary",
     });
     const select = vi.spyOn(db, "select");
+    const commentReadsPerDispatch: number[] = [];
+    let previousCommentReads = 0;
     inspectPreparation.set(f.agentId, () => {
       const commentReads = select.mock.calls.filter(([projection]) => projection
         && projection.body === issueComments.body && projection.id === issueComments.id && projection.deletedAt === issueComments.deletedAt);
-      expect(commentReads).toHaveLength(1);
+      // A successful mock run can enqueue a continuation. Count each dispatch
+      // separately, and assert outside the adapter so run failure cannot swallow it.
+      commentReadsPerDispatch.push(commentReads.length - previousCommentReads);
+      previousCommentReads = commentReads.length;
     });
     try {
       const { context } = await execute(f, { wakeCommentId: commentId, wakeCommentIds: [commentId] });
+      expect(commentReadsPerDispatch.length).toBeGreaterThan(0);
+      for (const count of commentReadsPerDispatch) expect(count).toBe(1);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
+      expect(runs).toHaveLength(commentReadsPerDispatch.length);
+      for (const run of runs) expect(run.status, run.error ?? undefined).toBe("succeeded");
       expect(context.paperclipWakeComment).toMatchObject({ id: commentId, body: "selected wake canary" });
       expect(context.paperclipWake).toMatchObject({ comments: [{ id: commentId, body: "selected wake canary" }] });
     } finally {
