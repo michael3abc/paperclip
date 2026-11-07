@@ -4842,3 +4842,8 @@ privilege-separated processes with inaccessible paths produce an explicit
 that a managed provider has stopped. Production sources must be labelled and
 use a separate fixed development checkout. Cleanup also rejects ignored files
 until their contents have been preserved or explicitly settled.
+
+Native execution-review recovery and explicit Owner wakes bind the current locked
+issue stage even without an old executionStage envelope. Require the same active
+run/assignee, pending review stage and policy; never infer authority from a prior
+run or caller payload, and never reopen blocked tasks during binding.

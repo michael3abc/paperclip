@@ -23,7 +23,7 @@ describe("native execution policy reviews", () => {
   const authorities: PaperclipRunnerToolAuthority[] = [];
   afterAll(() => { for (const authority of authorities) authority.close(); });
 
-  async function fixture(humanGate = false) {
+  async function fixture(humanGate = false, wake: "stage" | "recovery" | "manual" = "stage") {
     const companyId = randomUUID(), agentId = randomUUID(), workerId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Owned review test", issuePrefix: `R${companyId.slice(0, 7)}` });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "reserved-owner", membershipRole: "owner", status: "active" });
@@ -40,9 +40,9 @@ describe("native execution policy reviews", () => {
       executionPolicy: { ...policy }, executionState: { ...parseIssueExecutionState(transition.patch.executionState)! },
       executionWorkspaceSettings: { mode: "isolated_workspace" }, assigneeAdapterOverrides: { model: "original-worker-model" } });
     const state = parseIssueExecutionState(transition.patch.executionState)!;
-    const contextSnapshot = { issueId, wakeReason: "execution_review_requested", executionStage: { stageId: state.currentStageId,
+    const contextSnapshot = { issueId, wakeReason: wake === "stage" ? "execution_review_requested" : wake === "recovery" ? "execution_review_participant_recovery" : "owner_review_handoff", ...(wake === "stage" ? { executionStage: { stageId: state.currentStageId,
       stageType: "review", wakeRole: "reviewer", currentParticipant: state.currentParticipant,
-      returnAssignee: state.returnAssignee, allowedActions: ["approve", "request_changes"] } };
+      returnAssignee: state.returnAssignee, allowedActions: ["approve", "request_changes"] } } : {}) };
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId,
       runtimeMode: "native", status: "running", contextSnapshot });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
@@ -90,6 +90,15 @@ describe("native execution policy reviews", () => {
     await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(1);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId))).toHaveLength(1);
+  });
+
+  it.each(["recovery", "manual"] as const)("binds the current assigned stage for a %s wake without old executionStage metadata", async wake => {
+    const f = await fixture(false, wake);
+    expect(f.executionReview).not.toBeNull();
+    expect(f.authority.definitions().some(tool => tool.name === "resolve_review")).toBe(true);
+    await f.resolve("reject"); await f.finish();
+    expect(await f.read()).toMatchObject({ status: "in_progress", assigneeAgentId: f.workerId,
+      executionState: { status: "changes_requested" } });
   });
 
   it.each([false, true])("accepts the assigned review and preserves subsequent human gates (%s)", async humanGate => {

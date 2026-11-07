@@ -107,3 +107,5 @@ Develop on a dedicated `michael/<topic>` worktree; merge into `michael/main` bef
 Run only related tests, with commit/baseline-bound selection; never fall back to a full suite.
 Use the managed build/cutover procedures in `/home/michael/services/README.md`: build integrity, DB backup/history, required isolated upgrade, owned cutover and readiness.
 Preserve prior release for rollback and historical tasks/sessions; new dispatch is not a retry of old work.
+
+- Native review recovery binds the current server-owned pending stage for recovery/Owner wakes that lack the original stage envelope; preserves status, run and reviewer checks.

@@ -42,15 +42,27 @@ export async function prepareNativeExecutionReview(db: Db, binding: Binding) {
       eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.agentId, binding.agentId),
       eq(heartbeatRuns.nativeIssueId, binding.issueId))).for("update");
     if (!issue || !run) throw forbidden("Execution review binding is unavailable");
-    const snapshot = record(run.contextSnapshot), wake = record(snapshot.executionStage);
-    if (wake.wakeRole !== "reviewer" || wake.stageType !== "review") return null;
+    const snapshot = { ...record(run.contextSnapshot) };
+    let wake = record(snapshot.executionStage);
     const state = parseIssueExecutionState(issue.executionState);
+    // Recovery and explicit Owner wakes can lack the original stage envelope.
+    // Reconstruct it only from the current locked assignment, never from payload
+    // claims or a historical run. Blocked tasks still need an Owner restoration.
+    if (Object.keys(wake).length === 0 && issue.status === "in_review"
+      && state?.status === "pending" && state.currentStageType === "review"
+      && state.currentParticipant?.type === "agent" && state.currentParticipant.agentId === binding.agentId) {
+      wake = { stageId: state.currentStageId, stageType: "review", wakeRole: "reviewer",
+        currentParticipant: state.currentParticipant, returnAssignee: state.returnAssignee,
+        allowedActions: ["approve", "request_changes"] };
+      snapshot.executionStage = wake;
+    }
+    if (wake.wakeRole !== "reviewer" || wake.stageType !== "review") return null;
     const saved = readNativeExecutionReviewAssignment(snapshot);
     const assignment = saved ?? {
       stageId: String(wake.stageId), statusVersion: Number(issue.statusVersion),
       stateHash: nativeSha256(state), policyHash: nativeSha256(issue.executionPolicy),
     };
-    assertNativeExecutionReviewAssignment(assignment, run, issue);
+    assertNativeExecutionReviewAssignment(assignment, { ...run, contextSnapshot: snapshot }, issue);
     if (run.status !== "running") throw forbidden("Execution review run is no longer running");
     if (!saved) await tx.update(heartbeatRuns).set({ contextSnapshot: { ...snapshot, nativeExecutionReview: assignment } })
       .where(eq(heartbeatRuns.id, run.id));

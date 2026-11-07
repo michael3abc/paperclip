@@ -413,3 +413,8 @@ configuration is created or changed by a worker-policy save. Keep the managed JS
 projection and unique default consistent, retain old task settings and reject
 unavailable connections/models explicitly. Model choices show their connection;
 identical model IDs on different accounts remain distinct choices.
+
+Native execution-review recovery and explicit Owner wakes bind the current locked
+issue stage even without an old executionStage envelope. Require the same active
+run/assignee, pending review stage and policy; never infer authority from a prior
+run or caller payload, and never reopen blocked tasks during binding.
