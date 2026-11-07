@@ -20,7 +20,7 @@ import { executionWorkspaceService, readExecutionWorkspaceConfig, toExecutionWor
 import { instanceSettingsService } from "../instance-settings.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { nativeWorkspaceSyncInternals, prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
-import { createHeartbeatWorkspaceResolver, prepareProjectRepositoryWorkspaces, resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
+import { assertGitSensitiveAdapterWorkspaceValid, createHeartbeatWorkspaceResolver, prepareProjectRepositoryWorkspaces, resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
 import { prepareHeartbeatWorkspace, type HeartbeatWorkspacePreparationInput } from "./workspace-preparation.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
@@ -30,6 +30,7 @@ import { requestTaskRetry } from "../task-retry.js";
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
 import { createSystemRecovery } from "../system-recovery-state.js";
 import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js";
+import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { cleanupExecutionWorkspaceArtifacts } from "../workspace-runtime.js";
 import { expireIsolatedTaskDirectory } from "../isolated-task-directory-retention.js";
 import { buildProjectMentionHref, readRemoteWorkspaceAuthority } from "@paperclipai/shared";
@@ -249,6 +250,31 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (kind === "shared_mode") input.policy.effectiveExecutionWorkspaceMode = "shared_workspace";
     if (kind === "shared_strategy") input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/requires a project task with an isolated Git worktree/);
+  });
+  it.each(["claude_local", "codex_local"])("preserves the retained directory contract at %s launch after dependency continuation", async adapterType => {
+    const { input, source, issue } = await fixture(true);
+    await rm(join(source, ".git"), { recursive: true });
+    const cwd = await materializeIsolatedTaskDirectory({ companyId: issue.companyId, issueId: issue.id, attemptId: input.run.id });
+    await writeFile(join(cwd, "README.md"), "source content\n");
+    const [saved] = await db.insert(executionWorkspaces).values({
+      companyId: issue.companyId, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
+      sourceIssueId: issue.id, name: "Retained document delivery", cwd, mode: "isolated_workspace",
+      strategyType: "project_primary", providerType: "local_fs", status: "active",
+      metadata: { source: "task_session", _controllerProvisionCopyOnly: true },
+    }).returning();
+    await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issue.id));
+    await reuse(input, toExecutionWorkspace(saved));
+    input.policy.useIsolatedTaskDirectory = true;
+    input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
+    input.task.context.wakeReason = "issue_children_completed";
+    const prepared = await prepareHeartbeatWorkspace(db, input);
+    await assertGitSensitiveAdapterWorkspaceValid({ adapterType, agentId: input.agent.id, issue,
+      resolvedWorkspace: prepared.resolvedWorkspace, executionWorkspace: prepared.executionWorkspace,
+      persistedExecutionWorkspace: prepared.persistedExecutionWorkspace, executionTarget: { kind: "local" } });
+    expect(prepared.resolvedWorkspace).toMatchObject({ cwd, localPathOnlyWorkspace: true });
+    expect(prepared.persistedExecutionWorkspace?.id).toBe(saved.id);
+    expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+    await expect(access(join(source, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it.each(["foreign_owner", "git_required", "missing_directory", "no_copy_receipt"] as const)("rejects invalid retained Recovery reuse: %s", async scenario => {
     const { input, source, issue } = await fixture(true);

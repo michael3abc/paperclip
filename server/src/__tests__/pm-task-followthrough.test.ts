@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { agents, companies, projects, issues, issueWatchdogs, heartbeatRuns, agentWakeupRequests, issueRecoveryActions, createDb, applyPendingMigrations, type Db } from '@paperclipai/db';
+import { agents, companies, projects, issues, issueWatchdogEvents, issueWatchdogs, heartbeatRuns, agentWakeupRequests, issueRecoveryActions, createDb, applyPendingMigrations, type Db } from '@paperclipai/db';
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from './helpers/embedded-postgres.js';
 import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
 import { classifyTaskWatchdogSubtree, taskWatchdogService } from '../services/task-watchdogs.js';
@@ -11,7 +11,7 @@ import { pmCoordinationScope } from '../services/pm-coordination-policy.js';
 import { loadProjectPmIssueFacts, resolveProjectPmRole } from '../services/agent-workspace-binding.js';
 import { notifyIssueRecovery } from '../services/issue-recovery-notifications.js';
 import { createDeliveryWorkCoordinator } from '../services/delivery-work-coordinator.js';
-import { registerTaskWatchdogWork } from '../services/task-watchdog-work.js';
+import { consumeTaskWatchdogEvents, registerTaskWatchdogWork } from '../services/task-watchdog-work.js';
 import { issueService } from '../services/issues.js';
 import { setImmediate as immediate } from 'node:timers/promises';
 
@@ -138,13 +138,61 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(forged && forged !== 'missing' && forged.verifiedPmWatchdog).toBe(false);
   });
 
+  it('does not lock the watchdog from a producer while its scheduler owns that row', async () => {
+    const f = await fixture();
+    await db.transaction(async holder => {
+      await holder.update(issueWatchdogs).set({ lastCheckedAt: new Date() }).where(eq(issueWatchdogs.id, f.watchdog.id));
+      await db.transaction(async producer => {
+        await producer.execute(sql`set local lock_timeout = '250ms'`);
+        await notifyIssueRecovery(producer, { companyId: f.company.id });
+      });
+    });
+  });
+
   it('rolls back an event obligation and persists a committed event without relying on its wake hint', async () => {
     const f = await fixture(); const before = await f.row();
     await expect(db.transaction(async tx => { await notifyIssueRecovery(tx, { companyId: f.company.id }); throw new Error('rollback'); })).rejects.toThrow('rollback');
     expect((await f.row()).obligationVersion).toBe(before.obligationVersion);
+    expect(await db.select().from(issueWatchdogEvents)).toHaveLength(0);
     await db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.company.id }));
+    expect((await f.row()).obligationVersion).toBe(before.obligationVersion);
+    expect(await db.select().from(issueWatchdogEvents)).toHaveLength(1);
+    await expect(db.transaction(async tx => {
+      await consumeTaskWatchdogEvents(tx as unknown as Db);
+      throw new Error('consumer rollback');
+    })).rejects.toThrow('consumer rollback');
+    expect((await f.row()).obligationVersion).toBe(before.obligationVersion);
+    expect(await db.select().from(issueWatchdogEvents)).toHaveLength(1);
+    // No notification listener is running: reconstruction must consume the event.
+    await consumeTaskWatchdogEvents(db);
     expect((await f.row()).obligationVersion).toBe(before.obligationVersion + 1);
     expect((await f.row()).nextCheckAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await db.select().from(issueWatchdogEvents)).toHaveLength(0);
+  });
+
+  it('coalesces producer events without cross-company updates or duplicate consumption', async () => {
+    const a = await fixture(), b = await fixture();
+    await Promise.all(Array.from({ length: 4 }, () => db.transaction(tx => notifyIssueRecovery(tx, { companyId: a.company.id }))));
+    expect(await consumeTaskWatchdogEvents(db, { companyId: b.company.id })).toBe(0);
+    expect((await b.row()).obligationVersion).toBe(0);
+    const consumed = await Promise.all([consumeTaskWatchdogEvents(db), consumeTaskWatchdogEvents(db)]);
+    expect(consumed.reduce((sum, count) => sum + count, 0)).toBe(4);
+    expect((await a.row()).obligationVersion).toBe(1);
+    expect((await b.row()).obligationVersion).toBe(0);
+    expect(await db.select().from(issueWatchdogEvents)).toHaveLength(0);
+  });
+
+  it('drains bounded event batches and does not rearm completed tasks', async () => {
+    const f = await fixture();
+    await db.update(issues).set({ status: 'done' }).where(eq(issues.id, f.source.id));
+    await db.update(issueWatchdogs).set({ nextCheckAt: null }).where(eq(issueWatchdogs.id, f.watchdog.id));
+    await db.insert(issueWatchdogEvents).values(Array.from({ length: 101 }, () => ({ companyId: f.company.id })));
+    expect(await consumeTaskWatchdogEvents(db)).toBe(100);
+    expect(await consumeTaskWatchdogEvents(db)).toBe(1);
+    expect((await f.row()).nextCheckAt).toBeNull();
+    expect((await f.row()).obligationVersion).toBe(0);
+    await db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.company.id }));
+    expect(await db.select().from(issueWatchdogEvents)).toHaveLength(0);
   });
 
   it('deduplicates continuation operations, rejects stale versions and preserves unknown receipts', async () => {

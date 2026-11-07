@@ -1,5 +1,5 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { issueWatchdogs, type Db } from "@paperclipai/db";
+import { issueWatchdogEvents, issueWatchdogs, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 
 /** An issue hint is reserved for local facts such as comments. Lifecycle,
@@ -15,14 +15,16 @@ export async function notifyIssueRecovery(transaction: object, scope?: IssueReco
     await notifyDeliveryWork(transaction, queue,
       queue === DELIVERY_QUEUES.strandedAssignments || queue === DELIVERY_QUEUES.staleIssueLocks ? issueHint : companyHint);
   }
-  // The obligation commits with the producer. Notifications only shorten the
-  // latency; restart reconstruction and the saved deadline cover lost hints.
-  await (transaction as Db).update(issueWatchdogs).set({
-    nextCheckAt: new Date(),
-    obligationVersion: sql`${issueWatchdogs.obligationVersion} + 1`,
-  }).where(and(eq(issueWatchdogs.status, "active"), eq(issueWatchdogs.checkIntervalSec, 300),
-    sql`EXISTS (SELECT 1 FROM issues source WHERE source.id = ${issueWatchdogs.issueId}
-      AND source.company_id = ${issueWatchdogs.companyId}
-      AND (${issueWatchdogs.nextCheckAt} IS NOT NULL OR source.status NOT IN ('done', 'cancelled', 'backlog')))`,
-    scope ? eq(issueWatchdogs.companyId, scope.companyId) : undefined));
+  // Append the obligation in the producer transaction, without locking the
+  // scheduler's rows. Producers already own different issue/document/run locks;
+  // updating every company watchdog here inverts that order and deadlocks.
+  const tx = transaction as Db;
+  const eligible = tx.selectDistinct({ companyId: issueWatchdogs.companyId })
+    .from(issueWatchdogs).where(and(eq(issueWatchdogs.status, "active"),
+      eq(issueWatchdogs.checkIntervalSec, 300), scope ? eq(issueWatchdogs.companyId, scope.companyId) : undefined,
+      sql`EXISTS (SELECT 1 FROM issues source WHERE source.id = ${issueWatchdogs.issueId}
+        AND source.company_id = ${issueWatchdogs.companyId}
+        AND (${issueWatchdogs.nextCheckAt} IS NOT NULL OR source.status NOT IN ('done', 'cancelled', 'backlog')))`,
+    ));
+  await tx.execute(sql`INSERT INTO ${issueWatchdogEvents} (company_id) ${eligible}`);
 }

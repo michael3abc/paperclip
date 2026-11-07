@@ -3528,9 +3528,11 @@ A reusable task_watchdog child is a coordination assignment only when its persis
 watchdog, original task, project and current PM agree. It runs in PM home. Caller wake
 context cannot grant this role or take the worker checkout.
 
-Existing issue/run/review/decision/recovery producers save nextCheckAt and increment
-obligationVersion in their transaction. Shared recovery scheduling consumes those
-hints and reconstructs saved deadlines on startup/resume. A live worker or formal
+Existing issue/run/review/decision/recovery producers append durable watchdog events
+in their transaction, without locking shared watchdog rows. Shared recovery
+scheduling consumes bounded event batches and saves nextCheckAt/obligationVersion
+with event deletion in one transaction. Startup/resume reconstructs both unconsumed
+events and saved deadlines; notification loss cannot discard the obligation. A live worker or formal
 human/dependency wait remains due in five minutes without another model invocation.
 A wake receipt remains an outstanding obligation until an actual run, formal wait or
 terminal disposition is observed. Uncertain wakes retain their original key. Two

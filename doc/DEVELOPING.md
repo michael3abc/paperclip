@@ -4898,6 +4898,11 @@ classifier; task-watchdog-followthrough applies PM policy, bounded recovery and
 receipt observation. task-watchdog-work registers only actual persisted deadlines
 with the existing recovery coordinator. issue-recovery-notifications is the shared
 transactional producer boundary, also reached through run-dispatch notifications.
+It appends independent issue_watchdog_events rather than updating shared scheduler
+rows under producer locks. task-watchdog-work drains at most 100 events per
+transaction, locks affected watchdogs in ID order, and atomically saves deadlines
+and deletes consumed events. Startup and resume drain pending events even if the
+notification was lost. Failed consumption rolls back; there is no query replay.
 No new daemon, timer unit or generic Runner heartbeat is required.
 
 issue-continuations owns operation identity and the original receipt. HTTP and Runner
@@ -4923,6 +4928,9 @@ admissions and explicit Git-required workers retain their normal checks. Regress
 coverage starts a worker through heartbeat from a project-bound idle Recovery
 directory, preserves its deliverables and binding, and rejects foreign ownership,
 missing directories and Git-required reuse before acquiring an environment.
+An active retained directory also carries localPathOnlyWorkspace and its configured
+source ID into the final Git-sensitive adapter guard. Exercise Claude/Codex launch
+validation after dependency continuation; a process adapter does not run that guard.
 Task delivery instructions follow the run's runtimeMode. Legacy workers use the
 installed upload helper and run-authenticated task API; native workers use current
 register_deliverable/paperclip_finish tools. Missing native tools do not require a

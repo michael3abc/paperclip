@@ -448,9 +448,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
             cwd,
             source: "task_session",
             projectId: reusableExistingExecutionWorkspace?.projectId ?? null,
-            workspaceId: null,
+            workspaceId: reusableExistingExecutionWorkspace?.projectWorkspaceId ?? null,
             repoUrl: null,
             repoRef: null,
+            // The verified task-directory branch keeps its saved physical
+            // contract through the final Claude/Codex launch guard as well.
+            localPathOnlyWorkspace: true,
             workspaceHints: [],
             warnings: [],
             baseCwdFallback: false,

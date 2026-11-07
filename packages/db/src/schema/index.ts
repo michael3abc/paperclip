@@ -53,6 +53,7 @@ export { folders } from "./folders.js";
 export { issues } from "./issues.js";
 export { issueAccessGrants } from "./issue_access_grants.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
+export { issueWatchdogEvents } from "./issue_watchdog_events.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";

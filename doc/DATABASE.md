@@ -1933,7 +1933,12 @@ check_interval_sec, next_check_at, last_checked_at, obligation_version,
 last_check_outcome, waiting_reason, recovery_fingerprint, recovery_attempts,
 last_wakeup_key, last_wakeup_run_id and recovery_notified_at. Only managed rows with
 an actual next_check_at participate in deadline reconstruction. Producers register
-the work signal and update the obligation in their persistence transaction.
+the work signal and append independent issue_watchdog_events in their persistence
+transaction. Migration 0439 adds that empty event table and company/pending index.
+It never enrolls historical work. Producers must not lock watchdog rows while
+holding issue/document/run locks. The existing scheduler consumes bounded batches
+and updates obligation_version/next_check_at atomically with event deletion;
+failed consumption retains the events for reconstruction after restart.
 
 issue_continuations stores company/issue/idempotency key, original actor and run,
 request hash, observed status/run version and a result receipt. Its scoped unique key

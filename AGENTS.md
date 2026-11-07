@@ -450,8 +450,11 @@ sibling-repository synchronization, including reuse of a cached PM workspace.
 Keep the original worker task binding; do not weaken repository publication checks.
 
 Managed PM follow-through uses one original-task watchdog with taskTracking enabled,
-intervalSec=300 and maxRecoveryAttempts=2. Persist obligations in producer transactions;
-use the shared deadline scheduler, never a generic PM heartbeat or idle SQL polling.
+intervalSec=300 and maxRecoveryAttempts=2. Append issue_watchdog_events in producer transactions;
+never update shared watchdog rows while holding producer issue/document/run locks.
+The existing scheduler consumes bounded event batches and saves deadlines atomically,
+with ordered watchdog locks and restart reconstruction of unconsumed events.
+Use the shared deadline scheduler, never a generic PM heartbeat or idle SQL polling.
 Only persisted watchdog provenance permits a zero-slot PM coordination child; execute
 it in PM home and preserve the original worker workspace. Continue requires current
 project/worker authority, an idempotency key and observed task/run versions. Unknown
@@ -467,5 +470,7 @@ Environment selection carries the issue's projectId in its typed input and check
 that a saved workspace exists before comparing project/source ownership.
 Exercise the assembled heartbeat path for project-bound non-Git Recovery reuse,
 including preserved files, provider execution and task ownership rejection.
+Retained task-directory anchors carry their source identity and local-path contract
+through the final Claude/Codex launch guard; process-adapter tests alone cannot prove it.
 Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
 and task APIs for legacy adapters. Never require a native-only tool in a legacy run.

@@ -145,3 +145,10 @@ its execution lock. Finalizer-only recovery rechecks original failure/accepted-r
 receipts, review scope, process stop, leases, pauses and successor absence under
 transaction locks. Live tools retain strict execution-lock authority; formal review
 effects and dependency wakes remain atomic and idempotent. No migration is added.
+
+Postdeployment continuation exposed two further faults: active non-Git Recovery
+anchors lost their local-path contract at Claude/Codex launch, and company-wide
+watchdog updates under producer locks deadlocked native finalization. Retain the
+verified anchor contract and append independent events in migration 0439; the
+existing scheduler consumes them atomically with bounded, ordered watchdog updates.
+Preserve original failed runs, pending finalizations and the original business tasks.
