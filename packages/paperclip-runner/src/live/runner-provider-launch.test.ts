@@ -1,3 +1,4 @@
+import { canonicalNativeRuntimeContextDigest, nativeRuntimePromptDigest, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION } from "../contracts/runtime-context.js";
 import { describe, expect, it } from "vitest";
 import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch,
   runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
@@ -171,4 +172,27 @@ describe("built-in provider launch preparation", () => {
         .toThrow("runner_prepared_launch_working_directory_invalid");
     }
   });
+});
+
+
+it("pins the Codex PM catalog and restrictive launch through host preparation", () => {
+  const digest = "0".repeat(64);
+  const base = { prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
+    instructions: { entryPath: "AGENTS.md", bundle: { schema: "paperclip.runtime-asset.v1" as const, digest, manifestDigest: digest, rootPath: "/bundle", fileCount: 1, totalBytes: 10 } },
+    skills: [], mcp: { assignmentSetId: "none", digest, bindingId: null },
+    toolPolicy: { kind: "project_pm" as const, version: 1 as const, readRoots: ["/workspace"] } };
+  const context = { ...base, aggregateDigest: canonicalNativeRuntimeContextDigest(base) };
+  const selected = runnerProviderLaunchRequirements({ provider: "codex" }, requirements.identity,
+    { model: "gpt-6-astra", approvalPolicy: "never", permissions: "paperclip-runner-workspace-read-only", dynamicTools: [{ name: "create_task" }] }, context, "PM instructions");
+  const launch = createRunnerProviderLaunch(selected, { ...environment, options: {} });
+  expect(launch).toMatchObject({ providerVersion: "codex-pm-v1", readOnly: true, includeSkillInstructions: false, collaborationMode: "default" });
+  expect(launch.args).toContain("features.shell_tool=false");
+  expect((launch.args as string[]).length).toBeLessThanOrEqual(64);
+  expect((launch.args as string[]).every(arg => arg.length <= 4096)).toBe(true);
+  expect(String((launch.args as string[]).at(-2))).toContain("create_task");
+  const prepared = { configurationId: "pm", requirementsDigest: runnerLaunchRequirementsDigest(selected), provider: launch };
+  expect(() => validatePreparedRunnerLaunch(selected, prepared)).not.toThrow();
+  expect(() => validatePreparedRunnerLaunch(selected, { ...prepared, provider: { ...launch, args: ["app-server"] } })).toThrow();
+  expect(() => createRunnerProviderLaunch(selected, { ...environment, options: { codexArgs: ["-c", "features.shell_tool=true", "app-server"] } }))
+    .toThrow("runner_codex_pm_custom_launch_unqualified");
 });

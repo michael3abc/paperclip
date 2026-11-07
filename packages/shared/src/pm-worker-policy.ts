@@ -6,6 +6,7 @@ export const pmWorkerSelectionSchema = z.object({
   thinking: z.string().min(1).max(40).nullable(),
   permission: z.enum(["default", "full-access", "approve-all", "approve-reads", "deny-all"]),
   speed: z.enum(["standard", "fast"]),
+  purpose: z.string().trim().max(500).optional(),
 }).strict();
 
 export const pmWorkerPolicySchema = z.object({
@@ -54,16 +55,19 @@ export interface PmWorkerPolicyView {
 export const PM_WORKERS_START = "<!-- paperclip:worker-policy:start -->";
 export const PM_WORKERS_END = "<!-- paperclip:worker-policy:end -->";
 
+/** Purpose is descriptive guidance, never provider configuration or authority. */
+export function formatPmWorkerPolicyJson(policy: PmWorkerPolicy): string {
+  return JSON.stringify({ ...policy, workers: policy.workers.map(worker => ({ ...worker,
+    selections: worker.selections.map(choice => ({ ...choice, purpose: choice.purpose ?? "" })),
+  })) }, null, 2).replace(/</g, "\\u003c");
+}
+
 /** This projection is explanatory; only the Owner-owned policy grants dispatch. */
 export function renderPmWorkerPolicy(policy: PmWorkerPolicy): string {
-  const cell = (value: string) => value.replace(/\|/g, "\\|").replace(/[\r\n]/g, " ");
   return [PM_WORKERS_START, "## Worker selections (managed by Agent settings)",
     "Select a listed choice using assigneeAdapterOverrides.workerSelectionId. Omit selection to use the default. These settings apply only to new tasks.",
-    "Only this managed selection table is current. Any older model tables outside this section are historical and cannot authorize dispatch.",
-    "| Selection ID | Worker | Harness | Model | Thinking | Permission | Speed | Default |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- |",
-    ...policy.workers.flatMap(worker => worker.selections.map(choice =>
-      `| ${choice.id} | ${worker.agentId} | ${worker.harness} | ${cell(choice.model)} | ${choice.thinking ?? "auto"} | ${choice.permission} | ${choice.speed} | ${choice.id === policy.defaultSelectionId ? "yes" : "no"} |`)),
+    "Only this managed JSON is current. Older model tables outside this section are historical. Purpose describes intended use and does not grant permissions.",
+    "```json", formatPmWorkerPolicyJson(policy), "```",
     PM_WORKERS_END].join("\n");
 }
 

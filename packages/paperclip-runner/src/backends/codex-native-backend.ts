@@ -77,7 +77,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "codex_app_server",
         displayName: "Codex app-server",
-        version: "codex-v2",
+        version: "runtimeContext" in input && input.runtimeContext.toolPolicy ? "codex-pm-v1" : "codex-v2",
       };
     case "opencode":
       return {
@@ -161,6 +161,7 @@ function createTransportBackedNativeSessionBackend(
   const backend = new HarnessDriverBackend(
     new CodexAppServerDriver({
       ...(input.provider.model ? { model: input.provider.model } : {}),
+      ...(isCodex && "runtimeContext" in input && input.runtimeContext.toolPolicy ? { coordinationOnly: true } : {}),
       ...(input.provider.kind === "codex" && "webSearch" in input.provider && input.provider.webSearch === "disabled"
         ? { disableWebSearch: true } : {}),
       ...(input.provider.kind === "codex" && "reasoningEffort" in input.provider && input.provider.reasoningEffort

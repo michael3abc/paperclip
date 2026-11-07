@@ -193,6 +193,47 @@ const SKILLLESS_BASE_CONFIG = {
   "features.image_generation": false,
 } as const;
 
+/** PMs use only control-plane dynamic tools. Disable shell execution and guard
+ * remaining native tools with the owned hook; read-only files are a second gate.
+ * This is a per-run restriction, never a change to the user's Codex config. */
+export const CODEX_PM_CONFIG = {
+  ...SKILLLESS_BASE_CONFIG,
+  "features.shell_tool": false,
+  "features.multi_agent_v2": false,
+  "features.sleep_tool": false,
+  "agents.max_depth": 0,
+  "features.hooks": true,
+  "features.view_image": false,
+  "features.request_permissions_tool": false,
+  "features.tool_suggest": false,
+  web_search: "disabled",
+  project_doc_max_bytes: 0,
+} as const;
+
+export function codexPmHookCommand(toolNames: readonly string[] = []): string {
+  if (toolNames.some(name => !/^[a-zA-Z0-9_]+$/.test(name))) throw new Error("codex_pm_tool_name_invalid");
+  // Deny every local tool except the current server-authorized dynamic catalog.
+  // Code Mode's isolated JS wrapper is transport; its nested calls pass this hook.
+  const allowed = [...new Set([...toolNames, "exec", "wait"])].sort();
+  const script = `let b="";process.stdin.setEncoding("utf8");process.stdin.on("data",x=>{b+=x;if(b.length>1048576)process.exit(2)});process.stdin.on("end",()=>{try{const x=JSON.parse(b);if(!${JSON.stringify(allowed)}.includes(x.tool_name)){process.stderr.write("PM_TOOL_DENIED: delegate execution to a Paperclip worker");process.exit(2)}}catch{process.exit(2)}})`;
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  return `${quote(process.execPath)} -e ${quote(script)} || exit 2`;
+}
+
+export function codexPmPolicyArgs(toolNames: readonly string[] = []): string[] {
+  const command = codexPmHookCommand(toolNames);
+  return [
+    ...Object.entries(CODEX_PM_CONFIG).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`]),
+    "-c", `hooks.PreToolUse=[{matcher=".*",hooks=[{type="command",command=${JSON.stringify(command)},timeout=3}]}]`,
+  ];
+}
+
+export function assertCodexPmHome(source: NodeJS.ProcessEnv): void {
+  if (usesPreconfiguredHome(source) || usesExternalRunnerSandbox(source)) {
+    throw new Error("PM coordination requires an isolated, sandboxed Codex home");
+  }
+}
+
 export function codexCommandEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
@@ -255,9 +296,12 @@ export function createIsolatedCodexAppServerArgs(
   instructionWorkingCopyRoot?: string,
   protectedPaths: string[] = [],
   disableWebSearch = false,
+  coordinationOnly = false,
+  coordinationToolNames: readonly string[] = [],
 ): string[] {
   const explicitSource = source;
   source ??= process.env;
+  if (coordinationOnly) assertCodexPmHome(source);
   const gitRoots = gitFilesystemRoots(source);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
@@ -311,14 +355,14 @@ export function createIsolatedCodexAppServerArgs(
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
-    ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+    ...(!coordinationOnly && source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="read"}`,
   ].join(",");
   const commandEnv = Object.entries(commandEnvironment)
     .map(([key, value]) => `${key}=${tomlString(value)}`)
     .join(",");
-  const defaultPermissionProfile = externalRunnerSandbox
+  const defaultPermissionProfile = coordinationOnly ? CODEX_PLANNING_PERMISSION_PROFILE : externalRunnerSandbox
     ? CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE
     : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return [
@@ -358,6 +402,7 @@ export function createIsolatedCodexAppServerArgs(
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
     ...(disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
+    ...(coordinationOnly ? codexPmPolicyArgs(coordinationToolNames) : []),
     "app-server",
   ];
 }
@@ -368,8 +413,10 @@ export function createSecuredCodexThreadParams(
   includeCollaborationModeInstructions = true,
   includeSkillInstructions = false,
   source: NodeJS.ProcessEnv = process.env,
+  coordinationOnly = false,
 ): Record<string, unknown> {
-  const permissionProfile =
+  if (coordinationOnly) assertCodexPmHome(source);
+  const permissionProfile = coordinationOnly ? CODEX_PLANNING_PERMISSION_PROFILE :
     mode === "default" && usesExternalRunnerSandbox(source)
       ? CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE
       : mode === "plan"
@@ -377,7 +424,7 @@ export function createSecuredCodexThreadParams(
       : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return {
     cwd: workingDirectory,
-    config: usesPreconfiguredHome(source) ? { "skills.include_instructions": true, include_collaboration_mode_instructions: includeCollaborationModeInstructions } : collaborationThreadConfig(
+    config: coordinationOnly ? { ...CODEX_PM_CONFIG } : usesPreconfiguredHome(source) ? { "skills.include_instructions": true, include_collaboration_mode_instructions: includeCollaborationModeInstructions } : collaborationThreadConfig(
       includeCollaborationModeInstructions,
       includeSkillInstructions,
     ),

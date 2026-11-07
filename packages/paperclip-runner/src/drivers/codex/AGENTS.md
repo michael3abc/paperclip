@@ -19,3 +19,10 @@ Preserve table rows, waits, actions and assertions, including failure cases.
 Keep provider protocol and native lifecycle layers independent when they test
 different owners. Test workspaces must use the disposable real `WORKSPACE`
 fixture; do not use a managed Codex checkout as model-writable workspace.
+
+Coordination-only PM startup/resume requires the generated exact-catalog hook to
+be confirmed trusted in the disposable provider home before any turn. Never use
+hook-trust bypass or trust a different hook source. Lifecycle tests own admission
+and failure/readback checks; context-control owns repeated thread restrictions.
+Qualify native execution/subagent denials with the pinned executable and a local
+fake Responses endpoint, without provider credentials or production task replay.

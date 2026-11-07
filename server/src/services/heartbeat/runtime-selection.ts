@@ -273,7 +273,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   const { providerTraceRequested, providerTraceCapture } = input.trace;
   const coordinationOnly = pmCoordinationScope(agent) !== null;
   if (coordinationOnly && (nativeRuntimeResolution.kind !== "native" || executionTarget?.kind === "remote")) {
-    throw new Error("PM coordination requires the qualified local native Claude ACP runtime");
+    throw new Error("PM coordination requires the qualified local native Claude ACP or Codex runtime");
   }
   if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
   let nativeExecution: NativeExecutionInput | null = null;
@@ -761,7 +761,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             backend: nativeRuntimeResolution.profile.backend,
             adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding, museBinding,
           }) : requestedNativeProvider;
-      if (coordinationOnly && (nativeProvider.provider !== "acpx" || nativeProvider.acpxAgent !== "claude")) {
+      if (coordinationOnly && nativeProvider.provider !== "codex" && (nativeProvider.provider !== "acpx" || nativeProvider.acpxAgent !== "claude")) {
         throw new Error("This provider does not implement the PM coordination tool policy");
       }
       if (nativeProvider.model !== requestedNativeProvider.model) {

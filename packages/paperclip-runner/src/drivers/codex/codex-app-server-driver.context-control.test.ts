@@ -45,6 +45,26 @@ import {
 import { rehydrateRunnerdItemNotification } from "../../live/runnerd-codex-transport.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("pins PM restrictions on start and resume while retaining authorized dispatch tools", async () => {
+    const first = new FakeCodexTransport(), second = new FakeCodexTransport();
+    const driver = makeDriver([first, second], { coordinationOnly: true, includeSkillInstructions: true,
+      dynamicTools: [{ name: "create_task", description: "Dispatch", inputSchema: { type: "object" } }] });
+    const session = await driver.openSession({ runId: "pm", normalizedSessionId: "pm-session", workingDirectory: WORKSPACE });
+    const snapshot = await session.snapshot();
+    await session.close({ reason: "resume fixture" });
+    const recovered = await driver.recoverSession(snapshot);
+    expect(recovered.recovered).toBe(true);
+    for (const transport of [first, second]) {
+      const calls = transport.calls.filter(call => call.method === "thread/start" || call.method === "thread/resume");
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.params).toMatchObject({ permissions: "paperclip-runner-workspace-read-only",
+          config: { "features.shell_tool": false, "features.multi_agent": false, "skills.include_instructions": false, web_search: "disabled" } });
+        expect(call.params.dynamicTools).toEqual(expect.arrayContaining([expect.objectContaining({ name: "create_task" })]));
+      }
+    }
+    await recovered.session?.close({ reason: "fixture complete" });
+  });
   it.each(["default", "disabled"] as const)("rejects unsupported reasoning %s without sending a turn RPC", async reasoningMode => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

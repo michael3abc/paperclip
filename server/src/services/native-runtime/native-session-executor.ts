@@ -8610,9 +8610,9 @@ async function executePaperclipNativeSessionWithinScope(
   }
   const pm = await currentPmCoordinationScope(input.db, input.execution.binding);
   const pinnedPm = "runtimeContext" in input.execution && input.execution.runtimeContext.toolPolicy;
-  if (Boolean(pm) !== Boolean(pinnedPm) || (pm && (input.execution.provider.kind !== "acpx"
-    || input.execution.provider.agent !== "claude" || input.runnerExecutionTarget?.kind === "remote"))) {
-    throw new Error("PM coordination policy requires a fresh qualified local Claude ACP session");
+  if (Boolean(pm) !== Boolean(pinnedPm) || (pm && ((input.execution.provider.kind !== "codex" && (input.execution.provider.kind !== "acpx"
+    || input.execution.provider.agent !== "claude")) || input.runnerExecutionTarget?.kind === "remote"))) {
+    throw new Error("PM coordination policy requires a fresh qualified local Claude ACP or Codex session");
   }
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
   const preparationSpans = input.preparationSpans ?? [];
@@ -12917,9 +12917,9 @@ async function createRunnerdBackendWithinSessionClaim(
 ): Promise<ManagedRunnerdBackend> {
   const pm = await currentPmCoordinationScope(input.db, input.execution.binding);
   const pinnedPm = "runtimeContext" in input.execution && input.execution.runtimeContext.toolPolicy;
-  if (Boolean(pm) !== Boolean(pinnedPm) || (pm && (input.execution.provider.kind !== "acpx"
-    || input.execution.provider.agent !== "claude" || input.runnerExecutionTarget?.kind === "remote"))) {
-    throw new Error("PM coordination policy requires a fresh qualified local Claude ACP session");
+  if (Boolean(pm) !== Boolean(pinnedPm) || (pm && ((input.execution.provider.kind !== "codex" && (input.execution.provider.kind !== "acpx"
+    || input.execution.provider.agent !== "claude")) || input.runnerExecutionTarget?.kind === "remote"))) {
+    throw new Error("PM coordination policy requires a fresh qualified local Claude ACP or Codex session");
   }
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
   let recoveryPending = retainedTransition !== undefined;

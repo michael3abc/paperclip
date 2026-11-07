@@ -121,9 +121,13 @@ Shared native workers set `runtimeConfig.requireTaskWorktree=true`; reject missi
 project tasks and shared-directory overrides before workspace preparation.
 
 Zero-slot project PMs use the server-owned coordination capability policy in every
-chat, task and review run. Only the qualified local Claude ACP path enforces it;
-reject unsupported runtimes or stale unrestricted sessions. Native tools are
-Read/Grep/Glob, with a PreToolUse guard independent of approve-all. The Paperclip
+chat, task and review run. The qualified local Claude ACP and isolated Codex
+Runner paths enforce it; reject unsupported runtimes or stale unrestricted sessions.
+Claude uses Read/Grep/Glob plus PreToolUse. Codex uses a read-only profile, disabled
+shell/host tools and an exact-catalog PreToolUse guard. Admit only that generated
+hook's exact hash in its disposable runtime home and confirm trust before a thread
+opens/resumes; never disable hook trust or trust host/project/plugin hooks. Codex
+PMs use `codex-pm-v1`; ordinary workers retain their existing provider profile. The Paperclip
 bridge and authenticated HTTP API must both enforce company/project/run scope;
 connector names or read-only annotations are never grants. Keep the Owner-owned
 `runtimeConfig.pmDelegation` model/worker table separate from editable Markdown.
@@ -132,9 +136,14 @@ source, workspace and review before waking that worker. Preserve source Owner ga
 Use `read_bundle_file` receipts and `write_bundle_file` CAS saves for PM support
 files; protect AGENTS.md and synchronize the registered run baseline on every save.
 PM Agent settings own `pmDelegation` version 2: one default and explicit harness,
-model, thinking, permission and speed selections. Use GET/PUT
+model, thinking, permission and speed selections, plus optional `purpose` guidance.
+Purpose is at most 500 characters and never changes adapter settings or authority.
+The settings preview follows the current form as JSON; keep migration/history
+diagnostics out of the form header and retain explicit save errors. Use GET/PUT
 `/agents/:id/worker-policy` with `baseRevision` and the WORKERS.md `baseHash`;
-only this authorized save may change the policy and its managed Markdown section.
+only this authorized save may change the policy and its managed JSON block inside
+WORKERS.md. Preserve the file name and handwritten rules; escape marker delimiters
+in JSON strings so purposes cannot corrupt the managed block.
 Preserve handwritten content and existing task snapshots. Failed or conflicting
 saves never count as success; document/config drift blocks new dispatch. Legacy
 worker lists remain historical and require explicit migration, never fallback.

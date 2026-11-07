@@ -332,8 +332,14 @@ slots (1–4) must be explicitly configured to allow a dual-purpose agent.
 
 Zero-slot PMs also have a server-derived coordination tool policy, pinned in the
 native runtime context and ACP session compatibility digest. It is enforced for
-chat, work and review under the qualified local Claude ACP/SDK path, including
-approve-all. Unsupported/preconfigured/remote paths and incompatible retained
+chat, work and review under the qualified local Claude ACP/SDK path (including
+approve-all) or the isolated Codex Runner path. Codex PM launches use `codex-pm-v1`,
+read-only permissions, disabled shell/host integrations, and an exact dynamic-tool
+catalog hook. Before opening or resuming the provider thread, Runner admits only
+the controller-generated session hook's exact hash in the disposable provider home
+and verifies trusted readback. Missing/changed hooks or uncertain trust fail startup;
+ordinary workers and user/global hook trust are unchanged. This does not authorize
+implementation, native subagents, credential operations or general approvals. Unsupported/preconfigured/remote paths and incompatible retained
 sessions fail closed. Native tools are Read/Grep/Glob within declared read roots;
 PreToolUse rejects other native tools and non-Paperclip MCP names. User/project
 tool settings cannot override the policy. External MCP/connector operations have
@@ -373,11 +379,18 @@ Catalog entries use existing shared workers and harness model capabilities; unsu
 models, thinking, permission or speed combinations are rejected, never substituted.
 CLI permissions are explicit `default`/`full-access`; ACP permissions are explicit
 `deny-all`/`approve-reads`/`approve-all`. None remove Paperclip policy, isolation or
-review gates. Ambiguous legacy settings are displayed for manual migration.
+review gates. Each option also accepts optional `purpose` text (up to 500
+characters), displayed to the right of Speed. It describes intended use and never
+changes provider parameters, policy or authority. The JSON preview follows form
+edits immediately; it is persisted only by an explicit successful Save workers.
+Legacy migration/history diagnostics remain available through the API, without
+the long prose or historical Markdown dump above the form. Save/load errors remain
+visible; ambiguous legacy values are never silently imported.
 
 The file-store transaction saves configuration history and durable files together.
 Only `<!-- paperclip:worker-policy:start -->` through
-`<!-- paperclip:worker-policy:end -->` in WORKERS.md is generated. Other prose is
+`<!-- paperclip:worker-policy:end -->` in WORKERS.md is generated as fenced JSON,
+including purpose. JSON strings escape `<` to protect managed markers. Other prose is
 preserved. Revision/hash conflicts fail; a filesystem failure rolls back the DB,
 and any partially materialized mismatch blocks dispatch pending an explicit repaired
 save. Generic agent patches cannot change pmDelegation; file edits cannot change

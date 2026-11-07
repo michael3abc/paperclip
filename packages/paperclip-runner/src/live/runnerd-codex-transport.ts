@@ -5026,6 +5026,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       permissions: prior.readOnly === true || record(prior.providerPolicy).readOnly === true || prior.collaborationMode === "plan"
         ? "paperclip-runner-workspace-read-only" : "paperclip-runner-workspace-only",
       conversationMode: prior.conversationMode,
+      dynamicTools: Array.isArray(this.#authorizedTools?.operations)
+        ? this.#authorizedTools.operations.map(operation => ({ name: record(operation).operationId })) : [],
       config: { include_collaboration_mode_instructions: prior.includeCollaborationModeInstructions !== false },
     }, runtimeContext, instructions);
     if (requirements.schema !== "paperclip.runner.launch-requirements.v1"
@@ -5139,7 +5141,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
-        nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+        nativeMcp: runtimeContext?.toolPolicy ? null : nativeMcpLaunchBinding(this.options.environment),
       });
     }
     this.#assertStartupOpen();
@@ -5928,6 +5930,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         runAttachTemplate.runtimeLaunchArgs =
           createRunnerdCodexAppServerArgs({
             args: this.options.codexArgs,
+            coordinationOnly: Boolean(runtimeContext?.toolPolicy),
+            coordinationToolNames: [...(this.options.resumeDynamicTools ?? []), ...codexSemanticToolSpecs()].map(tool => String(tool.name)),
             disableWebSearch: this.options.disableCodexWebSearch,
             environment: this.options.environment,
             codexHome,
@@ -6119,7 +6123,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         await prepareIsolatedCodexRecoveryHome({
           ...auth,
           observability: this.options.observability,
-          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+          nativeMcp: runtimeContext?.toolPolicy ? null : nativeMcpLaunchBinding(this.options.environment),
         });
       } else {
         await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
@@ -6128,7 +6132,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...auth,
           context: sourceRuntimeContext,
           observability: this.options.observability,
-          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
+          nativeMcp: runtimeContext?.toolPolicy ? null : nativeMcpLaunchBinding(this.options.environment),
         });
       }
     }

@@ -6,6 +6,8 @@ import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js
 import { describe, expect, it } from "vitest";
 
 import {
+  CODEX_PM_CONFIG,
+  codexPmPolicyArgs,
   codexExecutableReadOnlyRoots,
   codexNetworkReadOnlyRoots,
   createIsolatedCodexAppServerArgs,
@@ -14,6 +16,21 @@ import {
 } from "./codex-security-config.js";
 
 describe("Codex security configuration", () => {
+  it("restricts PM launches and every thread mode without weakening ordinary workers", () => {
+    const args = createIsolatedCodexAppServerArgs({}, [], undefined, [], false, true);
+    expect(args.slice(-codexPmPolicyArgs().length - 1)).toEqual([...codexPmPolicyArgs(), "app-server"]);
+    expect(args).toContain('default_permissions="paperclip-runner-workspace-read-only"');
+    for (const mode of ["default", "plan"] as const) {
+      expect(createSecuredCodexThreadParams("/workspace", mode, true, true, {}, true))
+        .toMatchObject({ permissions: "paperclip-runner-workspace-read-only", config: CODEX_PM_CONFIG });
+    }
+    expect(createSecuredCodexThreadParams("/workspace", "default", true, true, {}))
+      .toMatchObject({ permissions: "paperclip-runner-workspace-only", config: { "skills.include_instructions": true } });
+    for (const environment of [{ PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }, { PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }]) {
+      expect(() => createIsolatedCodexAppServerArgs(environment, [], undefined, [], false, true)).toThrow("isolated, sandboxed");
+      expect(() => createSecuredCodexThreadParams("/workspace", "default", true, false, environment, true)).toThrow("isolated, sandboxed");
+    }
+  });
   it("uses the same actual pinned executable for native defaults and direct evals without a global Codex PATH", () => {
     const command = resolvePinnedCodexCommand();
     expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);

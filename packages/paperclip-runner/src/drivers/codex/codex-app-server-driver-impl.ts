@@ -1,3 +1,4 @@
+import { admitCodexPmHook } from "./codex-pm-policy.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import { codexProviderFailure } from "./provider-failure.js";
 import { writeManagedCodexObservability, redactObservabilityDiagnostic } from "../agent-observability.js";
@@ -295,6 +296,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         this.#options.includeCollaborationModeInstructions ?? true,
         this.#options.includeSkillInstructions ?? false,
         this.#options.environment,
+        this.#options.coordinationOnly,
       );
       if (workingDirectory === null) {
         delete threadParams.cwd;
@@ -694,7 +696,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       ...createSecuredCodexThreadParams(workingDirectory,
         this.#options.requestedCollaborationMode ?? "default",
         this.#options.includeCollaborationModeInstructions ?? true,
-        this.#options.includeSkillInstructions ?? false, this.#options.environment),
+        this.#options.includeSkillInstructions ?? false, this.#options.environment, this.#options.coordinationOnly),
       ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
       approvalPolicy: this.#options.approvalPolicy ?? "never",
       ...(this.#options.model ? { model: this.#options.model } : {}),
@@ -728,7 +730,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
         workingDirectory,
-        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot, [], this.#options.disableWebSearch),
+        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot, [], this.#options.disableWebSearch, this.#options.coordinationOnly, this.#providerDynamicTools().map(tool => text(tool.name))),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
         onDiagnostic: message => this.#options.onDiagnostic?.(redactObservabilityDiagnostic(message, this.#options.environment, this.#options.observability?.otelConfig)),
         processGroup: true,
@@ -803,6 +805,10 @@ export class CodexAppServerDriver implements HarnessDriver {
       capabilities: { experimentalApi: true, requestAttestation: false },
     });
     transport.notify("initialized");
+    // Runnerd performs the same admission in its owned provider process.
+    if (this.#options.coordinationOnly && !this.#options.transportFactory) {
+      await admitCodexPmHook(transport, this.#providerDynamicTools().map(tool => text(tool.name)));
+    }
     return initialized;
   }
 
@@ -878,7 +884,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     const permissionProfileId = text(activePermissionProfile.id);
     const requestedMode = this.#options.requestedCollaborationMode ?? "default";
     const requiredPermissionProfile =
-      text(createSecuredCodexThreadParams(workingDirectory, requestedMode, true, false, this.#options.environment).permissions);
+      text(createSecuredCodexThreadParams(workingDirectory, requestedMode, true, false, this.#options.environment, this.#options.coordinationOnly).permissions);
     if (
       permissionProfileId.length > 0 &&
       permissionProfileId !== requiredPermissionProfile
@@ -917,7 +923,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           legacyPolicy: boundedCodexValue(response.sandbox ?? null),
           rootAccess: "none",
           minimalRuntimeAccess: "read",
-          workspaceAccess: requestedMode === "plan" ? "read" : "write",
+          workspaceAccess: this.#options.coordinationOnly || requestedMode === "plan" ? "read" : "write",
           networkAccess: codexNetworkAccess(this.#options.environment),
           githubAuthenticationMode: this.#options.environment?.PAPERCLIP_GITHUB_AUTH_MODE ?? "managed",
         },
@@ -934,7 +940,7 @@ export class CodexAppServerDriver implements HarnessDriver {
               .map((value) => boundedText(value))
           : [],
         instructionPolicy: {
-          skillInstructions: this.#options.includeSkillInstructions ?? false,
+          skillInstructions: this.#options.coordinationOnly ? false : this.#options.includeSkillInstructions ?? false,
           appInstructions: false,
           collaborationInstructions:
             this.#options.includeCollaborationModeInstructions ?? true,

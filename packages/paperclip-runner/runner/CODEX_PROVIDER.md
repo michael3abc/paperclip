@@ -25,6 +25,19 @@ execution and finalization path.
   process group. Runner suspend and shutdown also stop the process without
   deleting the resumable thread identity.
 
+## Coordination-only PM profile
+
+Core selects `providerVersion: "codex-pm-v1"` only for its admitted PM tool policy.
+This profile requires read-only permissions, no external sandbox delegation, and
+no ambient skill/MCP integration. The launch args carry disabled shell tools and
+an exact-catalog PreToolUse hook. After initialize, before thread start/resume,
+Runner validates the owned session-flags hook against the launch descriptor,
+registers only its exact hash in the isolated Codex home's hook state, and verifies
+trusted readback. Missing or changed hooks fail startup. User/project/plugin hooks
+are never trusted by this flow; hook-trust bypass is never enabled. Dynamic tools
+still require Core's current project/run grants. Read-only permission does not
+force PM conversations into plan mode. Ordinary worker launches are unchanged.
+
 ## Recovery and duplicate safety
 
 The provider descriptor, Codex thread ID, account session ID, active Codex turn

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseNativeRuntimeContext, retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
 import { resolve } from "node:path";
-import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
+import { codexExecutableReadOnlyRoots, codexPmPolicyArgs, assertCodexPmHome } from "../drivers/codex/codex-security-config.js";
 import { createIsolatedCodexAppServerArgs } from "../drivers/codex/codex-app-server-driver.js";
 import { validatePreparedLaunchWorkingDirectory } from "../drivers/codex/codex-boundaries.js";
 import { usesPreconfiguredHome } from "../drivers/preconfigured-home.js";
@@ -29,6 +29,7 @@ export interface RunnerProviderLaunchRequirements {
     "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
     "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch" | "disableCodexProjectInstructions">;
   instructions: string;
+  coordinationToolNames?: string[];
   runtimeContext: NativeRuntimeContextSnapshot | null;
 }
 
@@ -56,6 +57,9 @@ export function runnerProviderLaunchRequirements(
     identity, provider: options.provider ?? "codex",
     model: typeof params.model === "string" ? params.model : null,
     instructions, runtimeContext,
+    ...(runtimeContext?.toolPolicy && (options.provider ?? "codex") === "codex" ? {
+      coordinationToolNames: Array.isArray(params.dynamicTools) ? params.dynamicTools.map(tool => String(tool.name)) : [],
+    } : {}),
     settings: {
       acpxAgent: options.acpxAgent, acpxMode: options.acpxMode,
       acpxPermissionMode: options.acpxPermissionMode,
@@ -116,7 +120,7 @@ export function validatePreparedRunnerLaunch(
   if (requirements.provider === "codex" && (descriptor.approvalPolicy !== requirements.approvalPolicy
     || Boolean(descriptor.readOnly) !== requirements.readOnly)) reject();
   if (requirements.provider === "codex" && (requirements.settings.disableCodexWebSearch === true
-    || requirements.settings.disableCodexProjectInstructions === true)) {
+    || requirements.settings.disableCodexProjectInstructions === true || requirements.runtimeContext?.toolPolicy)) {
     if (!Array.isArray(descriptor.args) || descriptor.args.some(arg => typeof arg !== "string")) reject();
     const args = descriptor.args as string[];
     const commandIndex = args.indexOf("app-server");
@@ -124,6 +128,7 @@ export function validatePreparedRunnerLaunch(
     const policy = [
       ...(requirements.settings.disableCodexProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
       ...(requirements.settings.disableCodexWebSearch ? ["-c", 'web_search="disabled"'] : []),
+      ...(requirements.runtimeContext?.toolPolicy ? codexPmPolicyArgs(requirements.coordinationToolNames) : []),
     ];
     if (args.some(arg => arg === "--" || (requirements.settings.disableCodexWebSearch
       && (arg === "--search" || arg.startsWith("--search=")))) || (commandIndex >= 0 && commandIndex !== args.length - 1)
@@ -138,6 +143,7 @@ export function validatePreparedRunnerLaunch(
       || descriptor.runId !== requirements.identity.runId
       || descriptor.normalizedSessionId !== requirements.identity.normalizedSessionId) reject();
   }
+  if (requirements.runtimeContext?.toolPolicy && (descriptor.preconfiguredHome || descriptor.externallySandboxed)) reject();
   const expected = createRunnerProviderLaunch(requirements, {
     options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
     providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
@@ -329,7 +335,7 @@ export function createRunnerProviderLaunch(
                       ? "opencode_server"
                       : "codex_app_server",
                   providerVersion:
-                    provider === "opencode" ? "1.18.34" : "codex-app-server-v1",
+                    provider === "opencode" ? "1.18.34" : runtimeContext?.toolPolicy ? "codex-pm-v1" : "codex-app-server-v1",
                   command:
                     provider === "opencode"
                       ? providerNodeCommand
@@ -339,6 +345,8 @@ export function createRunnerProviderLaunch(
                       ? [opencodeProxyPath]
                       : createRunnerdCodexAppServerArgs({
                           args: input.options.codexArgs,
+                          coordinationOnly: Boolean(runtimeContext?.toolPolicy),
+                          coordinationToolNames: requirements.coordinationToolNames,
                           disableWebSearch: settings.disableCodexWebSearch,
                           environment: input.options.environment,
                           codexHome,
@@ -378,7 +386,7 @@ export function createRunnerProviderLaunch(
                         )
                       : baseInstructions,
                   collaborationMode:
-                    requirements.readOnly
+                    requirements.readOnly && !runtimeContext?.toolPolicy
                       ? "plan"
                       : "default",
                   ...(requirements.preparedConversation
@@ -387,7 +395,7 @@ export function createRunnerProviderLaunch(
                   includeCollaborationModeInstructions:
                     includeCodexCollaborationInstructions,
                   ...(provider === "codex"
-                    ? { includeSkillInstructions: runtimeContext !== null }
+                    ? { includeSkillInstructions: runtimeContext !== null && !runtimeContext.toolPolicy }
                     : {}),
                   runtimeContext,
                 };
@@ -443,6 +451,8 @@ export function createRunnerdCodexAppServerArgs(input: {
   readOnlyRoots?: string[];
   instructionWorkingCopyRoot?: string;
   disableProjectInstructions?: boolean;
+  coordinationOnly?: boolean;
+  coordinationToolNames?: string[];
   disableWebSearch?: boolean;
   args?: string[];
 }): string[] {
@@ -450,6 +460,13 @@ export function createRunnerdCodexAppServerArgs(input: {
   // runner state outside provider reach. Always bind those names to the actual
   // isolated runner home; a stale controller environment must never cause the
   // execution workspace itself to become an explicit deny root.
+  if (input.coordinationOnly) {
+    assertCodexPmHome(input.environment ?? {});
+    if (input.args?.some(arg => arg !== "app-server") || (input.args?.length ?? 0) > 1) {
+      throw new Error("runner_codex_pm_custom_launch_unqualified");
+    }
+  }
+  const pmArgs = input.coordinationOnly ? codexPmPolicyArgs(input.coordinationToolNames) : [];
   const args = input.args ? [...input.args] : [
     ...createIsolatedCodexAppServerArgs(
       {
@@ -460,12 +477,16 @@ export function createRunnerdCodexAppServerArgs(input: {
       [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
       input.instructionWorkingCopyRoot,
       usesPreconfiguredHome(input.environment) && input.runtimeStateRoot ? [input.runtimeStateRoot] : [],
+      false, input.coordinationOnly, input.coordinationToolNames,
     ),
   ];
+  // Keep the strict filesystem projection, then place PM tool policy after all
+  // other restrictions so a prepared host cannot override its final values.
+  if (!input.args && pmArgs.length > 0) args.splice(args.length - 1 - pmArgs.length, pmArgs.length);
   if (!input.args && usesPreconfiguredHome(input.environment) && input.workingDirectory) {
     args.unshift("-c", `projects={${JSON.stringify(input.workingDirectory)}={trust_level="trusted"}}`);
   }
-  if (input.disableWebSearch || input.disableProjectInstructions) {
+  if (input.disableWebSearch || input.disableProjectInstructions || input.coordinationOnly) {
     // Apply Core's restriction after host overrides. Keep the override before
     // the Codex subcommand and after any earlier provider-home configuration.
     const commandIndex = args.indexOf("app-server");
@@ -477,7 +498,8 @@ export function createRunnerdCodexAppServerArgs(input: {
     }
     args.splice(commandIndex < 0 ? args.length : commandIndex, 0,
       ...(input.disableProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
-      ...(input.disableWebSearch ? ["-c", 'web_search="disabled"'] : []));
+      ...(input.disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
+      ...pmArgs);
   }
   return args;
 }

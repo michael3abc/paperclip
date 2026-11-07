@@ -311,7 +311,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
 export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
   const pm = pmCoordinationScope({ ...input.agent, runtimeConfig: input.agent.runtimeConfig ?? null });
   const preconfigured = input.runtimeConfig.homeMode === "preconfigured";
-  if (pm && preconfigured) throw new Error("PM coordination requires the isolated Claude ACP runtime context");
+  if (pm && preconfigured) throw new Error("PM coordination requires an isolated native runtime context");
   if (pm && input.instructionWorkingCopy?.kind !== "agent_files") throw new Error("PM coordination requires a registered agent-directory working copy for controlled bundle reads and saves");
   const emptyMcpDigest = sha256("preconfigured");
   const [instructions, skills, mcp] = await Promise.all([

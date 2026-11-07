@@ -1241,6 +1241,9 @@ impl CodexProvider {
                 }),
             )?;
             provider.send_frame(&json!({"method": "initialized"}))?;
+            crate::codex_pm_policy::admit_owned_hook(config, |method, params| {
+                provider.request(method, params)
+            })?;
 
             let mut params = json!({
                 "cwd": config.cwd,

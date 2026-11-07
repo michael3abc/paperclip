@@ -30,7 +30,7 @@ import { documentService } from "../services/documents.js";
 import { agentFileStore, snapshotAgentFiles } from "../services/agent-file-store.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 
-describe("PM capabilities on owned storage and database", () => {
+describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on owned storage and database", (pmHarness) => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>, db: ReturnType<typeof createDb>, home: string;
   const previousHome = process.env.PAPERCLIP_HOME;
   const companyId = randomUUID(), projectId = randomUUID(), otherProjectId = randomUUID(), agentId = randomUUID(), workerId = randomUUID(), userId = randomUUID();
@@ -55,7 +55,7 @@ describe("PM capabilities on owned storage and database", () => {
     const runtimeConfig = { workspaceBinding: { mode: "project_pm", projectId, workerRoot: home, workerSlots: 0, workerIsolation: "shared" },
       pmDelegation: policy };
     await db.insert(agents).values([
-      { id: agentId, companyId, name: "PM", status: "active", adapterType: "claude_local", runtimeConfig,
+      { id: agentId, companyId, name: "PM", status: "active", adapterType: pmHarness, runtimeConfig,
         adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" } },
       { id: workerId, companyId, name: "Shared worker", status: "active", adapterType: "codex_local", runtimeConfig: { requireTaskWorktree: true } },
     ]);
@@ -111,7 +111,7 @@ describe("PM capabilities on owned storage and database", () => {
     await expect(buildNativeRuntimeContext({ db, agent: agent!, runId, runtimeConfig: {}, runtimeSkillEntries: [] }))
       .rejects.toThrow("registered agent-directory working copy");
     await expect(buildNativeRuntimeContext({ db, agent: agent!, runId, runtimeConfig: { homeMode: "preconfigured" }, runtimeSkillEntries: [] }))
-      .rejects.toThrow("isolated Claude ACP runtime");
+      .rejects.toThrow("isolated native runtime");
     const names = authority.definitions().map(tool => tool.name);
     expect(names).toContain("read_bundle_file"); expect(names).toContain("write_bundle_file"); expect(names).toContain("request_approval");
     for (const tool of ["workspace_write", "workspace_run", "hire_agent", "decide_approval", "fake_connector_write"]) {

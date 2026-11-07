@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod codex_pm_policy;
+
 pub mod acpx_candidate_admission;
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;

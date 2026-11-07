@@ -27,6 +27,14 @@ async function select(field: string, value: string) {
   const element = container.querySelector<HTMLSelectElement>(`[aria-label="Worker 1 ${field}"]`)!;
   await act(async () => { element.value = value; element.dispatchEvent(new Event("change", { bubbles: true })); });
 }
+async function purpose(value: string) {
+  const element = container.querySelector<HTMLInputElement>('[aria-label="Worker 1 purpose"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+function preview() { return JSON.parse(container.querySelector('[aria-label="Worker settings JSON"]')!.textContent!); }
 beforeEach(() => {
   vi.clearAllMocks(); api.workerPolicy.mockResolvedValue(fixture());
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -35,13 +43,18 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); client.clear(); });
 
 describe("PM worker settings", () => {
-  it("requires explicit permission/default and saves five fields with revision/hash, then reloads", async () => {
+  it("previews the draft as JSON and saves purpose with explicit permission/default, then reloads", async () => {
     await render(); await click(button("Add worker option"));
+    expect(container.textContent).not.toContain("Review legacy settings explicitly.");
+    expect(container.textContent).not.toContain("Handwritten review rules");
+    expect(container.textContent).not.toContain("Choose the default and allowed worker settings");
     await select("harness", workerId); await select("model", "gpt-6.1-sol");
     await select("thinking", "high"); await select("speed", "fast");
+    await purpose('一般 coding | "檢查"');
     await click(container.querySelector("input[type=radio]")!);
     expect(button("Save workers").disabled).toBe(true);
     await select("permission", "approve-reads");
+    expect(preview().workers[0].selections[0]).toMatchObject({ model: "gpt-6.1-sol", thinking: "high", speed: "fast", purpose: '一般 coding | "檢查"' });
     api.saveWorkerPolicy.mockImplementation(async (_id, input) => {
       api.workerPolicy.mockResolvedValue({ ...fixture(), policy: input.policy, revision: "revision-1", documentHash: "a".repeat(64), warnings: [] });
       return { policy: input.policy, revision: "revision-1", documentHash: "a".repeat(64) };
@@ -50,16 +63,22 @@ describe("PM worker settings", () => {
     await vi.waitFor(() => expect(container.textContent).toContain("Worker settings and WORKERS.md saved."));
     const payload = api.saveWorkerPolicy.mock.calls[0]![1];
     expect(payload).toMatchObject({ baseRevision: null, baseHash: null, policy: { version: 2,
-      workers: [{ agentId: workerId, harness: "codex_local", selections: [{ model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "fast" }] }] } });
+      workers: [{ agentId: workerId, harness: "codex_local", selections: [{ model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "fast", purpose: '一般 coding | "檢查"' }] }] } });
     expect(payload.policy.defaultSelectionId).toBe(payload.policy.workers[0].selections[0].id);
     await click(button("Discard and reload"));
     expect(container.querySelector<HTMLSelectElement>('[aria-label="Worker 1 speed"]')!.value).toBe("fast");
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Worker 1 purpose"]')!.value).toBe('一般 coding | "檢查"');
+    await purpose("未儲存用途");
+    expect(preview().workers[0].selections[0].purpose).toBe("未儲存用途");
+    await click(button("Discard and reload"));
+    expect(preview().workers[0].selections[0].purpose).toBe('一般 coding | "檢查"');
   });
   it("disables unsupported speed and retains the draft on a conflict", async () => {
     const initial = fixture(); initial.revision = "old"; initial.documentHash = "a".repeat(64);
     initial.policy = { version: 2, defaultSelectionId: choiceId, workers: [{ agentId: workerId, harness: "codex_local",
       selections: [{ id: choiceId, model: "gpt-6.1-sol", thinking: "high", permission: "deny-all", speed: "standard" }] }] };
     api.workerPolicy.mockResolvedValue(initial); await render(); await select("model", "restricted-model");
+    expect(preview().workers[0].selections[0].purpose).toBe("");
     expect(container.querySelector<HTMLOptionElement>('[aria-label="Worker 1 speed"] option[value=fast]')!.disabled).toBe(true);
     expect(container.querySelector<HTMLSelectElement>('[aria-label="Worker 1 thinking"]')!.disabled).toBe(true);
     api.saveWorkerPolicy.mockRejectedValue(new Error("WORKERS.md changed. Reload before saving."));

@@ -25,7 +25,7 @@ describe("PM worker policy with owned database and real files", () => {
   const issueId = randomUUID(), otherIssueId = randomUUID(), runId = randomUUID(), legacyRunId = randomUUID(), otherRunId = randomUUID(), choiceId = randomUUID();
   const actor = { type: "board" as const, userId, source: "session" as const };
   const policy: PmWorkerPolicy = { version: 2, defaultSelectionId: choiceId, workers: [{ agentId: workerId, harness: "codex_local",
-    selections: [{ id: choiceId, model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "standard" }] }] };
+    selections: [{ id: choiceId, model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "一般 coding agent" }] }] };
   const readAgent = async () => (await db.select().from(agents).where(eq(agents.id, pmId)))[0]!;
   const scope = async () => pmCoordinationScope(await readAgent())!;
   beforeAll(async () => {
@@ -70,6 +70,7 @@ describe("PM worker policy with owned database and real files", () => {
     expect(after.policy).toEqual(policy); expect(after.revision).toBe(receipt.revision); expect(after.warnings).toEqual([]);
     expect(after.document).toContain("Keep handwritten review and isolation rules.");
     expect(after.document).toContain("approve-reads");
+    expect(JSON.parse(after.document.split("```json\n")[1]!.split("\n```")[0]!)).toEqual(policy);
     const task = (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
     expect(task.assigneeAdapterOverrides).toEqual({ adapterConfig: { model: "historical-model" } });
     expect((await db.select().from(agents).where(eq(agents.id, workerId)))[0]!.adapterConfig?.model).toBe("unchanged-global-model");

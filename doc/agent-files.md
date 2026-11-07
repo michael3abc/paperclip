@@ -35,11 +35,19 @@ overwrite newer canonical content with an older run copy.
 Markdown does not grant worker, model, budget or approval authority. The server's
 Owner-maintained `runtimeConfig.pmDelegation` stores the accepted worker IDs and
 version-2 options (stable ID, harness, model, thinking, explicit permission and
-speed) and a unique default. Agent Runtime settings use GET/PUT
+speed), optional `purpose` guidance (up to 500 characters), and a unique default.
+Purpose describes intended use, not provider parameters or permission grants.
+Agent Runtime settings use GET/PUT
 `/agents/:id/worker-policy` with configuration revision and WORKERS.md base hash.
 The file-store transaction persists policy/config history and the managed block
-between `paperclip:worker-policy:start` and `paperclip:worker-policy:end` markers;
-handwritten prose remains intact. Generic agent patches cannot change the policy,
+between `paperclip:worker-policy:start` and `paperclip:worker-policy:end` markers.
+The managed content is a fenced JSON policy, including each option's purpose;
+the surrounding WORKERS.md file is not renamed. The UI previews the current form
+as JSON immediately, including unsaved edits, rather than showing the old Markdown;
+handwritten prose remains intact. Existing version-2 Markdown-table projections
+must be saved once through the same revision/hash-checked API to generate JSON;
+no defaults or permissions are inferred and no read endpoint rewrites documents.
+Generic agent patches cannot change the policy,
 and bundle saves cannot change/remove this block. Dispatch verifies the current
 policy and projection; an incomplete file/config save returns an error and blocks
 new dispatch until explicitly repaired. This API does not resynchronize existing

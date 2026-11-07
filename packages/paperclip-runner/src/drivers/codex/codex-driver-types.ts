@@ -21,6 +21,8 @@ export interface CodexAppServerDriverOptions {
   reasoningEffort?: string;
   /** Saved hosted-search restriction for the default process transport. */
   disableWebSearch?: boolean;
+  /** Admitted server PM policy; never inferred from prompts or environment. */
+  coordinationOnly?: boolean;
   approvalPolicy?: "never" | "on-request" | "untrusted";
   /** Paperclip runtime instructions. Codex receives these as additive developer
    * instructions; the historical option name remains compatible with callers. */

@@ -1,3 +1,6 @@
+import { qualifyCodexPmPolicy } from "./codex-pm-policy.test-support.js";
+import { admitCodexPmHook } from "./codex-pm-policy.js";
+import { codexPmHookCommand } from "./codex-security-config.js";
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   PRP_BLOCK_TOOL_DESCRIPTION,
@@ -842,4 +845,40 @@ it("reapplies explicit skills after recovery without persisting them into ordina
       expect(items.filter((item) => item.type === "skill")).toEqual(selected);
     } finally { await session.close(); }
   }
+});
+
+
+describe("Codex PM hook admission", () => {
+  it("enforces the policy in the pinned provider, including Code Mode dispatch and native subagent denial", async () => {
+    const proof = await qualifyCodexPmPolicy();
+    expect(proof).toMatchObject({ passed: true, dynamicCalls: ["create_task"], unauthorizedFilesCreated: false });
+    expect(proof.deniedOutputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ call_id: "cspawn", output: expect.stringContaining("PM_TOOL_DENIED") }),
+    ]));
+  }, 20000);
+  const owned = () => ({ key: "/<session-flags>/config.toml:pre_tool_use:0:0", source: "sessionFlags",
+    command: codexPmHookCommand(["create_task"]), matcher: ".*", eventName: "preToolUse", handlerType: "command",
+    async: false, enabled: true, timeoutSec: 3, currentHash: `sha256:${"a".repeat(64)}`, trustStatus: "untrusted" });
+  it("registers only the exact owned hash and reads back trust before proceeding", async () => {
+    const hook = owned(), calls: string[] = [];
+    await admitCodexPmHook({ request: async (method, params) => {
+      calls.push(method);
+      if (method === "config/value/write") {
+        expect(params).toEqual({ keyPath: `hooks.state.${JSON.stringify(hook.key)}.trusted_hash`, value: hook.currentHash, mergeStrategy: "replace" });
+        hook.trustStatus = "trusted"; return {};
+      }
+      return { data: [{ hooks: [hook, { ...hook, key: "user-hook", command: "untrusted-user-script" }] }] };
+    } }, ["create_task"]);
+    expect(calls).toEqual(["hooks/list", "config/value/write", "hooks/list"]);
+  });
+  it.each([{ command: "foreign" }, { source: "user" }, { enabled: false }, { async: true }, { currentHash: "unknown" }])
+    ("refuses a changed hook without trusting it: %j", async patch => {
+      const request = vi.fn(async () => ({ data: [{ hooks: [{ ...owned(), ...patch }] }] }));
+      await expect(admitCodexPmHook({ request }, ["create_task"])).rejects.toThrow("codex_pm_hook_mismatch");
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+  it("fails closed when trust cannot be read back", async () => {
+    await expect(admitCodexPmHook({ request: async () => ({ data: [{ hooks: [owned()] }] }) }, ["create_task"]))
+      .rejects.toThrow("codex_pm_hook_trust_not_confirmed");
+  });
 });
