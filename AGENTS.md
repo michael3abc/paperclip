@@ -289,13 +289,13 @@ Run the browser suites only when your change touches them or when you are explic
 
 For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
 
-Run this full check before claiming repo work done in a PR-ready hand-off, or when the change scope is broad enough that targeted checks are not sufficient:
-
-```sh
-pnpm -r typecheck
-pnpm test:run
-pnpm build
-```
+Owner policy for this fork (2026-11-07): never run the full test suite, including
+at hand-off, deployment, recovery or as a selector fallback. Run only tests related
+to the change. Use the managed `fork-checks.py --since-release <previous release>`
+workflow; unsupported selection stops explicitly. If a selection expands to
+essentially the whole suite, narrow it and record the file-level rationale before
+execution. Keep build integrity, database backup/history and service readiness
+checks. See `/home/michael/services/README.md` for the deployment contract.
 
 If memory is limited, use `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
 

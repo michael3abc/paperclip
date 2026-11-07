@@ -140,6 +140,17 @@ GitHub Actions owns `pnpm-lock.yaml`.
 
 ## Trusted PR Workflow
 
+For local fork development and deployment, the Owner's 2026-11-07 policy overrides
+the upstream full-suite defaults described below: run only change-related tests,
+never the full suite or an automatic full fallback. The managed
+`/home/michael/services/systemd/platform/paperclip/fork-checks.py` requires
+`--since-release`; selection errors and unsupported global inputs stop before
+checks with exit 2. Review and narrow essentially whole-suite selections before
+running them. Build integrity, DB safety and service readiness remain required.
+Historical full receipts remain evidence for their original releases, not rerun
+instructions. The following GitHub workflow description is upstream context,
+not authorization to launch full checks on this fork.
+
 The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
