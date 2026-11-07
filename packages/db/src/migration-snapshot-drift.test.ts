@@ -64,5 +64,8 @@ describe("migration snapshot drift", () => {
       statements,
       `${file} no longer matches src/schema. Run \`pnpm --filter @paperclipai/db generate\` and commit the migration it emits; do not hand-edit the snapshot.`,
     ).toEqual([]);
-  });
+  // Cold imports cover the complete schema. Keep a bounded allowance for the
+  // release runner's deliberately reduced CPU allocation; the empty diff is
+  // still required and no schema mismatch is ignored.
+  }, 30_000);
 });

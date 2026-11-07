@@ -786,7 +786,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Create a typed, durable interaction on the active task.",
+    "description": "Create a typed, durable decision request on the active task. With company delegation enabled, worker requests go to the task's project PM and PM requests go to the company delegate. Do not find the delegate in the worker catalog or create an execution task for escalation. Omit resolverPolicy for ordinary decisions; the server preserves human-only gates.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -825,7 +825,7 @@
         },
         "resolverPolicy": {
           "const": "human_only",
-          "description": "Optionally require an authenticated human response."
+          "description": "Reserve this request for the human when explicitly required or when the matter must be escalated to the human. Omit for ordinary PM/delegate decisions."
         },
         "targetRevisionId": {
           "description": "Optional bound document revision.",
@@ -904,7 +904,7 @@
     "placement": "always",
     "requiredClaims": [],
     "schema": "paperclip.semantic-action.v1",
-    "title": "Request structured human input",
+    "title": "Request a decision",
     "version": 1
   },
   {

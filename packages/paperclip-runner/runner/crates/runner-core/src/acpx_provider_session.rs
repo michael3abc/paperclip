@@ -886,8 +886,19 @@ impl AcpxProviderSession {
             // fixed diagnostic. Internal dispatcher payloads must not cross
             // the sidecar boundary on the separate success-result channel.
             let message = if result.result.get("success").and_then(Value::as_bool) == Some(false)
-                && result.result.get("publicError").and_then(|value| value.get("message")).and_then(Value::as_str).is_some() {
-                result.result["publicError"]["message"].as_str().unwrap().chars().take(2_000).collect()
+                && result
+                    .result
+                    .get("publicError")
+                    .and_then(|value| value.get("message"))
+                    .and_then(Value::as_str)
+                    .is_some()
+            {
+                result.result["publicError"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .take(2_000)
+                    .collect()
             } else if is_reserved_terminal_operation(&result.operation_id) {
                 reserved_terminal_feedback(&result.result)
             } else {
