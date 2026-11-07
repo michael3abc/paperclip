@@ -139,3 +139,9 @@ delivery and workspace through provider execution; negative cases cover foreign
 ownership, missing directories and Git-required workers. Scope is limited to
 project-bound copies with matching ownership and the copy-only receipt; source-free
 Retry retains its existing explicit Git, path and recovery validation. No migration is added.
+
+HOM-236 acceptance exposed saved-review finalization after shutdown failure released
+its execution lock. Finalizer-only recovery rechecks original failure/accepted-result
+receipts, review scope, process stop, leases, pauses and successor absence under
+transaction locks. Live tools retain strict execution-lock authority; formal review
+effects and dependency wakes remain atomic and idempotent. No migration is added.

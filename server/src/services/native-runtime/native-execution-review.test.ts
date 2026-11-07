@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import os from "node:os";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, agentWakeupRequests, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, approvals, issueApprovals,
-  issueComments, issueExecutionDecisions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+  issueComments, issueExecutionDecisions, issueTreeHolds, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../issue-execution-policy.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
 import { prepareNativeExecutionReview } from "./native-execution-review.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
@@ -136,6 +141,95 @@ describe("native execution policy reviews", () => {
     expect((await f.read()).assigneeAgentId).toBe(f.agentId);
     expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.agentId, f.workerId)))).toHaveLength(0);
+  });
+
+  async function releasedReview(decision: "accept" | "reject" = "accept", humanGate = false) {
+    const f = await fixture(humanGate);
+    await f.resolve(decision);
+    await f.finish("failed");
+    // Heartbeat failure cleanup releases the issue; workspace finalization alone
+    // intentionally does not. Repair must reconcile the original accepted result.
+    const processStartedAt = new Date();
+    const child = spawn(process.execPath, ["-e", ""], { detached: true, stdio: "ignore" });
+    await new Promise<void>((resolve, reject) => { child.once("exit", () => resolve()); child.once("error", reject); });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "provider_transport_failed",
+      processPid: child.pid!, processGroupId: child.pid!, processStartedAt })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: f.agentId,
+      eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info", message: "Owned fixture process exited",
+      payload: { targetKind: "local", hostname: os.hostname(), processPid: child.pid!, processGroupId: child.pid!,
+        processStartedAt: processStartedAt.toISOString() } });
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, phase: "workspace_finalize", status: "succeeded" });
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    return f;
+  }
+
+  it("settles the saved review after failed finalization released its execution lock", async () => {
+    const f = await releasedReview();
+    expect(await f.read()).toMatchObject({ status: "in_review", executionRunId: null });
+    await expect(f.resolve("accept")).rejects.toThrow();
+    await reconcileNativeFinalizations(db, [f.runId]);
+    expect(await f.read()).toMatchObject({ status: "done", executionRunId: null,
+      executionState: { status: "completed" } });
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(1);
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(1);
+  });
+
+  it.each(["reject", "human-gate"] as const)("preserves %s during released review recovery", async kind => {
+    const f = await releasedReview(kind === "reject" ? "reject" : "accept", kind === "human-gate");
+    await reconcileNativeFinalizations(db, [f.runId]);
+    expect(await f.read()).toMatchObject(kind === "reject"
+      ? { status: "in_progress", assigneeAgentId: f.workerId, executionState: { status: "changes_requested" } }
+      : { status: "in_review", assigneeUserId: "reserved-owner", executionState: { currentStageType: "approval" } });
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(wakes).toHaveLength(kind === "reject" ? 1 : 0);
+  });
+
+  it.each(["stage", "participant", "policy", "version", "successor", "checkout", "process", "no-stop-proof",
+    "workspace", "agent-pause", "task-pause", "cancelled"])("rejects released review recovery with %s", async fault => {
+    const f = await releasedReview(), before = await f.read();
+    if (fault === "stage") await db.update(issues).set({ executionState: { ...before.executionState, currentStageId: randomUUID() } }).where(eq(issues.id, f.issueId));
+    if (fault === "participant") await db.update(issues).set({ assigneeAgentId: f.workerId }).where(eq(issues.id, f.issueId));
+    if (fault === "policy") await db.update(issues).set({ executionPolicy: { ...before.executionPolicy, maxReviewRounds: 9 } }).where(eq(issues.id, f.issueId));
+    if (fault === "version") await db.update(issues).set({ statusVersion: Number(before.statusVersion) + 1 }).where(eq(issues.id, f.issueId));
+    if (fault === "successor") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, runtimeMode: "native", status: "succeeded" });
+    if (fault === "checkout") await db.update(issues).set({ checkoutRunId: f.runId }).where(eq(issues.id, f.issueId));
+    if (fault === "process") {
+      const started = new Date();
+      await db.update(heartbeatRuns).set({ processPid: process.pid, processGroupId: null, processStartedAt: started }).where(eq(heartbeatRuns.id, f.runId));
+      await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: f.agentId,
+        eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info", message: "Live fixture process",
+        payload: { targetKind: "local", hostname: os.hostname(), processPid: process.pid, processGroupId: null, processStartedAt: started.toISOString() } });
+    }
+    if (fault === "no-stop-proof") await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (fault === "workspace") await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.heartbeatRunId, f.runId));
+    if (fault === "agent-pause") await db.update(agents).set({ lifecycleState: "paused", lifecycleHolds: ["manual"] }).where(eq(agents.id, f.agentId));
+    if (fault === "task-pause") await db.insert(issueTreeHolds).values({ companyId: f.companyId, rootIssueId: f.issueId, mode: "pause" });
+    if (fault === "cancelled") await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded" })).rejects.toThrow();
+    expect((await f.read()).status).toBe("in_review");
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+  });
+
+  it("rolls back a recovered review decision and settles it exactly once on reconciliation", async () => {
+    const f = await releasedReview("reject");
+    await expect(finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", failpoint: "status_projection" }))
+      .resolves.toMatchObject({ phase: "retryable_failure", failureCode: "side_effect_planning_failed" });
+    expect((await f.read()).status).toBe("in_review");
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseExpiresAt: new Date(0) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    await reconcileNativeFinalizations(db, [f.runId]);
+    await reconcileNativeFinalizations(db, [f.runId]);
+    expect((await f.read()).status).toBe("in_progress");
+    expect(await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, f.issueId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
   });
 
   it("does not complete through an independent pending approval", async () => {

@@ -1,10 +1,15 @@
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
+import { agents, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults,
+  statusDecisions, workAssessments, workspaceOperations, type Db } from "@paperclipai/db";
 import { forbidden } from "../../errors.js";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState, applyIssueExecutionPolicyTransition } from "../issue-execution-policy.js";
 import { nativeSha256 } from "./canonical.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 import { pendingNativeGovernance } from "./native-governance.js";
+import { issueTreeControlService } from "../issue-tree-control.js";
+import { hasNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
+import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Issue = typeof issues.$inferSelect;
@@ -72,13 +77,19 @@ export async function prepareNativeExecutionReview(db: Db, binding: Binding) {
 
 /** Used again under the issue/run locks; a wake or cached tool is never authority. */
 export function assertNativeExecutionReviewAssignment(assignment: NativeExecutionReviewAssignment, run: Run, issue: Issue) {
+  if (issue.executionRunId !== run.id)
+    throw forbidden("The assigned execution review changed; this run cannot decide another review");
+  assertExecutionReviewScope(assignment, run, issue);
+}
+
+function assertExecutionReviewScope(assignment: NativeExecutionReviewAssignment, run: Run, issue: Issue) {
   const wake = record(record(run.contextSnapshot).executionStage);
   const participant = record(wake.currentParticipant);
   const state = parseIssueExecutionState(issue.executionState);
   const policy = normalizeIssueExecutionPolicy(issue.executionPolicy);
   const stage = policy?.stages.find(stage => stage.id === assignment.stageId);
   if (run.companyId !== issue.companyId || run.nativeIssueId !== issue.id || run.runtimeMode !== "native"
-    || issue.executionRunId !== run.id || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId
+    || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId
     || issue.status !== "in_review" || state?.status !== "pending"
     || wake.wakeRole !== "reviewer" || wake.stageType !== "review" || wake.stageId !== assignment.stageId
     || participant.type !== "agent" || participant.agentId !== run.agentId
@@ -109,6 +120,10 @@ export function readNativeExecutionReviewDecision(run: Pick<Run, "contextSnapsho
 
 export function nativeExecutionReviewTransition(issue: Issue, run: Run, decision: NativeExecutionReviewDecision) {
   assertNativeExecutionReviewAssignment(decision.assignment, run, issue);
+  return executionReviewTransition(issue, run, decision);
+}
+
+function executionReviewTransition(issue: Issue, run: Run, decision: NativeExecutionReviewDecision) {
   if (nativeSha256(readNativeExecutionReviewDecision(run)) !== nativeSha256(decision))
     throw new Error("native_execution_review_receipt_changed");
   const requestedStatus = decision.decision === "accept" ? "done" : "in_progress";
@@ -129,9 +144,63 @@ export function nativeExecutionReviewTransition(issue: Issue, run: Run, decision
   return { patch, decision: transition.decision, status };
 }
 
+/** Finalizer-only recovery of an already saved decision, never new tool authority.
+ * The committer repeats this proof while holding the issue/coordinator/run locks.
+ * Failed status alone proves neither process termination nor review ownership. */
+async function assertReleasedReviewFinalization(db: Db, issue: Issue, run: Run, decision: NativeExecutionReviewDecision) {
+  assertExecutionReviewScope(decision.assignment, run, issue);
+  const unavailable = () => forbidden("Saved execution review recovery is no longer authorized or its execution has not stopped");
+  if (issue.executionRunId || issue.checkoutRunId || !["failed", "succeeded"].includes(run.status)
+    || !run.finishedAt || hasNativeWorkspaceFinalizationOwner(run.runnerProfileJson)) throw unavailable();
+  const [reviewer] = await db.select({ status: agents.status, lifecycle: agents.lifecycleState, holds: agents.lifecycleHolds })
+    .from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, issue.companyId))).for("share", { noWait: true });
+  if (!reviewer || reviewer.lifecycle !== "ready" || reviewer.holds.length
+    || ["paused", "terminated", "pending_approval"].includes(reviewer.status)
+    || await issueTreeControlService(db).getActivePauseHoldGate(issue.companyId, issue.id)) throw unavailable();
+  const [otherRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, issue.companyId), ne(heartbeatRuns.id, run.id),
+    or(eq(heartbeatRuns.nativeIssueId, issue.id), eq(heartbeatRuns.issueId, issue.id),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
+    or(gte(heartbeatRuns.createdAt, run.createdAt), inArray(heartbeatRuns.status, ["queued", "running"])),
+  )).limit(1);
+  if (otherRun) throw unavailable();
+  const [proof] = await db.select({ prior: workAssessments, decision: statusDecisions, result: nativeRunResults })
+    .from(nativeRunFinalizations)
+    .innerJoin(statusDecisions, eq(statusDecisions.id, nativeRunFinalizations.decisionId))
+    .innerJoin(workAssessments, eq(workAssessments.id, statusDecisions.assessmentId))
+    .innerJoin(nativeRunResults, eq(nativeRunResults.id, nativeRunFinalizations.resultId))
+    .where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, issue.companyId),
+      eq(nativeRunFinalizations.issueId, issue.id))).limit(1);
+  if (!proof || proof.decision.reasonCode !== "finalization_failed_claim_preserved"
+    || proof.decision.decisionJson.statusAction !== "preserve"
+    || proof.prior.priorIssueStatus !== issue.status || proof.prior.priorStatusVersion !== Number(issue.statusVersion)
+    || proof.prior.priorDecisionId !== issue.lastStatusDecisionId
+    || proof.result.schemaStatus !== "accepted"
+    || record(proof.result.resultJson.terminal).runTerminalState !== "succeeded"
+    || record(proof.result.resultJson.terminal).turnTerminalState !== "completed"
+    || record(proof.result.resultJson.result).reportedWorkDisposition !== "done") throw unavailable();
+  const [workspace] = await db.select({ status: workspaceOperations.status }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, issue.companyId), eq(workspaceOperations.issueId, issue.id),
+    eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_finalize"),
+  )).orderBy(desc(workspaceOperations.createdAt)).limit(1).for("share", { noWait: true });
+  if (workspace?.status !== "succeeded") throw unavailable();
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, issue.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  )).for("share", { noWait: true });
+  if (leases.some(lease => !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) throw unavailable();
+  const stopped = leases.some(lease => lease.provider !== "local")
+    ? leases.every(hasRemoteTerminationReceipt)
+    : run.processPid || run.processGroupId
+      ? await recordedLocalExecutionStopped(db, run)
+      : await hasNativeLocalProcessStop(db, issue.companyId, run.id);
+  if (!stopped) throw unavailable();
+}
+
 /** An assigned review never resolves an independent approval or interaction. */
 export async function planNativeExecutionReview(db: Db, issue: Issue, run: Run, decision: NativeExecutionReviewDecision) {
-  const transition = nativeExecutionReviewTransition(issue, run, decision);
+  if (issue.executionRunId === run.id) assertNativeExecutionReviewAssignment(decision.assignment, run, issue);
+  else await assertReleasedReviewFinalization(db, issue, run, decision);
+  const transition = executionReviewTransition(issue, run, decision);
   if (transition.status.toStatus === "done") {
     const gate = await pendingNativeGovernance({ db, companyId: run.companyId, issueId: issue.id, runId: run.id,
       executionState: transition.patch.executionState ?? null });

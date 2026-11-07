@@ -3547,6 +3547,12 @@ It retains budget, pause, dependency, responsible-user, execution-stop and human
 Working stages return to the original worker; pending policy reviews go to the current
 formal reviewer with the existing stage/participant/policy admission and resolve_review
 finalization contract. Ordinary conversation review does not finalize a task.
+An accepted, saved reviewer decision survives a shutdown failure that releases
+the execution lock. After workspace repair, the original finalizer may settle it
+only with unchanged review/version/decision ownership, process-stop and lease
+evidence, no successor and no human pause. Revalidate inside the decision
+transaction; preserve later human gates and exact-once worker/dependency wakes.
+This recovery grants no interactive tool authority and starts no provider turn.
 
 A continuation returns receiptId, outcome and the observed runId. Only scheduled/running
 with a real run uses HTTP 202. Pending is unresolved; waiting_dependency and blocked

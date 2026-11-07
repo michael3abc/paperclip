@@ -4800,6 +4800,18 @@ note; the existing approval service rechecks the grant and reserved human decisi
 Regression
 coverage is in `native-execution-review.test.ts` and `pm-coordination.test.ts`.
 
+A shutdown transport failure can leave an accepted review result and saved choice
+after heartbeat cleanup releases the issue lock. Workspace repair reuses the same
+finalization coordinator. Its finalizer-only recovery checks the original
+preserve-on-failure assessment and unchanged issue decision/version, pinned
+stage/policy/participant, successful workspace barrier, stopped local process
+identity or remote termination receipt, released leases, absence of any successor
+run, and task/agent pause holds. The status committer repeats these checks under
+its locks and commits the existing review transition exactly once. Interactive
+tool authorization still requires the live execution lock. Missing stop proof or
+changed ownership remains an explicit failure, never an invitation to rerun the
+model or approve on the PM's behalf.
+
 ### Delegated decisions
 
 The existing interaction/approval services own decision effects. The company
