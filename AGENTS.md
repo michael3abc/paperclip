@@ -120,6 +120,21 @@ hold when changing this topology or reuse another task's session/worktree.
 Shared native workers set `runtimeConfig.requireTaskWorktree=true`; reject missing
 project tasks and shared-directory overrides before workspace preparation.
 
+Zero-slot project PMs use the server-owned coordination capability policy in every
+chat, task and review run. Only the qualified local Claude ACP path enforces it;
+reject unsupported runtimes or stale unrestricted sessions. Native tools are
+Read/Grep/Glob, with a PreToolUse guard independent of approve-all. The Paperclip
+bridge and authenticated HTTP API must both enforce company/project/run scope;
+connector names or read-only annotations are never grants. Keep the Owner-owned
+`runtimeConfig.pmDelegation` model/worker table separate from editable Markdown.
+PM dispatch must explicitly select its authorized worker/model and persist plan,
+source, workspace and review before waking that worker. Preserve source Owner gates.
+Use `read_bundle_file` receipts and `write_bundle_file` CAS saves for PM support
+files; protect AGENTS.md and synchronize the registered run baseline on every save.
+Review decisions require evidence-linked reasons and the current assigned review;
+they grant no general approval authority. Test the real pinned ACP/SDK under
+approve-all as well as HTTP scope, dispatch/review and save/finalization behavior.
+
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
 - `packages/db` schema and exports

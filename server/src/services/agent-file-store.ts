@@ -8,11 +8,12 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, type DirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
-import { authorizeInstructionCommit, authorizeInstructionRead, authorizeOwnAgentMemoryWrite } from "./agent-instruction-authorization.js";
+import { authorizeInstructionCommit, authorizeInstructionRead, authorizeOwnAgentMemoryWrite, authorizeOwnPmWorkflowWrite } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
+import { pmCoordinationScope } from "./pm-coordination-policy.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -188,13 +189,14 @@ export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: st
 
 export function agentFileStore(db: Db) {
   db = fileStorageDb(db);
-  async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean | { ownMemoryPath: string },
+  async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean | { ownMemoryPath: string } | { ownWorkflowPath: string },
     fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>) {
     return db.transaction(async tx => {
       const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
       if (!agent) throw notFound("Agent not found");
       const bound = typeof write === "object"
-        ? await authorizeOwnAgentMemoryWrite(tx, actor, { companyId: agent.companyId, id: agent.id, entryFile: deriveBundleState(agent).entryFile }, write.ownMemoryPath)
+        ? "ownWorkflowPath" in write ? await authorizeOwnPmWorkflowWrite(tx, actor, agent, write.ownWorkflowPath)
+        : await authorizeOwnAgentMemoryWrite(tx, actor, { companyId: agent.companyId, id: agent.id, entryFile: deriveBundleState(agent).entryFile }, write.ownMemoryPath)
         : write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
       if (write) await invalidateAgentFileProjection(root);
@@ -228,13 +230,15 @@ export function agentFileStore(db: Db) {
     read: (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) =>
       locked(companyId, agentId, actor, false, (_tx, _agent, root) => readAgentFile(root, instructionPath(relative))),
     /** `ownMemory` authorizes an agent's own run to write its own `memory/` file (see authorizeOwnAgentMemoryWrite). */
-    write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null; ownMemory?: boolean }, actor: AuthorizationActor) =>
-      locked(input.companyId, input.agentId, actor, input.ownMemory ? { ownMemoryPath: agentFilePath(input.path) } : true, async (tx, agent, root, bound) => {
+    write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null; ownMemory?: boolean; ownWorkflow?: boolean; changeReason?: string }, actor: AuthorizationActor) =>
+      locked(input.companyId, input.agentId, actor, input.ownWorkflow ? { ownWorkflowPath: agentFilePath(input.path) } : input.ownMemory ? { ownMemoryPath: agentFilePath(input.path) } : true, async (tx, agent, root, bound) => {
+        if (input.ownWorkflow && (!input.changeReason?.trim() || input.bytes === null)) throw unprocessable("PM workflow saves require content and a change reason");
         const relative = agentFilePath(input.path);
         if (input.bytes) assertFileSize(input.bytes.length, relative);
         const previous = await inspectAgentFile(root, relative);
         const currentHash = previous?.hash ?? null;
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
+        if (input.ownWorkflow && currentHash !== input.baseHash) throw conflict("This file changed since it was read. Reload before saving.", { code: "AGENT_FILE_CONFLICT", path: relative, currentHash });
         if (currentHash === incomingHash) {
           if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
           return { contentHash: currentHash, changed: false };
@@ -252,7 +256,7 @@ export function agentFileStore(db: Db) {
         }
         if (input.bytes === null) await fs.unlink(await assertInstructionPathSafe(root, relative));
         else await materializeInstructionBytes(root, relative, input.bytes);
-        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, ...(input.changeReason ? { changeReason: input.changeReason } : {}) });
         return { contentHash: incomingHash, changed: true };
       }),
     apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) =>
@@ -276,6 +280,12 @@ export function agentFileStore(db: Db) {
         const entries = new Map(input.baseline.entries);
         const changed = [...new Set([...input.baseline.entries, ...incoming.entries].map(([name]) => name))]
           .filter(name => JSON.stringify(input.baseline.entries.get(name)) !== JSON.stringify(incoming.entries.get(name)));
+        // PM persistence is API-owned. A crash between projection and baseline
+        // acknowledgement must never overwrite a newer canonical save.
+        if (bound.type === "agent" && pmCoordinationScope(agent) && changed.some(name =>
+          JSON.stringify(incoming.entries.get(name)) !== JSON.stringify(current.entries.get(name)))) {
+          throw conflict("PM bundle changes must be saved through the controlled bundle tools", { code: "PM_UNSAVED_FILE_CHANGE" });
+        }
         for (const name of changed) {
           const present = current.entries.get(name);
           if (present) entries.set(name, present); else entries.delete(name);

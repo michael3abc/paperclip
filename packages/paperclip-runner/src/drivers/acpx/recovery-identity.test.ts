@@ -26,6 +26,19 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  it("requires a new PM session instead of recovering an unrestricted Claude session", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel };
+    const unrestricted = await createAcpxRecoveryBinding(input);
+    const restricted = await createAcpxRecoveryBinding({ ...input,
+      toolPolicy: { kind: "project_pm", version: 1, readRoots: [fixture.input.workingDirectory] } });
+    expect(restricted.profileSessionKey).not.toBe(unrestricted.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: unrestricted.commandDigest,
+      requestedModel: unrestricted.requestedModel, effectiveModel: unrestricted.effectiveModel };
+    const saved = createAcpxIdentityRecord(expected, unrestricted);
+    expect(() => verifyExpectedAcpxIdentity(expected, restricted, saved)).toThrow();
+  });
   // The last source-bound identities, the current versions with a changed
   // upstream release digest, and retained Cursor declarations.
   const changedDigest = `sha256:${"1".repeat(64)}`;

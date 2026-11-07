@@ -1,5 +1,5 @@
 import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../required-quality-review.js";
-import { AGENT_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE } from "../agent-conversations.js";
+import { agentChatDirective, COORDINATOR_CHAT_HANDOFF_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
@@ -67,6 +67,7 @@ export function buildPaperclipTaskMarkdown(input: {
   slackCommand?: string | null;
   nativeRunner?: boolean;
   coordinatorWorkspace?: boolean;
+  coordinationOnly?: boolean;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -219,7 +220,7 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
     if (issue.conversationAgentId) {
-      lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      lines.push("", "Chat mode directive:", agentChatDirective(input.coordinationOnly === true), `Current composer mode: ${issue.workMode ?? "standard"}.`);
       if (input.nativeRunner && input.coordinatorWorkspace) {
         lines.push("", "Coordinator task proposals:", COORDINATOR_CHAT_HANDOFF_DIRECTIVE);
       }

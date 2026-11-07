@@ -1,4 +1,6 @@
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
+import { pmCoordinationScope } from "../services/pm-coordination-policy.js";
+import { readPmBundleFile, writePmBundleFile } from "../services/pm-bundle-tools.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
 import { enqueueNativeRuntimeResponse } from "../services/native-runtime/native-runtime-response-delivery.js";
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
@@ -5263,6 +5265,8 @@ export function agentRoutes(
       res.setHeader("Content-Length", download.size);
       await pipeline(download.stream, res); return;
     }
+    const pm = req.actor.type === "agent" && req.actor.agentId === existing.id ? pmCoordinationScope(existing) : null;
+    if (pm && req.actor.runId) { res.json(await readPmBundleFile(db, pm, req.actor.runId, { path: relativePath })); return; }
     if (agentInstructionsBundleMode(existing) !== "external" && instructionPath(relativePath) === deriveBundleState(existing).entryFile) {
       const snapshot = await instructionRevisions.readCurrent({ companyId: existing.companyId, agentId: existing.id }, req.actor);
       if (snapshot) { res.json(instructionFileDetail(snapshot)); return; }
@@ -5277,6 +5281,11 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    const pm = req.actor.type === "agent" && req.actor.agentId === existing.id ? pmCoordinationScope(existing) : null;
+    if (pm && req.actor.runId) {
+      res.json(await writePmBundleFile(db, pm, req.actor.runId, { path: req.body.path, content: req.body.content,
+        baseHash: req.body.baseHash, changeReason: req.body.changeReason })); return;
+    }
     const entryFile = deriveBundleState(existing).entryFile;
     if (instructionPath(req.body.path) === entryFile) {
       assertExternalInstructionsAdmin(req, existing);

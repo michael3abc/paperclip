@@ -1,3 +1,4 @@
+import { currentPmCoordinationScope } from "../pm-coordination-policy.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
@@ -8607,6 +8608,12 @@ async function executePaperclipNativeSessionWithinScope(
       "paperclip_runner_provider_unsupported: ACPX candidate requires exact host qualification authorization",
     );
   }
+  const pm = await currentPmCoordinationScope(input.db, input.execution.binding);
+  const pinnedPm = "runtimeContext" in input.execution && input.execution.runtimeContext.toolPolicy;
+  if (Boolean(pm) !== Boolean(pinnedPm) || (pm && (input.execution.provider.kind !== "acpx"
+    || input.execution.provider.agent !== "claude" || input.runnerExecutionTarget?.kind === "remote"))) {
+    throw new Error("PM coordination policy requires a fresh qualified local Claude ACP session");
+  }
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
   const preparationSpans = input.preparationSpans ?? [];
   const preparationStarts = nativeRunPreparationStarts(
@@ -12908,6 +12915,12 @@ async function createRunnerdBackendWithinSessionClaim(
   sessionScopeId: string,
   retainedTransition?: VerifiedWarmTransitionBinding,
 ): Promise<ManagedRunnerdBackend> {
+  const pm = await currentPmCoordinationScope(input.db, input.execution.binding);
+  const pinnedPm = "runtimeContext" in input.execution && input.execution.runtimeContext.toolPolicy;
+  if (Boolean(pm) !== Boolean(pinnedPm) || (pm && (input.execution.provider.kind !== "acpx"
+    || input.execution.provider.agent !== "claude" || input.runnerExecutionTarget?.kind === "remote"))) {
+    throw new Error("PM coordination policy requires a fresh qualified local Claude ACP session");
+  }
   const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
   let recoveryPending = retainedTransition !== undefined;
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };

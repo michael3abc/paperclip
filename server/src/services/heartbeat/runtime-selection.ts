@@ -1,4 +1,5 @@
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
+import { pmCoordinationScope } from "../pm-coordination-policy.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { museRunnerBroker } from "../muse-runner-broker.js";
@@ -270,6 +271,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   const { runtimeConfig, runtimeSkillEntries, runScopedMentionedSkillKeys, instructionCopy, agentIdentity, issueAssigneeOverrides, resolvedConfig, managedAiRuntime } = input.config;
   const runOptions = input.recovery;
   const { providerTraceRequested, providerTraceCapture } = input.trace;
+  const coordinationOnly = pmCoordinationScope(agent) !== null;
+  if (coordinationOnly && (nativeRuntimeResolution.kind !== "native" || executionTarget?.kind === "remote")) {
+    throw new Error("PM coordination requires the qualified local native Claude ACP runtime");
+  }
   if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
   let nativeExecution: NativeExecutionInput | null = null;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
@@ -756,6 +761,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             backend: nativeRuntimeResolution.profile.backend,
             adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding, museBinding,
           }) : requestedNativeProvider;
+      if (coordinationOnly && (nativeProvider.provider !== "acpx" || nativeProvider.acpxAgent !== "claude")) {
+        throw new Error("This provider does not implement the PM coordination tool policy");
+      }
       if (nativeProvider.model !== requestedNativeProvider.model) {
         await postNativeModelFallbackWarning({
           issuesSvc, onEvent: onAdapterEvent, issueId: issueRef.id, runId: run.id,

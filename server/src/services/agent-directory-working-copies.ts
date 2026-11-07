@@ -9,7 +9,9 @@ import { prepareAdapterExecutionTargetRuntime, runAdapterExecutionTargetShellCom
 import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { AGENT_FILES_CONTRACT, AgentFileLimitError, agentFileStore, agentStorageWarning, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
-import { instructionGitExcludeProgram } from "./agent-instruction-files.js";
+import { instructionGitExcludeProgram, readInstructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
+import { fileHash } from "./agent-file-store.js";
+import { PM_BUNDLE_FILES } from "./pm-coordination-policy.js";
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
 import { HttpError, conflict, notFound } from "../errors.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -662,6 +664,26 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     }));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
+    synchronizePmFile: (row: Copy, relative: string, bytes: Buffer) => serial(row, async current => {
+      if (current.location !== "local" || current.state !== "prepared" || !await owns(current)
+        || !PM_BUNDLE_FILES.includes(relative as typeof PM_BUNDLE_FILES[number])) throw conflict("PM bundle working copy is not available for this run");
+      const snapshot = baseline(current);
+      const previous = snapshot.entries.get(relative);
+      const local = await readInstructionBytes(current.localRoot, relative);
+      const incomingHash = fileHash(bytes);
+      if (previous?.kind !== "file" || local === null || (fileHash(local) !== previous.hash && fileHash(local) !== incomingHash)) {
+        throw conflict("PM bundle working copy changed outside the controlled save; preserve and inspect it");
+      }
+      await materializeInstructionBytes(current.localRoot, relative, bytes);
+      const entries = new Map(snapshot.entries);
+      entries.set(relative, { ...previous, mode: (await fs.stat(path.join(current.localRoot, relative))).mode, hash: incomingHash });
+      const next = { ...snapshot, entries };
+      const nextHash = directorySnapshotSha256(next);
+      const saved = await patch(current, { baseHash: nextHash,
+        receipt: { ...current.receipt, baseline: serializeDirectorySnapshot(next) } }, eq(copies.baseHash, current.baseHash));
+      if (saved.baseHash !== nextHash) throw conflict("PM working copy baseline changed during synchronization; re-read before continuing");
+      return saved;
+    }, "agent_directory_checkpoint"),
     recoverStoppedRemote: (row: Copy) => serial(row, current => current.receipt?.retainedByRunId ? Promise.resolve(current) : recoverStoppedRemote(current), "agent_directory_collect"),
     checkpointWarm: (row: Copy, target?: AdapterExecutionTarget | null) => serial(row, current => current.receipt?.warm === true ? checkpoint(current, target) : Promise.resolve(current), "agent_directory_checkpoint"),
     collectStopped: (row: Copy, target?: AdapterExecutionTarget | null) => serial(row, current => collectStopped(current, target), "agent_directory_collect"),

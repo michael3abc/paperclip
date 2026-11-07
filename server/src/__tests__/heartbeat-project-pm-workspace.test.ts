@@ -133,8 +133,9 @@ suite("project PM role and workspace at claim", () => {
     expect(rejected.run.error).toContain("separate worker");
     expect(rejected.calls).toHaveLength(0);
     const planning = await runToEnd(pm.agentId, { issueId: pm.inboxIssueId });
-    expect(planning.run.status).toBe("succeeded");
-    expect(planning.calls[0]![0].context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pm.agentHome, workerSlots: 0 });
+    expect(planning.run.status).toBe("failed");
+    expect(planning.run.error).toContain("qualified local native Claude ACP runtime");
+    expect(planning.calls).toHaveLength(0);
   }, 60_000);
 
   it("runs one shared worker across projects in separate task worktrees with task-specific models", async () => {
@@ -146,15 +147,12 @@ suite("project PM role and workspace at claim", () => {
       await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace", allowIssueOverride: false,
         workspaceStrategy: { type: "git_worktree", baseRef: "main", worktreeParentDir: path.join(root, "task-worktrees", projectId!) } } }).where(eq(projects.id, projectId!));
     }
-    const planning = await runToEnd(pm.agentId, { issueId: pm.inboxIssueId });
-    expect(planning.run.status).toBe("succeeded");
-    expect(planning.calls[0]![0].context.paperclipWorkspace.cwd).toBe(pm.agentHome);
     const workerId = randomUUID();
     await db.insert(agents).values({ id: workerId, companyId: pm.companyId, name: "Shared worker", role: "engineer", status: "idle",
       adapterType: "codex_local", adapterConfig: { model: "default-model" },
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 20 }, requireTaskWorktree: true } });
     const taskIds = [randomUUID(), randomUUID(), randomUUID()];
-    const sessionIds = new Map(taskIds.map(id => [id, randomUUID()]));
+    const sessionIds = new Map<string, string>(taskIds.map(id => [id, randomUUID()]));
     const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent", agentId: pm.agentId }] }] })!;
     for (const [i, id] of taskIds.entries()) await db.insert(issues).values({ id, companyId: pm.companyId,
       projectId: i === 2 ? other.otherProjectId : pm.projectId, parentId: i === 2 ? null : pm.inboxIssueId,
@@ -206,8 +204,10 @@ suite("project PM role and workspace at claim", () => {
     }
   }, 60_000);
 
-  it.each(["review", "approval"] as const)("keeps a %s stage in the PM home and restores worker overrides after revision", async (type) => {
-    const pm = await seedPm({ workerSlots: 0 });
+  it.each(["review", "approval"] as const)("keeps a dual-role %s stage in the PM home and restores worker overrides after revision", async (type) => {
+    // Legacy dual-role compatibility. Zero-slot PMs use the qualified native
+    // review route exercised by pm-coordination.test.ts.
+    const pm = await seedPm({ workerSlots: 1 });
     const workerId = randomUUID(), childId = randomUUID();
     await db.update(agents).set({ adapterConfig: { cwd: pm.agentHome, model: "pm-model", modelReasoningEffort: "high" } }).where(eq(agents.id, pm.agentId));
     await db.insert(agents).values({ id: workerId, companyId: pm.companyId, name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: { model: "default-worker-model" } });

@@ -330,6 +330,40 @@ execution-policy review/approval stage is rejected before adapter execution.
 Previously claimed worker roles cannot bypass a current zero-slot policy. Positive
 slots (1–4) must be explicitly configured to allow a dual-purpose agent.
 
+Zero-slot PMs also have a server-derived coordination tool policy, pinned in the
+native runtime context and ACP session compatibility digest. It is enforced for
+chat, work and review under the qualified local Claude ACP/SDK path, including
+approve-all. Unsupported/preconfigured/remote paths and incompatible retained
+sessions fail closed. Native tools are Read/Grep/Glob within declared read roots;
+PreToolUse rejects other native tools and non-Paperclip MCP names. User/project
+tool settings cannot override the policy. External MCP/connector operations have
+no approved PM grants in this version and are neither advertised nor callable.
+This is a platform tool/API boundary, not host filesystem or network isolation.
+
+The authenticated bridge and HTTP middleware enforce current company, project,
+agent, running task and review scope. PMs can discover their workers/models,
+dispatch, maintain plans/documents, comment, request Owner decisions and resolve
+their assigned native review. Task attachments use the existing bounded,
+integrity-checked attachment readers. PMs cannot configure agents, grant rights,
+change budgets, approve general approvals or invoke generic execution endpoints.
+Workspace selections must belong to the same project. PM HTTP task reads return
+the task's core payload rather than enriching it with cross-project ancestry;
+native child and source-plan views also retain the project boundary.
+Review runs may only read and accept/reject their assigned review, including when
+using generic HTTP. Acceptance supports an optional `reason`, persisted as
+`acceptanceReason`; PM acceptance and rejection require an evidence-linked reason.
+
+`create_task` accepts existing issue model overrides, execution policy and workspace
+selection fields. PM dispatch requires an explicit shared worker and initialPlan;
+chat creates an independent same-project task, while ordinary work creates a child.
+The server preserves source Owner gates and adds PM review before any wake. The
+Owner-owned `runtimeConfig.pmDelegation={version:1,workers:[{agentId,selections}]}`
+pins exact model selections; editable WORKERS.md cannot authorize another worker
+or model. PMs cannot override trust, environment, network or runtime grants.
+Reassignment revalidates the target worker against the task's saved model choice.
+Bundle reads and saves use the current-hash receipts described in
+[agent-files.md](agent-files.md). This adds no database schema or separate service.
+
 Worker agent identity is company-scoped, not project-scoped. Projects may share one
 `claude_local` and one `codex_local` agent, with independent concurrency limits
 (for example 20 each). Each issue retains its project, parent, reviewer, model/effort

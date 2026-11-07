@@ -24,6 +24,7 @@ import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../services/nativ
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
+import { currentPmCoordinationScope } from "../services/pm-coordination-policy.js";
 import {
   childCreatedByRequest,
   loadCreationSourceAgent,
@@ -9528,7 +9529,9 @@ export function issueRoutes(
     // Saved cards are structural conversation data. Include their local
     // projection before first paint, independently of slow recovery, workspace
     // and related-task enrichment. This never refreshes external providers.
-    if (req.query.view === "core") {
+    const coordinationOnly = req.actor.type === "agent" && req.actor.agentId && req.actor.companyId
+      ? await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId }) : null;
+    if (req.query.view === "core" || coordinationOnly) {
       const [documentPayload, workProducts] = await Promise.all([
         timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
         timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),

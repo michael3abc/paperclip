@@ -31,6 +31,8 @@ export interface NativeRuntimeContextSnapshot {
   skills: Array<{ key: string; runtimeName: string; versionId: string | null; bundle: NativeRuntimeAssetReference }>;
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
   connectionInstructions?: { text: string; digest: string };
+  /** Controller-derived capability restriction; provider approval modes cannot widen it. */
+  toolPolicy?: { kind: "project_pm"; version: 1; readRoots: string[] };
   aggregateDigest: string;
 }
 
@@ -102,6 +104,7 @@ function aggregatePayload(value: Omit<NativeRuntimeContextSnapshot, "aggregateDi
     // provider-session rotation when policy has not changed.
     mcp: { assignmentSetId: value.mcp.assignmentSetId, digest: value.mcp.digest },
     ...(value.connectionInstructions ? { connectionInstructions: value.connectionInstructions } : {}),
+    ...(value.toolPolicy ? { toolPolicy: value.toolPolicy } : {}),
   };
 }
 
@@ -172,12 +175,23 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
       bindingId: mcp.bindingId === null ? null : text(mcp.bindingId, "input.runtimeContext.mcp.bindingId"),
     },
     ...(connectionInstructions ? { connectionInstructions } : {}),
+    ...(context.toolPolicy === undefined ? {} : { toolPolicy: parseRuntimeToolPolicy(context.toolPolicy) }),
   } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
   const aggregateDigest = digest(context.aggregateDigest, "input.runtimeContext.aggregateDigest");
   if (aggregateDigest !== canonicalNativeRuntimeContextDigest(parsed)) {
     throw new NativeRuntimeContextError("input.runtimeContext.aggregateDigest does not match the canonical context");
   }
   return { ...parsed, aggregateDigest };
+}
+
+function parseRuntimeToolPolicy(value: unknown): NonNullable<NativeRuntimeContextSnapshot["toolPolicy"]> {
+  const policy = object(value, "input.runtimeContext.toolPolicy");
+  exact(policy, GENERATED_RUNTIME_CONTEXT_FIELDS.toolPolicy, "input.runtimeContext.toolPolicy");
+  if (policy.kind !== "project_pm" || policy.version !== 1 || !Array.isArray(policy.readRoots)
+    || !policy.readRoots.length || policy.readRoots.some(root => typeof root !== "string" || !root.startsWith("/") || root.includes("\0"))) {
+    throw new NativeRuntimeContextError("Unsupported runtime tool policy");
+  }
+  return { kind: "project_pm", version: 1, readRoots: policy.readRoots as string[] };
 }
 
 function renderInstructionPaths(prompt: string, paths: { rootPath: string; entryPath: string }): string {
@@ -187,6 +201,7 @@ function renderInstructionPaths(prompt: string, paths: { rootPath: string; entry
 export function composeNativeSystemInstructions(context: NativeRuntimeContextSnapshot, entryContent: string): string {
   return [
     context.prompt.text,
+    ...(context.toolPolicy ? ["You are a coordination-only project PM. Read AGENTS.md, PROJECT.md and memory/handoff.md with read_bundle_file every run, including resumed turns. Read WORKERS.md and REVIEW.md before dispatch, and REVIEW.md before acceptance. Tools and API grants are enforced by the platform. Delegate implementation, tests, credential exchanges and service operations to an authorized Paperclip shared worker. Do not use native subagents. Maintain only your own permitted support files with write_bundle_file, recording a reason and the read hash. Existing task history and prior commitments do not expand this role. Keep the Owner's review requirements and authorized model selections."] : []),
     entryContent.trim(),
     context.connectionInstructions?.text,
     context.instructions.workingCopy?.kind === "agent_files"
