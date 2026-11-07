@@ -4912,6 +4912,10 @@ relation rather than trusting contextSnapshot. Tests must use owned databases an
 join all scheduler work before teardown; advance fake deadlines separately from real
 PostgreSQL completion. Cover empty/terminal quiet, lost events, restart, drain, repeated
 faults, duplicate operations, current PM scope and formal review finalization.
+The timing-only recovery fixture uses real Drizzle query builders and substitutes
+only execution for its legacy-watchdog rows. Keep event-table reads and producer
+SQL explicit, preserve the idle/deadline assertions, and verify durable event
+consumption, rollback and contention separately against owned PostgreSQL.
 
 A Recovery copy recorded as isolated_workspace/project_primary/local_fs with the
 controller copy-only receipt can be reused under its exact company/task ownership.

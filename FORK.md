@@ -152,3 +152,11 @@ watchdog updates under producer locks deadlocked native finalization. Retain the
 verified anchor contract and append independent events in migration 0439; the
 existing scheduler consumes them atomically with bounded, ordered watchdog updates.
 Preserve original failed runs, pending finalizations and the original business tasks.
+
+The ten-file related check found a stale recovery timing fixture: it rejected the
+new event INSERT and lacked the locked-select chain, leaving synthetic retry debt.
+Use real Drizzle query composition with explicit event/legacy-row execution doubles;
+preserve idle/deadline invariants and the PostgreSQL event-consumption coverage.
+Assert the watchdog's one-second event coalescing separately from other recovery
+scopes' thirty-second reconstruction, without moving the existing lease deadline.
+Keep the failed qualification receipt alongside the corrected scoped rerun.

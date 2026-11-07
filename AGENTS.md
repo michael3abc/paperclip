@@ -108,6 +108,8 @@ agents. Non-Git workspace tests require a clean owned temporary root with no
 ancestor Git metadata. Chromium injection tests do not qualify APNs or physical iPhone delivery.
 Database-backed scheduler tests must separate fake deadline advancement from
 wall-time batch completion and join execution cleanup before fixture teardown.
+Timing-only recovery fixtures retain real Drizzle query/locking composition;
+event persistence, rollback and contention require owned PostgreSQL coverage.
 
 1. Keep changes company-scoped.
 Every domain entity should be scoped to a company and company boundaries must be enforced in routes/services.

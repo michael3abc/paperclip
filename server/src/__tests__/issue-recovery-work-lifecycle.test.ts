@@ -1,6 +1,6 @@
-import { PgDialect } from "drizzle-orm/pg-core";
+import { PgDialect, QueryBuilder, type PgTable, type SelectedFields } from "drizzle-orm/pg-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { issueRecoveryActions, issueWatchdogs } from "@paperclipai/db";
+import { issueRecoveryActions, issues, issueWatchdogEvents, issueWatchdogs } from "@paperclipai/db";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
@@ -14,15 +14,35 @@ function fixture() {
   const dialect = new PgDialect();
   const rows = { issues: [] as Array<{ id: string; companyId: string }>, watchdogs: [] as Array<{ id: string; companyId: string }>, blockers: [] as Array<{ id: string; companyId: string }>, actions: [] as Array<{ id: string; companyId: string }> };
   const execute = vi.fn(async (query: any) => {
-    if (dialect.sqlToQuery(query).sql.includes("pg_current_xact_id")) return [{ xid: "42" }];
-    throw new Error("unexpected SQL");
+    const text = dialect.sqlToQuery(query).sql;
+    if (text.includes("pg_current_xact_id")) return [{ xid: "42" }];
+    // This timing fixture has only legacy watchdogs, so the managed-event
+    // INSERT selects no rows. Real event persistence/locking is covered by
+    // pm-task-followthrough.test.ts against owned PostgreSQL.
+    if (text.startsWith('INSERT INTO "issue_watchdog_events" (company_id) (select distinct "company_id" from "issue_watchdogs"')) return [];
+    throw new Error(`unexpected SQL: ${text}`);
   });
-  const load = vi.fn((table: unknown, distinct = false) => distinct
-    ? table === issueRecoveryActions ? rows.actions : rows.blockers
-    : table === issueWatchdogs ? rows.watchdogs : rows.issues);
-  const query = (distinct = false) => ({ from: (table: unknown) => ({ where: () => ({ orderBy: () => ({ limit: async () => load(table, distinct) }) }) }) });
+  const load = vi.fn((table: unknown, distinct = false) => {
+    if (table === issueWatchdogEvents) return [];
+    if (table === issueRecoveryActions && distinct) return rows.actions;
+    if (table === issueWatchdogs && !distinct) return rows.watchdogs;
+    if (table === issues) return distinct ? rows.blockers : rows.issues;
+    throw new Error("unexpected table");
+  });
+  // Keep Drizzle's SQL composition and lock/limit chaining; only execution is
+  // replaced so fake deadlines never depend on PostgreSQL wall-clock I/O.
+  const builder = new QueryBuilder(dialect);
+  const query = (distinct = false, fields?: SelectedFields) => ({ from: (table: PgTable) => {
+    const selection = distinct
+      ? fields ? builder.selectDistinct(fields) : builder.selectDistinct()
+      : fields ? builder.select(fields) : builder.select();
+    return Object.assign(selection.from(table), {
+      then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+        Promise.resolve().then(() => load(table, distinct)).then(resolve, reject),
+    });
+  } });
   const db: any = installDatabaseWorkSignals({ execute,
-    select: () => query(), selectDistinct: () => query(true),
+    select: (fields?: SelectedFields) => query(false, fields), selectDistinct: (fields?: SelectedFields) => query(true, fields),
     transaction: async (callback: (tx: any) => Promise<unknown>) => callback({ execute, select: db.select, selectDistinct: db.selectDistinct, transaction: db.transaction }),
   });
   const state = { draining: false, standby: false, suppressed: false, deadline: null as number | null, fail: false, incomplete: false };
@@ -86,8 +106,13 @@ describe("issue recovery obligation lifecycle", () => {
     const f = fixture(); f.rows.issues.push({ id: "issue", companyId: "selected" });
     f.state.deadline = 1_015_000; await f.worker.ready;
     await f.notify(); await f.settle(); const loaded = f.load.mock.calls.length, checked = f.check.mock.calls.length;
-    for (let index = 0; index < 100; index++) { await f.notify(); await vi.advanceTimersByTimeAsync(10); }
+    for (let index = 0; index < 99; index++) { await f.notify(); await vi.advanceTimersByTimeAsync(10); }
     expect(f.load).toHaveBeenCalledTimes(loaded); expect(f.check).toHaveBeenCalledTimes(checked);
+    // The watchdog's one-second event coalescer runs once at this boundary;
+    // the other recovery scopes retain their thirty-second reconstruction.
+    await f.notify(); await vi.advanceTimersByTimeAsync(10);
+    expect(f.load.mock.calls.slice(loaded)).toEqual([[issueWatchdogEvents, false], [issueWatchdogs, false]]);
+    expect(f.check).toHaveBeenCalledTimes(checked);
     await vi.advanceTimersByTimeAsync(13_000);
     expect(f.state.deadline).toBe(1_015_000);
     expect(f.coordinator.nextWakeAt()).toBe(1_031_000);
