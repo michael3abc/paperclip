@@ -178,6 +178,50 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const retained = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,input.run.id)))[0]!;
     expect(retained.contextSnapshot?.sharedCheckoutClaim).toEqual(input.task.context.sharedCheckoutClaim);
   });
+  it("prepares a configured non-Git document directory for a project-exclusive worker", async () => {
+    const { input, source } = await fixture(); input.agent.runtimeConfig = { requireProjectWorkspace: true };
+    await rm(join(source, ".git"), { recursive: true });
+    const result = await prepareHeartbeatWorkspace(db, input);
+    expect(result.executionWorkspace).toMatchObject({ cwd: source, strategy: "project_primary" });
+    expect(result.persistedExecutionWorkspace).toMatchObject({ cwd: source, mode: "shared_workspace" });
+    expect(input.task.context.sharedCheckoutClaim).toMatchObject({ path: source, issueId: input.task.issueId });
+    expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
+    await expect(access(join(source,".git"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("starts and settles a document worker through heartbeat without a Git repository", async () => {
+    const { input, source, issue } = await fixture();
+    await rm(join(source,".git"),{ recursive:true });
+    const userId = `document-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({ id:userId,name:"Document owner",email:`${userId}@example.test`,createdAt:new Date(),updatedAt:new Date() });
+    await db.insert(companyMemberships).values({ companyId:issue.companyId,principalId:userId,principalType:"user",membershipRole:"owner",status:"active" });
+    await db.update(companies).set({ defaultResponsibleUserId:userId }).where(eq(companies.id,issue.companyId));
+    await db.update(heartbeatRuns).set({ status:"failed",finishedAt:new Date() }).where(eq(heartbeatRuns.id,input.run.id));
+    await db.update(issues).set({ status:"todo",responsibleUserId:userId,executionWorkspaceSettings:{ mode:"shared_workspace" },
+      workspaceSelection:{ version:1,source:"explicit",selection:{ kind:"configured_source",mode:"shared",projectWorkspaceId:issue.projectWorkspaceId! } } }).where(eq(issues.id,issue.id));
+    await db.update(agents).set({ status:"idle",runtimeConfig:{ requireProjectWorkspace:true,heartbeat:{ enabled:false,wakeOnDemand:true } } }).where(eq(agents.id,input.agent.id));
+    const originalAdapter = getServerAdapter("process");
+    const executed = vi.fn(async (execution: AdapterExecutionContext) => {
+      const [lease] = await leases(execution.runId);
+      const workspace = await input.services.executionWorkspacesSvc.getStoredById(issue.companyId,lease.executionWorkspaceId!);
+      expect(workspace?.cwd).toBe(source);
+      await writeFile(join(workspace!.cwd!,"completed.txt"),"document worker ran\n");
+      await db.update(issues).set({ status:"done" }).where(eq(issues.id,issue.id));
+      return { exitCode:0,signal:null,timedOut:false,summary:"Document work completed" };
+    });
+    registerServerAdapter({ ...originalAdapter,type:"process",supportsLocalAgentJwt:false,execute:executed,
+      testEnvironment:async()=>({ adapterType:"process",status:"pass",checks:[],testedAt:new Date().toISOString() }) });
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.wakeup(input.agent.id,{ source:"on_demand",triggerDetail:"manual",reason:"manual",
+        requestedByActorType:"user",requestedByActorId:userId,payload:{ issueId:issue.id },contextSnapshot:{ issueId:issue.id } });
+      await heartbeat.drainActiveRunExecutions();
+      expect(run).not.toBeNull(); expect(executed).toHaveBeenCalledOnce();
+      expect(await readRun(run!.id)).toMatchObject({ status:"succeeded",errorCode:null });
+      expect(await readFile(join(source,"completed.txt"),"utf8")).toBe("document worker ran\n");
+      expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
+      await expect(access(join(source,".git"))).rejects.toMatchObject({ code:"ENOENT" });
+    } finally { await heartbeat.drainActiveRunExecutions();registerServerAdapter(originalAdapter); }
+  });
   it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("refuses a shared worker without a task worktree: %s", async kind => {
     const { input } = await fixture(true);
     input.agent.runtimeConfig = { requireTaskWorktree: true };

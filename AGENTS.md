@@ -135,11 +135,16 @@ projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
 hold when changing this topology or reuse another task's session/worktree.
 Shared native workers set `runtimeConfig.requireProjectWorkspace=true`; reject missing
-project tasks or unconfigured sources. A configured development checkout is the default:
+project tasks or unconfigured sources. A configured development directory is the default:
 one writer owns its canonical path through provider stop and workspace settlement;
 additional writers queue. Explicit parallel work or independent versions may select
 `managed_isolated`. `requireTaskWorktree=true` remains an explicit isolated-only worker
 restriction; only the Owner may change either flag. Existing runs keep their contract.
+Fixed document/data directories do not require Git or automatic `git init`.
+Git metadata, explicit repository/ref settings and isolated worktrees still require
+valid Git sources; damaged metadata must fail visibly. Shared claims use real paths
+and reject overlapping parent/child directories as well as aliases. Serialize the
+bounded admission transaction per host; independent admitted writers remain parallel.
 Read-only PM source tools share files; fixed-version reads take a full commit SHA and
 never switch the checkout. A provider with write capabilities always counts as a writer.
 A production source (`metadata.usage=production`) needs a separate fixed development

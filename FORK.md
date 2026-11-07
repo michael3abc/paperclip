@@ -97,7 +97,10 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `2c6666f7cd` feat: route project decisions through PM and Owner-delegated agent
 - `d6d2c8c0d7` fix: synchronize delegated decision contracts and validation fixtures
 
-Current change: audited PM project reads, formal decision routing and execution-review API boundaries.
+- `672478c734` fix: authorize PM project reads and enforce decision boundaries
+
+Current change: admit configured non-Git document directories with exclusive physical-path ownership; retain Git validation for repository/ref and worktree operations.
+Earlier permission repair: audited PM project reads, formal decision routing and execution-review API boundaries.
 Earlier dispatch repair: live schema, readiness/session diagnostics and pre-creation workspace admission.
 Acceptance follow-up: scoped saved-response asset reads and preservation of task worktree bindings during PM review.
 PM autonomy follow-up: native assigned-review decisions, independent Owner-scoped project PM authority, exclusive development checkouts with queued writers, commit-pinned reads and safe worktree reclamation; workspace maintenance preserves review state.

@@ -4699,7 +4699,7 @@ fields still pass the server's issue validators, PM worker selection, project/wo
 scope and review enforcement; advertising them does not grant additional authority.
 
 New PM tasks require `workspaceSelection.kind=configured_source` for their own
-project. Omitted `mode` means `shared`: use the project's fixed development checkout
+project. Omitted `mode` means `shared`: use the project's fixed development directory
 with one writer. Additional writers wait through the existing workspace-busy queue;
 only explicit parallelism or an independent version selects `managed_isolated`.
 The same native/HTTP admission rejects missing sources, production sources in shared
@@ -4709,8 +4709,14 @@ Owner-managed `requireProjectWorkspace` admits these two modes; an explicit
 Existing task continuation keeps its recorded contract.
 
 Local shared checkout admission records a durable claim on the run under a
-transaction advisory lock keyed by host and canonical Git checkout. Aliases and
-subdirectories cannot create a second writer. Acquisition precedes provisioning;
+transaction advisory lock per host during bounded admission only. Git sources use
+their canonical checkout; ordinary document/data folders use their real directory
+without invoking Git or initializing a repository. Existing Git metadata and explicit
+repository/ref settings still require a valid checkout. Damaged Git sources fail;
+`managed_isolated` continues to require Git. Aliases and overlapping parent/child
+paths cannot create a second writer; independent admitted providers remain parallel.
+Git dirty-state checks remain unchanged. Ordinary files remain in place across settled
+task ownership transfers. Acquisition precedes provisioning;
 there is no idle scan. A waiting run has not started its provider. Silence or a
 terminal status cannot free a provider's claim: require process-stop evidence and
 settled finalization/environment leases. New tasks cannot adopt another owner's

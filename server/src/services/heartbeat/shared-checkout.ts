@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { hostname } from "node:os";
@@ -9,14 +10,38 @@ import { WorkspaceValidationFailure } from "./workspaces.js";
 import { workspaceProcessConsumers } from "../workspace-process-consumers.js";
 
 const execFile = promisify(execFileCallback);
-export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string };
+export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" };
 
-/** Canonical checkout identity includes aliases/subdirectories but not sibling worktrees. */
-export async function sharedCheckoutPath(cwd: string): Promise<string> {
+async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | "directory" }> {
   const real = await fs.realpath(cwd);
+  if (!(await fs.stat(real)).isDirectory()) throw new WorkspaceValidationFailure(
+    "Select an existing project development directory.", { reason: "shared_workspace_not_directory" });
+  if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_COMMON_DIR) throw new WorkspaceValidationFailure(
+    "Clear inherited Git directory overrides before claiming a project workspace.", { reason: "shared_workspace_git_override" });
+  // Ordinary document folders need no Git executable. Any Git metadata, even
+  // a broken/dangling .git entry, keeps Git validation authoritative.
+  const entry = async (file: string) => fs.lstat(file).catch(error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  let directory = real, git = false;
+  for (;;) {
+    if (await entry(path.join(directory, ".git")) ||
+        (await entry(path.join(directory, "HEAD")) && await entry(path.join(directory, "objects")) &&
+          await entry(path.join(directory, "refs")))) { git = true; break; }
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  if (!git) return { path: real, kind: "directory" };
   const { stdout } = await execFile("git", ["-C", real, "rev-parse", "--show-toplevel"],
     { timeout: 10_000, maxBuffer: 16 * 1024 });
-  return fs.realpath(stdout.trim());
+  return { path: await fs.realpath(stdout.trim()), kind: "git" };
+}
+
+/** Git aliases/subdirectories share a checkout; ordinary folders use their real path. */
+export async function sharedCheckoutPath(cwd: string): Promise<string> {
+  return (await sharedSource(cwd)).path;
 }
 
 /** Durable run ownership, acquired before provisioning can mutate the checkout.
@@ -27,19 +52,27 @@ export async function sharedCheckoutPath(cwd: string): Promise<string> {
 export async function claimSharedCheckout(db: Db, input: {
   companyId: string; agentId: string; runId: string; issueId: string;
   projectWorkspaceId: string; cwd: string; deferralAttempt: number;
+  requireGit?: boolean;
   context: Record<string, unknown>;
 }): Promise<SharedCheckoutClaim> {
-  const claim: SharedCheckoutClaim = { version: 1, host: hostname(),
-    path: await sharedCheckoutPath(input.cwd), issueId: input.issueId, acquiredAt: new Date().toISOString() };
+  const source = await sharedSource(input.cwd);
+  if (input.requireGit && source.kind !== "git") throw new WorkspaceValidationFailure(
+    "This source declares a Git repository or revision but its directory is not a Git checkout. Repair that source or select an ordinary document directory without Git settings.",
+    { reason: "shared_workspace_git_required" });
+  const claim: SharedCheckoutClaim = { version: 1, host: hostname(), ...source,
+    issueId: input.issueId, acquiredAt: new Date().toISOString() };
   await db.transaction(async tx => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`shared-checkout:${claim.host}:${claim.path}`}, 0))`);
+    // Serialize only the admission transaction per host, so parent and child
+    // directory claims cannot race. Independent admitted providers run in parallel.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`shared-checkout:${claim.host}`}, 0))`);
     claim.acquiredAt = new Date().toISOString();
     const [current] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
         eq(heartbeatRuns.agentId, input.agentId))).for("update");
     if (current?.status !== "running") throw new Error("shared_checkout_run_not_running");
     const services = await tx.execute(sql`select 1 from workspace_runtime_services
-      where status <> 'stopped' and (cwd = ${claim.path} or left(cwd, length(${claim.path}) + 1) = ${claim.path} || '/') limit 1`);
+      where status <> 'stopped' and (cwd = ${claim.path} or starts_with(cwd, rtrim(${claim.path}, '/') || '/')
+        or starts_with(${claim.path}, rtrim(cwd, '/') || '/')) limit 1`);
     if (services.length) throw new WorkspaceValidationFailure(
       "This checkout serves a running service. Configure a separate fixed development checkout before dispatch.",
       { reason: "project_checkout_serves_running_service" });
@@ -47,7 +80,9 @@ export async function claimSharedCheckout(db: Db, input: {
       select r.id, r.company_id, r.agent_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id
       from heartbeat_runs r
       where r.id <> ${input.runId} and r.context_snapshot->'sharedCheckoutClaim'->>'host' = ${claim.host}
-        and r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${claim.path}
+        and (r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${claim.path}
+          or starts_with(r.context_snapshot->'sharedCheckoutClaim'->>'path', rtrim(${claim.path}, '/') || '/')
+          or starts_with(${claim.path}, rtrim(r.context_snapshot->'sharedCheckoutClaim'->>'path', '/') || '/'))
         and not (
           r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
@@ -72,8 +107,8 @@ export async function claimSharedCheckout(db: Db, input: {
     if ((await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
       "Another local process still uses this checkout. Release that writer or service; production needs a separate fixed development checkout.",
       { reason: "shared_checkout_process_active" });
-    const { stdout: dirty } = await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "--untracked-files=normal"],
-      { timeout: 10_000, maxBuffer: 1024 * 1024 });
+    const dirty = source.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "--untracked-files=normal"],
+      { timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout : "";
     const prior = await tx.execute<{ issue_id: string }>(sql`select r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id from heartbeat_runs r
       where r.company_id = ${input.companyId}
         and r.context_snapshot->'sharedCheckoutClaim'->>'host' = ${claim.host}

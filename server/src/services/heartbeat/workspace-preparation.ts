@@ -666,6 +666,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       { reason: "shared_checkout_environment_unsupported" });
     await claimSharedCheckout(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id,
       issueId, projectWorkspaceId: issueRef.projectWorkspaceId, cwd: executionWorkspaceBase.baseCwd,
+      requireGit: Boolean(executionWorkspaceBase.repoUrl || executionWorkspaceBase.repoRef),
       deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0, context });
   }
   const workspaceFreshnessSource = resolvedWorkspace.freshnessSource ?? executionWorkspaceBase;
