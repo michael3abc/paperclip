@@ -43,25 +43,30 @@ const WORKER_BOOTSTRAP = `
 
 const _undefined = void 0;
 
-// Network
-self.fetch = _undefined;
-self.XMLHttpRequest = _undefined;
-self.WebSocket = _undefined;
-self.EventSource = _undefined;
-self.RTCPeerConnection = _undefined;
-self.RTCDataChannel = _undefined;
-self.Request = _undefined;
-self.Response = _undefined;
-self.Headers = _undefined;
-self.Cache = _undefined;
-self.CacheStorage = _undefined;
-self.caches = _undefined;
+// Strict-mode assignment throws for getter-only globals (Chromium exposes
+// \`indexedDB\` that way), so shadow each one with an own read-only property and
+// fail closed if any stays reachable.
+function lockGlobal(name) {
+  try {
+    Object.defineProperty(self, name, { value: _undefined, writable: false, configurable: false });
+  } catch {
+    try { self[name] = _undefined; } catch {}
+  }
+  if (self[name] !== _undefined) throw new Error("Parser sandbox could not disable " + name);
+}
 
-// Import / eval escape hatches
-self.importScripts = _undefined;
-self.Worker = _undefined;
-self.SharedWorker = _undefined;
-self.Blob = _undefined;
+[
+  // Network
+  "fetch", "XMLHttpRequest", "WebSocket", "EventSource", "RTCPeerConnection", "RTCDataChannel",
+  "Request", "Response", "Headers", "Cache", "CacheStorage", "caches",
+  // Import / eval escape hatches
+  "importScripts", "Worker", "SharedWorker", "Blob",
+  // Service worker / broadcast channel
+  "BroadcastChannel",
+  // IndexedDB (prevents persistent state exfiltration)
+  "indexedDB", "IDBFactory",
+].forEach(lockGlobal);
+
 if (self.URL) {
   try { Object.defineProperty(self.URL, "createObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
   try { Object.defineProperty(self.URL, "revokeObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
@@ -71,13 +76,6 @@ if (self.URL) {
 if (self.navigator) {
   try { Object.defineProperty(self.navigator, "sendBeacon", { value: _undefined, writable: false, configurable: false }); } catch {}
 }
-
-// Service worker / broadcast channel
-self.BroadcastChannel = _undefined;
-
-// IndexedDB (prevents persistent state exfiltration)
-self.indexedDB = _undefined;
-self.IDBFactory = _undefined;
 
 // ── 2. Parser state ─────────────────────────────────────────────────────────
 
