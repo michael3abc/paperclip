@@ -7188,6 +7188,17 @@ export function agentRoutes(
       processStartedAt: heartbeatRuns.processStartedAt,
       scopeKind: heartbeatRuns.scopeKind,
       issueId: heartbeatRuns.issueId,
+      // Project of the run's task, so project-level surfaces (the sidebar's
+      // PM rows) can attribute work that executes on shared workers. A scalar
+      // subquery keeps the three row selections below join-free; it is bound to
+      // the run's own company. Runs the actor cannot read are replaced by the
+      // locked list row, which never carries it.
+      projectId: sql<string | null>`(
+        select ${issuesTable.projectId}
+        from ${issuesTable}
+        where ${issuesTable.id} = ${heartbeatRuns.issueId}
+          and ${issuesTable.companyId} = ${heartbeatRuns.companyId}
+      )`.as("projectId"),
       inputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'inputTokens')::numeric`.as("inputTokens"),
       cachedInputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric`.as("cachedInputTokens"),
       outputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'outputTokens')::numeric`.as("outputTokens"),

@@ -22,9 +22,11 @@ import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentStatus } from "../api/builtInAgents";
 import { BuiltInLifecycleChip } from "./BuiltInAgentBadges";
+import { attentionApi } from "../api/attention";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { deriveProjectPmSidebarStatus, type AgentSidebarStatus } from "../lib/agent-sidebar-status";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
@@ -117,6 +119,7 @@ function SidebarAgentItem({
   onPauseResume,
   rail,
   runCount,
+  status,
   setSidebarOpen,
   builtInStatus,
   starred = false,
@@ -133,6 +136,7 @@ function SidebarAgentItem({
   onPauseResume: (agent: Agent, action: "pause" | "resume") => void;
   rail: boolean;
   runCount: number;
+  status?: AgentSidebarStatus;
   setSidebarOpen: (open: boolean) => void;
   builtInStatus?: BuiltInAgentStatus;
   starred?: boolean;
@@ -170,6 +174,7 @@ function SidebarAgentItem({
       iconNode={<AgentAvatar agent={agent} size={16} className="shrink-0 h-4 w-4"/>}
       active={isActive}
       liveCount={runCount}
+      status={status}
       labelClassName={showBuiltInLifecycle ? "min-w-(--sz-4_5rem) flex-initial" : undefined}
       className={cn(
         "min-w-0 flex-1",
@@ -364,13 +369,48 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     }
     return counts;
   }, [liveRuns]);
+
+  // Project PM rows: zero-slot PMs run no implementation themselves, so their
+  // status comes from their project's tasks (subtasks included) and from
+  // requests waiting on the Owner, not from their own runs. momo and other
+  // non-PM agents are not workspace-bound and never get a status.
+  const { data: pmWorkspaces } = useQuery({
+    queryKey: queryKeys.pmWorkspaces(selectedCompanyId!),
+    queryFn: () => agentsApi.listPmWorkspaces(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 60_000,
+  });
+  const hasPmWorkspaces = (pmWorkspaces?.length ?? 0) > 0;
+  // The orange frame must not depend on a ranked, capped first page, so ask for
+  // the complete filtered snapshot (`all`). The key extends the attention prefix
+  // so live events that invalidate `queryKeys.attention` refresh it too, while
+  // staying distinct from the paginated Decisions feed that owns the bare key.
+  // Only fetched when there is a PM row that could show the status.
+  const { data: attentionFeed, dataUpdatedAt: attentionUpdatedAt } = useQuery({
+    queryKey: [...queryKeys.attention(selectedCompanyId!), "pm-sidebar", "pending"],
+    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }),
+    enabled: !!selectedCompanyId && hasPmWorkspaces,
+    refetchInterval: 60_000,
+  });
+  const pmStatusByAgent = useMemo(
+    () =>
+      deriveProjectPmSidebarStatus({
+        liveRuns,
+        pmWorkspaces,
+        attentionItems: attentionFeed?.items,
+      }),
+    // attentionUpdatedAt re-evaluates snooze expiry on every refetch.
+    [liveRuns, pmWorkspaces, attentionFeed, attentionUpdatedAt],
+  );
   const liveAgentIds = useMemo(() => {
     const ids = new Set<string>();
     for (const [agentId, count] of liveCountByAgent) {
       if (count > 0) ids.add(agentId);
     }
+    // A PM row showing a status is as "active" as one with its own live run.
+    for (const agentId of pmStatusByAgent.keys()) ids.add(agentId);
     return ids;
-  }, [liveCountByAgent]);
+  }, [liveCountByAgent, pmStatusByAgent]);
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
@@ -429,11 +469,11 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     const nowForLiveLinger = Date.now();
     const lastSeenLiveAtByAgent = lastSeenLiveAtRef.current;
     return sortedAgents.filter((agent: Agent) => {
-      if ((liveCountByAgent.get(agent.id) ?? 0) > 0) return true;
+      if ((liveCountByAgent.get(agent.id) ?? 0) > 0 || pmStatusByAgent.has(agent.id)) return true;
       const lastSeenLiveAt = lastSeenLiveAtByAgent.get(agent.id);
       return lastSeenLiveAt !== undefined && nowForLiveLinger - lastSeenLiveAt <= LIVE_AGENT_LINGER_MS;
     });
-  }, [liveCountByAgent, liveLingerVersion, sortedAgents]);
+  }, [liveCountByAgent, liveLingerVersion, pmStatusByAgent, sortedAgents]);
   const hasActiveAgents = runningAgents.length > 0;
   const displayedAgents = !streamlined
     ? sortedAgents
@@ -484,7 +524,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     const now = Date.now();
     let nextExpiryAt: number | null = null;
     for (const agent of sortedAgents) {
-      if ((liveCountByAgent.get(agent.id) ?? 0) > 0) continue;
+      if ((liveCountByAgent.get(agent.id) ?? 0) > 0 || pmStatusByAgent.has(agent.id)) continue;
       const lastSeenLiveAt = lastSeenLiveAtRef.current.get(agent.id);
       if (lastSeenLiveAt === undefined) continue;
       const expiresAt = lastSeenLiveAt + LIVE_AGENT_LINGER_MS;
@@ -500,7 +540,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [streamlined, sortedAgents, liveCountByAgent, liveLingerVersion]);
+  }, [streamlined, sortedAgents, liveCountByAgent, liveLingerVersion, pmStatusByAgent]);
 
   const persistSortMode = useCallback(
     (value: string) => {
@@ -627,6 +667,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
       rail={rail}
       runCount={liveCountByAgent.get(agent.id) ?? 0}
+      status={pmStatusByAgent.get(agent.id)}
       setSidebarOpen={setSidebarOpen}
       builtInStatus={builtInStatusByAgentId.get(agent.id)}
       starred={isStarredRow || isStarred(membershipsQuery.data, "agent", agent.id)}

@@ -76,6 +76,11 @@ export interface LiveRunForIssue {
   logBytes?: number | null;
   lastOutputBytes?: number | null;
   issueId?: string | null;
+  /**
+   * Project of the run's task. Only present on the company-wide live-runs
+   * listing, and only for runs the viewer may read.
+   */
+  projectId?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
   continuationAttempt?: number;

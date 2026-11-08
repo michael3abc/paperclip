@@ -656,6 +656,10 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
+  // Deliberately outside the `agents` prefix: the agents list is invalidated on
+  // every run lifecycle event, while PM bindings change only when an Owner
+  // reconfigures an agent.
+  pmWorkspaces: (companyId: string) => ["pm-workspaces", companyId] as const,
   decisions: {
     list: (companyId: string, status?: string) =>
       ["decisions", companyId, status ?? "__all-statuses__"] as const,

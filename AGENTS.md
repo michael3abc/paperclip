@@ -131,6 +131,21 @@ and membership visibility restrictions regardless of primary selection.
 Pin the primary agent first and sort the remaining agents alphabetically.
 Do not add a worker expansion control or change dispatch to implement this filter.
 
+Project PM sidebar rows show a presentation-only status (the plain and `.production`
+sidebar chains must change in lockstep). Blue frame, `working` label and pulsing dot:
+a readable running live run belongs to a task of the PM's project, subtasks included,
+or is the PM's own run. Orange frame and `需要你輸入`, which overrides blue: an
+Owner-addressed `issue_thread_interaction`, `approval` or `decision` item of that
+project is pending. Zero-slot PMs work through shared workers, so attribute through
+`GET /companies/:id/pm-workspaces` and the live run's `projectId` (omitted on runs the
+viewer cannot read), never `run.agentId`; momo and michael get no status. Read the
+complete attention snapshot (`attentionApi.list(..., { all: true })`), not the ranked
+first page. Queued, scheduled-retry, recovery and answer/access-wait runs are not
+working; a `running` row whose cached projection still says `queued` has just started
+(`heartbeat.run.status` patches only `status`). The status never changes dispatch,
+permissions, row order or agent configuration. Sidebar rows keep the neutral
+`ring-ring` keyboard focus ring; do not restore the browser default outline.
+
 Project PMs can be restricted to coordination and review with
 `runtimeConfig.workspaceBinding.workerSlots=0` (the default for new bindings).
 Reject implementation children assigned to such a PM before adapter dispatch,
