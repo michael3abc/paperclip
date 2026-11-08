@@ -188,3 +188,16 @@ when the PM selects its own projectWorkspaceId; retain foreign nested roots,
 cross-company registrations, issue privacy and inode/symlink checks. Definite
 bridge read denials return a bounded scope error rather than a generic failure.
 Keep worker write ownership and task recovery separate from read authorization.
+
+### Per-PM compact instructions (2026-11-08)
+
+`f3eb006cf6` adds Owner-selected `pmInstructionLayout=compact-v1`: AGENTS.md and
+PROJECT.md are required per run, while MEMORY.md is optional. Tool schemas,
+file permissions, read receipts, worker policy projection and session compatibility
+follow that per-agent setting; unselected PMs keep the existing split layout.
+The worker-policy API reports its actual documentPath and protects its generated
+table. No model, connection, approval grant, service or database schema changes.
+Switch michael only after external backups and idle/collection checks, using
+native file/configuration CAS. Preserve history and never replay old work.
+The layout-transition regression normalizes stored policy through the same schema
+as the worker-policy API before rendering its target document.

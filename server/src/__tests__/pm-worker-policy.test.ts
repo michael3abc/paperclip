@@ -6,7 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { eq } from "drizzle-orm";
 import { agents, companies, projects, projectWorkspaces, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb, toolApplications, toolConnections, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
-import { pmInstructionLayout, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
+import { pmInstructionLayout, pmWorkerPolicySchema, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
@@ -185,7 +185,7 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     const runtimeConfig = { ...before.runtimeConfig, pmInstructionLayout: nextVersion };
     const options = { recordRevision: { source: "api", createdByUserId: userId } };
     await expect(agentService(db).update(pmId, { runtimeConfig }, options)).rejects.toThrow();
-    const next = pmInstructionLayout(runtimeConfig), currentPolicy = before.runtimeConfig!.pmDelegation as PmWorkerPolicy;
+    const next = pmInstructionLayout(runtimeConfig), currentPolicy = pmWorkerPolicySchema.parse(before.runtimeConfig!.pmDelegation);
     for (const file of next.files) {
       await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
       await fs.writeFile(path.join(root, file), file === next.workerDocumentPath
