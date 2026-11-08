@@ -303,3 +303,11 @@ It reads the existing run transcript; adapters without these activities show onl
 the top card. Publish from michael/main through the existing UI overlay after
 relevant UI tests, typecheck, token gates and build; retain rollback assets. No
 backend, schema, restart or agent-state changes are part of this panel.
+
+Commits: `01cc81f48` (panel), `9e29855c0` (context fill and subagent progress) and
+`1749aacfe`. The last one fixes an upstream bug: the sandboxed adapter UI parser
+worker never started in Chromium, so external adapters' run transcripts were empty
+in the browser. Its lockdown assigned to getter-only WorkerGlobalScope accessors
+such as `indexedDB`, which throws in strict mode. The bootstrap now shadows each
+blocked global with a non-writable own property and fails closed when a global
+cannot be hidden. Published as UI-only overlays on b6ae191596-r1.
