@@ -26,6 +26,7 @@ import { attentionApi } from "../api/attention";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { deriveProjectPmSidebarStatus, type AgentSidebarStatus } from "../lib/agent-sidebar-status";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
@@ -370,10 +371,13 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     return counts;
   }, [liveRuns]);
 
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
   // Project PM rows: zero-slot PMs run no implementation themselves, so their
   // status comes from their project's tasks (subtasks included) and from
   // requests waiting on the Owner, not from their own runs. momo and other
-  // non-PM agents are not workspace-bound and never get a status.
+  // non-PM agents are not workspace-bound and never get a status; a
+  // workspace-bound agent the viewer excluded (stored preference) gets none either.
   const { data: pmWorkspaces } = useQuery({
     queryKey: queryKeys.pmWorkspaces(selectedCompanyId!),
     queryFn: () => agentsApi.listPmWorkspaces(selectedCompanyId!),
@@ -392,15 +396,52 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     enabled: !!selectedCompanyId && hasPmWorkspaces,
     refetchInterval: 60_000,
   });
+  // The viewer's stored list of PM-bound agents that must not show a status
+  // (the company preference also holding the project order, same cache entry).
+  // Default is every PM, but only once the list is actually known: a list that
+  // is still loading, never loaded (failed, or no session to key it) or lacks
+  // the field claims no PM status at all, because an unknown list is not an
+  // empty one. A failed refetch keeps the last loaded list (react-query's
+  // retained data); the failure is reported through the existing error toast.
+  const sidebarPreferenceQuery = useQuery({
+    queryKey: queryKeys.sidebarPreferences.projectOrder(
+      selectedCompanyId ?? "__none__",
+      currentUserId ?? "__anon__",
+    ),
+    queryFn: () => sidebarPreferencesApi.getProjectOrder(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!currentUserId && hasPmWorkspaces,
+  });
+  const storedExclusions = sidebarPreferenceQuery.data?.excludedPmStatusAgentIds;
+  const excludedPmStatusAgentIds = Array.isArray(storedExclusions) ? storedExclusions : null;
+  const sidebarPreferenceFailed = sidebarPreferenceQuery.isError;
+  const sidebarPreferenceError = sidebarPreferenceQuery.error;
+  const sidebarPreferenceErrorAt = sidebarPreferenceQuery.errorUpdatedAt;
+  useEffect(() => {
+    if (!sidebarPreferenceFailed) return;
+    pushToast({
+      dedupeKey: `sidebar-pm-status-preference:${selectedCompanyId}`,
+      title: "Could not load PM status settings",
+      body:
+        sidebarPreferenceError instanceof Error
+          ? sidebarPreferenceError.message
+          : "PM working and needs-input status is hidden until they load.",
+      tone: "error",
+    });
+    // errorUpdatedAt makes every new failure report once, not every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarPreferenceFailed, sidebarPreferenceErrorAt, selectedCompanyId]);
   const pmStatusByAgent = useMemo(
     () =>
-      deriveProjectPmSidebarStatus({
-        liveRuns,
-        pmWorkspaces,
-        attentionItems: attentionFeed?.items,
-      }),
+      excludedPmStatusAgentIds === null
+        ? new Map<string, AgentSidebarStatus>()
+        : deriveProjectPmSidebarStatus({
+            liveRuns,
+            pmWorkspaces,
+            attentionItems: attentionFeed?.items,
+            excludedAgentIds: excludedPmStatusAgentIds,
+          }),
     // attentionUpdatedAt re-evaluates snooze expiry on every refetch.
-    [liveRuns, pmWorkspaces, attentionFeed, attentionUpdatedAt],
+    [liveRuns, pmWorkspaces, attentionFeed, attentionUpdatedAt, excludedPmStatusAgentIds],
   );
   const liveAgentIds = useMemo(() => {
     const ids = new Set<string>();
@@ -423,7 +464,6 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     );
     return filtered;
   }, [agents, membershipsQuery.data, membershipsQuery.isSuccess]);
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const sortModeStorageKey = useMemo(() => {
     if (!selectedCompanyId) return null;
     return getAgentSortModeStorageKey(selectedCompanyId, currentUserId);

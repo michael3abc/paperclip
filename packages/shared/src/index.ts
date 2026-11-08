@@ -1322,6 +1322,7 @@ export type {
   UserProfileResponse,
   UserProfileWindowStats,
   SidebarBadges,
+  CompanySidebarPreference,
   SidebarOrderPreference,
   InboxDismissal,
   InboxDismissalKind,
@@ -1737,8 +1738,11 @@ export {
 
 export {
   sidebarOrderPreferenceSchema,
+  companySidebarPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
+  upsertCompanySidebarPreferenceSchema,
   type UpsertSidebarOrderPreference,
+  type UpsertCompanySidebarPreference,
 } from "./validators/sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,

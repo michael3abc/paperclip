@@ -256,6 +256,99 @@ describe("deriveProjectPmSidebarStatus", () => {
     expect([...result.keys()]).toEqual(["pm-a"]);
   });
 
+  describe("viewer-excluded PMs", () => {
+    // A PM-bound agent the viewer excluded (stored preference) still has a
+    // workspace binding, so it must be skipped by the derivation itself.
+    const BOUND = [pm("pm-a", "project-a"), pm("pm-excluded", "project-a"), pm("pm-b", "project-b")];
+
+    it("gives an excluded PM-bound agent no working status while its project's PMs keep theirs", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [run({ projectId: "project-a" })],
+        pmWorkspaces: BOUND,
+        attentionItems: [],
+        excludedAgentIds: ["pm-excluded"],
+        now: NOW,
+      });
+
+      expect(result.get("pm-a")).toBe("working");
+      expect(result.has("pm-excluded")).toBe(false);
+      expect(result.has("pm-b")).toBe(false);
+    });
+
+    it("gives an excluded agent no needs_input status and no working status from its own run", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [run({ agentId: "pm-excluded", projectId: null })],
+        pmWorkspaces: BOUND,
+        attentionItems: [item({ sourceKind: "approval", project: { id: "project-a" } })],
+        excludedAgentIds: ["pm-excluded"],
+        now: NOW,
+      });
+
+      expect(result.get("pm-a")).toBe("needs_input");
+      expect(result.has("pm-excluded")).toBe(false);
+    });
+
+    it("shows every PM when the list is empty, null or absent", () => {
+      const base = {
+        liveRuns: [run({ projectId: "project-a" })],
+        pmWorkspaces: BOUND,
+        attentionItems: [],
+        now: NOW,
+      };
+
+      for (const excludedAgentIds of [[], null, undefined]) {
+        const result = deriveProjectPmSidebarStatus({ ...base, excludedAgentIds });
+        expect(result.get("pm-a")).toBe("working");
+        expect(result.get("pm-excluded")).toBe("working");
+      }
+    });
+
+    it("skips an excluded agent in every project it is bound to and ignores unknown excluded ids", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [run({ projectId: "project-a" }), run({ projectId: "project-b" })],
+        pmWorkspaces: [pm("pm-multi", "project-a"), pm("pm-multi", "project-b"), pm("pm-b", "project-b")],
+        attentionItems: [],
+        excludedAgentIds: ["pm-multi", "agent-not-in-this-company"],
+        now: NOW,
+      });
+
+      expect([...result.entries()]).toEqual([["pm-b", "working"]]);
+    });
+  });
+
+  describe("approval items as the attention feed returns them", () => {
+    // Shape of an approval row from the real GET /attention response after the
+    // server carries the linked task's project: the nested project object
+    // `issueContext` produces, not a hand-made { id } stub.
+    it("reads the project of a pending approval from the nested project object", () => {
+      const approval = item({
+        sourceKind: "approval",
+        project: { id: "project-b", name: "Beta", urlKey: "beta", color: null, icon: null },
+        relatedIssue: { id: "issue-1", identifier: "BET-1", title: "Pick a vendor" },
+      });
+
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [],
+        pmWorkspaces: PMS,
+        attentionItems: [approval],
+        now: NOW,
+      });
+
+      expect(result.get("pm-b")).toBe("needs_input");
+    });
+
+    it("cannot place an approval whose project the server left null", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [],
+        pmWorkspaces: PMS,
+        attentionItems: [item({ sourceKind: "approval", project: null, relatedIssue: null })],
+        now: NOW,
+      });
+
+      expect(result.size).toBe(0);
+    });
+  });
+
   it("skips terminated PMs", () => {
     const result = deriveProjectPmSidebarStatus({
       liveRuns: [run({ projectId: "project-a" })],

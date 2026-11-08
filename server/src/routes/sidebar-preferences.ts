@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { upsertSidebarOrderPreferenceSchema } from "@paperclipai/shared";
+import { upsertCompanySidebarPreferenceSchema, upsertSidebarOrderPreferenceSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logActivity, sidebarPreferenceService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -40,30 +40,46 @@ export function sidebarPreferenceRoutes(db: Db) {
 
   router.put(
     "/companies/:companyId/sidebar-preferences/me",
-    validate(upsertSidebarOrderPreferenceSchema),
+    validate(upsertCompanySidebarPreferenceSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       const userId = requireBoardUserId(req, res);
       if (!userId) return;
 
-      const result = await svc.upsertProjectOrder(companyId, userId, req.body.orderedIds);
+      const { orderedIds, excludedPmStatusAgentIds } = req.body as {
+        orderedIds?: string[];
+        excludedPmStatusAgentIds?: string[];
+      };
+      const result = await svc.upsertCompanyPreference(companyId, userId, {
+        orderedIds,
+        excludedPmStatusAgentIds,
+      });
       const actor = getActorInfo(req);
-      await logActivity(db, {
+      const audit = {
         companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
         agentApiKeyId: actor.agentApiKeyId,
-        action: "sidebar_preferences.project_order_updated",
         entityType: "company",
         entityId: companyId,
-        details: {
-          userId,
-          orderedIds: result.orderedIds,
-        },
-      });
+      } as const;
+      if (orderedIds !== undefined) {
+        await logActivity(db, {
+          ...audit,
+          action: "sidebar_preferences.project_order_updated",
+          details: { userId, orderedIds: result.orderedIds },
+        });
+      }
+      if (excludedPmStatusAgentIds !== undefined) {
+        await logActivity(db, {
+          ...audit,
+          action: "sidebar_preferences.pm_status_exclusions_updated",
+          details: { userId, excludedPmStatusAgentIds: result.excludedPmStatusAgentIds },
+        });
+      }
       res.json(result);
     },
   );

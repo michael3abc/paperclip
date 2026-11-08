@@ -128,8 +128,11 @@ export {
 } from "./feedback.js";
 export {
   sidebarOrderPreferenceSchema,
+  companySidebarPreferenceSchema,
   upsertSidebarOrderPreferenceSchema,
+  upsertCompanySidebarPreferenceSchema,
   type UpsertSidebarOrderPreference,
+  type UpsertCompanySidebarPreference,
 } from "./sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,

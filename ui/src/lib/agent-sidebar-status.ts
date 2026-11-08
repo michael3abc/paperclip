@@ -69,6 +69,11 @@ export interface ProjectPmSidebarStatusInput {
   liveRuns: readonly LiveRunLike[] | null | undefined;
   pmWorkspaces: readonly PmWorkspaceLike[] | null | undefined;
   attentionItems: readonly AttentionItemLike[] | null | undefined;
+  /**
+   * Agents the viewer chose not to see a status on (their stored sidebar
+   * preference). Absent or empty means every PM-bound agent shows its status.
+   */
+  excludedAgentIds?: readonly string[] | null;
   now?: number;
 }
 
@@ -76,21 +81,27 @@ export interface ProjectPmSidebarStatusInput {
  * Zero-slot project PMs run no implementation themselves; their project's work
  * executes on shared workers. So status is attributed by project, through the
  * PM workspace bindings, instead of by `run.agentId`. Agents that are not a
- * project PM never appear in the result.
+ * project PM, and PMs the viewer excluded in their sidebar preference, never
+ * appear in the result.
  */
 export function deriveProjectPmSidebarStatus({
   liveRuns,
   pmWorkspaces,
   attentionItems,
+  excludedAgentIds,
   now = Date.now(),
 }: ProjectPmSidebarStatusInput): Map<string, AgentSidebarStatus> {
   const result = new Map<string, AgentSidebarStatus>();
   if (!pmWorkspaces?.length) return result;
+  const excluded = new Set(excludedAgentIds ?? []);
 
   const pmIdsByProject = new Map<string, Set<string>>();
   const pmIds = new Set<string>();
   for (const workspace of pmWorkspaces) {
     if (workspace.status === "terminated" || !workspace.projectId) continue;
+    // An excluded agent never joins either lookup, so none of the run or
+    // attention paths below can reach it.
+    if (excluded.has(workspace.agentId)) continue;
     pmIds.add(workspace.agentId);
     let ids = pmIdsByProject.get(workspace.projectId);
     if (!ids) {

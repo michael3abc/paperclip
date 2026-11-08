@@ -41,6 +41,10 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
   updateAgent: vi.fn(),
 }));
 
+const mockSidebarPreferencesApi = vi.hoisted(() => ({
+  getProjectOrder: vi.fn(),
+}));
+
 const mockOpenNewAgent = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
@@ -127,6 +131,10 @@ vi.mock("../api/heartbeats", () => ({
 
 vi.mock("../api/resourceMemberships", () => ({
   resourceMembershipsApi: mockResourceMembershipsApi,
+}));
+
+vi.mock("../api/sidebarPreferences", () => ({
+  sidebarPreferencesApi: mockSidebarPreferencesApi,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -248,6 +256,12 @@ describe("SidebarAgents", () => {
       user: { id: "user-1" },
     });
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    // Default stored preference: nothing excluded, so every project PM shows its status.
+    mockSidebarPreferencesApi.getProjectOrder.mockResolvedValue({
+      orderedIds: [],
+      excludedPmStatusAgentIds: [],
+      updatedAt: null,
+    });
     memberships = {
       projectMemberships: {},
       agentMemberships: {},
@@ -1119,6 +1133,166 @@ describe("SidebarAgents", () => {
 
       expect(mockAttentionApi.list).not.toHaveBeenCalled();
       expect(container.querySelector("[data-agent-status]")).toBeNull();
+    });
+
+    describe("viewer exclusions (stored sidebar preference)", () => {
+      const projectOrderKey = () => queryKeys.sidebarPreferences.projectOrder("company-1", "user-1");
+
+      function storedPreference(excludedPmStatusAgentIds: string[]) {
+        return { orderedIds: [], excludedPmStatusAgentIds, updatedAt: null };
+      }
+
+      function statusAgents() {
+        return Array.from(container.querySelectorAll("[data-agent-status]")).map((row) => [
+          row.getAttribute("href"),
+          row.getAttribute("data-agent-status"),
+        ]);
+      }
+
+      it("gives a PM-bound agent the viewer excluded no status, while other PMs keep theirs", async () => {
+        setUpCompany();
+        mockSidebarPreferencesApi.getProjectOrder.mockResolvedValue(storedPreference(["pm-a"]));
+        mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+          { id: "run-1", agentId: "shared-claude", status: "running", projectId: "project-a" },
+        ]);
+        mockAttentionApi.list.mockResolvedValue({
+          items: [ownerRequest("project-a"), ownerRequest("project-b")],
+        });
+
+        await renderWithPmData();
+
+        // pm-a stays bound to a project with a running task and an owner request,
+        // yet gets neither the blue nor the orange state, and no label.
+        const excluded = agentRow("/agents/all-set");
+        expect(excluded?.hasAttribute("data-agent-status") ?? false).toBe(false);
+        expect(container.textContent).not.toContain("working");
+        expect(statusAgents()).toEqual([["/agents/comfyui", "needs_input"]]);
+        expect(mockSidebarPreferencesApi.getProjectOrder).toHaveBeenCalledWith("company-1");
+      });
+
+      it("does not let an excluded PM's own run or its project's run give it a frame", async () => {
+        setUpCompany();
+        mockSidebarPreferencesApi.getProjectOrder.mockResolvedValue(storedPreference(["pm-a"]));
+        mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+          { id: "run-1", agentId: "pm-a", status: "running", projectId: null },
+          { id: "run-2", agentId: "shared-claude", status: "running", projectId: "project-a" },
+        ]);
+
+        await renderWithPmData();
+
+        const rows = [agentRow("/agents/all-set"), agentRow("/agents/claude-worker")];
+        for (const row of rows) {
+          expect(row?.hasAttribute("data-agent-status") ?? false).toBe(false);
+          expect(rowTokens(row).some((token) => token.startsWith("ring-blue-") || token.startsWith("ring-orange-"))).toBe(
+            false,
+          );
+        }
+        expect(container.querySelector("[data-agent-status]")).toBeNull();
+      });
+
+      it("claims no PM status while the stored list is still loading, then shows the right ones", async () => {
+        setUpCompany();
+        let resolvePreference: (value: ReturnType<typeof storedPreference>) => void = () => {};
+        mockSidebarPreferencesApi.getProjectOrder.mockReturnValue(
+          new Promise((resolve) => {
+            resolvePreference = resolve;
+          }),
+        );
+        mockAttentionApi.list.mockResolvedValue({ items: [ownerRequest("project-a"), ownerRequest("project-b")] });
+
+        await renderWithPmData();
+        expect(container.querySelector("[data-agent-status]")).toBeNull();
+
+        await act(async () => {
+          resolvePreference(storedPreference(["pm-a"]));
+        });
+        await settlePmQueries();
+
+        expect(statusAgents()).toEqual([["/agents/comfyui", "needs_input"]]);
+      });
+
+      it("claims no status and reports the failure when the list never loaded", async () => {
+        setUpCompany();
+        mockSidebarPreferencesApi.getProjectOrder.mockRejectedValue(new Error("preferences unavailable"));
+        mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+          { id: "run-1", agentId: "shared-claude", status: "running", projectId: "project-a" },
+        ]);
+        mockAttentionApi.list.mockResolvedValue({ items: [ownerRequest("project-b")] });
+
+        await renderWithPmData();
+
+        // A failed load is not an empty exclusion list: nobody may be shown, in particular
+        // not an agent the viewer excluded.
+        expect(container.querySelector("[data-agent-status]")).toBeNull();
+        expect(container.textContent).not.toContain("working");
+        expect(container.textContent).not.toContain("需要你輸入");
+        const failures = mockPushToast.mock.calls.filter(([toast]) => toast.tone === "error");
+        expect(failures).toHaveLength(1);
+        expect(failures[0]?.[0]).toMatchObject({
+          title: "Could not load PM status settings",
+          body: "preferences unavailable",
+          tone: "error",
+        });
+      });
+
+      it("keeps the last loaded list when a refresh fails and still reports the failure", async () => {
+        setUpCompany();
+        mockSidebarPreferencesApi.getProjectOrder.mockResolvedValue(storedPreference(["pm-a"]));
+        mockAttentionApi.list.mockResolvedValue({ items: [ownerRequest("project-a"), ownerRequest("project-b")] });
+
+        await renderWithPmData();
+        expect(statusAgents()).toEqual([["/agents/comfyui", "needs_input"]]);
+        expect(mockPushToast).not.toHaveBeenCalled();
+
+        mockSidebarPreferencesApi.getProjectOrder.mockRejectedValue(new Error("offline"));
+        await act(async () => {
+          await queryClient.invalidateQueries({ queryKey: projectOrderKey() });
+        });
+        await settlePmQueries();
+
+        expect(queryClient.getQueryState(projectOrderKey())?.status).toBe("error");
+        // The retained list still hides the excluded PM; it is neither shown nor empty.
+        expect(statusAgents()).toEqual([["/agents/comfyui", "needs_input"]]);
+        const failures = mockPushToast.mock.calls.filter(([toast]) => toast.tone === "error");
+        expect(failures).toHaveLength(1);
+        expect(failures[0]?.[0]).toMatchObject({ body: "offline" });
+      });
+
+      it("treats a cache entry without the exclusion list as unknown, not as empty", async () => {
+        setUpCompany();
+        // What the order-only optimistic update leaves when nothing had loaded yet.
+        queryClient.setQueryData(projectOrderKey(), { orderedIds: ["project-b"], updatedAt: null });
+        mockSidebarPreferencesApi.getProjectOrder.mockReturnValue(new Promise(() => {}));
+        mockAttentionApi.list.mockResolvedValue({ items: [ownerRequest("project-a")] });
+
+        await renderWithPmData();
+
+        expect(container.querySelector("[data-agent-status]")).toBeNull();
+      });
+
+      it("shows every PM when the stored list is a loaded empty list", async () => {
+        setUpCompany();
+        mockSidebarPreferencesApi.getProjectOrder.mockResolvedValue(storedPreference([]));
+        mockAttentionApi.list.mockResolvedValue({ items: [ownerRequest("project-a"), ownerRequest("project-b")] });
+
+        await renderWithPmData();
+
+        expect(statusAgents()).toEqual([
+          ["/agents/all-set", "needs_input"],
+          ["/agents/comfyui", "needs_input"],
+        ]);
+        expect(mockPushToast).not.toHaveBeenCalled();
+      });
+
+      it("does not request the stored list when the company has no PM workspaces", async () => {
+        mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" })]);
+        mockAgentsApi.listPmWorkspaces.mockResolvedValue([]);
+
+        await renderWithPmData();
+
+        expect(mockSidebarPreferencesApi.getProjectOrder).not.toHaveBeenCalled();
+        expect(mockPushToast).not.toHaveBeenCalled();
+      });
     });
 
     it("shows the status as a dot with an accessible name in the rail", async () => {

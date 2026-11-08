@@ -141,11 +141,24 @@ project is pending. Zero-slot PMs work through shared workers, so attribute thro
 viewer cannot read), never `run.agentId`; agents that are not a project PM (momo and
 the personal agent rows) get no status. Read the
 complete attention snapshot (`attentionApi.list(..., { all: true })`), not the ranked
-first page. Queued, scheduled-retry, recovery and answer/access-wait runs are not
+first page; `approval` attention items must carry their linked issue's `project`
+(`issueContext`), and approvals the viewer cannot read stay excluded. Queued,
+scheduled-retry, recovery and answer/access-wait runs are not
 working; a `running` row whose cached projection still says `queued` has just started
 (`heartbeat.run.status` patches only `status`). The status never changes dispatch,
 permissions, row order or agent configuration. Sidebar rows keep the neutral
 `ring-ring` keyboard focus ring; do not restore the browser default outline.
+A person may exclude PM agents from this status:
+`company_user_sidebar_preferences.excluded_pm_status_agent_ids` is a jsonb agent-ID
+array, default `[]` (every PM shows status), read and written by
+`GET/PUT /companies/:companyId/sidebar-preferences/me` (`{ excludedPmStatusAgentIds }`)
+under the existing board/membership checks. A PUT changes only the fields it sends, so
+the project-reorder `orderedIds` PUT preserves the list. Both sidebar chains read the
+same query; never hardcode agent names or production IDs in the repository, the person
+saves verified IDs after deploy. An unreadable list is not an empty list: with no
+loaded list claim no PM status and report the failure through the existing error toast;
+a failed refetch keeps the list already loaded. The column is additive (`NOT NULL`
+default `[]`) so the previous release still runs on the new schema.
 
 Project PMs can be restricted to coordination and review with
 `runtimeConfig.workspaceBinding.workerSlots=0` (the default for new bindings).
