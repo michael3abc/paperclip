@@ -19,6 +19,7 @@ import {
   issueAccessGrants,
   issues,
   nativeRunFinalizations,
+  projects,
   toolApplications,
   toolConnections,
   workspaceOperations,
@@ -61,6 +62,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     await db.delete(nativeRunFinalizations);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -330,10 +332,69 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(live.status).toBe(200);
     expect(live.body[0]).toMatchObject({ id: fixture.privateRunId, redacted: true, costUsd: 0.42 });
     expect(live.body[0]).not.toHaveProperty("issueId");
+    // The task's project would identify the private task, so the stub omits it too.
+    expect(live.body[0]).not.toHaveProperty("projectId");
 
     const maintenance = await request(app).get(`/api/heartbeat-runs/${fixture.maintenanceRunId}`);
     expect(maintenance.status).toBe(200);
     expect(maintenance.body.resultJson.summary).toBe("Maintenance complete");
+  });
+
+  it("reports the project of a readable run's task on the live-runs list", async () => {
+    const f = await seedFixture();
+    const projectId = randomUUID();
+    const projectIssueId = randomUUID();
+    const plainIssueId = randomUUID();
+    const projectRunId = randomUUID();
+    const plainRunId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Sidebar project" });
+    await db.insert(issues).values([
+      {
+        id: projectIssueId,
+        companyId: f.companyId,
+        identifier: "RPR-2",
+        title: "Visible project task",
+        status: "in_progress",
+        projectId,
+        assigneeAgentId: f.ownerAgentId,
+      },
+      {
+        id: plainIssueId,
+        companyId: f.companyId,
+        identifier: "RPR-3",
+        title: "Visible task without a project",
+        status: "in_progress",
+        assigneeAgentId: f.ownerAgentId,
+      },
+    ]);
+    await db.insert(heartbeatRuns).values(
+      [
+        { id: projectRunId, issueId: projectIssueId },
+        { id: plainRunId, issueId: plainIssueId },
+      ].map(({ id, issueId }) => ({
+        id,
+        companyId: f.companyId,
+        agentId: f.ownerAgentId,
+        scopeKind: "issue" as const,
+        issueId,
+        invocationSource: "assignment" as const,
+        status: "running" as const,
+        startedAt: new Date("2026-07-31T12:00:00.000Z"),
+        contextSnapshot: { issueId },
+      })),
+    );
+
+    // Viewed by an agent without access to the private task: its run is a stub.
+    const live = await request(createApp(f.companyId, f.otherAgentId)).get(`/api/companies/${f.companyId}/live-runs`);
+    expect(live.status).toBe(200);
+    const byId = new Map<string, Record<string, unknown>>(live.body.map((run: { id: string }) => [run.id, run]));
+    // A run's project lets the sidebar credit a zero-slot PM for work that
+    // executes on a shared worker, subtasks included (each carries its own task).
+    expect(byId.get(projectRunId)).toMatchObject({ issueId: projectIssueId, projectId });
+    expect(byId.get(plainRunId)).toMatchObject({ issueId: plainIssueId, projectId: null });
+    expect(byId.get(plainRunId)).not.toHaveProperty("redacted");
+    expect(byId.get(f.privateRunId)).toMatchObject({ redacted: true });
+    expect(byId.get(f.privateRunId)).not.toHaveProperty("projectId");
   });
 
   it("filters latest failures within the requested run window and preserves private-run redaction", async () => {

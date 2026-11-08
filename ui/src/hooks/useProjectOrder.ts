@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Project } from "@paperclipai/shared";
+import type { CompanySidebarPreference, Project } from "@paperclipai/shared";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { sortProjectsByStoredOrder } from "../lib/project-order";
 import { queryKeys } from "../lib/queryKeys";
@@ -68,7 +68,10 @@ export function useProjectOrder({ projects, companyId, userId }: UseProjectOrder
       setOrderedIds((current) => (areEqual(current, filtered) ? current : filtered));
       if (!companyId || !userId) return;
 
-      queryClient.setQueryData(queryKey, (current: { orderedIds?: string[]; updatedAt?: Date | null } | undefined) => ({
+      // Keep every other stored field (the PM status exclusions) while the order
+      // update is in flight; only the order changes optimistically.
+      queryClient.setQueryData(queryKey, (current: Partial<CompanySidebarPreference> | undefined) => ({
+        ...current,
         orderedIds: filtered,
         updatedAt: current?.updatedAt ?? null,
       }));

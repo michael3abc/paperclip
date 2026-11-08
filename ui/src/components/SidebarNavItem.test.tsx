@@ -72,6 +72,14 @@ describe("SidebarNavItem", () => {
     return element?.className.toString().split(/\s+/).filter(Boolean) ?? [];
   }
 
+  // The status label sits inside a wrapper span with identical text, so take the
+  // innermost match (the one that carries the colour classes).
+  function statusLabel(text: string) {
+    return Array.from(container.querySelectorAll("span"))
+      .filter((el) => el.textContent === text && el.children.length === 0)
+      .at(-1);
+  }
+
   it("shows the full label and numeric badge when expanded", () => {
     render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} badge={28} badgeLabel="unread" />);
 
@@ -191,5 +199,94 @@ describe("SidebarNavItem", () => {
     render(<SidebarNavItem to="/dashboard" label="Dashboard" icon={Inbox} liveCount={3} />);
 
     expect(link().getAttribute("aria-label")).toBe("Dashboard, 3 live");
+  });
+
+  describe("agent status", () => {
+    it("frames a working row in blue and labels it working", () => {
+      render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="working" />);
+
+      expect(link().getAttribute("data-agent-status")).toBe("working");
+      expect(classTokens(link())).toContain("ring-1");
+      expect(classTokens(link())).toContain("ring-inset");
+      expect(classTokens(link()).some((token) => token.startsWith("ring-blue-"))).toBe(true);
+      expect(classTokens(link()).some((token) => token.startsWith("ring-orange-"))).toBe(false);
+      const label = statusLabel("working");
+      expect(label).toBeTruthy();
+      expect(classTokens(label)).toContain("text-blue-600");
+    });
+
+    it("frames a row that needs input in orange and labels it 需要你輸入", () => {
+      render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="needs_input" />);
+
+      expect(link().getAttribute("data-agent-status")).toBe("needs_input");
+      expect(classTokens(link()).some((token) => token.startsWith("ring-orange-"))).toBe(true);
+      expect(classTokens(link()).some((token) => token.startsWith("ring-blue-"))).toBe(false);
+      const label = statusLabel("需要你輸入");
+      expect(label).toBeTruthy();
+      expect(classTokens(label)).toContain("text-orange-600");
+    });
+
+    it("replaces the live count with the status label, so the two never stack", () => {
+      render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} liveCount={2} status="working" />);
+
+      expect(container.textContent).toContain("working");
+      expect(container.textContent).not.toContain("2 live");
+    });
+
+    it("shows the status label for a row that is not live-counted", () => {
+      render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="needs_input" />);
+
+      expect(container.textContent).toContain("需要你輸入");
+    });
+
+    it("pulses the working dot", () => {
+      render(<SidebarNavItem to="/agents/a" label="A" icon={Inbox} status="working" />);
+
+      expect(container.querySelector("[class*='animate-pulse']")).not.toBeNull();
+    });
+
+    it("keeps the needs-input dot still", () => {
+      render(<SidebarNavItem to="/agents/a" label="A" icon={Inbox} status="needs_input" />);
+
+      expect(container.querySelector("[class*='animate-pulse']")).toBeNull();
+    });
+
+    it("leaves a row without a status untouched", () => {
+      render(<SidebarNavItem to="/agents/momo" label="momo" icon={Inbox} />);
+
+      expect(link().hasAttribute("data-agent-status")).toBe(false);
+      expect(classTokens(link()).some((token) => token.startsWith("ring-blue-"))).toBe(false);
+      expect(classTokens(link()).some((token) => token.startsWith("ring-orange-"))).toBe(false);
+      expect(container.textContent).not.toContain("working");
+      expect(container.textContent).not.toContain("需要你輸入");
+    });
+
+    it("surfaces the status in the rail aria-label and as a dot on the icon", () => {
+      sidebarState.collapsed = true;
+      render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="needs_input" />);
+
+      expect(link().getAttribute("aria-label")).toBe("All-Set, needs your input");
+      expect(link().getAttribute("data-agent-status")).toBe("needs_input");
+      expect(container.textContent).not.toContain("需要你輸入");
+      expect(container.querySelector("[class*='bg-orange-']")).not.toBeNull();
+    });
+
+    it("lets the status outrank the live count in the rail announcement", () => {
+      sidebarState.collapsed = true;
+      render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} liveCount={3} status="working" />);
+
+      expect(link().getAttribute("aria-label")).toBe("All-Set, working");
+    });
+  });
+
+  it("uses an explicit neutral keyboard focus ring instead of the browser default outline", () => {
+    render(<SidebarNavItem to="/agents/momo" label="momo" icon={Inbox} />);
+
+    const tokens = classTokens(link());
+    expect(tokens).toContain("focus-visible:outline-none");
+    expect(tokens).toContain("focus-visible:ring-2");
+    expect(tokens).toContain("focus-visible:ring-inset");
+    expect(tokens).toContain("focus-visible:ring-ring");
+    expect(tokens.some((token) => token.startsWith("focus-visible:ring-blue-"))).toBe(false);
   });
 });

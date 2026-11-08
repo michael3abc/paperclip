@@ -6,6 +6,12 @@ import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import {
+  agentSidebarStatusAnnouncement,
+  agentSidebarStatusLabel,
+  agentSidebarStatusStyle,
+  type AgentSidebarStatus,
+} from "../lib/agent-sidebar-status";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -67,6 +73,11 @@ interface SidebarNavItemProps {
   trailingLabel?: string;
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
+  /**
+   * Project-level agent status: blue frame + "working", or orange frame +
+   * "需要你輸入". Takes the place of the "N live" text and the live dot.
+   */
+  status?: AgentSidebarStatus;
 }
 
 export function SidebarNavItem({
@@ -88,6 +99,7 @@ export function SidebarNavItem({
   trailing,
   trailingLabel,
   liveAccessory,
+  status,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A fixed-width contextual pane (SecondarySidebar) forces full labels even
@@ -100,10 +112,13 @@ export function SidebarNavItem({
 
   const hasBadge = badge != null && badge > 0;
   const hasLive = liveCount != null && liveCount > 0;
+  const statusStyle = status ? agentSidebarStatusStyle(status) : undefined;
 
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
-  const railStatusText = hasLive
+  const railStatusText = status
+    ? agentSidebarStatusAnnouncement(status)
+    : hasLive
     ? `${liveCount} live`
     : hasBadge
       ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
@@ -120,6 +135,7 @@ export function SidebarNavItem({
       state={SIDEBAR_SCROLL_RESET_STATE}
       end={end}
       aria-label={railAriaLabel}
+      data-agent-status={status}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(
@@ -128,6 +144,11 @@ export function SidebarNavItem({
           // the icon breathing room inside the pill. Rows with hover menus
           // (agents/projects) reserve extra right padding via className.
           "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
+          // Explicit, neutral keyboard focus (inset so it never clips against
+          // the sidebar edge) instead of the browser's default focus ring.
+          // Blue/orange stay exclusive to the agent status frame below.
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          statusStyle?.frame,
           (active ?? isActive)
             ? "bg-accent text-foreground"
             : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
@@ -142,13 +163,21 @@ export function SidebarNavItem({
         )}
         {/* Collapsed rail: numeric badge / live count collapse to a dot on the
             icon. The icon markup is untouched so it stays pixel-aligned. */}
-        {rail && !alert && hasLive && (
+        {rail && !alert && statusStyle && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2" aria-hidden="true">
+            {statusStyle.pulse && (
+              <span className={cn("absolute inline-flex h-full w-full rounded-full opacity-75", statusStyle.pulse)} />
+            )}
+            <span className={cn("relative inline-flex h-2 w-2 rounded-full shadow-(--shadow-extract-12)", statusStyle.dot)} />
+          </span>
+        )}
+        {rail && !alert && !status && hasLive && (
           <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2" aria-hidden="true">
             <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-600 dark:bg-blue-400 shadow-(--shadow-extract-12)" />
           </span>
         )}
-        {rail && !alert && !hasLive && hasBadge && (
+        {rail && !alert && !status && !hasLive && hasBadge && (
           <span
             className={cn(
               "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-(--shadow-extract-12)",
@@ -176,10 +205,22 @@ export function SidebarNavItem({
           {textBadge}
         </Badge>
       )}
-      {!rail && (hasLive || liveAccessory) && (
-        <span className="ml-auto flex items-center gap-1.5">
+      {!rail && (hasLive || liveAccessory || status) && (
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">
           {liveAccessory}
-          {hasLive && (
+          {status && statusStyle ? (
+            <>
+              <span className="relative flex h-2 w-2" aria-hidden="true">
+                {statusStyle.pulse && (
+                  <span className={cn("absolute inline-flex h-full w-full rounded-full opacity-75", statusStyle.pulse)} />
+                )}
+                <span className={cn("relative inline-flex h-2 w-2 rounded-full", statusStyle.dot)} />
+              </span>
+              <span className={cn("text-(length:--text-micro) font-medium", statusStyle.text)}>
+                {agentSidebarStatusLabel(status)}
+              </span>
+            </>
+          ) : hasLive && (
             <>
               <span className="relative flex h-2 w-2">
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />

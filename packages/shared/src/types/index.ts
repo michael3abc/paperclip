@@ -992,7 +992,7 @@ export type {
   UserProfileWindowStats,
 } from "./user-profile.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
-export type { SidebarOrderPreference } from "./sidebar-preferences.js";
+export type { CompanySidebarPreference, SidebarOrderPreference } from "./sidebar-preferences.js";
 export type {
   ResourceMembershipResourceType,
   ResourceMembershipState,

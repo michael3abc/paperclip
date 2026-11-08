@@ -1,0 +1,1 @@
+ALTER TABLE "company_user_sidebar_preferences" ADD COLUMN "excluded_pm_status_agent_ids" jsonb DEFAULT '[]'::jsonb NOT NULL;

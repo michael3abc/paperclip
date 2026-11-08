@@ -163,6 +163,7 @@ import {
   adjustCostSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
+  upsertCompanySidebarPreferenceSchema,
   // Announcements
   announcementIdSchema,
   announcementSchema,
@@ -7089,7 +7090,7 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/sidebar-preferences/me",
   tags: ["sidebar"],
-  summary: "Get sidebar preferences for company",
+  summary: "Get your sidebar preferences for the company: project order and agents excluded from the PM sidebar status (default none)",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7098,10 +7099,10 @@ registry.registerPath({
   method: "put",
   path: "/api/companies/{companyId}/sidebar-preferences/me",
   tags: ["sidebar"],
-  summary: "Update sidebar preferences for company",
+  summary: "Update your sidebar preferences for the company; only the fields sent change (orderedIds and/or excludedPmStatusAgentIds)",
   request: {
     params: z.object({ companyId: z.string() }),
-    body: jsonBody(upsertSidebarOrderPreferenceSchema),
+    body: jsonBody(upsertCompanySidebarPreferenceSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });

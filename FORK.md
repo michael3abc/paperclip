@@ -98,6 +98,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `d6d2c8c0d7` fix: synchronize delegated decision contracts and validation fixtures
 
 - `672478c734` fix: authorize PM project reads and enforce decision boundaries
+- `18c527ba2d` feat(ui): show project PM working and needs-input status in the sidebar
 
 Current change: admit configured non-Git document directories with exclusive physical-path ownership, including beneath an ancestor ignore-only `.git/info/exclude` directory; retain Git validation for real repository metadata, repository/ref and worktree operations.
 Earlier permission repair: audited PM project reads, formal decision routing and execution-review API boundaries.
@@ -201,3 +202,62 @@ Switch michael only after external backups and idle/collection checks, using
 native file/configuration CAS. Preserve history and never replay old work.
 The layout-transition regression normalizes stored policy through the same schema
 as the worker-policy API before rendering its target document.
+
+### PM sidebar status (2026-11-08)
+
+Feature branch `sidebar-agent-status`. First feature commit `18c527ba2d` was presentation
+only; follow-up commits on the same branch add the stored per-person exclusion list below,
+so the branch now carries one additive migration (`0440_fine_leper_queen`; renumber if the
+release line gained migrations meanwhile) and no dispatch, permission or agent-configuration
+change. Project PM rows in the Agents section show blue `working` while a readable running
+task of the PM's project (subtasks included) executes, and orange `需要你輸入` (overriding
+blue) while an Owner-addressed `issue_thread_interaction`, `approval` or `decision` of that
+project is pending. Agents without a project PM binding (such as momo) get no
+status. Zero-slot PMs work through shared
+workers, so attribution uses `GET /companies/:id/pm-workspaces` plus a company-bound
+`projectId` on `GET /companies/:id/live-runs` (omitted on redacted rows), never
+`run.agentId`. The attention query reads the complete `all=true` snapshot. A `running`
+row whose cached projection still says `queued` counts as working because
+`heartbeat.run.status` patches only `status`. Sidebar rows use the neutral `ring-ring`
+keyboard focus ring instead of the browser default outline. The plain and `.production`
+sidebar chains change in lockstep. See `AGENTS.md` for the standing rule.
+
+Follow-ups required by pre-release review:
+
+- Approval attention items now carry `project` (`...issueContext(...)` from the existing
+  readable-issue map in `server/src/services/attention.ts`); before, `project` was `null`,
+  so a real pending approval never turned its PM orange. Cross-company and private-issue
+  exclusions are unchanged; `attention-service.test.ts` asserts the real
+  `GET /companies/:id/attention?all=true` response shape.
+- A PM-bound agent can also be a person's own agent, and the binding alone cannot tell them
+  apart (no existing agent, preference, membership or binding field does). The person's
+  exclusion list is stored in `company_user_sidebar_preferences.excluded_pm_status_agent_ids`
+  (jsonb array of agent IDs, `NOT NULL DEFAULT '[]'`, so every PM shows status by default
+  and the previous release keeps working on the new schema). It is read and written by the
+  existing `GET/PUT /companies/:companyId/sidebar-preferences/me` as
+  `{ excludedPmStatusAgentIds }` under the existing board/membership checks; the PUT is
+  patch-style, so a legacy `orderedIds`-only project-reorder PUT preserves the list, and the
+  audit action `sidebar_preferences.pm_status_exclusions_updated` is written only when the
+  list was sent. The repository holds no agent names or production IDs: after deploy the
+  Owner writes the verified IDs for the Owner's own user and company.
+- No silent fallback: both sidebar chains share one query. A list that cannot be read is not
+  an empty list, so with no loaded list they claim no PM status and surface the failure through
+  the existing toast (`Could not load PM status settings`); a failed refetch keeps the list that
+  was already loaded. `useProjectOrder` has no rollback, and its optimistic cache write spreads
+  the cached row, so the list survives reorders (an empty cache gets no list field, which readers
+  treat as unknown).
+- `sidebar-preferences-routes.test.ts` warms the one-time route-module import in a
+  `beforeAll` (hook timeout 120s) so the file passes at the default 15s test timeout; the
+  failing first test before the change is retained as release evidence.
+
+Validation was related-only: the sidebar/live-run/preference UI tests, the heartbeat
+privacy-routes, attention-service, sidebar-preferences routes and DB-backed service server
+tests, the DB migration tests, the token gates and Chromium runs against a mocked,
+local-only API; no full suite and no real agent was woken. Known
+limits: runs the viewer cannot read are not attributed; the attention query runs only
+when the company has PM workspaces; the retired icon rail dot and the `.production`
+chain have no dedicated unit tests; the narrow sidebar truncates PM names beside the
+wider `需要你輸入` label; the non-delegation legacy privileged-approval path was not
+exercised; there is no UI to edit the exclusion list (written through the API). Release
+ordering, the combined-release backup/history/isolated-upgrade of migration 0440 and
+deployment remain with the Owner via the release line.
