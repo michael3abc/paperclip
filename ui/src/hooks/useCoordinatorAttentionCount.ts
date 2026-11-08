@@ -3,8 +3,9 @@ import { attentionApi } from "@/api/attention";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { useLocation } from "@/lib/router";
 
-/** Navigation never starts a full-feed read. Reuse it on pages that own one;
- * elsewhere desktop and mobile navigation share the same count-only read. */
+/** This count hook never starts a full-feed read. Bound project PM status is
+ * the explicit navigation exception and shares the page-owned full-feed key.
+ * Desktop and mobile counts otherwise share the separate summary read. */
 export function useCoordinatorAttentionCount(companyId: string | null | undefined, enabled = true) {
   const location = useLocation();
   const feedPage = location.pathname.endsWith("/decisions");

@@ -63,7 +63,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `a6afe037f7` feat(ui): add Agents section to the Coordinator sidebar
 - `f8d1e645b0` feat(ui): show each agent's own avatar in the Coordinator sidebar Agents section
 - `392a2fcbdb` feat(ui): hide process-adapter service agents from the Coordinator Agents section
-- `6f354182d0` feat(ui): outline working agents in the coordinator AGENTS list
+- `6f354182d0` feat(ui): outline working agents in the coordinator AGENTS list (superseded by shared project PM status below)
 - `4168242bfc` fix(ui): continue lists on Shift+Enter in the MDXEditor chat composer
 - `46812a8808` feat(agents): let agents decide design and scope themselves; ask humans only for human matters
 - `076b4007af` Merge pull request #1 from michael3abc/fix/dot-oauth-renewable-refresh
@@ -255,9 +255,28 @@ privacy-routes, attention-service, sidebar-preferences routes and DB-backed serv
 tests, the DB migration tests, the token gates and Chromium runs against a mocked,
 local-only API; no full suite and no real agent was woken. Known
 limits: runs the viewer cannot read are not attributed; the attention query runs only
-when the company has PM workspaces; the retired icon rail dot and the `.production`
-chain have no dedicated unit tests; the narrow sidebar truncates PM names beside the
+when the company has PM workspaces; the initial revision did not cover the `.production`
+chain; the Coordinator follow-up below adds equivalent behavioral tests; the narrow sidebar truncates PM names beside the
 wider `需要你輸入` label; the non-delegation legacy privileged-approval path was not
 exercised; there is no UI to edit the exclusion list (written through the API). Release
 ordering, the combined-release backup/history/isolated-upgrade of migration 0440 and
 deployment remain with the Owner via the release line.
+
+### Coordinator PM status convergence (2026-11-08)
+
+Feature branch michael/coordinator-pm-status corrects the active Coordinator entry,
+which still used the 6f354182d0 task-tree/chat outline after classic PM status shipped.
+Coordinator and both classic variants now share useProjectPmSidebarStatus and the
+existing row rendering. Remove the unused agent-activity helper and open-work scan.
+The shared hook requires binding/preference/attention snapshots, reports first and
+refetch failures, retains loaded data and shares the complete attention cache with
+the pages. This deliberately permits bound PM navigation to fetch all=true, unlike
+the general count-only rule; no bindings means no full feed. See the Coordinator
+contract in doc/SPEC-implementation.md and focused checks in doc/DEVELOPING.md.
+
+Frontend-only overlay on b6ae191596-r1: no backend, migrations, restart, agent wakes
+or permission changes. The exact Storybook preview fixture is development-only.
+Publish from michael/main with targeted status/attention tests, typecheck, token
+gates, build, catalog and read-only production DOM/network evidence; retain the old
+UI and index-hash receipt for atomic rollback. Empty live state proves empty state
+only; deterministic consumer tests establish blue/orange behavior.

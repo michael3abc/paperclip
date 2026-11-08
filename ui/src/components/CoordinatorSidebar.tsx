@@ -13,7 +13,7 @@ import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
-import { agentIdsWithRunningWork, OPEN_WORK_STATUSES, type AgentActivityIssue } from "@/lib/agent-activity";
+import { useProjectPmSidebarStatus } from "@/hooks/useProjectPmSidebarStatus";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
 import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
@@ -66,19 +66,6 @@ function ProjectRecent({ project }: { project: Project }) {
   </div>;
 }
 
-/** Every open issue, as the light index rows. Paged so a large backlog cannot silently truncate the working set. */
-async function listOpenWork(companyId: string): Promise<AgentActivityIssue[]> {
-  const pageSize = 500;
-  const rows: AgentActivityIssue[] = [];
-  let afterId: string | undefined;
-  for (;;) {
-    const page = await issuesApi.listCompact(companyId, { projection: "index", status: OPEN_WORK_STATUSES, limit: pageSize, sortField: "id", sortDir: "asc", afterId });
-    rows.push(...page);
-    if (page.length < pageSize) return rows;
-    afterId = page[page.length - 1]!.id;
-  }
-}
-
 /** The navigation is a view of the existing records; it never creates a chat
  * or task just because someone visits or switches agents. */
 export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
@@ -108,9 +95,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     setProjectVisits(previous => ({ scope, entries: { ...(previous.scope === scope ? previous.entries : {}), [project.id]: Date.now() } }));
   }, [location.pathname, projects, scope]);
   const agentMemberships = useResourceMemberships(companyId);
-  // An agent is "working" while it has a live heartbeat run, is answering a chat,
-  // or has a running sub-task anywhere beneath a task assigned to it. Same live-runs
-  // query as the classic Agents section, which is not mounted in this mode.
+  // Live-run ownership remains with this navigation entry.
   const liveRunsQueryKey = queryKeys.liveRuns(companyId!);
   const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: liveRunsQueryKey, enabled: !!companyId,
     // Event-sourced via LiveUpdatesProvider; no interval poll needed.
@@ -118,16 +103,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const liveRuns = useQuery({ queryKey: liveRunsQueryKey, queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
     enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns.data, liveRuns.dataUpdatedAt);
-  const openWork = useQuery({ queryKey: [...queryKeys.issues.list(companyId!), "coordinator-agent-activity"], queryFn: () => listOpenWork(companyId!), enabled: !!companyId });
-  const workingAgentIds = useMemo(() => {
-    const ids = agentIdsWithRunningWork(openWork.data ?? [], new Set((chats.data ?? []).map(chat => chat.id)));
-    for (const run of liveRuns.data ?? []) ids.add(run.agentId);
-    for (const chat of chats.data ?? []) if (chat.conversationState === "active" && chat.conversationAgentId) ids.add(chat.conversationAgentId);
-    return ids;
-  }, [openWork.data, liveRuns.data, chats.data]);
-  const activityFailed = liveRuns.isError || openWork.isError;
-  // Keep the navigation focused on the person's primary agent, CEO and PMs. Worker activity
-  // still contributes to their parent task's working indicator above.
+  const pmStatusByAgent = useProjectPmSidebarStatus(companyId, userId, liveRuns.data);
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
     return (agents.data ?? [])
@@ -137,8 +113,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
       .sort((left, right) => Number(right.id === primaryAgentId) - Number(left.id === primaryAgentId)
         || left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
-      .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), working: workingAgentIds.has(agent.id) }));
-  }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId, workingAgentIds]);
+      .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), status: pmStatusByAgent.get(agent.id) }));
+  }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId, pmStatusByAgent]);
   const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
   const agentsFailed = agents.isError;
   const agentsLoading = agents.isPending && agents.fetchStatus === "fetching";
@@ -208,13 +184,13 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           ? <p role="alert" className="px-4 py-1.5 text-xs text-destructive">Couldn’t load agents. <button type="button" className="underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { void agents.refetch(); }}>Retry</button></p>
           : agentsLoading && !agentRows.length
             ? <p role="status" className="px-4 py-1.5 text-xs text-muted-foreground">Loading agents…</p>
-            : agentRows.map(({ agent, unread, working }) => <SidebarNavItem className={cn("design-sidebar-item", working && "ring-1 ring-inset ring-(--dashboard-run-accent)")} key={agent.id}
+            : agentRows.map(({ agent, unread, status }) => <SidebarNavItem className="design-sidebar-item" key={agent.id}
               to={`/chats/${encodeURIComponent(agentRouteRef(agent))}`} label={agent.name}
               iconNode={<AgentAvatar agent={agent} size={20} />}
               active={activeChatRef !== undefined && (activeChatRef === agent.id || activeChatRef === encodeURIComponent(agentRouteRef(agent)))}
-              trailing={working ? <span className="sr-only">working</span> : undefined}
+              status={status}
               badge={unread ? 1 : undefined} badgeLabel="unread chat" />)}
-        {activityFailed && agentRows.length > 0 && <p role="alert" className="px-4 py-1.5 text-xs text-destructive">Couldn’t load agent activity. <button type="button" className="underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { void liveRuns.refetch(); void openWork.refetch(); }}>Retry</button></p>}
+        {liveRuns.isError && agentRows.length > 0 && <p role="alert" className="px-4 py-1.5 text-xs text-destructive">Couldn’t load agent activity. <button type="button" className="underline focus-visible:ring-2 focus-visible:ring-ring" onClick={() => { void liveRuns.refetch(); }}>Retry</button></p>}
       </SidebarSection></div>}
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents">
         <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label="Recents" tabIndex={0}>

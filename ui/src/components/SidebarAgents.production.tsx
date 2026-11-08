@@ -22,15 +22,14 @@ import { useToastActions } from "../context/ToastContext";
 import { agentsApi } from "../api/agents";
 import { builtInAgentsApi, type BuiltInAgentStatus } from "../api/builtInAgents";
 import { BuiltInLifecycleChip } from "./BuiltInAgentBadges";
-import { attentionApi } from "../api/attention";
 import { authApi } from "../api/auth";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { sidebarPreferencesApi } from "../api/sidebarPreferences";
-import { deriveProjectPmSidebarStatus, type AgentSidebarStatus } from "../lib/agent-sidebar-status";
+import { type AgentSidebarStatus } from "../lib/agent-sidebar-status";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { useProjectPmSidebarStatus } from "../hooks/useProjectPmSidebarStatus";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import {
   isStarred,
@@ -373,76 +372,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
 
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
 
-  // Project PM rows: zero-slot PMs run no implementation themselves, so their
-  // status comes from their project's tasks (subtasks included) and from
-  // requests waiting on the Owner, not from their own runs. momo and other
-  // non-PM agents are not workspace-bound and never get a status; a
-  // workspace-bound agent the viewer excluded (stored preference) gets none either.
-  const { data: pmWorkspaces } = useQuery({
-    queryKey: queryKeys.pmWorkspaces(selectedCompanyId!),
-    queryFn: () => agentsApi.listPmWorkspaces(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-    staleTime: 60_000,
-  });
-  const hasPmWorkspaces = (pmWorkspaces?.length ?? 0) > 0;
-  // The orange frame must not depend on a ranked, capped first page, so ask for
-  // the complete filtered snapshot (`all`). The key extends the attention prefix
-  // so live events that invalidate `queryKeys.attention` refresh it too, while
-  // staying distinct from the paginated Decisions feed that owns the bare key.
-  // Only fetched when there is a PM row that could show the status.
-  const { data: attentionFeed, dataUpdatedAt: attentionUpdatedAt } = useQuery({
-    queryKey: [...queryKeys.attention(selectedCompanyId!), "pm-sidebar", "pending"],
-    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }),
-    enabled: !!selectedCompanyId && hasPmWorkspaces,
-    refetchInterval: 60_000,
-  });
-  // The viewer's stored list of PM-bound agents that must not show a status
-  // (the company preference also holding the project order, same cache entry).
-  // Default is every PM, but only once the list is actually known: a list that
-  // is still loading, never loaded (failed, or no session to key it) or lacks
-  // the field claims no PM status at all, because an unknown list is not an
-  // empty one. A failed refetch keeps the last loaded list (react-query's
-  // retained data); the failure is reported through the existing error toast.
-  const sidebarPreferenceQuery = useQuery({
-    queryKey: queryKeys.sidebarPreferences.projectOrder(
-      selectedCompanyId ?? "__none__",
-      currentUserId ?? "__anon__",
-    ),
-    queryFn: () => sidebarPreferencesApi.getProjectOrder(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!currentUserId && hasPmWorkspaces,
-  });
-  const storedExclusions = sidebarPreferenceQuery.data?.excludedPmStatusAgentIds;
-  const excludedPmStatusAgentIds = Array.isArray(storedExclusions) ? storedExclusions : null;
-  const sidebarPreferenceFailed = sidebarPreferenceQuery.isError;
-  const sidebarPreferenceError = sidebarPreferenceQuery.error;
-  const sidebarPreferenceErrorAt = sidebarPreferenceQuery.errorUpdatedAt;
-  useEffect(() => {
-    if (!sidebarPreferenceFailed) return;
-    pushToast({
-      dedupeKey: `sidebar-pm-status-preference:${selectedCompanyId}`,
-      title: "Could not load PM status settings",
-      body:
-        sidebarPreferenceError instanceof Error
-          ? sidebarPreferenceError.message
-          : "PM working and needs-input status is hidden until they load.",
-      tone: "error",
-    });
-    // errorUpdatedAt makes every new failure report once, not every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sidebarPreferenceFailed, sidebarPreferenceErrorAt, selectedCompanyId]);
-  const pmStatusByAgent = useMemo(
-    () =>
-      excludedPmStatusAgentIds === null
-        ? new Map<string, AgentSidebarStatus>()
-        : deriveProjectPmSidebarStatus({
-            liveRuns,
-            pmWorkspaces,
-            attentionItems: attentionFeed?.items,
-            excludedAgentIds: excludedPmStatusAgentIds,
-          }),
-    // attentionUpdatedAt re-evaluates snooze expiry on every refetch.
-    [liveRuns, pmWorkspaces, attentionFeed, attentionUpdatedAt, excludedPmStatusAgentIds],
-  );
+  const pmStatusByAgent = useProjectPmSidebarStatus(selectedCompanyId, currentUserId, liveRuns);
   const liveAgentIds = useMemo(() => {
     const ids = new Set<string>();
     for (const [agentId, count] of liveCountByAgent) {

@@ -3976,6 +3976,37 @@ Networking behavior for this smoke script:
 
 See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.
 
+### Project PM sidebar verification
+
+Qualify the active CoordinatorSidebar as well as plain and production SidebarAgents.
+They share useProjectPmSidebarStatus, with known binding, preference and complete
+attention snapshots required before showing status. Test quiet initial loading,
+reported first errors, retained data on refetch errors, shared-worker project
+attribution, orange priority, exclusions and unchanged navigation. The complete
+feed uses coordinatorAttentionQueryKey (not a second sidebar key); test a sidebar
+and page mounted together and attention-prefix invalidation issuing one request.
+The count-only summary remains separate. No PM bindings means no full-feed fetch.
+
+Focused checks from the repository root:
+
+```sh
+pnpm --dir ui exec vitest run src/components/CoordinatorSidebar.test.tsx src/components/SidebarAgents.test.tsx src/lib/agent-sidebar-status.test.ts src/lib/coordinator-attention.test.ts src/components/SidebarNavItem.test.tsx --maxWorkers=1
+pnpm --dir ui typecheck
+pnpm check:token-gates
+node scripts/storybook-catalog.mjs --check
+node --test scripts/check-maps.test.mjs scripts/storybook-catalog.test.mjs scripts/storybook-feature-index.test.mjs
+pnpm --dir ui build
+```
+
+Render coordinator-tasks-design (AllTasks/NeedsAttention/NoResults) with the existing
+owned Storybook server. Its exact GET pm-workspaces default fixture is empty; the
+production fixture does not prove live permissions or status colors. Use component
+tests for deterministic colors and a read-only production dashboard observation
+for actual bindings/preferences/attention/live-runs and every rendered row. Capture
+those responses from the page itself, including its leader-owned live-runs request;
+separate blocked writes, realtime events and empty-state evidence. Do not manufacture
+production tasks or replace a failed observation with a helper-only success.
+
 ### Agent persona Storybook
 
 See [agent-personas.md](agent-personas.md) for the dynamic avatar endpoint, cache,

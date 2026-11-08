@@ -2961,8 +2961,24 @@ The Coordinator sidebar's Agents section lists the person's company-scoped
 primary agent (regardless of role) alongside agents with role `ceo` or `pm`,
 with the primary agent first and the rest alphabetically, excluding terminated agents, process service accounts and
 agents the person has left. Paused PMs remain visible. There is no worker expansion
-control. Worker tasks still contribute to the parent PM's working indicator;
-this presentation filter does not change agent records, dispatch or task access.
+control. All three sidebar entries share project PM status through
+useProjectPmSidebarStatus and SidebarNavItem. A readable running project task or
+bound PM's own live run shows blue working; pending Owner-addressed interaction,
+approval or decision for the project shows orange 需要你輸入 with priority. Shared
+workers attribute work by project binding, never by the worker's identity. Unbound,
+excluded and chat-only rows get no status. The old Coordinator task-tree/active-chat
+outline is superseded; row order, selection, unread and recents stay unchanged.
+
+Binding, viewer-preference and complete attention snapshots must all be known before
+claiming status, including blue. Initial loading stays quiet, first errors show no
+status and toast by company/source/failure timestamp, and failed refetches retain
+loaded snapshots. The preference error contract remains unchanged. A bound PM status
+read is the explicit exception to upstream #18323's count-only navigation rule:
+use the same coordinatorAttentionQueryKey complete all=true feed as Needs You/task
+attention pages, 60-second cadence and attention-prefix invalidation. Without PM
+bindings, navigation starts no full-feed read. Summary counts remain a distinct key;
+live-run queries and shared polling remain with each caller. This presentation does
+not change agent records, dispatch, authorization or task access.
 
 `GET /api/workspace-preferences/me` reads only the caller's choice.
 `PUT /api/companies/{companyId}/workspace-preferences/me` updates it with authorized

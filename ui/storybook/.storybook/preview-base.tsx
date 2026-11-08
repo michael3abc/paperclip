@@ -656,6 +656,9 @@ function installStorybookApiFixtures() {
     );
     if (companyResourceMatch) {
       const [, companyId, resource] = companyResourceMatch;
+      if (resource === "pm-workspaces" && (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase() === "GET") {
+        return Response.json([]);
+      }
       if (resource === "agents") {
         return Response.json(
           companyId === "company-storybook" ? storybookAgents : [],

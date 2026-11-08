@@ -5,7 +5,9 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ResourceMemberships } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SidebarAgents } from "./SidebarAgents";
+import { SidebarAgents as PlainSidebarAgents } from "./SidebarAgents";
+import { SidebarAgents as ProductionSidebarAgents } from "./SidebarAgents.production";
+import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "../lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -233,8 +235,10 @@ describe("SidebarAgents", () => {
   let root: ReturnType<typeof createRoot> | null;
   let queryClient: QueryClient;
   let memberships: ResourceMemberships;
+  let SidebarAgents = PlainSidebarAgents;
 
   beforeEach(() => {
+    SidebarAgents = PlainSidebarAgents;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     mockSidebarState.collapsed = false;
     mockSidebarState.peeking = false;
@@ -940,7 +944,8 @@ describe("SidebarAgents", () => {
     expect(seeAllAgentsLink(container)).toBeNull();
   });
 
-  describe("project PM status", () => {
+  describe.each([["plain", PlainSidebarAgents], ["production", ProductionSidebarAgents]] as const)("%s project PM status", (_name, Component) => {
+    beforeEach(() => { SidebarAgents = Component; });
     function agentRow(href: string) {
       return container.querySelector(`a[href="${href}"]`) as HTMLAnchorElement | null;
     }
@@ -1133,6 +1138,46 @@ describe("SidebarAgents", () => {
 
       expect(mockAttentionApi.list).not.toHaveBeenCalled();
       expect(container.querySelector("[data-agent-status]")).toBeNull();
+    });
+
+    describe.each(["binding", "attention"] as const)("%s snapshot", source => {
+      const read = () => source === "binding"
+        ? { mock: mockAgentsApi.listPmWorkspaces, key: queryKeys.pmWorkspaces("company-1") }
+        : { mock: mockAttentionApi.list, key: coordinatorAttentionQueryKey("company-1") };
+      beforeEach(() => {
+        setUpCompany();
+        mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+          { id: "run", agentId: "shared-claude", status: "running", projectId: "project-a" },
+        ]);
+      });
+      it("waits quietly until the first read completes", async () => {
+        let resolve!: (value: unknown) => void;
+        read().mock.mockReturnValue(new Promise(r => { resolve = r; }));
+        await renderWithPmData();
+        expect(container.querySelector("[data-agent-status]")).toBeNull();
+        expect(mockPushToast).not.toHaveBeenCalled();
+        await act(async () => resolve(source === "binding"
+          ? [{ agentId: "pm-a", projectId: "project-a", status: "active" }] : { items: [] }));
+        await settlePmQueries();
+        expect(agentRow("/agents/all-set")?.getAttribute("data-agent-status")).toBe("working");
+      });
+      it("reports a first failure without claiming status", async () => {
+        read().mock.mockRejectedValue(new Error("unavailable"));
+        await renderWithPmData();
+        expect(container.querySelector("[data-agent-status]")).toBeNull();
+        expect(mockPushToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          dedupeKey: "sidebar-pm-status-" + source + ":company-1", body: "unavailable", tone: "error",
+        }));
+      });
+      it("retains a loaded snapshot when refetch fails", async () => {
+        await renderWithPmData();
+        expect(agentRow("/agents/all-set")?.getAttribute("data-agent-status")).toBe("working");
+        read().mock.mockRejectedValue(new Error("offline"));
+        await act(async () => { await queryClient.invalidateQueries({ queryKey: read().key }); });
+        await settlePmQueries();
+        expect(agentRow("/agents/all-set")?.getAttribute("data-agent-status")).toBe("working");
+        expect(mockPushToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ body: "offline" }));
+      });
     });
 
     describe("viewer exclusions (stored sidebar preference)", () => {

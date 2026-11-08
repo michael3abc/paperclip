@@ -131,8 +131,8 @@ and membership visibility restrictions regardless of primary selection.
 Pin the primary agent first and sort the remaining agents alphabetically.
 Do not add a worker expansion control or change dispatch to implement this filter.
 
-Project PM sidebar rows show a presentation-only status (the plain and `.production`
-sidebar chains must change in lockstep). Blue frame, `working` label and pulsing dot:
+Project PM sidebar rows show a presentation-only status. CoordinatorSidebar and
+both SidebarAgents variants use useProjectPmSidebarStatus; change all three in lockstep. Blue frame, `working` label and pulsing dot:
 a readable running live run belongs to a task of the PM's project, subtasks included,
 or is the PM's own run. Orange frame and `需要你輸入`, which overrides blue: an
 Owner-addressed `issue_thread_interaction`, `approval` or `decision` item of that
@@ -145,7 +145,16 @@ first page; `approval` attention items must carry their linked issue's `project`
 (`issueContext`), and approvals the viewer cannot read stay excluded. Queued,
 scheduled-retry, recovery and answer/access-wait runs are not
 working; a `running` row whose cached projection still says `queued` has just started
-(`heartbeat.run.status` patches only `status`). The status never changes dispatch,
+(`heartbeat.run.status` patches only `status`). Known binding, viewer-preference and complete attention snapshots are required even
+for blue. First loading is quiet; first failure shows no status and reports an error
+through the nonoptional toast actions (company/source dedupe key and failure timestamp).
+A failed refetch retains the loaded snapshots. Use coordinatorAttentionQueryKey for
+the full feed, shared with Needs You/task attention pages and their invalidations,
+with the existing 60-second cadence. Bound PM status is the explicit full-feed
+navigation exception to upstream #18323; no bindings means no full-feed read. Keep
+the count-only summary separate and live-run/shared-polling ownership in callers.
+Do not restore the old Coordinator open-task query, chat inference or working ring.
+The status never changes dispatch,
 permissions, row order or agent configuration. Sidebar rows keep the neutral
 `ring-ring` keyboard focus ring; do not restore the browser default outline.
 A person may exclude PM agents from this status:

@@ -1,18 +1,20 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionFeed, AttentionItem } from "@paperclipai/shared";
 import { CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
+import { attentionApi } from "@/api/attention";
 import { queryKeys } from "@/lib/queryKeys";
 import { PrimaryAgentPresentationProvider } from "./primary-agent/PrimaryAgentPresentation";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 type FixtureAgent = { id: string; name: string; role: "ceo" | "pm" | "engineer" | "general"; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), liveRuns: vi.fn(), openWork: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
+  pmWorkspaces: vi.fn(), preferences: vi.fn(), pushToast: vi.fn(),
   chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string }>,
   primaryAgentId: null as string | null, primaryCompanyId: "company",
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
@@ -24,6 +26,9 @@ vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () =>
 vi.mock("@/api/resourceMemberships", () => ({ resourceMembershipsApi: { listMine: fixture.listMemberships } }));
 vi.mock("@/api/agentChats", () => ({ agentChatsApi: { ensure: fixture.ensureChat } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: fixture.liveRuns } }));
+vi.mock("@/api/agents", () => ({ agentsApi: { listPmWorkspaces: fixture.pmWorkspaces } }));
+vi.mock("@/api/sidebarPreferences", () => ({ sidebarPreferencesApi: { getProjectOrder: fixture.preferences } }));
+vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: fixture.pushToast }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.openWork } }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: [] }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
@@ -58,6 +63,9 @@ beforeEach(() => {
   fixture.primaryAgentId = null; fixture.primaryCompanyId = "company";
   fixture.listMemberships.mockResolvedValue({ agentMemberships: {}, projectMemberships: {} });
   fixture.liveRuns.mockResolvedValue([]); fixture.openWork.mockResolvedValue([]);
+  fixture.pmWorkspaces.mockResolvedValue([]);
+  fixture.preferences.mockResolvedValue({ orderedIds: [], excludedPmStatusAgentIds: [], updatedAt: null });
+  fixture.attention.mockResolvedValue(feed([]));
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -147,15 +155,24 @@ describe("Coordinator pinned pages", () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
 async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); }
-async function renderSidebar() {
+async function renderSidebar(children?: ReactNode) {
   await act(async () => root.render(<QueryClientProvider client={client}><PrimaryAgentPresentationProvider value={{
     companyId: fixture.primaryCompanyId, primaryAgentId: fixture.primaryAgentId, primaryAgent: null, onChange: () => {},
-  }}><TooltipProvider><CoordinatorSidebar /></TooltipProvider></PrimaryAgentPresentationProvider></QueryClientProvider>));
+  }}><TooltipProvider><CoordinatorSidebar />{children}</TooltipProvider></PrimaryAgentPresentationProvider></QueryClientProvider>));
   await flush();
 }
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
 describe("Coordinator agents section", () => {
+  it("attributes a shared worker run to its project PM in the actual Coordinator entry", async () => {
+    fixture.agents = [{ id: "pm-a", name: "Project PM", role: "pm", status: "idle", urlKey: "project-pm" }];
+    fixture.pmWorkspaces.mockResolvedValue([{ agentId: "pm-a", projectId: "project-a", status: "active" }]);
+    fixture.liveRuns.mockResolvedValue([{ id: "run-a", agentId: "shared-worker", status: "running", projectId: "project-a" }]);
+    await renderSidebar();
+    await flush();
+    await flush();
+    expect(container.querySelector('.design-sidebar-agents a')?.getAttribute("data-agent-status")).toBe("working");
+  });
   const roster: FixtureAgent[] = [
     { id: "a-zed", name: "Zed", role: "pm", urlKey: "zed", icon: "bot", status: "idle" },
     { id: "a-amy", name: "amy", role: "pm", urlKey: "amy", icon: "bot", status: "running" },
@@ -242,78 +259,120 @@ describe("Coordinator agents section", () => {
     expect(byLabel("amy").querySelector('[data-slot="badge"]')).toBeNull();
   });
 
-  describe("working outline", () => {
-    const WORKING_RING = "ring-(--dashboard-run-accent)";
+  describe("project PM status", () => {
     const byLabel = (label: string) => rows().find(row => row.textContent?.startsWith(label))!;
-    const workingLabels = () => rows().filter(row => row.className.includes(WORKING_RING)).map(row => row.textContent!.replace(/working$/, ""));
-
-    it("outlines no one when nothing is running", async () => {
+    const status = () => byLabel("Zed")?.getAttribute("data-agent-status");
+    const binding = [{ agentId: "a-zed", projectId: "project-z", status: "active" }];
+    const preference = { orderedIds: [], excludedPmStatusAgentIds: [], updatedAt: null };
+    const request = { ...pending("input"), project: { id: "project-z" } } as AttentionItem;
+    beforeEach(() => {
       fixture.agents = roster;
-      await renderSidebar();
-      expect(workingLabels()).toEqual([]);
-      expect(section()?.textContent).not.toContain("working");
+      fixture.pmWorkspaces.mockResolvedValue(binding);
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "shared-worker", projectId: "project-z", status: "running" }]);
+    });
+    async function settle() { await flush(); await flush(); await flush(); }
+
+    it("gives Owner input priority over work and honors stored exclusions", async () => {
+      fixture.attention.mockResolvedValue(feed([request]));
+      await renderSidebar(); await settle();
+      expect(status()).toBe("needs_input");
+      expect(byLabel("Zed").textContent).toContain("需要你輸入");
+      fixture.preferences.mockResolvedValue({ ...preference, excludedPmStatusAgentIds: ["a-zed"] });
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.sidebarPreferences.projectOrder("company", "reviewer") }); });
+      await settle();
+      expect(status()).toBeNull();
     });
 
-    it("outlines an agent with a live run and labels it for assistive tech", async () => {
-      fixture.agents = roster;
-      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-zed" }]);
-      await renderSidebar();
-      expect(workingLabels()).toEqual(["Zed"]);
-      expect(byLabel("Zed").querySelector(".sr-only")?.textContent).toBe("working");
-      expect(byLabel("amy").querySelector(".sr-only")).toBeNull();
+    it("never infers status from unbound agents, open tasks or chat-only state", async () => {
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-amy", status: "running" }]);
+      fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", conversationState: "active" }];
+      await renderSidebar(); await settle();
+      expect(section()?.querySelector("[data-agent-status]")).toBeNull();
+      expect(fixture.openWork).not.toHaveBeenCalled();
+      expect(rows().some(row => row.className.includes("ring-(--dashboard-run-accent)"))).toBe(false);
     });
 
-    it("outlines the PM above a running worker sub-task while keeping the worker hidden", async () => {
-      fixture.agents = roster;
-      fixture.openWork.mockResolvedValue([
-        { id: "req", status: "blocked", assigneeAgentId: "a-amy", parentId: null },
-        { id: "child", status: "in_progress", assigneeAgentId: "a-worker", parentId: "req" },
-        { id: "idle", status: "todo", assigneeAgentId: "a-ceo", parentId: null },
-      ]);
-      await renderSidebar();
-      expect(workingLabels()).toEqual(["amy"]);
-      expect(fixture.openWork).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", status: expect.stringContaining("in_progress") }));
-    });
-
-    it("does not treat an open chat conversation as running work", async () => {
-      fixture.agents = roster;
-      fixture.chats = [{ id: "chat-amy", isUnreadForMe: false, conversationAgentId: "a-amy", conversationState: "waiting" }];
-      fixture.openWork.mockResolvedValue([{ id: "chat-amy", status: "in_progress", assigneeAgentId: "a-amy", parentId: null }]);
-      await renderSidebar();
-      expect(workingLabels()).toEqual([]);
-    });
-
-    it("outlines an agent that is answering its chat right now", async () => {
-      fixture.agents = roster;
-      fixture.chats = [{ id: "chat-amy", isUnreadForMe: false, conversationAgentId: "a-amy", conversationState: "active" }];
-      await renderSidebar();
-      expect(workingLabels()).toEqual(["amy"]);
-    });
-
-    it("keeps the unread badge and the open-chat highlight on a working row", async () => {
-      fixture.agents = roster;
+    it("keeps unread and selected state on a working row without the legacy ring", async () => {
       fixture.pathname = "/COO/chats/zed";
       fixture.chats = [{ id: "chat-zed", isUnreadForMe: true, conversationAgentId: "a-zed" }];
-      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-zed" }]);
-      await renderSidebar();
-      const zed = byLabel("Zed");
-      expect(zed.className).toContain(WORKING_RING);
-      expect(zed.className).toContain("bg-sidebar-accent text-sidebar-accent-foreground");
-      expect(zed.querySelector('[aria-label="1 unread chat"]')).not.toBeNull();
+      await renderSidebar(); await settle();
+      expect(status()).toBe("working");
+      expect(byLabel("Zed").className).toContain("bg-sidebar-accent text-sidebar-accent-foreground");
+      expect(byLabel("Zed").className).not.toContain("ring-(--dashboard-run-accent)");
+      expect(byLabel("Zed").querySelector('[aria-label="1 unread chat"]')).not.toBeNull();
     });
 
-    it("says so, with a retry, when activity cannot be loaded", async () => {
-      fixture.agents = roster;
-      fixture.openWork.mockRejectedValue(new Error("boom"));
-      await renderSidebar();
+    const sources = ["binding", "preference", "attention"] as const;
+    function source(name: typeof sources[number]) {
+      if (name === "binding") return { mock: fixture.pmWorkspaces, value: binding, key: queryKeys.pmWorkspaces("company") };
+      if (name === "preference") return { mock: fixture.preferences, value: preference, key: queryKeys.sidebarPreferences.projectOrder("company", "reviewer") };
+      return { mock: fixture.attention, value: feed([]), key: coordinatorAttentionQueryKey("company") };
+    }
+    it.each(sources)("waits quietly for the first %s snapshot", async name => {
+      const read = source(name);
+      let resolve!: (value: unknown) => void;
+      read.mock.mockReturnValue(new Promise(r => { resolve = r; }));
+      await renderSidebar(); await settle();
+      expect(status()).toBeNull();
+      expect(fixture.pushToast).not.toHaveBeenCalled();
+      await act(async () => resolve(read.value)); await settle();
+      expect(status()).toBe("working");
+    });
+    it.each(sources)("reports a first %s failure without claiming status", async name => {
+      source(name).mock.mockRejectedValue(new Error("unavailable"));
+      await renderSidebar(); await settle();
+      expect(status()).toBeNull();
+      expect(fixture.pushToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        dedupeKey: "sidebar-pm-status-" + name + ":company", body: "unavailable", tone: "error",
+      }));
+      await renderSidebar(); await settle();
+      expect(fixture.pushToast).toHaveBeenCalledTimes(1);
+    });
+    it.each(sources)("retains the loaded %s snapshot after a failed refresh", async name => {
+      await renderSidebar(); await settle();
+      expect(status()).toBe("working");
+      const read = source(name); read.mock.mockRejectedValue(new Error("offline"));
+      await act(async () => { await client.invalidateQueries({ queryKey: read.key }); }); await settle();
+      expect(status()).toBe("working");
+      expect(fixture.pushToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ body: "offline" }));
+    });
+
+    it.each([false, true])("shares one page feed and invalidation with delayed bindings=%s", async delayed => {
+      function FullFeedPage() {
+        const { data } = useQuery({ queryKey: coordinatorAttentionQueryKey("company"),
+          queryFn: () => attentionApi.list("company", { all: true }) });
+        return <output>{data?.items.length}</output>;
+      }
+      let resolve!: (value: unknown) => void;
+      if (delayed) fixture.pmWorkspaces.mockReturnValue(new Promise(r => { resolve = r; }));
+      else client.setQueryData(queryKeys.pmWorkspaces("company"), binding);
+      await renderSidebar(<FullFeedPage />); await settle();
+      if (delayed) {
+        expect(fixture.attention).toHaveBeenCalledTimes(1);
+        await act(async () => resolve(binding)); await settle();
+      }
+      expect(fixture.attention).toHaveBeenCalledExactlyOnceWith("company", { all: true });
+      fixture.attention.mockResolvedValue(feed([request]));
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.attention("company") }); }); await settle();
+      expect(fixture.attention).toHaveBeenCalledTimes(2);
+      expect(status()).toBe("needs_input");
+      expect(container.querySelector("output")?.textContent).toBe("1");
+    });
+
+    it("retries only live runs after live-run failure", async () => {
+      fixture.liveRuns.mockRejectedValue(new Error("boom"));
+      await renderSidebar(); await settle();
       const alert = section()?.querySelector('[role="alert"]');
       expect(alert?.textContent).toContain("Couldn’t load agent activity");
-      expect(rows().length).toBeGreaterThan(0);
-      fixture.openWork.mockResolvedValue([{ id: "t", status: "in_progress", assigneeAgentId: "a-zed", parentId: null }]);
-      await act(async () => alert!.querySelector("button")!.click());
-      await flush();
+      const bindingsReads = fixture.pmWorkspaces.mock.calls.length;
+      const attentionReads = fixture.attention.mock.calls.length;
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-zed", status: "running" }]);
+      await act(async () => alert!.querySelector("button")!.click()); await settle();
       expect(section()?.querySelector('[role="alert"]')).toBeNull();
-      expect(workingLabels()).toEqual(["Zed"]);
+      expect(status()).toBe("working");
+      expect(fixture.pmWorkspaces).toHaveBeenCalledTimes(bindingsReads);
+      expect(fixture.attention).toHaveBeenCalledTimes(attentionReads);
+      expect(fixture.openWork).not.toHaveBeenCalled();
     });
   });
 
