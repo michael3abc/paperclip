@@ -138,7 +138,8 @@ or is the PM's own run. Orange frame and `需要你輸入`, which overrides blue
 Owner-addressed `issue_thread_interaction`, `approval` or `decision` item of that
 project is pending. Zero-slot PMs work through shared workers, so attribute through
 `GET /companies/:id/pm-workspaces` and the live run's `projectId` (omitted on runs the
-viewer cannot read), never `run.agentId`; momo and michael get no status. Read the
+viewer cannot read), never `run.agentId`; agents that are not a project PM (momo and
+the personal agent rows) get no status. Read the
 complete attention snapshot (`attentionApi.list(..., { all: true })`), not the ranked
 first page. Queued, scheduled-retry, recovery and answer/access-wait runs are not
 working; a `running` row whose cached projection still says `queued` has just started

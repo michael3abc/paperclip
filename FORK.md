@@ -98,6 +98,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `d6d2c8c0d7` fix: synchronize delegated decision contracts and validation fixtures
 
 - `672478c734` fix: authorize PM project reads and enforce decision boundaries
+- `18c527ba2d` feat(ui): show project PM working and needs-input status in the sidebar
 
 Current change: admit configured non-Git document directories with exclusive physical-path ownership, including beneath an ancestor ignore-only `.git/info/exclude` directory; retain Git validation for real repository metadata, repository/ref and worktree operations.
 Earlier permission repair: audited PM project reads, formal decision routing and execution-review API boundaries.
@@ -188,3 +189,28 @@ when the PM selects its own projectWorkspaceId; retain foreign nested roots,
 cross-company registrations, issue privacy and inode/symlink checks. Definite
 bridge read denials return a bounded scope error rather than a generic failure.
 Keep worker write ownership and task recovery separate from read authorization.
+
+### PM sidebar status (2026-11-08)
+
+Feature branch `sidebar-agent-status`, feature commit `18c527ba2d`; presentation only, no
+schema, dispatch, permission or agent-configuration change, and no new migration.
+Project PM rows in the Agents section show blue `working` while a readable running task
+of the PM's project (subtasks included) executes, and orange `需要你輸入` (overriding blue)
+while an Owner-addressed `issue_thread_interaction`, `approval` or `decision` of that
+project is pending. Non-PM agents (momo and the personal agent) get no status. Zero-slot PMs work through shared
+workers, so attribution uses `GET /companies/:id/pm-workspaces` plus a company-bound
+`projectId` on `GET /companies/:id/live-runs` (omitted on redacted rows), never
+`run.agentId`. The attention query reads the complete `all=true` snapshot. A `running`
+row whose cached projection still says `queued` counts as working because
+`heartbeat.run.status` patches only `status`. Sidebar rows use the neutral `ring-ring`
+keyboard focus ring instead of the browser default outline. The plain and `.production`
+sidebar chains change in lockstep. See `AGENTS.md` for the standing rule.
+
+Validation was related-only: the four sidebar/live-run UI test files, the heartbeat
+privacy-routes server test, the token gates and a Chromium run against a mocked,
+local-only API (244 assertions); no full suite and no real agent was woken. Known
+limits: runs the viewer cannot read are not attributed; the attention query runs only
+when the company has PM workspaces; the retired icon rail dot and the `.production`
+chain have no dedicated unit tests; the narrow sidebar truncates PM names beside the
+wider `需要你輸入` label; the non-delegation legacy privileged-approval path was not
+exercised. Release ordering and deployment remain with the Owner via the release line.
