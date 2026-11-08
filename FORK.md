@@ -210,7 +210,7 @@ only; follow-up commits on the same branch add the stored per-person exclusion l
 so the branch now carries one additive migration (`0440_fine_leper_queen`; renumber if the
 release line gained migrations meanwhile) and no dispatch, permission or agent-configuration
 change. Project PM rows in the Agents section show blue `working` while a readable running
-task of the PM's project (subtasks included) executes, and orange `需要你輸入` (overriding
+task of the PM's project (subtasks included) executes, and orange `needs input` (overriding
 blue) while an Owner-addressed `issue_thread_interaction`, `approval` or `decision` of that
 project is pending. Agents without a project PM binding (such as momo) get no
 status. Zero-slot PMs work through shared
@@ -257,7 +257,7 @@ local-only API; no full suite and no real agent was woken. Known
 limits: runs the viewer cannot read are not attributed; the attention query runs only
 when the company has PM workspaces; the initial revision did not cover the `.production`
 chain; the Coordinator follow-up below adds equivalent behavioral tests; the narrow sidebar truncates PM names beside the
-wider `需要你輸入` label; the non-delegation legacy privileged-approval path was not
+wider `needs input` label; the non-delegation legacy privileged-approval path was not
 exercised; there is no UI to edit the exclusion list (written through the API). Release
 ordering, the combined-release backup/history/isolated-upgrade of migration 0440 and
 deployment remain with the Owner via the release line.

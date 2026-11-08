@@ -395,9 +395,9 @@ describe("deriveProjectPmSidebarStatus", () => {
 describe("agent sidebar status presentation", () => {
   it("labels working in English and the input request in Chinese", () => {
     expect(agentSidebarStatusLabel("working")).toBe("working");
-    expect(agentSidebarStatusLabel("needs_input")).toBe("需要你輸入");
+    expect(agentSidebarStatusLabel("needs_input")).toBe("needs input");
     expect(agentSidebarStatusAnnouncement("working")).toBe("working");
-    expect(agentSidebarStatusAnnouncement("needs_input")).toBe("needs your input");
+    expect(agentSidebarStatusAnnouncement("needs_input")).toBe("needs input");
   });
 
   it("keeps blue for working and orange for needs_input across frame, text and dot", () => {

@@ -1035,7 +1035,7 @@ describe("SidebarAgents", () => {
       expect(container.textContent).not.toContain("working");
     });
 
-    it("shows an orange 需要你輸入 frame when a request needs the owner, and it outranks working", async () => {
+    it("shows an orange needs input frame when a request needs the owner, and it outranks working", async () => {
       setUpCompany();
       mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
         { id: "run-1", agentId: "shared-claude", status: "running", projectId: "project-a" },
@@ -1046,7 +1046,7 @@ describe("SidebarAgents", () => {
 
       const pm = agentRow("/agents/all-set");
       expect(pm?.getAttribute("data-agent-status")).toBe("needs_input");
-      expect(pm?.textContent).toContain("需要你輸入");
+      expect(pm?.textContent).toContain("needs input");
       expect(pm?.textContent).not.toContain("working");
       expect(rowTokens(pm).some((token) => token.startsWith("ring-orange-"))).toBe(true);
       expect(rowTokens(pm).some((token) => token.startsWith("ring-blue-"))).toBe(false);
@@ -1058,7 +1058,7 @@ describe("SidebarAgents", () => {
 
       await renderWithPmData();
 
-      expect(agentLinkLabels(container)).toEqual(["Comfyui需要你輸入"]);
+      expect(agentLinkLabels(container)).toEqual(["Comfyuineeds input"]);
       expect(agentRow("/agents/comfyui")?.getAttribute("data-agent-status")).toBe("needs_input");
     });
 
@@ -1270,7 +1270,7 @@ describe("SidebarAgents", () => {
         // not an agent the viewer excluded.
         expect(container.querySelector("[data-agent-status]")).toBeNull();
         expect(container.textContent).not.toContain("working");
-        expect(container.textContent).not.toContain("需要你輸入");
+        expect(container.textContent).not.toContain("needs input");
         const failures = mockPushToast.mock.calls.filter(([toast]) => toast.tone === "error");
         expect(failures).toHaveLength(1);
         expect(failures[0]?.[0]).toMatchObject({
@@ -1359,8 +1359,8 @@ describe("SidebarAgents", () => {
       await settlePmQueries();
 
       const pm = agentRow("/agents/all-set");
-      expect(pm?.getAttribute("aria-label")).toBe("All-Set, needs your input");
-      expect(pm?.textContent).not.toContain("需要你輸入");
+      expect(pm?.getAttribute("aria-label")).toBe("All-Set, needs input");
+      expect(pm?.textContent).not.toContain("needs input");
     });
   });
 

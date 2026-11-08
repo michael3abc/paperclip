@@ -165,10 +165,10 @@ export function agentSidebarStatusStyle(status: AgentSidebarStatus): AgentSideba
 
 /** Visible label for a status. */
 export function agentSidebarStatusLabel(status: AgentSidebarStatus): string {
-  return status === "needs_input" ? "需要你輸入" : "working";
+  return status === "needs_input" ? "needs input" : "working";
 }
 
 /** Screen-reader phrase appended to the row's accessible name. */
 export function agentSidebarStatusAnnouncement(status: AgentSidebarStatus): string {
-  return status === "needs_input" ? "needs your input" : "working";
+  return status === "needs_input" ? "needs input" : "working";
 }

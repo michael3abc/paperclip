@@ -74,7 +74,7 @@ interface SidebarNavItemProps {
   liveAccessory?: ReactNode;
   /**
    * Project-level agent status: blue frame + "working", or orange frame +
-   * "需要你輸入". Takes the place of the "N live" text and the live dot.
+   * "needs input". Takes the place of the "N live" text and the live dot.
    */
   status?: AgentSidebarStatus;
 }

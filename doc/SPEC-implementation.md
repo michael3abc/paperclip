@@ -2964,7 +2964,7 @@ agents the person has left. Paused PMs remain visible. There is no worker expans
 control. All three sidebar entries share project PM status through
 useProjectPmSidebarStatus and SidebarNavItem. A readable running project task or
 bound PM's own live run shows blue working; pending Owner-addressed interaction,
-approval or decision for the project shows orange 需要你輸入 with priority. Shared
+approval or decision for the project shows orange needs input with priority. Shared
 workers attribute work by project binding, never by the worker's identity. Unbound,
 excluded and chat-only rows get no status. The old Coordinator task-tree/active-chat
 outline is superseded; row order, selection, unread and recents stay unchanged.

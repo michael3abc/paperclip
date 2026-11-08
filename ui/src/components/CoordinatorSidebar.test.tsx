@@ -276,7 +276,7 @@ describe("Coordinator agents section", () => {
       fixture.attention.mockResolvedValue(feed([request]));
       await renderSidebar(); await settle();
       expect(status()).toBe("needs_input");
-      expect(byLabel("Zed").textContent).toContain("需要你輸入");
+      expect(byLabel("Zed").textContent).toContain("needs input");
       fixture.preferences.mockResolvedValue({ ...preference, excludedPmStatusAgentIds: ["a-zed"] });
       await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.sidebarPreferences.projectOrder("company", "reviewer") }); });
       await settle();

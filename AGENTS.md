@@ -134,7 +134,7 @@ Do not add a worker expansion control or change dispatch to implement this filte
 Project PM sidebar rows show a presentation-only status. CoordinatorSidebar and
 both SidebarAgents variants use useProjectPmSidebarStatus; change all three in lockstep. Blue frame, `working` label and pulsing dot:
 a readable running live run belongs to a task of the PM's project, subtasks included,
-or is the PM's own run. Orange frame and `需要你輸入`, which overrides blue: an
+or is the PM's own run. Orange frame and `needs input`, which overrides blue: an
 Owner-addressed `issue_thread_interaction`, `approval` or `decision` item of that
 project is pending. Zero-slot PMs work through shared workers, so attribute through
 `GET /companies/:id/pm-workspaces` and the live run's `projectId` (omitted on runs the

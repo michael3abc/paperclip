@@ -4006,7 +4006,7 @@ Qualify the active CoordinatorSidebar as well as plain and production SidebarAge
 They share useProjectPmSidebarStatus, with known binding, preference and complete
 attention snapshots required before showing status. Test quiet initial loading,
 reported first errors, retained data on refetch errors, shared-worker project
-attribution, orange priority, exclusions and unchanged navigation. The complete
+attribution, orange needs input priority, exclusions and unchanged navigation. The complete
 feed uses coordinatorAttentionQueryKey (not a second sidebar key); test a sidebar
 and page mounted together and attention-prefix invalidation issuing one request.
 The count-only summary remains separate. No PM bindings means no full-feed fetch.
