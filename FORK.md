@@ -310,4 +310,10 @@ worker never started in Chromium, so external adapters' run transcripts were emp
 in the browser. Its lockdown assigned to getter-only WorkerGlobalScope accessors
 such as `indexedDB`, which throws in strict mode. The bootstrap now shadows each
 blocked global with a non-writable own property and fails closed when a global
-cannot be hidden. Published as UI-only overlays on b6ae191596-r1.
+cannot be hidden. `ccb7f7e4b` makes the panel independent of parse order: the
+sandboxed parser is one shared, line-cached instance per page, so a tail-only
+reader (compact chat) could freeze a partial checklist and name a subagent card
+from progress text. The panel rebuilds the checklist from the TodoWrite /
+TaskCreate / TaskUpdate tool entries and their results, names a subagent only
+from its `started` event, and reads the run log from the start (up to 2 MB).
+Published as UI-only overlays on b6ae191596-r1.
