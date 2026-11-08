@@ -1137,6 +1137,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           add(createItem({
             companyId,
             sourceKind: "approval",
+            // Same readable-issue project/workspace context every other issue-linked kind carries,
+            // so clients can attribute a pending approval to its project (e.g. the PM sidebar frame).
+            ...issueContext(linkedIssueId ? readableApprovalIssues.get(linkedIssueId) : null),
             subject: {
               kind: "approval",
               id: approval.id,

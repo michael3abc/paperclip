@@ -1863,6 +1863,124 @@ describeEmbeddedPostgres("attention service", () => {
     expect(approvalItems[0]?.subject.metadata?.issueId).toBe(firstIssueId);
   });
 
+  it("carries the linked task's project on pending approvals in the route response, keeping private, cross-company and agent-delegated approvals out", async () => {
+    const { companyId, workerId } = await seedCompany("APR");
+    const other = await seedCompany("APQ");
+    const projectId = randomUUID();
+    const foreignProjectId = randomUUID();
+    const workspaceId = randomUUID();
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Approval Project", status: "in_progress", color: "#0f766e", icon: "rocket" },
+      { id: foreignProjectId, companyId: other.companyId, name: "Foreign Project", status: "in_progress" },
+    ]);
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId, companyId, projectId, name: "Approval workspace", sourceType: "local_path", isPrimary: true,
+    });
+
+    const visibleIssueId = await insertIssue({
+      companyId, identifier: "APR-1", title: "Visible project task", status: "in_progress", projectId, projectWorkspaceId: workspaceId,
+    });
+    const privateIssueId = randomUUID();
+    await insertIssue({
+      id: privateIssueId, companyId, identifier: "APR-2", title: "Confidential project task", status: "in_progress", projectId,
+      visibility: "private", privacyRootIssueId: privateIssueId, responsibleUserId: "private-owner",
+    });
+    const foreignIssueId = await insertIssue({
+      companyId: other.companyId, identifier: "APQ-1", title: "Foreign task", status: "in_progress", projectId: foreignProjectId,
+    });
+    const agentDelegatedIssueId = await insertIssue({
+      companyId, identifier: "APR-3", title: "Agent-delegated project task", status: "in_progress", projectId,
+    });
+    const humanDelegatedIssueId = await insertIssue({
+      companyId, identifier: "APR-4", title: "Human-reserved project task", status: "in_progress", projectId,
+    });
+
+    const delegation = (level: "pm" | "human", recipientAgentId: string | null) => ({
+      version: 1 as const,
+      grantId: randomUUID(),
+      grantRevision: randomUUID(),
+      ownerUserId: "board-user",
+      delegateAgentId: recipientAgentId,
+      level,
+      recipientAgentId,
+      projectId,
+      sourceRunId: null,
+      sourceFingerprint: `fingerprint:${level}`,
+      revision: randomUUID(),
+      reservedReasons: [],
+      requiredScopes: ["task_decisions" as const],
+    });
+    const approvalIds = {
+      visible: randomUUID(),
+      private: randomUUID(),
+      foreign: randomUUID(),
+      agentDelegated: randomUUID(),
+      humanDelegated: randomUUID(),
+      unlinked: randomUUID(),
+    };
+    await db.insert(approvals).values([
+      { id: approvalIds.visible, companyId, type: "request_board_approval", status: "pending", payload: { title: "Approve visible" } },
+      { id: approvalIds.private, companyId, type: "request_board_approval", status: "pending", payload: { title: "Approve private" } },
+      { id: approvalIds.foreign, companyId, type: "request_board_approval", status: "pending", payload: { title: "Approve foreign" } },
+      {
+        id: approvalIds.agentDelegated, companyId, type: "request_board_approval", status: "pending",
+        payload: { title: "Approve agent-delegated" }, delegation: delegation("pm", workerId),
+      },
+      {
+        id: approvalIds.humanDelegated, companyId, type: "request_board_approval", status: "pending",
+        payload: { title: "Approve human-reserved" }, delegation: delegation("human", null),
+      },
+      { id: approvalIds.unlinked, companyId, type: "request_board_approval", status: "pending", payload: { title: "Approve unlinked" } },
+    ]);
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: visibleIssueId, approvalId: approvalIds.visible },
+      { companyId, issueId: privateIssueId, approvalId: approvalIds.private },
+      { companyId, issueId: foreignIssueId, approvalId: approvalIds.foreign },
+      { companyId, issueId: agentDelegatedIssueId, approvalId: approvalIds.agentDelegated },
+      { companyId, issueId: humanDelegatedIssueId, approvalId: approvalIds.humanDelegated },
+    ]);
+
+    const viewer = {
+      type: "board",
+      source: "session",
+      userId: "board-user",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    };
+    const testApp = express();
+    testApp.use(express.json());
+    testApp.use((req, _res, next) => {
+      (req as any).actor = viewer;
+      next();
+    });
+    testApp.use("/api", attentionRoutes(db));
+    testApp.use(errorHandler);
+
+    // Exactly the request the sidebar makes: the complete snapshot, JSON-serialized by the real route.
+    const response = await request(testApp).get(`/api/companies/${companyId}/attention?all=true`).expect(200);
+    const approvalItems = (response.body.items as Array<Record<string, any>>).filter((item) => item.sourceKind === "approval");
+    const byApproval = new Map(approvalItems.map((item) => [item.subject.id as string, item]));
+
+    expect([...byApproval.keys()].sort()).toEqual(
+      [approvalIds.visible, approvalIds.humanDelegated, approvalIds.unlinked].sort(),
+    );
+    expect(JSON.stringify(response.body)).not.toContain(privateIssueId);
+    expect(JSON.stringify(response.body)).not.toContain("Foreign Project");
+
+    const projectShape = { id: projectId, name: "Approval Project", color: "#0f766e", icon: "rocket" };
+    for (const approvalId of [approvalIds.visible, approvalIds.humanDelegated]) {
+      const item = byApproval.get(approvalId)!;
+      expect(item.project).toMatchObject(projectShape);
+      expect(item.project.urlKey).toEqual(expect.any(String));
+      // The fields the PM sidebar reads to decide whether the request still needs the Owner.
+      expect(item).toMatchObject({ sourceKind: "approval", shelf: false, archivedAt: null, snoozedUntil: null, dismissal: null });
+    }
+    expect(byApproval.get(approvalIds.visible)!.workspace).toEqual({ id: workspaceId, name: "Approval workspace" });
+    expect(byApproval.get(approvalIds.visible)!.relatedIssue).toBeNull();
+    expect(byApproval.get(approvalIds.humanDelegated)!.workspace).toBeNull();
+    expect(byApproval.get(approvalIds.unlinked)).toMatchObject({ project: null, workspace: null });
+  });
+
   it("hides snoozed attention rows until snoozedUntil passes, then returns them unconditionally", async () => {
     const { companyId } = await seedCompany("ATS");
     const approvalId = randomUUID();
