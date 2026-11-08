@@ -317,3 +317,19 @@ from progress text. The panel rebuilds the checklist from the TodoWrite /
 TaskCreate / TaskUpdate tool entries and their results, names a subagent only
 from its `started` event, and reads the run log from the start (up to 2 MB).
 Published as UI-only overlays on b6ae191596-r1.
+
+### Main agent workers (2026-11-08)
+
+Feature branch michael/main-agent-workers lets a ccpocket_bridge main agent
+(`role: main` with a project UUID) dispatch the Owner-configured shared workers.
+The Owner saves the same v2 worker policy through `PUT /agents/:id/worker-policy`;
+for main agents it renders as the `main-v1` "Worker 選用" table with option IDs in
+PROJECT.md, between the managed worker-policy markers, which agent-side bundle
+writes cannot change. A main agent's `POST /companies/:id/issues` that names a
+worker option or a policy worker is checked like a PM dispatch: same project,
+configured source selection, option expansion into worker/model overrides,
+serialized shared workspace and a review stage back to the main agent. Other
+issue creation by the main agent is unchanged. Without a saved policy nothing
+changes. The main agent is not a zero-slot PM and gains no PM decision authority.
+Commit `f92bdcc5b`. Released as a backend release (no schema change) after
+related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
