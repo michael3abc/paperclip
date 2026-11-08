@@ -67,10 +67,20 @@ export function formatPmWorkerPolicyJson(policy: PmWorkerPolicy): string {
   })) }, null, 2).replace(/</g, "\\u003c");
 }
 
+/** Worker table layouts: the PM instruction layouts plus the main agent's PROJECT.md table, which lists option IDs. */
+export type PmWorkerDocumentLayout = PmInstructionLayoutVersion | "main-v1";
+
 /** This projection is explanatory; only the Owner-owned policy grants dispatch. */
-export function renderPmWorkerPolicy(policy: PmWorkerPolicy, layout?: PmInstructionLayoutVersion): string {
+export function renderPmWorkerPolicy(policy: PmWorkerPolicy, layout?: PmWorkerDocumentLayout): string {
+  const cell = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "&#124;").replace(/[\r\n]+/g, " ");
+  if (layout === "main-v1") {
+    return [PM_WORKERS_START, "## Worker 選用", "Owner 在 Agent 設定維護此表。派 worker 任務時以 assigneeAdapterOverrides.workerSelectionId 指定選項 ID（省略則用預設）；做法見 paperclip skill。",
+      "| 選項 ID | 用途 | Worker | 模型 | 思考程度 | 速度 | 預設 |", "| --- | --- | --- | --- | --- | --- | --- |",
+      ...policy.workers.flatMap(worker => worker.selections.map(choice =>
+        `| ${[choice.id, choice.purpose ?? "", worker.harness === "claude_local" ? "Claude" : "Codex", choice.model, choice.thinking ?? "auto", choice.speed, choice.id === policy.defaultSelectionId ? "是" : ""].map(cell).join(" | ")} |`)),
+      PM_WORKERS_END].join("\n");
+  }
   if (layout === "compact-v1") {
-    const cell = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "&#124;").replace(/[\r\n]+/g, " ");
     return [PM_WORKERS_START, "## Worker 選用", "平台維護此表；派工時查詢目前選項與可用性。",
       "| 用途 | Worker | 模型 | 思考程度 | 速度 | 預設 |", "| --- | --- | --- | --- | --- | --- |",
       ...policy.workers.flatMap(worker => worker.selections.map(choice =>
@@ -92,7 +102,7 @@ export function pmWorkerManagedBlock(document: string): string | null {
   return document.slice(start, end + PM_WORKERS_END.length);
 }
 
-export function updatePmWorkerDocument(document: string, policy: PmWorkerPolicy, layout?: PmInstructionLayoutVersion): string {
+export function updatePmWorkerDocument(document: string, policy: PmWorkerPolicy, layout?: PmWorkerDocumentLayout): string {
   const previous = pmWorkerManagedBlock(document);
   const block = renderPmWorkerPolicy(policy, layout);
   return previous === null ? `${document}${document.endsWith("\n") ? "\n" : "\n\n"}${block}\n` : document.replace(previous, () => block);

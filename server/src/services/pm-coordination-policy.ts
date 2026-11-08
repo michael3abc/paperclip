@@ -1,5 +1,6 @@
 import { pmInstructionLayout, type PmInstructionLayoutVersion, aiConnectionBindingSchema } from "@paperclipai/shared";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
+import { workerPolicyLayout } from "./main-agent-workers.js";
 import { isDeepStrictEqual } from "node:util";
 import { workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
@@ -118,7 +119,7 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     const { agentInstructionsService } = await import("./agent-instructions.js");
     const [owner] = await db.select().from(agents).where(and(eq(agents.id, scope.agentId), eq(agents.companyId, scope.companyId)));
     if (!owner || !isDeepStrictEqual(owner.runtimeConfig?.pmDelegation, scope.delegation)) throw forbidden("PM worker policy changed; read current settings before dispatch");
-    const layout = pmInstructionLayout(owner.runtimeConfig);
+    const layout = workerPolicyLayout(owner);
     const document = await agentInstructionsService(db).readFile(owner, layout.workerDocumentPath);
     if (pmWorkerManagedBlock(document.content ?? "") !== renderPmWorkerPolicy(scope.delegation, layout.version)) throw unprocessable(`${layout.workerDocumentPath} and worker policy are out of sync; save the policy before dispatch`, { code: "PM_WORKER_DOCUMENT_OUT_OF_SYNC" });
     const selected = scope.delegation.workers.find(worker => worker.selections.some(choice => choice.id === (overrides as { workerSelectionId?: string }).workerSelectionId))!;

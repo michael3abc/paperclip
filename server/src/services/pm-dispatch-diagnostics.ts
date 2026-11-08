@@ -1,8 +1,9 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
-import { pmInstructionLayout, aiConnectionBindingSchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { pmWorkerPolicyRevision } from "./pm-worker-policy.js";
+import { workerPolicyLayout } from "./main-agent-workers.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
 import { HttpError } from "../errors.js";
@@ -20,7 +21,7 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
   if (!owner || pmWorkerPolicyRevision(owner.runtimeConfig?.pmDelegation) !== result.revision) {
     result.blockers.push("PM_WORKER_POLICY_CHANGED"); return result;
   }
-  const layout = pmInstructionLayout(owner.runtimeConfig);
+  const layout = workerPolicyLayout(owner);
   const document = await agentInstructionsService(db).readFile(owner, layout.workerDocumentPath);
   result.documentSynchronized = pmWorkerManagedBlock(document.content ?? "") === renderPmWorkerPolicy(policy, layout.version);
   if (!result.documentSynchronized) result.blockers.push("PM_WORKER_DOCUMENT_OUT_OF_SYNC");

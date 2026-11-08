@@ -1,4 +1,4 @@
-import { pmInstructionLayout, aiConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { HttpError } from "../errors.js";
@@ -13,6 +13,7 @@ import type { AuthorizationActor } from "./authorization.js";
 import { agentFileStore, readAgentFile, fileHash } from "./agent-file-store.js";
 import { materializeInstructionBytes } from "./agent-instruction-files.js";
 import { pmCoordinationScope, pmDelegationSchema } from "./pm-coordination-policy.js";
+import { mainAgentProjectId, workerPolicyLayout } from "./main-agent-workers.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
 
@@ -54,14 +55,16 @@ export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string
 export function pmWorkerPolicyService(db: Db) {
   const files = agentFileStore(db);
   const requirePm = (agent: typeof agents.$inferSelect) => {
-    if (!pmCoordinationScope({ ...agent, runtimeConfig: { ...agent.runtimeConfig, pmDelegation: undefined } })) throw unprocessable("Worker policy belongs to a coordination-only project PM");
+    if (!mainAgentProjectId(agent) && !pmCoordinationScope({ ...agent, runtimeConfig: { ...agent.runtimeConfig, pmDelegation: undefined } })) {
+      throw unprocessable("Worker policy belongs to a coordination-only project PM or a project main agent");
+    }
   };
   return {
     read: async (companyId: string, agentId: string, actor: AuthorizationActor): Promise<PmWorkerPolicyView> => {
       const catalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
       return files.locked(companyId, agentId, actor, false, async (_tx, agent, root) => {
         requirePm(agent);
-        const layout = pmInstructionLayout(agent.runtimeConfig);
+        const layout = workerPolicyLayout(agent);
         const bytes = await readAgentFile(root, layout.workerDocumentPath);
         const document = bytes?.toString("utf8") ?? "";
         const raw = agent.runtimeConfig?.pmDelegation;
@@ -97,7 +100,7 @@ export function pmWorkerPolicyService(db: Db) {
       }
       return files.locked(companyId, agentId, actor, true, async (tx, agent, root) => {
         requirePm(agent);
-        const layout = pmInstructionLayout(agent.runtimeConfig);
+        const layout = workerPolicyLayout(agent);
         const previous = await readAgentFile(root, layout.workerDocumentPath);
         if (pmWorkerPolicyRevision(agent.runtimeConfig?.pmDelegation) !== input.baseRevision
           || (previous ? fileHash(previous) : null) !== input.baseHash) throw conflict("Worker settings or the instruction document changed. Reload before saving.", { code: "PM_WORKER_POLICY_CONFLICT" });

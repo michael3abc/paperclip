@@ -1,4 +1,3 @@
-import { pmInstructionLayout } from "@paperclipai/shared";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -16,6 +15,7 @@ import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructi
 import type { AuthorizationActor } from "./authorization.js";
 import { durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles } from "./agent-file-durability.js";
 import { pmCoordinationScope } from "./pm-coordination-policy.js";
+import { workerPolicyLayout } from "./main-agent-workers.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -237,7 +237,7 @@ export function agentFileStore(db: Db) {
         if (input.ownWorkflow && (!input.changeReason?.trim() || input.bytes === null)) throw unprocessable("PM workflow saves require content and a change reason");
         const relative = agentFilePath(input.path);
         const workerPolicy = pmWorkerPolicySchema.safeParse(agent.runtimeConfig?.pmDelegation);
-        const layout = pmInstructionLayout(agent.runtimeConfig);
+        const layout = workerPolicyLayout(agent);
         if (relative === layout.workerDocumentPath && workerPolicy.success
           && pmWorkerManagedBlock(input.bytes?.toString("utf8") ?? "") !== renderPmWorkerPolicy(workerPolicy.data, layout.version)) {
           throw unprocessable("The managed worker table must be changed through the worker-policy API");

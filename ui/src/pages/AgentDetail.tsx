@@ -1760,8 +1760,9 @@ export function ConfigurationTab({
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
 
-      {content === "runtime" && (agent.runtimeConfig?.workspaceBinding as { mode?: string; workerSlots?: number } | undefined)?.mode === "project_pm"
-        && ((agent.runtimeConfig?.workspaceBinding as { workerSlots?: number }).workerSlots ?? 0) === 0
+      {content === "runtime" && (((agent.runtimeConfig?.workspaceBinding as { mode?: string; workerSlots?: number } | undefined)?.mode === "project_pm"
+        && ((agent.runtimeConfig?.workspaceBinding as { workerSlots?: number }).workerSlots ?? 0) === 0)
+        || (agent.adapterType === "ccpocket_bridge" && (agent.adapterConfig as { role?: unknown } | null)?.role === "main"))
         ? <PmWorkerSettings key={agent.id} agentId={agent.id} /> : null}
 
       {content === "permissions" ? <TrustPresetSection

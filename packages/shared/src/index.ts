@@ -2929,7 +2929,7 @@ export { readBoardBootstrap } from "./board-bootstrap.js";
 export * from "./push.js";
 export { pmInstructionLayout, requiredPmBundleFiles, type PmInstructionLayoutVersion } from "./pm-instruction-layout.js";
 export { pmWorkerPolicySchema, savePmWorkerPolicySchema, formatPmWorkerPolicyJson, renderPmWorkerPolicy, pmWorkerManagedBlock, updatePmWorkerDocument,
-  type PmWorkerPolicy, type PmWorkerSelection, type PmWorkerCatalogEntry, type PmWorkerPolicyView, type SavePmWorkerPolicy } from "./pm-worker-policy.js";
+  type PmWorkerPolicy, type PmWorkerSelection, type PmWorkerCatalogEntry, type PmWorkerPolicyView, type SavePmWorkerPolicy, type PmWorkerDocumentLayout } from "./pm-worker-policy.js";
 
 export type { ProjectSessionRecord, ProjectSessionRecords, ProjectWorkProductRecords } from "./project-execution-records.js";
 export * from "./delegated-decisions.js";

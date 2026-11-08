@@ -1,12 +1,13 @@
 import { pmInstructionLayout } from "@paperclipai/shared";
 import { getDelegatedRequest } from "../services/delegated-requests.js";
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, runnerApiResponseReservations, issueAttachments, issues } from "@paperclipai/db";
+import { agents, heartbeatRuns, runnerApiResponseReservations, issueAttachments, issues } from "@paperclipai/db";
 import type { RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
 import { currentPmCoordinationScope, assertPmIssue, assertPmDispatch, assertPmRun, assertPmApproval, pmDispatchExecutionPolicy, type PmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { requirePmBundleReads } from "../services/pm-bundle-tools.js";
+import { mainAgentDispatchScope } from "../services/main-agent-workers.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { readNativeExecutionReviewAssignment } from "../services/native-runtime/native-execution-review.js";
 import { boundRunIssueIdSql } from "../services/run-task-binding.js";
@@ -135,6 +136,31 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
   }
 }
 
+/**
+ * A main agent creating a task for a shared worker of its Owner-managed policy
+ * dispatches it like a PM: the option ID expands to the Owner-selected model,
+ * connection and workspace mode, and the main agent reviews the result. Other
+ * task creation by the main agent is unchanged.
+ */
+export async function applyMainAgentDispatch(db: Db, identity: { agentId: string; companyId: string }, request: {
+  method: string; path: string; body: Record<string, unknown>;
+}) {
+  if (request.method !== "POST") return false;
+  const match = request.path.replace(/\/$/, "").match(/^\/companies\/([^/]+)\/issues$/);
+  if (!match || match[1] !== identity.companyId) return false;
+  const [agent] = await db.select().from(agents).where(and(eq(agents.id, identity.agentId), eq(agents.companyId, identity.companyId))).limit(1);
+  const scope = agent ? mainAgentDispatchScope(agent) : null;
+  if (!scope) return false;
+  const body = request.body;
+  const overrides = body.assigneeAdapterOverrides as { workerSelectionId?: unknown } | null | undefined;
+  const policyWorker = typeof body.assigneeAgentId === "string" && scope.delegation!.workers.some(worker => worker.agentId === body.assigneeAgentId);
+  if (overrides?.workerSelectionId == null && !policyWorker) return false;
+  body.projectId ??= scope.projectId;
+  await assertPmDispatch(db, scope, body);
+  body.executionPolicy = pmDispatchExecutionPolicy(scope, body.executionPolicy, null);
+  return true;
+}
+
 export function pmCoordinationMiddleware(db: Db): RequestHandler {
   return async (req, _res, next) => {
     try {
@@ -142,6 +168,8 @@ export function pmCoordinationMiddleware(db: Db): RequestHandler {
         const pm = await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId });
         if (pm) await assertPmApiRequest(db, pm, { method: req.method, path: req.path,
           query: req.query, body: req.body ?? {}, runId: req.actor.runId });
+        else if (req.body && typeof req.body === "object") await applyMainAgentDispatch(db, { agentId: req.actor.agentId, companyId: req.actor.companyId },
+          { method: req.method, path: req.path, body: req.body });
       }
       next();
     } catch (error) { next(error); }
