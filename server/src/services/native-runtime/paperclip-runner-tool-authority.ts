@@ -7,7 +7,7 @@ import { notifyAttentionRetentionWork } from "../retention-work-notifications.js
 import { requiredQualityReviewSchema, createIssueInputSchema } from "@paperclipai/shared";
 import { PM_READ_TOOLS, PM_WRITE_TOOLS, currentPmCoordinationScope, assertPmTool, assertPmIssue, assertPmRun, assertPmDispatch, pmDispatchExecutionPolicy, assertPmApproval } from "../pm-coordination-policy.js";
 import { pmDispatchDiagnostics } from "../pm-dispatch-diagnostics.js";
-import { PM_BUNDLE_TOOLS, readPmBundleFile, writePmBundleFile, requirePmBundleReads } from "../pm-bundle-tools.js";
+import { pmBundleTools, readPmBundleFile, writePmBundleFile, requirePmBundleReads } from "../pm-bundle-tools.js";
 import { PM_PROJECT_READ_TOOLS, executePmProjectRead } from "../pm-project-read-tools.js";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -345,7 +345,7 @@ export class PaperclipRunnerToolAuthority {
       ...TASK_ATTACHMENT_DEFINITIONS.map(tool => ({ ...tool, description: tool.description.replace("This sends file contents to OpenAI.", "Contents are returned to this run's provider.") })),
       ...(!this.binding.nativeReview && !this.binding.executionReview ? CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(tool => tool.operationId === "request_approval")
         .map(tool => ({ name: tool.operationId, description: tool.description, inputSchema: tool.inputSchema })) : []),
-      ...PM_BUNDLE_TOOLS.filter(tool => (!this.binding.nativeReview && !this.binding.executionReview) || tool.name === "read_bundle_file"), ...PM_PROJECT_READ_TOOLS];
+      ...pmBundleTools(this.binding.runtimeContext?.toolPolicy?.instructionLayout).filter(tool => (!this.binding.nativeReview && !this.binding.executionReview) || tool.name === "read_bundle_file"), ...PM_PROJECT_READ_TOOLS];
   }
 
   #unrestrictedDefinitions(): Array<Record<string, unknown>> {

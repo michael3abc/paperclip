@@ -1,10 +1,11 @@
+import { pmInstructionLayout } from "@paperclipai/shared";
 import { getDelegatedRequest } from "../services/delegated-requests.js";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, runnerApiResponseReservations, issueAttachments, issues } from "@paperclipai/db";
 import type { RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { currentPmCoordinationScope, assertPmIssue, assertPmDispatch, assertPmRun, assertPmApproval, pmDispatchExecutionPolicy, PM_BUNDLE_FILES, PM_EDITABLE_BUNDLE_FILES, type PmCoordinationScope } from "../services/pm-coordination-policy.js";
+import { currentPmCoordinationScope, assertPmIssue, assertPmDispatch, assertPmRun, assertPmApproval, pmDispatchExecutionPolicy, type PmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { requirePmBundleReads } from "../services/pm-bundle-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { readNativeExecutionReviewAssignment } from "../services/native-runtime/native-execution-review.js";
@@ -36,8 +37,8 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
     else if (own && !match[3]) allowed = read;
     else if (own && match[3]) {
       const file = read ? query.path : body.path;
-      allowed = typeof file === "string" && (read ? PM_BUNDLE_FILES.includes(file as typeof PM_BUNDLE_FILES[number])
-        : method === "PUT" && PM_EDITABLE_BUNDLE_FILES.has(file) && typeof body.changeReason === "string"
+      allowed = typeof file === "string" && (read ? pmInstructionLayout({ pmInstructionLayout: pm.instructionLayout }).files.includes(file)
+        : method === "PUT" && pmInstructionLayout({ pmInstructionLayout: pm.instructionLayout }).editableFiles.includes(file) && typeof body.changeReason === "string"
           && !!body.changeReason.trim() && body.clearLegacyPromptTemplate !== true);
     }
   } else if ((match = path.match(/^\/assets\/([^/]+)\/content$/))) {

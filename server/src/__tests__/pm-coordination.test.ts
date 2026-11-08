@@ -1,4 +1,4 @@
-import { renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
+import { pmInstructionLayout, requiredPmBundleFiles, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
 import { workerSelectionOverrides } from "../services/pm-worker-options.js";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import express from "express";
@@ -16,7 +16,7 @@ import { resolveManagedInstructionsRoot, agentInstructionsService } from "../ser
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
-import { PM_BUNDLE_FILES, pmCoordinationScope } from "../services/pm-coordination-policy.js";
+import { pmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { readPmBundleFile, writePmBundleFile } from "../services/pm-bundle-tools.js";
 import { assertPmApiRequest, pmCoordinationMiddleware } from "../middleware/pm-coordination.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -42,7 +42,9 @@ import { executePmProjectRead } from "../services/pm-project-read-tools.js";
 import { prepareNativeExecutionReview } from "../services/native-runtime/native-execution-review.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.js";
 
-describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on owned storage and database", (pmHarness) => {
+describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["codex_local", "compact-v1"]] as const)("%s %s PM capabilities on owned storage and database", (pmHarness, instructionLayout) => {
+  const layout = pmInstructionLayout({ pmInstructionLayout: instructionLayout });
+  const memoryPath = instructionLayout === "compact-v1" ? "MEMORY.md" : "memory/decisions.md";
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>, db: ReturnType<typeof createDb>, home: string;
   const previousHome = process.env.PAPERCLIP_HOME;
   const companyId = randomUUID(), projectId = randomUUID(), otherProjectId = randomUUID(), agentId = randomUUID(), workerId = randomUUID(), userId = randomUUID();
@@ -70,7 +72,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     root = resolveManagedInstructionsRoot({ id: agentId, companyId, name: "PM", adapterConfig: {} });
     const runtimeConfig = { workspaceBinding: { mode: "project_pm", projectId, workerRoot: home, workerSlots: 0, workerIsolation: "shared" },
-      pmDelegation: policy };
+      pmDelegation: policy, pmInstructionLayout: instructionLayout };
     await db.insert(agents).values([
       { id: agentId, companyId, name: "PM", status: "active", adapterType: pmHarness, runtimeConfig,
         adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" } },
@@ -87,8 +89,8 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId, issueId, scopeKind: "issue",
       responsibleUserId: userId, invocationSource: "assignment", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
-    for (const file of PM_BUNDLE_FILES) { await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true }); await fs.writeFile(path.join(root, file), `# ${file}\nOwner baseline\n`); }
-    await fs.appendFile(path.join(root, "WORKERS.md"), renderPmWorkerPolicy(policy));
+    for (const file of layout.files) { await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true }); await fs.writeFile(path.join(root, file), `# ${file}\nOwner baseline\n`); }
+    await fs.appendFile(path.join(root, layout.workerDocumentPath), renderPmWorkerPolicy(policy, instructionLayout));
     const copy = (await agentInstructionWorkingCopyService(db).prepare({ companyId, agentId, runId, cwd: home }))!;
     localRoot = copy.localRoot;
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId)); scope = pmCoordinationScope(agent!)!;
@@ -125,7 +127,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
       await unlock(home); await fs.rm(home, { recursive: true, force: true });
     }
   });
-  const reads = async () => { for (const file of PM_BUNDLE_FILES) await readPmBundleFile(db, scope, runId, { path: file }); };
+  const reads = async () => { for (const file of requiredPmBundleFiles(instructionLayout, "create_task")) await readPmBundleFile(db, scope, runId, { path: file }); };
 
   it("reads and searches project files while rejecting symlink escape and binaries", async () => {
     await fs.writeFile(path.join(home, "project-evidence.txt"), "first\nacceptance evidence\nlast\n");
@@ -252,10 +254,10 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     expect(listed.dispatchReadiness).toMatchObject({ version: 2, defaultSelectionId: selectionId, documentSynchronized: true, blockers: [],
       selections: [{ id: selectionId, agentId: workerId, ready: true }] });
     expect(listed.actors.find((a: any) => a.id === workerId)).not.toHaveProperty("adapterConfig");
-    const original = await fs.readFile(path.join(root, "WORKERS.md"), "utf8");
-    await fs.writeFile(path.join(root, "WORKERS.md"), "# out of sync");
+    const original = await fs.readFile(path.join(root, layout.workerDocumentPath), "utf8");
+    await fs.writeFile(path.join(root, layout.workerDocumentPath), "# out of sync");
     try { expect((await execute("list_agents", {}) as any).dispatchReadiness).toMatchObject({ documentSynchronized: false, blockers: ["PM_WORKER_DOCUMENT_OUT_OF_SYNC"] }); }
-    finally { await fs.writeFile(path.join(root, "WORKERS.md"), original); }
+    finally { await fs.writeFile(path.join(root, layout.workerDocumentPath), original); }
     const [saved] = await db.select().from(agents).where(eq(agents.id, agentId));
     await db.update(agents).set({ runtimeConfig: { ...saved!.runtimeConfig, pmDelegation: { version: 1, workers: [{ agentId: workerId, selections: [{ model: "old", effort: "high" }] }] } } }).where(eq(agents.id, agentId));
     try { expect((await execute("list_agents", {}) as any).dispatchReadiness).toMatchObject({ version: 1, blockers: ["PM_WORKER_MIGRATION_REQUIRED"] }); }
@@ -285,15 +287,15 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     await expect(gateway.executeTool({ sessionToken: token, tool: "guessed_connector_write", parameters: {} })).rejects.toMatchObject({ status: 403, reasonCode: "pm_connector_denied" });
   });
   it("saves only own support files with CAS, a reason and a synchronized working baseline", async () => {
-    await reads(); const before = await readPmBundleFile(db, scope, runId, { path: "memory/decisions.md" });
+    await reads(); const before = await readPmBundleFile(db, scope, runId, { path: memoryPath });
     await expect(writePmBundleFile(db, scope, runId, { path: "AGENTS.md", content: "expanded role", baseHash: before.contentHash, changeReason: "expand" })).rejects.toThrow("Owner-managed");
     const changed = "# Decisions\nUse bounded reviews; source: owned test.\n";
-    expect(await writePmBundleFile(db, scope, runId, { path: "memory/decisions.md", content: changed, baseHash: before.contentHash, changeReason: "Record verified workflow" }))
+    expect(await writePmBundleFile(db, scope, runId, { path: memoryPath, content: changed, baseHash: before.contentHash, changeReason: "Record verified workflow" }))
       .toMatchObject({ saved: true, workingCopySynchronized: true });
-    expect(await fs.readFile(path.join(localRoot, "memory/decisions.md"), "utf8")).toBe(changed);
+    expect(await fs.readFile(path.join(localRoot, memoryPath), "utf8")).toBe(changed);
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-    expect((await agentInstructionsService().readFile(agent!, "memory/decisions.md")).content).toBe(changed);
-    await expect(writePmBundleFile(db, scope, runId, { path: "memory/decisions.md", content: changed, baseHash: before.contentHash, changeReason: "stale save" })).rejects.toThrow("changed since");
+    expect((await agentInstructionsService().readFile(agent!, memoryPath)).content).toBe(changed);
+    await expect(writePmBundleFile(db, scope, runId, { path: memoryPath, content: changed, baseHash: before.contentHash, changeReason: "stale save" })).rejects.toThrow("changed since");
     const logs = await db.select().from(activityLog).where(and(eq(activityLog.runId, runId), eq(activityLog.action, "agent.files_updated")));
     expect(logs.some(row => row.details?.changeReason === "Record verified workflow")).toBe(true);
   });
@@ -352,7 +354,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
       const review = new PaperclipRunnerToolAuthority(db, { companyId, agentId, runId: reviewRunId, issueId: childId, workMode: "standard", runtimeContext, nativeReview, apiUrl });
       try {
         await expect(review.execute({ tool: "resolve_review", callId: "unread", arguments: { decision, reason: "Evidence checked" } })).rejects.toThrow("Read the current bundle");
-        for (const file of ["AGENTS.md", "PROJECT.md", "memory/handoff.md", "REVIEW.md"]) await review.execute({ tool: "read_bundle_file", callId: randomUUID(), arguments: { path: file } });
+        for (const file of requiredPmBundleFiles(instructionLayout, "resolve_review")) await review.execute({ tool: "read_bundle_file", callId: randomUUID(), arguments: { path: file } });
         await expect(review.execute({ tool: "create_task", callId: "review-dispatch", arguments: {} })).rejects.toThrow();
         if (decision === "reject") {
           expect(review.definitions().some(tool => tool.name === "request_human_input")).toBe(true);
@@ -416,7 +418,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
       expect(review.definitions().map(tool => tool.name)).not.toContain("create_task");
       await expect(review.execute({ tool: "resolve_review", callId: "before-reads", arguments: { decision: "reject", reason: "Missing document evidence" } }))
         .rejects.toThrow("Read the current bundle");
-      for (const file of PM_BUNDLE_FILES) await review.execute({ tool: "read_bundle_file", callId: file, arguments: { path: file } });
+      for (const file of layout.files) await review.execute({ tool: "read_bundle_file", callId: file, arguments: { path: file } });
       await expect(review.execute({ tool: "resolve_review", callId: "after-reads", arguments: { decision: "reject", reason: "Missing document evidence" } }))
         .resolves.toMatchObject({ status: "pending_finalization" });
       await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/issues/${reviewIssueId}/stalled-review-decision`,
@@ -562,7 +564,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     const executionReview = (await prepareNativeExecutionReview(db, { companyId, agentId, runId: reviewRunId, issueId: reviewIssueId }))!;
     const review = new PaperclipRunnerToolAuthority(db, { companyId, agentId, runId: reviewRunId, issueId: reviewIssueId, runtimeContext, executionReview, apiUrl });
     try {
-      for (const file of PM_BUNDLE_FILES) await review.execute({ tool: "read_bundle_file", callId: file, arguments: { path: file } });
+      for (const file of layout.files) await review.execute({ tool: "read_bundle_file", callId: file, arguments: { path: file } });
       expect(review.definitions().map(tool => tool.name)).not.toContain("create_task");
       const result = await review.execute({ tool: "call_api", callId: randomUUID(), arguments: {
         operationId: "POST /api/companies/{companyId}/issues", pathParams: { companyId },
@@ -650,7 +652,7 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
 
   it("does not let run-end collection overwrite a newer canonical support-file save", async () => {
     await reads();
-    const file = "memory/decisions.md", before = await readPmBundleFile(db, scope, runId, { path: file });
+    const file = memoryPath, before = await readPmBundleFile(db, scope, runId, { path: file });
     const baseline = await snapshotAgentFiles(localRoot);
     const newer = "# Decisions\nA newer Owner-reviewed process.\n";
     await agentFileStore(db).write({ companyId, agentId, path: file, bytes: Buffer.from(newer), baseHash: before.contentHash! },

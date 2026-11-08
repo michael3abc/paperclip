@@ -91,7 +91,7 @@ function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial:
     </fieldset>
     <details><summary>Worker settings JSON</summary><pre aria-label="Worker settings JSON" className="whitespace-pre-wrap break-words text-sm">{formatPmWorkerPolicyJson(draft)}</pre></details>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    {saved && <p role="status">Worker settings and WORKERS.md saved.</p>}
+    {saved && <p role="status">Worker settings and {base.documentPath} saved.</p>}
     <div className="flex items-center justify-between gap-3">
       <Button variant="outline" disabled={busy} onClick={async () => {
         try { const current = await agentsApi.workerPolicy(agentId); setBase(current); setRows(current.policy?.workers.flatMap(worker => worker.selections.map(choice => ({ ...choice, agentId: worker.agentId, harness: worker.harness }))) ?? []); setDefaultId(current.policy?.defaultSelectionId ?? ""); setError(""); setSaved(false); }

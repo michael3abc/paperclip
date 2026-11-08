@@ -325,6 +325,7 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
     skills,
     mcp,
     ...(pm ? { toolPolicy: { kind: "project_pm" as const, version: 2 as const,
+      ...(pm.instructionLayout === "compact-v1" ? { instructionLayout: "compact-v1" as const } : {}),
       // Source reads use read_project_file/search_project_files, which check
       // current project ownership, including nested projects and symlink aliases.
       // A provider-native recursive reader cannot enforce those dynamic bounds.

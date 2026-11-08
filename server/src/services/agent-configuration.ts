@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
+import { assertEphemeralAgentInstructions, agentInstructionsService } from "./agent-instructions.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -9,9 +9,9 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { and, eq } from "drizzle-orm";
 import { assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
-import { normalizeAgentUrlKey } from "@paperclipai/shared";
+import { normalizeAgentUrlKey, pmInstructionLayout, pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy, agentProjectPmWorkspaceBindingSchema } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { agentRecordQueries, type UpdateAgentOptions, type AgentConfigurationPatch, type AgentConfigurationRecord, isPlainRecord, buildConfigSnapshot,
   hasConfigPatchFields, changedPendingApprovalConfigFields, diffConfigSnapshot } from "../lib/agent-records.js";
 import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
@@ -26,7 +26,29 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   const id = existing.id;
   if (data.runtimeConfig !== undefined && !options?.allowPmWorkerPolicyUpdate
     && !isDeepStrictEqual(data.runtimeConfig?.pmDelegation ?? null, existing.runtimeConfig?.pmDelegation ?? null)) {
-    throw unprocessable("Use the worker-policy API to update PM delegation together with WORKERS.md");
+    throw unprocessable("Use the worker-policy API to update PM delegation together with its instruction document");
+  }
+  if (data.runtimeConfig !== undefined) {
+    const layout = pmInstructionLayout(data.runtimeConfig);
+    if (layout.version !== pmInstructionLayout(existing.runtimeConfig).version) {
+      if (!options?.recordRevision?.createdByUserId || options.recordRevision.createdByAgentId) {
+        throw forbidden("Only an Owner can change the PM instruction layout");
+      }
+      const binding = agentProjectPmWorkspaceBindingSchema.safeParse(data.runtimeConfig?.workspaceBinding);
+      if (!binding.success || binding.data.workerSlots !== 0) throw unprocessable("Instruction layouts require a coordination-only project PM");
+      const target = { ...existing, ...data } as AgentConfigurationRecord;
+      const instructions = agentInstructionsService(db);
+      for (const path of layout.files) {
+        const file = await instructions.readFile(target, path);
+        if (!file.content?.trim()) throw unprocessable(`Prepare ${path} before changing the instruction layout`);
+        if (path === layout.workerDocumentPath) {
+          const policy = pmWorkerPolicySchema.parse(target.runtimeConfig?.pmDelegation);
+          if (pmWorkerManagedBlock(file.content) !== renderPmWorkerPolicy(policy, layout.version)) {
+            throw unprocessable(`Prepare the current worker table in ${path} before changing the instruction layout`);
+          }
+        }
+      }
+    }
   }
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {

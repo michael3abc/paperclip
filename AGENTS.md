@@ -169,6 +169,14 @@ PMs use `codex-pm-v1`; ordinary workers retain their existing provider profile. 
 bridge and authenticated HTTP API must both enforce company/project/run scope;
 connector names or read-only annotations are never grants. Keep the Owner-owned
 `runtimeConfig.pmDelegation` model/worker table separate from editable Markdown.
+Owner-selected `runtimeConfig.pmInstructionLayout=compact-v1` uses only
+`AGENTS.md`, `PROJECT.md` and `MEMORY.md`. Require the first two each run;
+memory is read as needed. Tool schemas, HTTP authorization, working-copy saves,
+dispatch diagnostics and runtime prompts must use the selected layout. Keep
+the protected worker table in `PROJECT.md` as a compact projection; full IDs,
+connections and grants remain in the saved policy. Worker settings return
+`documentPath` and compare that file's hash. Agents cannot change the layout or
+managed table. Unselected PMs retain their existing layout and sessions.
 PM dispatch selects a stable worker option ID or its unique default and persists plan,
 source, workspace and review before waking that worker. Preserve source Owner gates.
 Keep these dispatch fields in the live `protocol-actions/create-task.ts` schema

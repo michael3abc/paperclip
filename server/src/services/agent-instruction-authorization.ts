@@ -1,3 +1,4 @@
+import { pmInstructionLayout } from "@paperclipai/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import {
   agentApiKeys,
@@ -8,7 +9,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { pmCoordinationScope, PM_EDITABLE_BUNDLE_FILES } from "./pm-coordination-policy.js";
+import { pmCoordinationScope } from "./pm-coordination-policy.js";
 import {
   authorizationService,
   authorizationDeniedDetails,
@@ -247,7 +248,7 @@ export async function authorizeOwnPmWorkflowWrite(
   target: { companyId: string; id: string; runtimeConfig: Record<string, unknown> | null }, relativePath: string,
 ) {
   if (actor.type !== "agent" || actor.agentId !== target.id || actor.companyId !== target.companyId
-    || !actor.runId || !pmCoordinationScope(target) || !PM_EDITABLE_BUNDLE_FILES.has(relativePath)) {
+    || !actor.runId || !pmCoordinationScope(target) || !pmInstructionLayout(target.runtimeConfig).editableFiles.includes(relativePath)) {
     throw forbidden("Only a PM's own run may maintain its workflow support files", { code: "PM_BUNDLE_DENIED" });
   }
   const bound = await resolveInstructionActor(db, actor);

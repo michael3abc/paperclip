@@ -37,6 +37,19 @@ function savedContext(revision: string, text: string) {
 }
 
 describe("persisted native execution prompts", () => {
+  it("binds the compact PM layout into the session digest and instruction reads", () => {
+    const original = savedContext("fixture", "Runtime prompt");
+    const context = { ...original, toolPolicy: { kind: "project_pm" as const, version: 2 as const, readRoots: ["/runtime/instructions"] } };
+    const compact = { ...context, toolPolicy: { ...context.toolPolicy, instructionLayout: "compact-v1" as const } };
+    const parsed = parseNativeRuntimeContext({ ...compact, aggregateDigest: canonicalNativeRuntimeContextDigest(compact) });
+    expect(parsed.toolPolicy?.instructionLayout).toBe("compact-v1");
+    expect(canonicalNativeRuntimeContextDigest(context)).not.toBe(parsed.aggregateDigest);
+    const prompt = composeNativeSystemInstructions(parsed, "Agent instructions");
+    expect(prompt).toContain("Read AGENTS.md and PROJECT.md");
+    expect(prompt).toContain("Read MEMORY.md when");
+    expect(prompt).not.toMatch(/WORKERS\.md|REVIEW\.md|memory\/handoff/);
+    expect(() => parseNativeRuntimeContext({ ...parsed, toolPolicy: { ...parsed.toolPolicy, instructionLayout: "unknown" } })).toThrow();
+  });
   it.each([
     ["snapshot-before-upgrade", "Saved instructions from before the upgrade."],
     ["future-prompt-fixture", "  Saved instructions absent from this release.\n"],

@@ -8,6 +8,6 @@ export const GENERATED_RUNTIME_CONTEXT_FIELDS = {
   skill: ["key", "runtimeName", "versionId", "bundle"],
   mcp: ["assignmentSetId", "digest", "bindingId"],
   connectionInstructions: ["text", "digest"],
-  toolPolicy: ["kind", "version", "readRoots"],
+  toolPolicy: ["kind", "version", "instructionLayout", "readRoots"],
   asset: ["schema", "digest", "manifestDigest", "rootPath", "fileCount", "totalBytes"],
 } as const;

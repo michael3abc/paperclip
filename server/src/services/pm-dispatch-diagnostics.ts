@@ -1,6 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
-import { aiConnectionBindingSchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
+import { pmInstructionLayout, aiConnectionBindingSchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { pmWorkerPolicyRevision } from "./pm-worker-policy.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
@@ -20,8 +20,9 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
   if (!owner || pmWorkerPolicyRevision(owner.runtimeConfig?.pmDelegation) !== result.revision) {
     result.blockers.push("PM_WORKER_POLICY_CHANGED"); return result;
   }
-  const document = await agentInstructionsService(db).readFile(owner, "WORKERS.md");
-  result.documentSynchronized = pmWorkerManagedBlock(document.content ?? "") === renderPmWorkerPolicy(policy);
+  const layout = pmInstructionLayout(owner.runtimeConfig);
+  const document = await agentInstructionsService(db).readFile(owner, layout.workerDocumentPath);
+  result.documentSynchronized = pmWorkerManagedBlock(document.content ?? "") === renderPmWorkerPolicy(policy, layout.version);
   if (!result.documentSynchronized) result.blockers.push("PM_WORKER_DOCUMENT_OUT_OF_SYNC");
   const workers = await db.select().from(agents).where(and(eq(agents.companyId, scope.companyId), inArray(agents.id, policy.workers.map(w => w.agentId))));
   for (const group of policy.workers) for (const choice of group.selections) {
@@ -46,5 +47,5 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
     result.selections.push({ id: choice.id, agentId: group.agentId, model: choice.model, thinking: choice.thinking,
       ready: !blocker && result.documentSynchronized, blocker });
   }
-  return { ...result, instruction: "Read current WORKERS.md and select its stable option ID. Ready describes saved dispatch metadata, not provider execution. Use this project's configured_source development checkout in shared mode by default. One writer holds it exclusively; additional writers wait. Select managed_isolated only when parallel writes or an independent version are needed. Read this project's sessions API for execution diagnostics; do not request full worker configuration." };
+  return { ...result, documentPath: layout.workerDocumentPath, instruction: `Read current ${layout.workerDocumentPath} and select a stable option ID from this response. Ready describes saved dispatch metadata, not provider execution. Use this project's configured_source development checkout in shared mode by default. One writer holds it exclusively; additional writers wait. Select managed_isolated only when parallel writes or an independent version are needed. Read this project's sessions API for execution diagnostics; do not request full worker configuration.` };
 }

@@ -1,3 +1,4 @@
+import { pmInstructionLayout, requiredPmBundleFiles, type PmInstructionLayoutVersion } from "@paperclipai/shared";
 import { and, eq, desc } from "drizzle-orm";
 import { activityLog, type Db } from "@paperclipai/db";
 import { z } from "zod";
@@ -7,18 +8,25 @@ import { agentInstructionsService } from "./agent-instructions.js";
 import { agentFileStore } from "./agent-file-store.js";
 import { agentInstructionWorkingCopyService } from "./agent-instruction-working-copies.js";
 import { authorizeInstructionRead } from "./agent-instruction-authorization.js";
-import { PM_BUNDLE_FILES, PM_EDITABLE_BUNDLE_FILES, assertPmRun, type PmCoordinationScope } from "./pm-coordination-policy.js";
+import { assertPmRun, type PmCoordinationScope } from "./pm-coordination-policy.js";
 
-const readSchema = z.object({ path: z.enum(PM_BUNDLE_FILES) }).strict();
-const writeSchema = z.object({ path: z.enum(PM_BUNDLE_FILES), content: z.string().max(1024 * 1024),
-  baseHash: z.string().regex(/^[a-f0-9]{64}$/), changeReason: z.string().trim().min(1).max(2000) }).strict();
-export const PM_BUNDLE_TOOLS = [
-  { name: "read_bundle_file", description: "Read a required file from your current AGENT_HOME, synchronize its saved version and record this run's read receipt. Read AGENTS.md, PROJECT.md and memory/handoff.md every run; WORKERS.md and REVIEW.md before dispatch; REVIEW.md before review. Returned hashes are save preconditions.", inputSchema: z.toJSONSchema(readSchema) },
-  { name: "write_bundle_file", description: "Save one of your own workflow or memory support files with its last read baseHash and a changeReason. AGENTS.md, model authorization, worker identity and Owner gates stay protected. Inspect the save and working-copy receipts; never replay an uncertain save blindly.", inputSchema: z.toJSONSchema(writeSchema) },
-];
+function bundleSchemas(version?: PmInstructionLayoutVersion) {
+  const layout = pmInstructionLayout({ pmInstructionLayout: version });
+  const path = z.enum(layout.files);
+  return { layout, read: z.object({ path }).strict(), write: z.object({ path, content: z.string().max(1024 * 1024),
+    baseHash: z.string().regex(/^[a-f0-9]{64}$/), changeReason: z.string().trim().min(1).max(2000) }).strict() };
+}
+
+export function pmBundleTools(version?: PmInstructionLayoutVersion) {
+  const { layout, read, write } = bundleSchemas(version);
+  return [
+    { name: "read_bundle_file", description: `Read a file from your current AGENT_HOME and record this run's read receipt. ${layout.readGuidance} Returned hashes are save preconditions.`, inputSchema: z.toJSONSchema(read) },
+    { name: "write_bundle_file", description: `Save your own support files (${layout.editableFiles.join(", ")}) with the last read baseHash and a changeReason. The role entry and managed worker table are protected. Check saved and workingCopySynchronized; on a conflict re-read before deciding your next change.`, inputSchema: z.toJSONSchema(write) },
+  ];
+}
 
 export async function readPmBundleFile(db: Db, scope: PmCoordinationScope, runId: string, input: unknown) {
-  const { path } = readSchema.parse(input);
+  const { path } = bundleSchemas(scope.instructionLayout).read.parse(input);
   await assertPmRun(db, scope, runId);
   const agent = await agentService(db).getById(scope.agentId);
   if (!agent || agent.companyId !== scope.companyId) throw forbidden("PM identity is unavailable");
@@ -34,9 +42,7 @@ export async function readPmBundleFile(db: Db, scope: PmCoordinationScope, runId
 
 export async function requirePmBundleReads(db: Db, scope: PmCoordinationScope, runId: string, operation: string) {
   await assertPmRun(db, scope, runId);
-  const required = ["AGENTS.md", "PROJECT.md", "memory/handoff.md"];
-  if (["create_task", "reassign_task", "dispatch"].includes(operation)) required.push("WORKERS.md", "REVIEW.md");
-  else if (["resolve_review", "request_review", "review", "resolve_delegated_request", "escalate_delegated_request"].includes(operation)) required.push("REVIEW.md");
+  const required = requiredPmBundleFiles(scope.instructionLayout, operation);
   const reads = await db.select({ details: activityLog.details }).from(activityLog).where(and(
     eq(activityLog.companyId, scope.companyId), eq(activityLog.agentId, scope.agentId), eq(activityLog.runId, runId),
     eq(activityLog.action, "pm.bundle_read"))).orderBy(desc(activityLog.createdAt)).limit(200);
@@ -51,8 +57,8 @@ export async function requirePmBundleReads(db: Db, scope: PmCoordinationScope, r
 }
 
 export async function writePmBundleFile(db: Db, scope: PmCoordinationScope, runId: string, input: unknown) {
-  const args = writeSchema.parse(input);
-  if (!PM_EDITABLE_BUNDLE_FILES.has(args.path)) throw forbidden("The PM role entry is Owner-managed", { code: "PM_BUNDLE_DENIED" });
+  const args = bundleSchemas(scope.instructionLayout).write.parse(input);
+  if (!bundleSchemas(scope.instructionLayout).layout.editableFiles.includes(args.path)) throw forbidden("The PM role entry is Owner-managed", { code: "PM_BUNDLE_DENIED" });
   await requirePmBundleReads(db, scope, runId, "write_bundle_file");
   const receipt = await agentFileStore(db).write({ ...scope, ...args, bytes: Buffer.from(args.content), ownWorkflow: true },
     { type: "agent", source: "agent_jwt", ...scope, runId });

@@ -10,7 +10,7 @@ const api = vi.hoisted(() => ({ workerPolicy: vi.fn(), saveWorkerPolicy: vi.fn()
 vi.mock("../api/agents", () => ({ agentsApi: api }));
 const workerId = "10000000-0000-4000-8000-000000000001";
 const choiceId = "10000000-0000-4000-8000-000000000002";
-const fixture = (): PmWorkerPolicyView => ({ policy: null, revision: null, documentHash: null,
+const fixture = (): PmWorkerPolicyView => ({ documentPath: "WORKERS.md", policy: null, revision: null, documentHash: null,
   document: "Handwritten review rules", warnings: ["Review legacy settings explicitly."],
   catalog: [{ agentId: workerId, name: "Shared Codex", harness: "codex_local", permissions: ["deny-all", "approve-reads"],
     models: [{ id: "gpt-6.1-sol", label: "Sol", thinking: ["low", "high"], speeds: ["standard", "fast"] },
@@ -43,7 +43,8 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); client.clear(); });
 
 describe("PM worker settings", () => {
-  it("previews the draft as JSON and saves purpose with explicit permission/default, then reloads", async () => {
+  it.each(["WORKERS.md", "PROJECT.md"] as const)("saves settings into %s and reloads the projection receipt", async (documentPath) => {
+    api.workerPolicy.mockResolvedValue({ ...fixture(), documentPath });
     await render(); await click(button("Add worker option"));
     expect(container.textContent).not.toContain("Review legacy settings explicitly.");
     expect(container.textContent).not.toContain("Handwritten review rules");
@@ -56,11 +57,11 @@ describe("PM worker settings", () => {
     await select("permission", "approve-reads");
     expect(preview().workers[0].selections[0]).toMatchObject({ model: "gpt-6.1-sol", thinking: "high", speed: "fast", purpose: '一般 coding | "檢查"' });
     api.saveWorkerPolicy.mockImplementation(async (_id, input) => {
-      api.workerPolicy.mockResolvedValue({ ...fixture(), policy: input.policy, revision: "revision-1", documentHash: "a".repeat(64), warnings: [] });
+      api.workerPolicy.mockResolvedValue({ ...fixture(), documentPath, policy: input.policy, revision: "revision-1", documentHash: "a".repeat(64), warnings: [] });
       return { policy: input.policy, revision: "revision-1", documentHash: "a".repeat(64) };
     });
     await click(button("Save workers"));
-    await vi.waitFor(() => expect(container.textContent).toContain("Worker settings and WORKERS.md saved."));
+    await vi.waitFor(() => expect(container.textContent).toContain(`Worker settings and ${documentPath} saved.`));
     const payload = api.saveWorkerPolicy.mock.calls[0]![1];
     expect(payload).toMatchObject({ baseRevision: null, baseHash: null, policy: { version: 2,
       workers: [{ agentId: workerId, harness: "codex_local", selections: [{ model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "fast", purpose: '一般 coding | "檢查"' }] }] } });

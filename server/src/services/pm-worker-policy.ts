@@ -1,4 +1,4 @@
-import { aiConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { pmInstructionLayout, aiConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { HttpError } from "../errors.js";
@@ -61,13 +61,14 @@ export function pmWorkerPolicyService(db: Db) {
       const catalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
       return files.locked(companyId, agentId, actor, false, async (_tx, agent, root) => {
         requirePm(agent);
-        const bytes = await readAgentFile(root, "WORKERS.md");
+        const layout = pmInstructionLayout(agent.runtimeConfig);
+        const bytes = await readAgentFile(root, layout.workerDocumentPath);
         const document = bytes?.toString("utf8") ?? "";
         const raw = agent.runtimeConfig?.pmDelegation;
         const parsed = pmWorkerPolicySchema.safeParse(raw);
         const warnings: string[] = [];
         if (!parsed.success) {
-          warnings.push("Existing worker settings require explicit migration. Review WORKERS.md and select every field; no legacy list is imported automatically.");
+          warnings.push("Existing worker settings require explicit migration. Review worker settings and select every field; no legacy list is imported automatically.");
           const legacy = pmDelegationSchema.safeParse(raw);
           if (legacy.success && legacy.data.version === 1) {
             warnings.push("Legacy settings have no stable option IDs, explicit permission or unique default. Confirm these fields before dispatch.");
@@ -78,11 +79,11 @@ export function pmWorkerPolicyService(db: Db) {
         }
         else {
           try {
-            if (pmWorkerManagedBlock(document) !== renderPmWorkerPolicy(parsed.data)) warnings.push("WORKERS.md is out of sync. New dispatch is blocked until the policy is saved successfully.");
+            if (pmWorkerManagedBlock(document) !== renderPmWorkerPolicy(parsed.data, layout.version)) warnings.push(`${layout.workerDocumentPath} is out of sync. New dispatch is blocked until the policy is saved successfully.`);
             validateWorkerChoices(parsed.data, catalog);
           } catch (error) { warnings.push(error instanceof Error ? error.message : String(error)); }
         }
-        return { policy: parsed.success ? parsed.data : null, revision: pmWorkerPolicyRevision(raw),
+        return { documentPath: layout.workerDocumentPath, policy: parsed.success ? parsed.data : null, revision: pmWorkerPolicyRevision(raw),
           documentHash: bytes ? fileHash(bytes) : null, document, catalog, warnings };
       });
     },
@@ -96,24 +97,25 @@ export function pmWorkerPolicyService(db: Db) {
       }
       return files.locked(companyId, agentId, actor, true, async (tx, agent, root) => {
         requirePm(agent);
-        const previous = await readAgentFile(root, "WORKERS.md");
+        const layout = pmInstructionLayout(agent.runtimeConfig);
+        const previous = await readAgentFile(root, layout.workerDocumentPath);
         if (pmWorkerPolicyRevision(agent.runtimeConfig?.pmDelegation) !== input.baseRevision
-          || (previous ? fileHash(previous) : null) !== input.baseHash) throw conflict("Worker settings or WORKERS.md changed. Reload before saving.", { code: "PM_WORKER_POLICY_CONFLICT" });
+          || (previous ? fileHash(previous) : null) !== input.baseHash) throw conflict("Worker settings or the instruction document changed. Reload before saving.", { code: "PM_WORKER_POLICY_CONFLICT" });
         // Recheck identity under the same transaction as the owner update.
         const selected = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, policy.workers.map(worker => worker.agentId))));
         if (policy.workers.some(worker => !selected.some(row => row.id === worker.agentId && row.adapterType === worker.harness
           && (row.runtimeConfig?.requireTaskWorktree === true || row.runtimeConfig?.requireProjectWorkspace === true) && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
-        const document = updatePmWorkerDocument(previous?.toString("utf8") ?? "", policy);
+        const document = updatePmWorkerDocument(previous?.toString("utf8") ?? "", policy, layout.version);
         const bytes = Buffer.from(document);
-        if (bytes.length > 1024 * 1024) throw unprocessable("WORKERS.md exceeds 1 MiB");
+        if (bytes.length > 1024 * 1024) throw unprocessable(`${layout.workerDocumentPath} exceeds 1 MiB`);
         await updateAgentConfigurationInTransaction(tx as unknown as Db, agentId, { runtimeConfig: { ...agent.runtimeConfig, pmDelegation: policy } },
           { allowPmWorkerPolicyUpdate: true, recordRevision: { source: "api", createdByUserId: actor.type === "board" ? actor.userId : null } });
-        await materializeInstructionBytes(root, "WORKERS.md", bytes);
+        await materializeInstructionBytes(root, layout.workerDocumentPath, bytes);
         await tx.insert(activityLog).values({ companyId, actorType: actor.type === "board" ? "user" : "agent",
           actorId: actor.type === "board" ? actor.userId ?? "board" : actor.agentId!, action: "agent.worker_policy_updated",
           entityType: "agent", entityId: agentId, details: { revision: pmWorkerPolicyRevision(policy), documentHash: fileHash(bytes), policy,
             previousPolicy: agent.runtimeConfig?.pmDelegation ?? null } });
-        return { revision: pmWorkerPolicyRevision(policy), documentHash: fileHash(bytes), policy };
+        return { documentPath: layout.workerDocumentPath, revision: pmWorkerPolicyRevision(policy), documentHash: fileHash(bytes), policy };
       });
     },
   };

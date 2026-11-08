@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { aiConnectionBindingSchema } from "./ai-connections.js";
+import type { PmInstructionLayoutVersion } from "./pm-instruction-layout.js";
 
 export const pmWorkerSelectionSchema = z.object({
   id: z.string().uuid(),
@@ -47,6 +48,7 @@ export interface PmWorkerCatalogEntry {
   models: { aiConnection?: PmWorkerSelection["aiConnection"]; id: string; label: string; thinking: string[]; speeds: PmWorkerSelection["speed"][] }[];
 }
 export interface PmWorkerPolicyView {
+  documentPath: "WORKERS.md" | "PROJECT.md";
   policy: PmWorkerPolicy | null;
   revision: string | null;
   documentHash: string | null;
@@ -66,7 +68,15 @@ export function formatPmWorkerPolicyJson(policy: PmWorkerPolicy): string {
 }
 
 /** This projection is explanatory; only the Owner-owned policy grants dispatch. */
-export function renderPmWorkerPolicy(policy: PmWorkerPolicy): string {
+export function renderPmWorkerPolicy(policy: PmWorkerPolicy, layout?: PmInstructionLayoutVersion): string {
+  if (layout === "compact-v1") {
+    const cell = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\|/g, "&#124;").replace(/[\r\n]+/g, " ");
+    return [PM_WORKERS_START, "## Worker 選用", "平台維護此表；派工時查詢目前選項與可用性。",
+      "| 用途 | Worker | 模型 | 思考程度 | 速度 | 預設 |", "| --- | --- | --- | --- | --- | --- |",
+      ...policy.workers.flatMap(worker => worker.selections.map(choice =>
+        `| ${[choice.purpose ?? "", worker.harness === "claude_local" ? "Claude" : "Codex", choice.model, choice.thinking ?? "auto", choice.speed, choice.id === policy.defaultSelectionId ? "是" : ""].map(cell).join(" | ")} |`)),
+      PM_WORKERS_END].join("\n");
+  }
   return [PM_WORKERS_START, "## Worker selections (managed by Agent settings)",
     "Select a listed choice using assigneeAdapterOverrides.workerSelectionId. Omit selection to use the default. These settings apply only to new tasks.",
     "Only this managed JSON is current. Older model tables outside this section are historical. Purpose describes intended use and does not grant permissions.",
@@ -78,12 +88,12 @@ export function pmWorkerManagedBlock(document: string): string | null {
   const start = document.indexOf(PM_WORKERS_START), end = document.indexOf(PM_WORKERS_END);
   if (start === -1 && end === -1) return null;
   if (start < 0 || end < start || document.indexOf(PM_WORKERS_START, start + 1) !== -1
-    || document.indexOf(PM_WORKERS_END, end + 1) !== -1) throw new Error("WORKERS.md has malformed worker-policy markers");
+    || document.indexOf(PM_WORKERS_END, end + 1) !== -1) throw new Error("Worker document has malformed worker-policy markers");
   return document.slice(start, end + PM_WORKERS_END.length);
 }
 
-export function updatePmWorkerDocument(document: string, policy: PmWorkerPolicy): string {
+export function updatePmWorkerDocument(document: string, policy: PmWorkerPolicy, layout?: PmInstructionLayoutVersion): string {
   const previous = pmWorkerManagedBlock(document);
-  const block = renderPmWorkerPolicy(policy);
+  const block = renderPmWorkerPolicy(policy, layout);
   return previous === null ? `${document}${document.endsWith("\n") ? "\n" : "\n\n"}${block}\n` : document.replace(previous, () => block);
 }

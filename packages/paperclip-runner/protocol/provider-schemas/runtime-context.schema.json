@@ -27,6 +27,7 @@
       "properties": {
         "kind": { "const": "project_pm" },
         "version": { "const": 2 },
+        "instructionLayout": { "const": "compact-v1" },
         "readRoots": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^/" } }
       },
       "additionalProperties": false

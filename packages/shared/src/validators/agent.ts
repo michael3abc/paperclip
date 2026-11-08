@@ -137,6 +137,7 @@ export const createPmIntakeSchema = z.object({
 export type CreatePmIntake = z.infer<typeof createPmIntakeSchema>;
 
 export const agentRuntimeConfigSchema = z.object({
+  pmInstructionLayout: z.enum(["split-v1", "compact-v1"]).optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   workspaceBinding: agentWorkspaceBindingSchema.optional(),
   /** Shared workers must execute a project task in its isolated Git worktree. */

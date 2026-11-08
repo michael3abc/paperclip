@@ -11,7 +11,7 @@ import { AGENT_FILES_CONTRACT, AgentFileLimitError, agentFileStore, agentStorage
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { instructionGitExcludeProgram, readInstructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
 import { fileHash } from "./agent-file-store.js";
-import { PM_BUNDLE_FILES } from "./pm-coordination-policy.js";
+import { pmInstructionLayout } from "@paperclipai/shared";
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
 import { HttpError, conflict, notFound } from "../errors.js";
 import type { AuthorizationActor } from "./authorization.js";
@@ -665,8 +665,10 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
     synchronizePmFile: (row: Copy, relative: string, bytes: Buffer) => serial(row, async current => {
+      const [agent] = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents)
+        .where(and(eq(agents.id, current.agentId), eq(agents.companyId, current.companyId)));
       if (current.location !== "local" || current.state !== "prepared" || !await owns(current)
-        || !PM_BUNDLE_FILES.includes(relative as typeof PM_BUNDLE_FILES[number])) throw conflict("PM bundle working copy is not available for this run");
+        || !agent || !pmInstructionLayout(agent.runtimeConfig).files.includes(relative)) throw conflict("PM bundle working copy is not available for this run");
       const snapshot = baseline(current);
       const previous = snapshot.entries.get(relative);
       const local = await readInstructionBytes(current.localRoot, relative);

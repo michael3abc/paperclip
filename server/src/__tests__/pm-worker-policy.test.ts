@@ -6,7 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { eq } from "drizzle-orm";
 import { agents, companies, projects, projectWorkspaces, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb, toolApplications, toolConnections, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
-import type { PmWorkerPolicy } from "@paperclipai/shared";
+import { pmInstructionLayout, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
@@ -20,7 +20,8 @@ vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof
   listAdapterModels: async () => [{ id: "gpt-6.1-sol", label: "Sol" }],
 }));
 
-describe("PM worker policy with owned database and real files", () => {
+describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with owned database and real files", (instructionLayout) => {
+  const documentPath = instructionLayout === "compact-v1" ? "PROJECT.md" : "WORKERS.md";
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>, db: ReturnType<typeof createDb>, home: string, root: string;
   const companyId = randomUUID(), projectId = randomUUID(), otherProjectId = randomUUID(), pmId = randomUUID(), workerId = randomUUID(), userId = randomUUID();
   const issueId = randomUUID(), otherIssueId = randomUUID(), runId = randomUUID(), legacyRunId = randomUUID(), otherRunId = randomUUID(), choiceId = randomUUID();
@@ -48,12 +49,12 @@ describe("PM worker policy with owned database and real files", () => {
     await db.insert(agents).values([
       { id: pmId, companyId, name: "PM", status: "active", adapterType: "claude_local",
         adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" },
-        runtimeConfig: { workspaceBinding: { mode: "project_pm", projectId, workerRoot: home, workerSlots: 0, workerIsolation: "shared" } } },
+        runtimeConfig: { pmInstructionLayout: instructionLayout, workspaceBinding: { mode: "project_pm", projectId, workerRoot: home, workerSlots: 0, workerIsolation: "shared" } } },
       { id: workerId, companyId, name: "Shared Codex", status: "active", adapterType: "codex_local", adapterConfig: { model: "unchanged-global-model", engine: "acp" }, runtimeConfig: { requireTaskWorktree: true } },
     ]);
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(path.join(root, "AGENTS.md"), "# PM\n");
-    await fs.writeFile(path.join(root, "WORKERS.md"), "# Workers\nKeep handwritten review and isolation rules.\n");
+    await fs.writeFile(path.join(root, documentPath), "# Workers\nKeep handwritten review and isolation rules.\n");
     await db.insert(issues).values([{ id: issueId, companyId, projectId, title: "Original task", status: "done", assigneeAgentId: workerId,
       assigneeAdapterOverrides: { adapterConfig: { model: "historical-model" } } }, { id: otherIssueId, companyId, projectId: otherProjectId, title: "Unrelated", status: "done", assigneeAgentId: workerId }]);
     await db.insert(issueExecutionDecisions).values({ companyId, issueId, stageId: randomUUID(), stageType: "review", actorAgentId: pmId, outcome: "approved", body: "Evidence accepted" });
@@ -76,8 +77,16 @@ describe("PM worker policy with owned database and real files", () => {
     const after = await svc.read(companyId, pmId, actor);
     expect(after.policy).toEqual(policy); expect(after.revision).toBe(receipt.revision); expect(after.warnings).toEqual([]);
     expect(after.document).toContain("Keep handwritten review and isolation rules.");
-    expect(after.document).toContain("approve-reads");
-    expect(JSON.parse(after.document.split("```json\n")[1]!.split("\n```")[0]!)).toEqual(policy);
+    expect(after.documentPath).toBe(documentPath);
+    if (instructionLayout === "compact-v1") {
+      expect(after.document).toContain("| 一般 coding agent | Codex | gpt-6.1-sol | high | standard | 是 |");
+      expect(after.document).not.toContain(choiceId);
+      expect(after.document).not.toContain("```json");
+      await expect(fs.stat(path.join(root, "WORKERS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(after.document).toContain("approve-reads");
+      expect(JSON.parse(after.document.split("```json\n")[1]!.split("\n```")[0]!)).toEqual(policy);
+    }
     const task = (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
     expect(task.assigneeAdapterOverrides).toEqual({ adapterConfig: { model: "historical-model" } });
     expect((await db.select().from(agents).where(eq(agents.id, workerId)))[0]!.adapterConfig?.model).toBe("unchanged-global-model");
@@ -88,12 +97,15 @@ describe("PM worker policy with owned database and real files", () => {
   });
   it("rejects file conflicts, agent escalation and generic configuration bypass", async () => {
     const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
-    await fs.appendFile(path.join(root, "WORKERS.md"), "Concurrent note.\n");
+    await fs.appendFile(path.join(root, documentPath), "Concurrent note.\n");
     await expect(svc.save(companyId, pmId, { policy, baseRevision: before.revision, baseHash: before.documentHash }, actor)).rejects.toThrow("changed");
     await expect(svc.save(companyId, pmId, { policy, baseRevision: before.revision, baseHash: before.documentHash }, { type: "agent", agentId: pmId, companyId })).rejects.toThrow("Owner");
     await expect(agentService(db).update(pmId, { runtimeConfig: { ...(await readAgent()).runtimeConfig, pmDelegation: null } })).rejects.toThrow("worker-policy API");
+    await expect(agentService(db).update(pmId, { runtimeConfig: { ...(await readAgent()).runtimeConfig,
+      pmInstructionLayout: instructionLayout === "compact-v1" ? "split-v1" : "compact-v1" } },
+      { recordRevision: { createdByAgentId: pmId } })).rejects.toThrow("Only an Owner");
     const current = await svc.read(companyId, pmId, actor);
-    await expect(agentFileStore(db).write({ companyId, agentId: pmId, path: "WORKERS.md", bytes: Buffer.from("Changed authorization"), baseHash: current.documentHash }, actor)).rejects.toThrow("managed worker table");
+    await expect(agentFileStore(db).write({ companyId, agentId: pmId, path: documentPath, bytes: Buffer.from("Changed authorization"), baseHash: current.documentHash }, actor)).rejects.toThrow("managed worker table");
   });
   it("rolls policy back on a projection failure and fences a partially written file", async () => {
     const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
@@ -165,6 +177,23 @@ describe("PM worker policy with owned database and real files", () => {
     await expect(svc.save(companyId, pmId, { policy: wrongRoute, baseRevision: after.revision, baseHash: after.documentHash }, actor)).rejects.toThrow("not supported");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, routes[1]!.binding.grantId));
     await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId, assigneeAdapterOverrides: { workerSelectionId: selections[1]!.id } })).rejects.toThrow("unavailable or not installed");
+  });
+
+  it("changes layout only after the Owner prepares the exact target files and model projection", async () => {
+    const before = await readAgent();
+    const nextVersion = instructionLayout === "compact-v1" ? "split-v1" : "compact-v1";
+    const runtimeConfig = { ...before.runtimeConfig, pmInstructionLayout: nextVersion };
+    const options = { recordRevision: { source: "api", createdByUserId: userId } };
+    await expect(agentService(db).update(pmId, { runtimeConfig }, options)).rejects.toThrow();
+    const next = pmInstructionLayout(runtimeConfig), currentPolicy = before.runtimeConfig!.pmDelegation as PmWorkerPolicy;
+    for (const file of next.files) {
+      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await fs.writeFile(path.join(root, file), file === next.workerDocumentPath
+        ? `# Project\n${renderPmWorkerPolicy(currentPolicy, nextVersion)}\n` : `# ${file}\nPrepared by Owner\n`);
+    }
+    await agentService(db).update(pmId, { runtimeConfig }, options);
+    expect((await readAgent()).runtimeConfig).toEqual(runtimeConfig);
+    expect((await pmWorkerPolicyService(db).read(companyId, pmId, actor)).documentPath).toBe(next.workerDocumentPath);
   });
 
 });

@@ -4755,6 +4755,20 @@ PM `list_agents` includes `dispatchReadiness`: policy revision/version, current
 default, managed document synchronization and bounded per-selection readiness.
 It reads current saved metadata on demand, performs no background polling and
 does not claim a provider has started. Private worker configuration remains hidden.
+The Owner may select `runtimeConfig.pmInstructionLayout=compact-v1` for an
+individual coordination PM. Prepare all three files before saving that config:
+`AGENTS.md` and `PROJECT.md` are required reads each run; `MEMORY.md` is optional
+until relevant. The agent may save its own project prose and memory through the
+existing receipt-bearing bundle tools. The entry and generated model table stay
+protected. Worker settings project a short table into `PROJECT.md`, returning
+`documentPath` alongside its hash; full selection IDs and connections remain in
+the policy returned by `list_agents`. The existing split layout uses `WORKERS.md`.
+Changing the layout requires a human configuration revision and a matching saved
+model projection. It participates in native session compatibility. Migration
+backs up files outside the bundle, writes support files before the entry, changes
+the layout with configuration CAS, then removes old files with hash-checked APIs
+while the target is idle and its instruction collection is settled. A version
+conflict stops the migration; it never resumes tasks or changes decision grants.
 Use `GET /api/projects/{id}/sessions` for own-project, issue-authorized execution
 diagnostics. Its additive `diagnostics` projection contains a failure category,
 tri-state provider-start evidence, confirmed/not-started/unknown stop evidence and

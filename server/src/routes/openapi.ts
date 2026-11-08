@@ -3800,8 +3800,8 @@ registry.registerPath({
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
 registry.registerPath({
   method: "get", path: "/api/agents/{id}/worker-policy", tags: ["agents"],
-  summary: "Read a project PM's worker policy, document revision and available worker choices",
-  description: "Requires agent configuration read access. Returns warnings for legacy or out-of-sync policies without migrating or dispatching work. Model choices identify existing installed AI connections and use their routed catalogs.",
+  summary: "Read a project PM's worker policy, document path/revision and available worker choices",
+  description: "Requires agent configuration read access. Returns documentPath (PROJECT.md for compact-v1, otherwise WORKERS.md), its documentHash, and warnings for out-of-sync policies without migrating or dispatching work. Model choices identify existing installed AI connections and use their routed catalogs.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });

@@ -32,7 +32,7 @@ export interface NativeRuntimeContextSnapshot {
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
   connectionInstructions?: { text: string; digest: string };
   /** Controller-derived capability restriction; provider approval modes cannot widen it. */
-  toolPolicy?: { kind: "project_pm"; version: 2; readRoots: string[] };
+  toolPolicy?: { kind: "project_pm"; version: 2; readRoots: string[]; instructionLayout?: "compact-v1" };
   aggregateDigest: string;
 }
 
@@ -104,7 +104,10 @@ function aggregatePayload(value: Omit<NativeRuntimeContextSnapshot, "aggregateDi
     // provider-session rotation when policy has not changed.
     mcp: { assignmentSetId: value.mcp.assignmentSetId, digest: value.mcp.digest },
     ...(value.connectionInstructions ? { connectionInstructions: value.connectionInstructions } : {}),
-    ...(value.toolPolicy ? { toolPolicy: value.toolPolicy } : {}),
+    ...(value.toolPolicy ? { toolPolicy: {
+      kind: value.toolPolicy.kind, version: value.toolPolicy.version, readRoots: value.toolPolicy.readRoots,
+      ...(value.toolPolicy.instructionLayout ? { instructionLayout: value.toolPolicy.instructionLayout } : {}),
+    } } : {}),
   };
 }
 
@@ -187,11 +190,12 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
 function parseRuntimeToolPolicy(value: unknown): NonNullable<NativeRuntimeContextSnapshot["toolPolicy"]> {
   const policy = object(value, "input.runtimeContext.toolPolicy");
   exact(policy, GENERATED_RUNTIME_CONTEXT_FIELDS.toolPolicy, "input.runtimeContext.toolPolicy");
-  if (policy.kind !== "project_pm" || policy.version !== 2 || !Array.isArray(policy.readRoots)
+  if (policy.kind !== "project_pm" || policy.version !== 2 || (policy.instructionLayout !== undefined && policy.instructionLayout !== "compact-v1") || !Array.isArray(policy.readRoots)
     || !policy.readRoots.length || policy.readRoots.some(root => typeof root !== "string" || !root.startsWith("/") || root.includes("\0"))) {
     throw new NativeRuntimeContextError("Unsupported runtime tool policy");
   }
-  return { kind: "project_pm", version: 2, readRoots: policy.readRoots as string[] };
+  return { kind: "project_pm", version: 2, readRoots: policy.readRoots as string[],
+    ...(policy.instructionLayout === "compact-v1" ? { instructionLayout: "compact-v1" as const } : {}) };
 }
 
 function renderInstructionPaths(prompt: string, paths: { rootPath: string; entryPath: string }): string {
@@ -201,7 +205,9 @@ function renderInstructionPaths(prompt: string, paths: { rootPath: string; entry
 export function composeNativeSystemInstructions(context: NativeRuntimeContextSnapshot, entryContent: string): string {
   return [
     context.prompt.text,
-    ...(context.toolPolicy ? ["You are a coordination-only project PM. Read AGENTS.md, PROJECT.md and memory/handoff.md with read_bundle_file every run, including resumed turns. Read WORKERS.md and REVIEW.md before dispatch, and REVIEW.md before acceptance. Tools and API grants are enforced by the platform. Delegate implementation, tests, credential exchanges and service operations to an authorized Paperclip shared worker. Do not use native subagents. Maintain only your own permitted support files with write_bundle_file, recording a reason and the read hash. Existing task history and prior commitments do not expand this role. Keep the Owner's review requirements and authorized model selections."] : []),
+    ...(context.toolPolicy ? [context.toolPolicy.instructionLayout === "compact-v1"
+      ? "You are this project's PM: coordinate, decide within granted authority and review evidence; delegate implementation to authorized workers. Read AGENTS.md and PROJECT.md with read_bundle_file every run, including resumed turns. Read MEMORY.md when continuing work or making a related decision. Save your own support files with write_bundle_file using the read hash and a reason; keep the managed worker table unchanged. Query list_agents for current worker selections and readiness. Record assigned reviews with resolve_review and then paperclip_finish. Tools enforce scope and current request bindings."
+      : "You are a coordination-only project PM. Read AGENTS.md, PROJECT.md and memory/handoff.md with read_bundle_file every run, including resumed turns. Read WORKERS.md and REVIEW.md before dispatch, and REVIEW.md before acceptance. Tools and API grants are enforced by the platform. Delegate implementation, tests, credential exchanges and service operations to an authorized Paperclip shared worker. Do not use native subagents. Maintain only your own permitted support files with write_bundle_file, recording a reason and the read hash. Existing task history and prior commitments do not expand this role. Keep the Owner's review requirements and authorized model selections."] : []),
     entryContent.trim(),
     context.connectionInstructions?.text,
     context.instructions.workingCopy?.kind === "agent_files"

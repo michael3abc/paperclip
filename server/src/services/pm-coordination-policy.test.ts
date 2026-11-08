@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { pmInstructionLayout, requiredPmBundleFiles, agentRuntimeConfigSchema } from "@paperclipai/shared";
+import { pmBundleTools } from "./pm-bundle-tools.js";
 import { assertPmTool, assertPmWorkerSelection, pmCoordinationScope } from "./pm-coordination-policy.js";
 import { agentChatDirective, AGENT_CHAT_DIRECTIVE } from "./agent-conversations.js";
 
@@ -11,6 +13,17 @@ const agent = (slots = 0) => ({ id: pmId, companyId: "company", runtimeConfig: {
 } });
 
 describe("PM coordination capability boundary", () => {
+  it("advertises only the selected layout and does not require optional memory for dispatch or review", () => {
+    expect(pmInstructionLayout().workerDocumentPath).toBe("WORKERS.md");
+    expect(pmInstructionLayout({ pmInstructionLayout: "compact-v1" }).files).toEqual(["AGENTS.md", "PROJECT.md", "MEMORY.md"]);
+    for (const operation of ["create_task", "resolve_review", "write_bundle_file"]) {
+      expect(requiredPmBundleFiles("compact-v1", operation)).toEqual(["AGENTS.md", "PROJECT.md"]);
+    }
+    const definitions = JSON.stringify(pmBundleTools("compact-v1"));
+    expect(definitions).toContain("MEMORY.md");
+    expect(definitions).not.toMatch(/WORKERS\.md|REVIEW\.md|memory\/handoff/);
+    expect(agentRuntimeConfigSchema.safeParse({ pmInstructionLayout: "unknown" }).success).toBe(false);
+  });
   it("derives the role from the saved binding, not its label or a tool request", () => {
     expect(pmCoordinationScope(agent())?.projectId).toBe(projectId);
     expect(pmCoordinationScope(agent(1))).toBeNull();

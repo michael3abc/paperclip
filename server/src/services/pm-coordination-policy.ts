@@ -1,4 +1,4 @@
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { pmInstructionLayout, type PmInstructionLayoutVersion, aiConnectionBindingSchema } from "@paperclipai/shared";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { isDeepStrictEqual } from "node:util";
 import { workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
@@ -11,8 +11,6 @@ import { agentProjectPmWorkspaceBindingSchema, issueExecutionPolicySchema, taskW
 
 /** A platform capability boundary, independent of prompts and provider approvals. */
 export const PM_COORDINATION_VERSION = 2 as const;
-export const PM_BUNDLE_FILES = ["AGENTS.md", "PROJECT.md", "WORKERS.md", "REVIEW.md", "memory/decisions.md", "memory/handoff.md"] as const;
-export const PM_EDITABLE_BUNDLE_FILES = new Set<string>(PM_BUNDLE_FILES.filter(path => path !== "AGENTS.md"));
 export const PM_READ_TOOLS = new Set([
   "get_identity", "get_task_context", "get_task_history", "search_tasks", "read_current_wake_comments", "list_assigned_skills", "read_assigned_skill",
   "list_documents", "read_document", "list_document_revisions", "list_agents", "get_agent",
@@ -45,7 +43,7 @@ const legacyPmDelegationSchema = z.object({
 export const pmDelegationSchema = z.union([legacyPmDelegationSchema, pmWorkerPolicySchema]);
 export type PmDelegation = z.infer<typeof pmDelegationSchema>;
 type Agent = { id: string; companyId: string; runtimeConfig: Record<string, unknown> | null };
-export type PmCoordinationScope = { agentId: string; companyId: string; projectId: string; workerRoot: string; delegation: PmDelegation | null };
+export type PmCoordinationScope = { agentId: string; companyId: string; projectId: string; workerRoot: string; delegation: PmDelegation | null; instructionLayout?: PmInstructionLayoutVersion };
 
 export function pmCoordinationScope(agent: Agent): PmCoordinationScope | null {
   const raw = agent.runtimeConfig?.workspaceBinding as { mode?: string } | undefined;
@@ -60,7 +58,7 @@ export function pmCoordinationScope(agent: Agent): PmCoordinationScope | null {
   const parsed = configured === undefined ? null : pmDelegationSchema.safeParse(configured);
   if (parsed && !parsed.success) throw unprocessable("The PM delegation policy is invalid", { code: "PM_DELEGATION_INVALID" });
   return { agentId: agent.id, companyId: agent.companyId, projectId: binding.projectId,
-    workerRoot: binding.workerRoot, delegation: parsed?.success ? parsed.data : null };
+    workerRoot: binding.workerRoot, instructionLayout: pmInstructionLayout(agent.runtimeConfig).version, delegation: parsed?.success ? parsed.data : null };
 }
 
 export async function currentPmCoordinationScope(db: Db, identity: { companyId: string; agentId: string }) {
@@ -120,8 +118,9 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     const { agentInstructionsService } = await import("./agent-instructions.js");
     const [owner] = await db.select().from(agents).where(and(eq(agents.id, scope.agentId), eq(agents.companyId, scope.companyId)));
     if (!owner || !isDeepStrictEqual(owner.runtimeConfig?.pmDelegation, scope.delegation)) throw forbidden("PM worker policy changed; read current settings before dispatch");
-    const document = await agentInstructionsService(db).readFile(owner, "WORKERS.md");
-    if (pmWorkerManagedBlock(document.content ?? "") !== renderPmWorkerPolicy(scope.delegation)) throw unprocessable("WORKERS.md and worker policy are out of sync; save the policy before dispatch", { code: "PM_WORKER_DOCUMENT_OUT_OF_SYNC" });
+    const layout = pmInstructionLayout(owner.runtimeConfig);
+    const document = await agentInstructionsService(db).readFile(owner, layout.workerDocumentPath);
+    if (pmWorkerManagedBlock(document.content ?? "") !== renderPmWorkerPolicy(scope.delegation, layout.version)) throw unprocessable(`${layout.workerDocumentPath} and worker policy are out of sync; save the policy before dispatch`, { code: "PM_WORKER_DOCUMENT_OUT_OF_SYNC" });
     const selected = scope.delegation.workers.find(worker => worker.selections.some(choice => choice.id === (overrides as { workerSelectionId?: string }).workerSelectionId))!;
     input.assigneeAgentId = selected.agentId;
     input.assigneeAdapterOverrides = overrides;

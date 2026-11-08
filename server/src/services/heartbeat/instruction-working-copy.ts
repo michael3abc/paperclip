@@ -219,7 +219,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
             agentHomeForPermissions: workspace.agentHome,
           };
         }
-        const guidance = instructionWorkingCopyGuidance(instructionCopy, Boolean(pmCoordinationScope(agent)));
+        const guidance = instructionWorkingCopyGuidance(instructionCopy, Boolean(pmCoordinationScope(agent)), pmCoordinationScope(agent)?.instructionLayout);
         for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact"]) {
           context[key] = [readNonEmptyString(context[key]), guidance].filter(Boolean).join("\n\n");
         }
