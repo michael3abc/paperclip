@@ -22,6 +22,7 @@ import { cn, formatDurationMs, formatTokens, relativeTime } from "@/lib/utils";
  */
 
 const RECENT_RUN_LIMIT = 5;
+const MAIN_AGENT_LOG_READ_LIMIT_BYTES = 2_000_000;
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
 
 function toIso(value: Date | string | null | undefined): string | null {
@@ -106,7 +107,8 @@ export function MainAgentLiveWorkPanel({ companyId, agentId }: { companyId: stri
     lastOutputBytes: run.lastOutputBytes,
     logRef: run.logRef,
   }] : []), [adapterType, run]);
-  const { transcriptByRun } = useLiveRunTranscripts({ runs: sources, companyId });
+  // Read the run from its start (up to 2 MB) so the checklist and subagent names come from their creating events.
+  const { transcriptByRun } = useLiveRunTranscripts({ runs: sources, companyId, logReadLimitBytes: MAIN_AGENT_LOG_READ_LIMIT_BYTES });
   const transcript = run ? transcriptByRun.get(run.id) ?? [] : [];
   const work = useMemo(() => deriveMainAgentWork(transcript), [transcript]);
   const issueQuery = useQuery({

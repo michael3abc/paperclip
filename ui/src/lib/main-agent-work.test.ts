@@ -61,4 +61,39 @@ describe("deriveMainAgentWork", () => {
     expect(work.context).toEqual({ used: 251_000, window: 1_000_000, percent: 25 });
     expect(work.subagents.map((s) => [s.id, s.activity])).toEqual([["a", "Reading routes"], ["b", null]]);
   });
+
+  it("rebuilds Claude task-list steps from tool calls even when a cached plan activity is partial", () => {
+    const call = (ts: string, name: string, input: unknown, toolUseId?: string): TranscriptEntry => ({ kind: "tool_call", ts, name, input, toolUseId });
+    const result = (ts: string, toolUseId: string, content: string, isError = false): TranscriptEntry => ({ kind: "tool_result", ts, toolUseId, content, isError });
+    const work = deriveMainAgentWork([
+      call("1", "TaskCreate", { subject: "Frontend survey" }, "u1"),
+      result("2", "u1", "Task #5 created successfully: Frontend survey"),
+      call("3", "TaskCreate", { subject: "Backend survey", activeForm: "Surveying backend" }, "u2"),
+      result("4", "u2", "Task #6 created successfully: Backend survey"),
+      call("5", "TaskCreate", { subject: "Broken" }, "u3"),
+      result("6", "u3", "Error", true),
+      call("7", "TaskCreate", { subject: "Summarize" }, "u4"),
+      result("8", "u4", "Task #7 created successfully: Summarize"),
+      call("9", "TaskUpdate", { taskId: "5", status: "completed" }),
+      call("10", "TaskUpdate", { taskId: 6, status: "in_progress" }),
+      // A plan activity first parsed for a tail-only window only knows tasks 6 and 7.
+      { kind: "provider_activity", ts: "11", family: "plan", eventType: "plan.updated", status: "running", title: "Todo", summary: "",
+        payload: { planId: "todo", steps: [{ stepId: "task:6", body: "Task #6", status: "in_progress" }, { stepId: "task:7", body: "Task #7", status: "pending" }] } },
+    ]);
+    expect(work.steps.map((step) => [step.id, step.body, step.status])).toEqual([
+      ["task:5", "Frontend survey", "completed"], ["task:6", "Surveying backend", "in_progress"], ["task:7", "Summarize", "pending"],
+    ]);
+    expect(work.currentStep).toBe("Surveying backend");
+  });
+
+  it("uses the latest TodoWrite list and keeps a subagent named by its start event", () => {
+    const work = deriveMainAgentWork([
+      { kind: "tool_call", ts: "1", name: "TodoWrite", input: { todos: [{ content: "Read", status: "completed" }, { content: "Fix", activeForm: "Fixing", status: "in_progress" }] } },
+      delegation("2", "running", { delegationId: "a", action: "started", description: "Survey routes", subagentType: "Explore" }),
+      delegation("3", "running", { delegationId: "a", action: "progress", description: "Running cd /repo…", activity: "Running cd /repo…" }),
+      delegation("4", "running", { delegationId: "b", action: "progress", subagentType: "Explore", activity: "Reading a.ts" }),
+    ]);
+    expect(work.steps.map((step) => [step.body, step.status])).toEqual([["Read", "completed"], ["Fixing", "in_progress"]]);
+    expect(work.subagents.map((s) => [s.id, s.title])).toEqual([["a", "Survey routes"], ["b", "Explore"]]);
+  });
 });
