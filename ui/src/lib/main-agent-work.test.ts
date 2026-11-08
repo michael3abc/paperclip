@@ -43,7 +43,22 @@ describe("deriveMainAgentWork", () => {
 
   it("is empty for transcripts without plan or delegation activity", () => {
     expect(deriveMainAgentWork([{ kind: "stdout", ts: "1", text: "hello" }])).toEqual({
-      steps: [], currentStep: null, lastToolName: null, lastAssistantText: null, subagents: [],
+      steps: [], currentStep: null, lastToolName: null, lastAssistantText: null, subagents: [], context: null,
     });
+  });
+
+  it("keeps the latest context fill and a running subagent's activity", () => {
+    const usage = (ts: string, currentTokens: unknown): TranscriptEntry => ({ kind: "provider_activity", ts, family: "context", eventType: "context.usage",
+      status: "completed", title: "Context", summary: "", payload: { usageId: "context-usage", currentTokens, modelContextWindow: 1_000_000 } });
+    const work = deriveMainAgentWork([
+      usage("1", 42_000),
+      delegation("2", "running", { delegationId: "a", description: "Audit API", activity: "Reading routes" }),
+      usage("3", 251_000),
+      usage("4", "bad"),
+      delegation("5", "running", { delegationId: "b", description: "Check UI", activity: "Scanning" }),
+      delegation("6", "completed", { delegationId: "b", description: "Check UI", activity: "Scanning" }, "Done"),
+    ]);
+    expect(work.context).toEqual({ used: 251_000, window: 1_000_000, percent: 25 });
+    expect(work.subagents.map((s) => [s.id, s.activity])).toEqual([["a", "Reading routes"], ["b", null]]);
   });
 });

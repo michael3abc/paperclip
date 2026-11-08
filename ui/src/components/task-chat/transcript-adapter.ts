@@ -881,6 +881,9 @@ export function transcriptToTaskChatItems(
         if (entry.family === "provider_notice" && (entry.payload.userActionable !== true ||
           ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
             .includes(String(entry.payload.category)))) break;
+        // Context fill is shown by the agent's live-work panel; the run
+        // transcript keeps every sample.
+        if (entry.family === "context" && entry.eventType === "context.usage") break;
         const key = `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);

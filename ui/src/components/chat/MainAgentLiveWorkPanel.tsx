@@ -66,6 +66,9 @@ function SubagentCard({ subagent }: { subagent: MainAgentSubagent }) {
         <span className="min-w-0 flex-1 line-clamp-2 text-sm font-medium">{subagent.title}</span>
       </div>
       {meta && <div className="mt-1 pl-5.5 text-xs text-muted-foreground">{meta}</div>}
+      {subagent.status === "running" && subagent.activity && (
+        <p data-testid="main-agent-subagent-activity" className="mt-1 line-clamp-2 pl-5.5 text-xs text-foreground/80">{subagent.activity}</p>
+      )}
       {subagent.status === "running" && subagent.lastToolName && (
         <div className="mt-1 flex items-center gap-1 pl-5.5 text-xs text-muted-foreground">
           <Wrench className="h-3 w-3" /> <span className="font-mono">{subagent.lastToolName}</span>
@@ -153,6 +156,11 @@ export function MainAgentLiveWorkPanel({ companyId, agentId }: { companyId: stri
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {work.steps.length > 0 && <span>{doneSteps}/{work.steps.length} steps</span>}
           {lastTool && <span className="inline-flex items-center gap-1"><Wrench className="h-3 w-3" /><span className="font-mono">{lastTool}</span></span>}
+          {work.context && (
+            <span data-testid="main-agent-context" title={`${work.context.used.toLocaleString()} / ${work.context.window.toLocaleString()} tokens`}>
+              Context {formatTokens(work.context.used)} / {formatTokens(work.context.window)} ({work.context.percent}%)
+            </span>
+          )}
           {work.subagents.length > 0 && <span>{runningSubagents > 0 ? `${runningSubagents} subagents running` : `${work.subagents.length} subagents`}</span>}
           <Link to={`/agents/${agentId}/runs/${run.id}`} className="font-mono hover:underline">{run.id.slice(0, 8)}</Link>
         </div>

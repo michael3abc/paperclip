@@ -24,11 +24,20 @@ export interface MainAgentSubagent {
   subagentType: string | null;
   status: MainAgentWorkStatus;
   lastToolName: string | null;
+  /** Latest progress text of a running subagent (Claude task_progress). */
+  activity: string | null;
   summary: string | null;
   totalTokens: number | null;
   toolUses: number | null;
   startedAt: string;
   updatedAt: string;
+}
+
+/** Main session context fill (ccpocket `context` / `context.usage` activity). */
+export interface MainAgentContextUsage {
+  used: number;
+  window: number;
+  percent: number;
 }
 
 export interface MainAgentWork {
@@ -37,6 +46,7 @@ export interface MainAgentWork {
   lastToolName: string | null;
   lastAssistantText: string | null;
   subagents: MainAgentSubagent[];
+  context: MainAgentContextUsage | null;
 }
 
 const STEP_STATUSES = new Set(["pending", "in_progress", "completed"]);
@@ -70,6 +80,7 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
   let lastToolName: string | null = null;
   let lastAssistantText: string | null = null;
   const subagents = new Map<string, MainAgentSubagent>();
+  let context: MainAgentContextUsage | null = null;
 
   for (const entry of entries) {
     if (entry.kind === "tool_call") {
@@ -78,6 +89,10 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
       lastAssistantText = text(entry.text) ?? lastAssistantText;
     } else if (entry.kind === "provider_activity" && entry.family === "plan") {
       steps = planSteps(entry.payload);
+    } else if (entry.kind === "provider_activity" && entry.family === "context" && entry.eventType === "context.usage") {
+      const used = count(entry.payload.currentTokens);
+      const window = count(entry.payload.modelContextWindow);
+      if (used !== null && window !== null) context = { used, window, percent: Math.min(100, Math.round((used / window) * 100)) };
     } else if (entry.kind === "provider_activity" && entry.family === "delegation") {
       const payload = entry.payload;
       const id = text(payload.delegationId);
@@ -90,6 +105,7 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
         subagentType: text(payload.subagentType),
         status: workStatus(entry.status),
         lastToolName: text(payload.lastToolName),
+        activity: entry.status === "running" ? text(payload.activity) : null,
         summary: entry.status === "running" ? null : text(entry.summary),
         totalTokens: count(usage.totalTokens),
         toolUses: count(usage.toolUses),
@@ -106,5 +122,6 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
     lastToolName,
     lastAssistantText,
     subagents: [...subagents.values()],
+    context,
   };
 }

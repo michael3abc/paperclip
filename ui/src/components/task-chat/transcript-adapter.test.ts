@@ -215,6 +215,17 @@ describe("accepted native response-wake answers", () => {
   });
 });
 
+describe("context usage samples", () => {
+  it("are kept out of the chat feed", () => {
+    const items = transcriptToTaskChatItems([
+      { kind: "provider_activity", ts: TS, family: "context", eventType: "context.usage", status: "completed", title: "Context",
+        summary: "51,000 / 1,000,000 tokens (5%)", payload: { usageId: "context-usage", currentTokens: 51000, modelContextWindow: 1000000 } },
+      { kind: "assistant", ts: TS, text: "Done" },
+    ], { runId: "context", running: false });
+    expect(items.map((item) => item.kind)).toEqual(["message"]);
+  });
+});
+
 describe("completion tool feed visibility", () => {
   it("keeps the full bounded notice text available when expanded", () => {
     const summary = `${"Configuration context. ".repeat(30)}Use the project settings to fix this.`;

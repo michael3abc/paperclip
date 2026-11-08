@@ -43,7 +43,9 @@ const activeTranscript: TranscriptEntry[] = [
   { kind: "provider_activity", ts: "2", family: "plan", eventType: "plan.updated", status: "running", title: "Todo", summary: "",
     payload: { planId: "todo", steps: [{ stepId: "todo:0", body: "Read code", status: "completed" }, { stepId: "todo:1", body: "Running the API tests", status: "in_progress" }] } },
   { kind: "provider_activity", ts: "3", family: "delegation", eventType: "delegation.updated", status: "running", title: "Audit", summary: "",
-    payload: { delegationId: "tu-1", description: "Audit auth routes", subagentType: "Explore", lastToolName: "Grep" } },
+    payload: { delegationId: "tu-1", description: "Audit auth routes", activity: "Reading middleware", subagentType: "Explore", lastToolName: "Grep" } },
+  { kind: "provider_activity", ts: "3", family: "context", eventType: "context.usage", status: "completed", title: "Context", summary: "",
+    payload: { usageId: "context-usage", currentTokens: 51000, modelContextWindow: 1000000 } },
   { kind: "provider_activity", ts: "4", family: "delegation", eventType: "delegation.completed", status: "completed", title: "UI", summary: "No regressions",
     payload: { delegationId: "tu-2", description: "Check UI copy", usage: { totalTokens: 2500, toolUses: 3 } } },
 ];
@@ -101,6 +103,8 @@ describe("MainAgentLiveWorkPanel", () => {
       expect.stringContaining("Check UI copy"),
     ]);
     expect(cards[0].textContent).toContain("Grep");
+    expect(cards[0].querySelector('[data-testid="main-agent-subagent-activity"]')?.textContent).toBe("Reading middleware");
+    expect(current.querySelector('[data-testid="main-agent-context"]')?.textContent).toContain("(5%)");
     expect(cards[1].textContent).toContain("2.5k tokens");
     expect(cards[1].textContent).toContain("No regressions");
   });
