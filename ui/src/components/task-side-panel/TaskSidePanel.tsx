@@ -40,6 +40,7 @@ import { IssueProperties } from "@/components/IssueProperties";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { AgentArtifactsPanel, AgentTasksPanel } from "@/components/chat/AgentWorkPanels";
+import { MainAgentLiveWorkPanel } from "@/components/chat/MainAgentLiveWorkPanel";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { ArtifactDropzone } from "@/components/artifacts/ArtifactDropzone";
@@ -835,9 +836,17 @@ function TaskSidePanelForScope({
     );
   } else if (activeTab.payload.kind === "agent-tasks") {
     content = conversationAgentId ? (
-      coordinatorWorkspaceEnabled
-        ? <CoordinatorConversationTasksPanel conversationIssueId={issue.id} />
-        : <AgentTasksPanel companyId={issue.companyId} agentId={conversationAgentId} excludeIssueId={issue.id} />
+      <div className="space-y-4">
+        <MainAgentLiveWorkPanel companyId={issue.companyId} agentId={conversationAgentId} />
+        <details open className="group" data-testid="agent-task-list">
+          <summary className="cursor-pointer select-none text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Task list</summary>
+          <div className="mt-3">
+            {coordinatorWorkspaceEnabled
+              ? <CoordinatorConversationTasksPanel conversationIssueId={issue.id} />
+              : <AgentTasksPanel companyId={issue.companyId} agentId={conversationAgentId} excludeIssueId={issue.id} />}
+          </div>
+        </details>
+      </div>
     ) : null;
   } else if (activeTab.payload.kind === "artifacts" && conversationAgentId) {
     content = (

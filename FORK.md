@@ -291,3 +291,15 @@ on close. See AGENTS.md and doc/DEVELOPING.md for the contract and device limits
 Publish from michael/main through the existing UI overlay after relevant UI
 tests, typecheck, token gates and build; retain rollback assets. No backend,
 schema, restart, worker retry or workspace-policy changes are part of this fix.
+
+### Main agent live work panel (2026-11-08)
+
+Feature branch michael/main-agent-panel adds a live work panel above the agent
+chat's task list. The top card shows the agent's current or most recent run: issue,
+in-progress checklist step (`plan` provider activity), last tool, elapsed time and
+run link. Each card below is one native subagent (`delegation` activity merged by
+`delegationId`), with status, type, tool/token usage and the result after completion.
+It reads the existing run transcript; adapters without these activities show only
+the top card. Publish from michael/main through the existing UI overlay after
+relevant UI tests, typecheck, token gates and build; retain rollback assets. No
+backend, schema, restart or agent-state changes are part of this panel.

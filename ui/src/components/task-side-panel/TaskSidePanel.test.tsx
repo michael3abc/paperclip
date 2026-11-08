@@ -106,6 +106,10 @@ vi.mock("@/components/chat/AgentWorkPanels", () => ({
   AgentArtifactsPanel: ({ agentId }: { agentId: string }) => <div>{`Agent artifacts ${agentId}`}</div>,
 }));
 
+vi.mock("@/components/chat/MainAgentLiveWorkPanel", () => ({
+  MainAgentLiveWorkPanel: ({ agentId }: { agentId: string }) => <div>{`Live work ${agentId}`}</div>,
+}));
+
 vi.mock("@/components/WorkspaceFileBrowser", () => ({
   WorkspaceFileBrowser: () => <div>Files browser</div>,
 }));
@@ -447,6 +451,8 @@ describe("TaskSidePanel", () => {
     expect(selected?.textContent).toContain("Tasks");
     expect(container.textContent).toContain("Agent tasks agent-1 excluding task-1");
     expect(container.textContent).not.toContain("Artifacts content");
+    const live = container.querySelector('[data-testid="agent-task-list"]')?.previousElementSibling;
+    expect(live?.textContent).toBe("Live work agent-1");
   });
 
   it("keeps an Artifacts-only layout the user chose", async () => {
