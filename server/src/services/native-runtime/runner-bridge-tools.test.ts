@@ -4,6 +4,7 @@ import { materializeAsset } from "./runtime-context.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
+import { forbidden } from "../../errors.js";
 import { executeWorkspaceTool, readAssignedSkill, readWorkspaceUploadFile, runnerBridgeDefinitions, workspaceCommandSandboxAvailable, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -189,5 +190,15 @@ if sys.argv[1] != "completion":
     const tools = runnerBridgeDefinitions({ workspace: false, skills: false, api: false, mode: "ask" }).map(tool => tool.name);
     expect(tools).toEqual(["get_identity", "list_people"]);
     expect(runnerBridgeDefinitions({ workspace: true, skills: true, api: true, mode: "planning" }).map(tool => tool.name)).not.toContain("workspace_run");
+  });
+
+  it.each([
+    forbidden("private host path /private/source"),
+    Object.assign(new Error("private host path /private/source"), { code: "EACCES" }),
+    Object.assign(new Error("private host path /private/source"), { code: "EPERM" }),
+  ])("settles denied reads with actionable scope guidance and no private details", async error => {
+    const result = await settleRunnerBridgeRead(async () => { throw error; });
+    expect(result).toMatchObject({ outcome: "failed", code: "runner_bridge_read_forbidden", message: expect.stringContaining("authorized source") });
+    expect(JSON.stringify(result)).not.toContain("/private/source");
   });
 });

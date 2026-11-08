@@ -190,7 +190,11 @@ Every PM API/tool request must retain its current run and task execution lock.
 Project file reads include dotfiles, .env, credential files and Git configuration;
 never copy credential values into reports, comments or repository changes. Select
 one projectWorkspaceId or executionWorkspaceId to read a configured source or task
-checkout. Deny foreign registered projects nested beneath a broad project root,
+checkout. An explicitly selected same-project source may share its exact canonical
+root with another project in the same company; a broad workerRoot is not that grant.
+Cross-company registrations and foreign nested roots remain denied. Settle denied
+bridge reads with safe scope guidance, never private host paths or credentials.
+Deny foreign registered projects nested beneath a broad project root,
 including symlink aliases and commit reads; native provider reads cover only the
 instruction bundle so they cannot bypass current ownership checks. Shared-worker
 management configuration stays hidden. Captured responses and registered attachments

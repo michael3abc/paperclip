@@ -9,7 +9,7 @@ import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { assets, runnerApiResponseReservations, agents, agentWakeupRequests, companies, projects, projectWorkspaces, issues, heartbeatRuns, authUsers, companyMemberships, activityLog, principalPermissionGrants, completionContracts, issueThreadInteractions, toolGatewaySessions, createDb } from "@paperclipai/db";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { resolveManagedInstructionsRoot, agentInstructionsService } from "../services/agent-instructions.js";
@@ -466,6 +466,46 @@ describe.each(["claude_local", "codex_local"] as const)("%s PM capabilities on o
     } finally {
       await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, otherSource));
       await fs.rm(sibling, { recursive: true });
+    }
+  });
+  it("an explicitly selected shared source remains readable while nested foreign projects stay denied", async () => {
+    await reads();
+    const repo = path.join(home, "source"), nested = path.join(repo, "nested-private");
+    const sharedId = randomUUID(), nestedId = randomUUID();
+    await fs.mkdir(nested);
+    await fs.writeFile(path.join(repo, "shared-evidence.txt"), "SHARED_READ_EVIDENCE");
+    await fs.writeFile(path.join(nested, "private.txt"), "FOREIGN_READ_EVIDENCE");
+    await db.insert(projectWorkspaces).values([
+      { id: sharedId, companyId, projectId: otherProjectId, name: "Same checkout", cwd: repo },
+      { id: nestedId, companyId, projectId: otherProjectId, name: "Nested private source", cwd: nested },
+    ]);
+    try {
+      // A broad home root does not implicitly inherit the explicit source grant.
+      await expect(executePmProjectRead(db, scope, runId, "read_project_file", { path: "source/shared-evidence.txt" })).rejects.toThrow("outside");
+      expect(await execute("read_project_file", { projectWorkspaceId: sourceId, path: "shared-evidence.txt" }))
+        .toMatchObject({ content: "SHARED_READ_EVIDENCE" });
+      expect(await execute("read_project_file", { projectWorkspaceId: sourceId, path: "nested-private/private.txt" }))
+        .toMatchObject({ outcome: "failed", code: "runner_bridge_read_forbidden" });
+      const found = await executePmProjectRead(db, scope, runId, "search_project_files", { projectWorkspaceId: sourceId, text: "READ_EVIDENCE" });
+      expect(JSON.stringify(found)).toContain("SHARED_READ_EVIDENCE");
+      expect(JSON.stringify(found)).not.toContain("FOREIGN_READ_EVIDENCE");
+    } finally {
+      await db.delete(projectWorkspaces).where(inArray(projectWorkspaces.id, [sharedId, nestedId]));
+      await fs.rm(nested, { recursive: true });
+      await fs.unlink(path.join(repo, "shared-evidence.txt"));
+    }
+  });
+  it("an explicit same-path source does not grant reads across companies", async () => {
+    const foreignCompany = randomUUID(), foreignProject = randomUUID();
+    await db.insert(companies).values({ id: foreignCompany, name: "Foreign source owner" });
+    await db.insert(projects).values({ id: foreignProject, companyId: foreignCompany, name: "Foreign source" });
+    await db.insert(projectWorkspaces).values({ companyId: foreignCompany, projectId: foreignProject, name: "Foreign checkout", cwd: path.join(home, "source") });
+    try {
+      await expect(executePmProjectRead(db, scope, runId, "read_project_file", { projectWorkspaceId: sourceId, path: ".git/config" })).rejects.toThrow("outside");
+    } finally {
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, foreignCompany));
+      await db.delete(projects).where(eq(projects.id, foreignProject));
+      await db.delete(companies).where(eq(companies.id, foreignCompany));
     }
   });
   it("scoped general approval resolves through its real PM tool and HTTP middleware", async () => {

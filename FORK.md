@@ -179,3 +179,12 @@ environment selection and binding validation. PM coordination no longer retires
 that row. Preserve the original task, workspace and stop evidence; regressions
 cover unchanged worker metadata and an assembled Claude continuation with PM
 preparation interleaved before the canonical Recovery-directory recheck.
+
+### Explicit PM source ownership (2026-11-08)
+
+HOM-249 exposed an explicitly authorized source registered at the same physical
+root by two projects. Permit that exact-root sharing within the company only
+when the PM selects its own projectWorkspaceId; retain foreign nested roots,
+cross-company registrations, issue privacy and inode/symlink checks. Definite
+bridge read denials return a bounded scope error rather than a generic failure.
+Keep worker write ownership and task recovery separate from read authorization.

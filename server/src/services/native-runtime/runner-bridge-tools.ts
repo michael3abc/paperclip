@@ -129,10 +129,14 @@ export async function readAssignedSkill(context: NativeRuntimeContextSnapshot, r
 export async function settleRunnerBridgeRead(read: () => Promise<unknown>) {
   try { return await read(); } catch (error) {
     const storageCode = error && typeof error === "object" && "code" in error ? error.code : null;
+    const status = error && typeof error === "object" && "status" in error ? error.status : null;
     const message = error instanceof Error ? error.message : "";
     const code = storageCode === "ENOENT" ? "runner_bridge_file_not_found"
+      : status === 403 || storageCode === "EACCES" || storageCode === "EPERM" ? "runner_bridge_read_forbidden"
       : /^runner_(workspace|bridge|skill|attachment)_[a-z0-9_]+$/.test(message) ? message : "runner_bridge_read_failed";
-    return { outcome: "failed", code, message: code === "runner_attachment_use_base64" ? "This file is binary. Retry read_task_attachment with encoding base64." : "The requested read did not succeed. Check the assigned file or pinned skill before continuing." };
+    return { outcome: "failed", code, message: code === "runner_attachment_use_base64" ? "This file is binary. Retry read_task_attachment with encoding base64."
+      : code === "runner_bridge_read_forbidden" ? "Read access was denied. Select an authorized source or task workspace in your project; check its file permissions."
+      : "The requested read did not succeed. Check the assigned file or pinned skill before continuing." };
   }
 }
 const workspaceLanes = new Map<string, Promise<void>>();

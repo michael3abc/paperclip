@@ -48,24 +48,30 @@ export async function executePmProjectRead(db: Db, scope: PmCoordinationScope, r
   // The home project can contain other registered projects. Root containment
   // alone is not project authorization. Resolve once per request, never per file.
   const [sources, workspaces, bindings] = await Promise.all([
-    db.select({ projectId: projectWorkspaces.projectId, cwd: projectWorkspaces.cwd }).from(projectWorkspaces),
-    db.select({ projectId: executionWorkspaces.projectId, cwd: executionWorkspaces.cwd }).from(executionWorkspaces),
-    db.select({ runtimeConfig: agents.runtimeConfig }).from(agents),
+    db.select({ companyId: projectWorkspaces.companyId, projectId: projectWorkspaces.projectId, cwd: projectWorkspaces.cwd }).from(projectWorkspaces),
+    db.select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId, cwd: executionWorkspaces.cwd }).from(executionWorkspaces),
+    db.select({ companyId: agents.companyId, runtimeConfig: agents.runtimeConfig }).from(agents),
   ]);
-  const foreignPaths = [...sources, ...workspaces, ...bindings.flatMap(({ runtimeConfig }) => {
+  const foreignSources = [...sources, ...workspaces, ...bindings.flatMap(({ companyId, runtimeConfig }) => {
     const binding = runtimeConfig?.workspaceBinding as { projectId?: string; workerRoot?: string } | undefined;
-    return binding?.projectId && binding.workerRoot ? [{ projectId: binding.projectId, cwd: binding.workerRoot }] : [];
-  })].filter(source => source.projectId && source.projectId !== scope.projectId && source.cwd).map(source => source.cwd!);
+    return binding?.projectId && binding.workerRoot ? [{ companyId, projectId: binding.projectId, cwd: binding.workerRoot }] : [];
+  })].filter(source => source.projectId && (source.companyId !== scope.companyId || source.projectId !== scope.projectId) && source.cwd);
   const within = (parent: string, child: string) => {
     const relative = path.relative(parent, child);
     return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
   };
   const excluded = new Set<string>();
-  for (const configured of new Set(foreignPaths)) {
-    const lexical = path.resolve(configured);
-    if (within(root, lexical)) excluded.add(lexical);
-    try { const resolved = await fs.realpath(configured); if (within(root, resolved)) excluded.add(resolved); }
+  for (const source of foreignSources) {
+    const lexical = path.resolve(source.cwd!);
+    let resolved: string | undefined;
+    try { resolved = await fs.realpath(source.cwd!); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    // An explicitly selected source already passed same-project authorization.
+    // Its exact physical root may be shared within the company. A broad home,
+    // foreign nested root or cross-company registration is never such a grant.
+    if (request.projectWorkspaceId && source.companyId === scope.companyId && resolved === root) continue;
+    if (within(root, lexical)) excluded.add(lexical);
+    if (resolved && within(root, resolved)) excluded.add(resolved);
   }
   function assertProjectPath(candidate: string) {
     if (!within(root, candidate) || [...excluded].some(foreign => within(foreign, candidate))) {

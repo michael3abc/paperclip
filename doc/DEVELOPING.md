@@ -4734,8 +4734,14 @@ one `projectWorkspaceId` or `executionWorkspaceId`, checked against the same com
 and project; task-workspace reads retain issue privacy. Owner-authorized project
 reads include `.env`, dotfiles, credential files and Git configuration. Never copy
 credential values into reports, comments or repository changes. The reader resolves
-registered project/source/task roots once per request, rejects foreign nested roots
-and aliases, and rechecks the opened inode. Native provider readers cover instruction
+registered project/source/task roots once per request. An explicitly selected,
+authorized project source may share its exact canonical root with another project
+in the same company; implicit workerRoot reads do not acquire that grant. Foreign
+nested roots, cross-company same-root registrations and escaping aliases remain
+denied, including search and fixed-commit reads. The reader rechecks the opened
+inode. Definite HTTP 403 and filesystem permission failures settle as
+`runner_bridge_read_forbidden` with source-selection guidance, without private paths.
+Native provider readers cover instruction
 bundles only; project content uses the server-owned tools so a broad home root cannot
 bypass project ownership. A provider that has write tools
 still counts as a writer even when its prompt calls the task read-only.
