@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { isTextAttachment } from "@/lib/issue-attachments";
 import { useContext, useMemo, useState, type DragEvent, type ReactNode } from "react";
@@ -58,7 +59,9 @@ function AttachmentActions({
   onPreview?: (attachment: IssueAttachment) => void;
 }) {
   const openText = useContext(TextAttachmentContext);
+  const onPdfClick = usePdfLink();
   const openInPanel = (event: React.MouseEvent) => {
+    if (onPdfClick(event, { href: attachmentOpenPath(attachment), filename: attachmentFilename(attachment), contentType: attachment.contentType })) return;
     if (openText && isTextAttachment(attachment) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openText(attachment.id, attachmentFilename(attachment)); }
   };
   const filename = attachmentFilename(attachment);
@@ -119,7 +122,9 @@ function MarkdownAttachmentCard({
   deletePending?: boolean;
 }) {
   const openText = useContext(TextAttachmentContext);
+  const onPdfClick = usePdfLink();
   const openInPanel = (event: React.MouseEvent) => {
+    if (onPdfClick(event, { href: attachmentOpenPath(attachment), filename: attachmentFilename(attachment), contentType: attachment.contentType })) return;
     if (openText && isTextAttachment(attachment) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openText(attachment.id, attachmentFilename(attachment)); }
   };
   const filename = attachmentFilename(attachment);
@@ -198,7 +203,9 @@ function GenericAttachmentRow({
   deletePending?: boolean;
 }) {
   const openText = useContext(TextAttachmentContext);
+  const onPdfClick = usePdfLink();
   const openInPanel = (event: React.MouseEvent) => {
+    if (onPdfClick(event, { href: attachmentOpenPath(attachment), filename: attachmentFilename(attachment), contentType: attachment.contentType })) return;
     if (openText && isTextAttachment(attachment) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); openText(attachment.id, attachmentFilename(attachment)); }
   };
   const filename = attachmentFilename(attachment);

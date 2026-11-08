@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { CoordinatorRelativeTime } from "@/components/coordinator/CoordinatorRelativeTime";
 import { useAgentChatRead } from "@/hooks/useAgentChatRead";
 import { Link } from "@/lib/router";
@@ -169,6 +170,7 @@ function TaskChatBubbleContent({
     ? <CoordinatorRelativeTime value={recordedTimestamp} /> : item.timestamp;
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   const openText = useContext(TextAttachmentContext);
+  const onPdfClick = usePdfLink();
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -373,6 +375,7 @@ function TaskChatBubbleContent({
                       <a
                         href={ref.openPath ?? ref.url}
                         onClick={(event) => {
+                          if (onPdfClick(event, { href: ref.openPath ?? ref.url, filename: ref.name, contentType: ref.contentType })) return;
                           if (openText && ref.id && isTextAttachment({ contentType: ref.contentType ?? "", originalFilename: ref.name }) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
                             event.preventDefault(); openText(ref.id, ref.name);
                           }

@@ -1,3 +1,5 @@
+import { usePdfPreview } from "@/components/PdfPreviewProvider";
+import { pdfPreviewSource } from "@/lib/pdf-preview";
 import { Download, ExternalLink } from "lucide-react";
 import { useContext, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -42,6 +44,8 @@ export function ArtifactFileRow({
 }) {
   const { id, attachmentId, filename, contentType, contentPath, openPath, downloadPath, byteSize } = source;
   const openGallery = useContext(IssueGalleryContext);
+  const openPdf = usePdfPreview();
+  const pdf = pdfPreviewSource({ href: openPath || contentPath, filename, contentType });
   const openTextAttachment = useContext(TextAttachmentContext);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [csvRequested, setCsvRequested] = useState(false);
@@ -81,6 +85,8 @@ export function ArtifactFileRow({
 
   const row = picture ? (
     <ArtifactRow subject={subject} onClick={() => { if (!openGallery?.(contentPath)) setGalleryOpen(true); }} trailing={trailing} now={now} testId={testId} />
+  ) : pdf && openPdf ? (
+    <ArtifactRow subject={subject} href={openPath || contentPath} external onClick={() => openPdf(pdf)} trailing={trailing} now={now} testId={testId} />
   ) : textTab ? (
     <ArtifactRow subject={subject} href={openPath || contentPath} external onClick={() => openTextAttachment?.(attachmentId!, filename)} trailing={trailing} now={now} testId={testId} />
   ) : (

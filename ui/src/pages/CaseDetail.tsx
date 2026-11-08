@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, FolderOpen } from "lucide-react";
@@ -34,6 +35,7 @@ function CaseRelation({ item, search }: { item: Pick<CaseSummary, "id" | "identi
 
 /** Cases are persistent records. This board page only reads them and their work. */
 export function CaseDetail() {
+  const onPdfClick = usePdfLink();
   const { caseIdentifier } = useParams<{ caseIdentifier: string }>();
   const { search } = useLocation();
   const caseHref = useCaseHref();
@@ -123,7 +125,7 @@ export function CaseDetail() {
       {caseData.attachments.length > 0 && <section className="space-y-3" aria-label="Case attachments">
         <h2 className="text-sm font-semibold">Attachments</h2>
         {images.length > 0 && <CaseAttachmentsGallery attachments={images} />}
-        {files.length > 0 && <ul className="space-y-2">{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
+        {files.length > 0 && <ul className="space-y-2">{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} onClick={event => onPdfClick(event, { href: caseAttachmentUrl(attachment), filename: attachment.asset.originalFilename ?? "Attachment", contentType: attachment.asset.contentType })} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
       </section>}
 
       {caseData.workIssueId && <CaseHandoffHistory caseId={caseData.id} task={caseData.workIssue} agents={agents} />}

@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -817,6 +818,7 @@ function MarkdownBodyImpl({
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
   const coordinator = useCoordinatorPresentation();
+  const onPdfClick = usePdfLink();
   const streamWords = useContext(MarkdownWordStreaming);
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
@@ -1020,6 +1022,7 @@ function MarkdownBodyImpl({
       return (
         <a
           href={href}
+          onClick={event => onPdfClick(event, { href: href ?? "", filename: /\.pdf$/i.test(flattenText(linkChildren).trim()) ? flattenText(linkChildren).trim() : String(anchorProps.title ?? "") })}
           {...(isExternal
             ? { target: "_blank", rel: "noopener noreferrer" }
             : { rel: "noreferrer" })}
@@ -1065,7 +1068,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode]);
+  }, [theme, coordinator, onPdfClick, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode]);
 
   return (
     <div

@@ -163,7 +163,7 @@ export function ArtifactRow({ subject, to, href, external = false, onClick, expa
       onClick={
         onClick
           ? (event) => {
-              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+              if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
               event.preventDefault();
               onClick();
             }

@@ -1,3 +1,5 @@
+import { usePdfLink, usePdfPreview } from "@/components/PdfPreviewProvider";
+import { pdfPreviewSource } from "@/lib/pdf-preview";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { isTextAttachment } from "@/lib/issue-attachments";
 import { getAttachmentArtifactWorkProductMetadata } from "@paperclipai/shared";
@@ -191,8 +193,16 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   }
 
   const openText = useContext(TextAttachmentContext);
+  const openPdf = usePdfPreview();
+  const onPdfClick = usePdfLink();
   const textMetadata = getAttachmentArtifactWorkProductMetadata(workProduct);
   const canOpenText = Boolean(openText && textMetadata && isTextAttachment(textMetadata));
+  const pdf = workProduct.type === "artifact" ? pdfPreviewSource({
+    href: stringMeta(metadata, "contentPath", "openPath") ?? href ?? "",
+    filename: stringMeta(metadata, "originalFilename") ?? workProduct.title,
+    contentType,
+  }) : null;
+  const canOpenPdf = Boolean(openPdf && pdf);
   const additions = numberMeta(metadata, "additions");
   const deletions = numberMeta(metadata, "deletions");
   const files = numberMeta(metadata, "files", "changedFiles");
@@ -300,6 +310,14 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       </div>
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
+        {canOpenPdf ? (
+          <a href={pdf!.href} target="_blank" rel="noreferrer"
+            onClick={event => onPdfClick(event, pdf!)}
+            aria-label={"Open preview: " + workProduct.title}
+            className="inline-flex items-center gap-1 text-xs font-medium text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring">
+            <span>Open preview</span><FileText aria-hidden className="h-3 w-3" />
+          </a>
+        ) : null}
         {canOpenText ? (
           <button
             type="button"
@@ -315,7 +333,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<Maximize2 aria-hidden className="h-3 w-3" />
           </button>
         ) : actionHref ? (
-          <a href={actionHref} aria-label={`${action}: ${workProduct.title}`} className={cn("inline-flex items-center gap-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", canOpenText ? "relative z-10" : "after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring")} target={actionHref.startsWith("http") ? "_blank" : undefined} rel={actionHref.startsWith("http") ? "noreferrer" : undefined}>
+          <a href={actionHref} download={canOpenPdf ? pdf!.filename : undefined} aria-label={`${action}: ${workProduct.title}`} className={cn("inline-flex items-center gap-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", (canOpenText || canOpenPdf) ? "relative z-10" : "after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring")} target={actionHref.startsWith("http") ? "_blank" : undefined} rel={actionHref.startsWith("http") ? "noreferrer" : undefined}>
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
         ) : expandable ? (

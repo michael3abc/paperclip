@@ -1851,6 +1851,30 @@ maintenance-run visibility.
 
 ## Storage in Dev (Auto-Handled)
 
+PDF attachment previews share PdfPreviewProvider under BrowserRouter.
+Attachment rows, legacy chat resources, work products, output cards, case files
+and Markdown filename/title links open its local-state Radix dialog. The header
+keeps Back, the filename, Open original and Download visible on mobile. Back or
+Escape restores the underlying task/sheet without changing its location key,
+state or scroll. Route changes close the preview, reload does not reopen it,
+and system/browser Back still navigates normally; no synthetic history is added.
+
+Only unprevented primary clicks without modifiers on same-origin
+/api/attachments/:id/content or /api/assets/:id/content qualify. Raw and download
+links retain native behavior, including when the provider is absent. Markdown
+uses the label/title filename because content routes have no extension. Existing
+text-tab and media handlers remain independent. Work-product previews and
+downloads have separate controls.
+
+Preview loading uses one authenticated GET with redirects rejected. Require HTTP
+200, normalized application/pdf (or application/octet-stream with a PDF
+filename), a %PDF- header in the first 1024 bytes and at most 32 MiB, checking
+both Content-Length and streamed bytes. Embed only the validated PDF blob and
+abort/revoke it on close or navigation. Errors expose explicit retry and retain
+raw/download actions; no automatic retry or PDF renderer dependency. The native
+viewer requires an unsandboxed iframe. Mobile viewport tests cover navigation
+and layering, not physical iOS PWA/Android native PDF rendering.
+
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:
 
 - `~/.paperclip/instances/default/data/storage`

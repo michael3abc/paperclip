@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { Download, ExternalLink, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +28,7 @@ interface OutputPrimaryCardProps {
 export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPrimaryCardProps) {
   const meta = item.metadata;
   const filename = outputFilename(item);
+  const onPdfClick = usePdfLink();
   const contentType = meta?.contentType;
   const isMedia = Boolean(meta && (
     isImageContentType(contentType) ||
@@ -107,7 +109,7 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
             ) : null}
             {!isMedia || !onMediaClick || isVideo ? (
               <Button asChild variant="outline" size="sm" className="max-md:flex-1">
-                <a href={meta.openPath} target="_blank" rel="noreferrer">
+                <a href={meta.openPath} onClick={event => onPdfClick(event, { href: meta.openPath, filename, contentType: meta.contentType })} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
                   Open
                 </a>

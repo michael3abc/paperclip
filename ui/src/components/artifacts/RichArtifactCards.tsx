@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -682,6 +683,7 @@ export interface FileCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 export function FileCard(props: FileCardProps) {
+  const onPdfClick = usePdfLink();
   return (
     <Card>
       <div className="flex flex-col gap-4 p-5">
@@ -716,7 +718,7 @@ export function FileCard(props: FileCardProps) {
           <div className="flex flex-wrap items-center gap-2">
             {props.actions}
             {props.openUrl && (
-              <SourceLink url={props.openUrl}>Open file</SourceLink>
+              <Button variant="outline" size="sm" asChild><a href={props.openUrl} target="_blank" rel="noreferrer" onClick={event => onPdfClick(event, { href: props.openUrl!, filename: props.filename, contentType: props.contentType })}>Open file<ExternalLink className="size-3" /></a></Button>
             )}
             {props.downloadUrl ? (
               <Button asChild size="sm" variant="outline">

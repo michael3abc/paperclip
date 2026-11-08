@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { useContext, useEffect, useMemo, useState } from "react";
 import { DelegatedDecisionStatus, DelegatedRuntimeInteractions } from "@/components/DelegatedDecisionStatus";
 import {
@@ -1044,6 +1045,7 @@ function ResourceCard({
   item: Extract<TaskChatProtocolItem, { surface: "resource" }>;
 }) {
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
+  const onPdfClick = usePdfLink();
   if (artifactsV1) {
     // Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): one full-width row named after the file. A
     // registered file keeps the shipped card's actions (gallery, text tab, open raw, download, CSV preview);
@@ -1089,6 +1091,7 @@ function ResourceCard({
     <a
       className="block rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       href={item.href}
+      onClick={event => onPdfClick(event, { href: item.href!, filename: item.attachment?.originalFilename ?? item.title, contentType: item.attachment?.contentType })}
     >
       {body}
     </a>

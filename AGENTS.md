@@ -451,6 +451,16 @@ When adding endpoints:
 
 ## 9. UI Expectations
 
+PDF attachment opens use the shared PdfPreviewProvider under BrowserRouter.
+Its local-state dialog keeps Back, Open original and Download visible without
+changing task history, location state or scroll; a route change closes it.
+System/browser Back keeps its normal navigation behavior. Intercept only plain,
+unprevented primary clicks on same-origin attachment/asset content routes.
+Validate the authenticated response (200, PDF MIME/header, bounded 32 MiB stream)
+before embedding a PDF blob; abort/revoke on close. Download stays a separate
+action. Preserve text tabs, media viewers and native modifier-click behavior.
+Browser viewport tests do not qualify physical iPhone/Android PDF rendering.
+
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors

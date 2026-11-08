@@ -280,3 +280,14 @@ Publish from michael/main with targeted status/attention tests, typecheck, token
 gates, build, catalog and read-only production DOM/network evidence; retain the old
 UI and index-hash receipt for atomic rollback. Empty live state proves empty state
 only; deterministic consumer tests establish blue/orange behavior.
+
+### Mobile PDF return (2026-11-08)
+
+Feature branch michael/mobile-pdf-return adds one local-state PDF preview dialog
+across attachment entry points. Back restores the task/sheet, with separate raw
+and download actions; browser Back remains normal navigation. The authenticated
+PDF stream is bounded and validated before embedding, and URLs/reads are released
+on close. See AGENTS.md and doc/DEVELOPING.md for the contract and device limits.
+Publish from michael/main through the existing UI overlay after relevant UI
+tests, typecheck, token gates and build; retain rollback assets. No backend,
+schema, restart, worker retry or workspace-policy changes are part of this fix.

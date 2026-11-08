@@ -1,3 +1,4 @@
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { Download, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn, relativeTime } from "@/lib/utils";
@@ -13,6 +14,7 @@ interface OutputRowProps {
 /** Compact row for a non-primary output ("ALSO PRODUCED"). */
 export function OutputRow({ item, creatorName }: OutputRowProps) {
   const filename = outputFilename(item);
+  const onPdfClick = usePdfLink();
   const meta = item.metadata;
 
   const metaBits: string[] = [];
@@ -42,7 +44,7 @@ export function OutputRow({ item, creatorName }: OutputRowProps) {
       {meta ? (
         <div className="flex shrink-0 items-center gap-1">
           <Button asChild variant="ghost" size="icon-sm" title="Open in new tab">
-            <a href={meta.openPath} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
+            <a href={meta.openPath} onClick={event => onPdfClick(event, { href: meta.openPath, filename, contentType: meta.contentType })} target="_blank" rel="noreferrer" aria-label={`Open ${filename}`}>
               <ExternalLink className="h-4 w-4" />
             </a>
           </Button>
