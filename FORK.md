@@ -375,6 +375,13 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   longer appear there. Task grouping stays in the Group by menu, and saved
   `?groupIssueId=` links still open their stack. Stored records are unchanged; no schema
   change.
+- Artifacts chat project (HOM-265, 2026-11-09): agent chats carry no project, so their
+  media fell into "No project". The artifacts listing now files an issue under
+  `coalesce(issues.project_id, <the one active project led by its conversation agent>)`
+  for project folders, the `projectId` filter (project page tab), the archived-project
+  filter and each artifact's `project`. An explicit project wins; an agent leading none
+  or several active projects stays under "No project". Read-only; no stored issue or
+  project changes, no schema change.
 - Chat preempts the main agent's task (2026-11-09): an owner Agent Chat message
   (`enableAgentChat`) that waits for capacity behind its own main agent's running turn on
   a different, ordinary task now gracefully interrupts that turn with the chat-interrupt
