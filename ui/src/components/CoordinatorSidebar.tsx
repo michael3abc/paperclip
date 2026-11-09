@@ -8,7 +8,7 @@ import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
-import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
+import { isStarred, resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { useDialogActions } from "@/context/DialogContext";
@@ -108,8 +108,10 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
     return (agents.data ?? [])
       // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
+      // Agents the person starred are listed too, so a project's main agent with an ordinary role can be pinned here.
       .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
-        && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm")
+        && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm"
+          || (agentMemberships.isSuccess && isStarred(agentMemberships.data, "agent", agent.id)))
         && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
       .sort((left, right) => Number(right.id === primaryAgentId) - Number(left.id === primaryAgentId)
         || left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
