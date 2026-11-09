@@ -348,3 +348,9 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   base card and notes the 1M window in the evidence; the receipt model id is unchanged and
   OpenAI selectors stay exact-match. Feature commit `d3b28fea5`; no schema change.
   Receipts already recorded as unpriced are not repriced automatically.
+- Coordinator starred agents (2026-11-09): project main agents use an ordinary role, so
+  the Coordinator sidebar's Agents section (primary, `ceo` and `pm` only) never listed
+  them. It now also lists agents the person starred, through the existing per-user
+  agent membership stars; terminated, `process` and left agents stay hidden, the
+  primary-first/alphabetical order and PM status rules are unchanged, and dispatch and
+  roles are untouched. No schema change.

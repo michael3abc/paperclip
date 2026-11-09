@@ -226,6 +226,26 @@ describe("Coordinator agents section", () => {
     expect(rows().map(row => row.textContent)).not.toContain("momo");
   });
 
+  it("lists agents the person starred alongside CEO and PM roles, keeping unstarred workers hidden", async () => {
+    fixture.agents = [
+      ...roster,
+      { id: "a-main", name: "Billing main agent", role: "engineer", urlKey: "billing", status: "idle", adapterType: "ccpocket_bridge" },
+      { id: "a-gone", name: "Starred retired", role: "engineer", status: "terminated" },
+      { id: "a-cmd", name: "Starred command", role: "engineer", status: "idle", adapterType: "process" },
+      { id: "a-out", name: "Starred left", role: "engineer", status: "idle" },
+    ];
+    fixture.listMemberships.mockResolvedValue({ agentMemberships: { "a-out": "left" }, projectMemberships: {},
+      starredAgentIds: ["a-main", "a-gone", "a-cmd", "a-out"] });
+    await renderSidebar();
+    expect(rows().map(row => [row.textContent, row.getAttribute("href")])).toEqual([
+      ["amy", "/chats/amy"], ["Billing main agent", "/chats/billing"], ["Left", "/chats/left"], ["momo", "/chats/momo"],
+      ["Space Name", `/chats/${encodeURIComponent("space name")}`], ["Zed", "/chats/zed"],
+    ]);
+    expect(section()?.textContent).not.toContain("worker");
+    expect(section()?.textContent).not.toContain("Starred");
+    expect(section()?.querySelector('[aria-expanded]')).toBeNull();
+  });
+
   it.each(["terminated", "process", "left"])("does not bypass the %s visibility restriction for a primary agent", async restriction => {
     fixture.agents = [{ id: "a-primary", name: "Primary", role: "general", status: restriction === "terminated" ? "terminated" : "idle", adapterType: restriction === "process" ? "process" : "paperclip_runner" }];
     fixture.primaryAgentId = "a-primary";

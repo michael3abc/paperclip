@@ -126,8 +126,9 @@ validated company membership supplying audit context. They never grant execution
 authority, change company capabilities or agent configuration, or rewrite canonical
 work records. Optional conversation guidance must retain the same action permissions.
 The Coordinator sidebar's Agents section includes the person's company-scoped
-primary agent alongside `ceo` and `pm` roles; preserve lifecycle, service-account
-and membership visibility restrictions regardless of primary selection.
+primary agent alongside `ceo` and `pm` roles and agents the person starred;
+preserve lifecycle, service-account
+and membership visibility restrictions regardless of primary selection or stars.
 Pin the primary agent first and sort the remaining agents alphabetically.
 Do not add a worker expansion control or change dispatch to implement this filter.
 
