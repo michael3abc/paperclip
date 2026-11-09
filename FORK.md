@@ -409,3 +409,16 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   exclusion list load. It gets no project attribution and no `needs input`, starts no
   full attention read, and excluded agents (such as momo) stay plain. PM rules and the
   classic sidebars are unchanged. Frontend only; no schema change.
+- Bridge interrupt handoff (2026-11-09): an explicit Agent Chat message that interrupts a
+  `ccpocket_bridge` turn whose unforced Stop stayed `requested` (the Bridge had not returned
+  the turn's result within the adapter's 30-second window) no longer waits for stop proof.
+  When both the historical and current adapters are `ccpocket_bridge` and the run records
+  its bridge and native session IDs, explicit continuation admits it as a same-session
+  handoff (`continuation.bridgeSessionHandoff`, only for the latest previous run). The
+  adapter re-interrupts that session, waits for the old turn to settle within its own run
+  timeout and delivers the message in the same session. When the successor finishes, a
+  valid `resultJson.bridgeHandoff.proof` (`ccpocket.bridge-stop-reverification.v1`)
+  acknowledges the predecessor through the same compare-and-set as re-verification
+  (`proof: bridge_handoff_settled`). Without that proof the predecessor stays `requested`.
+  Forced stops, missing session IDs, adapter mismatches and automatic recovery remain
+  blocked, and nothing is replayed (`4dbb3aadf`). No schema change.
