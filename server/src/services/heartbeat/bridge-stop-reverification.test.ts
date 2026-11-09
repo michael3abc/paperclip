@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { bridgeSessionStopAcknowledged } from "../explicit-native-continuation.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 import { createBridgeStopReverification, validBridgeStopProof } from "./bridge-stop-reverification.js";
 
 const BRIDGE = "bridge-session-1", NATIVE = "native-session-1", KEY = "a".repeat(64);
@@ -64,6 +65,19 @@ describe.skipIf(!support.supported)("bridge stop re-verification", () => {
       type: "heartbeat.run.status", payload: expect.objectContaining({ runId: f.run.id, status: "cancelled" }) }));
     // An acknowledged run is no longer a candidate.
     expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("skipped");
+  });
+
+  it("wakes deferred interrupt receipts when a stop is acknowledged, and not when it stays unverified", async () => {
+    const wakes: number[] = [];
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, () => { wakes.push(Date.now()); });
+    try {
+      const held = await seed();
+      expect(await harness(async () => ({ verified: false as const, reason: "busy" })).service.reconcile(held.run.id, held.company.id)).toBe("unverified");
+      expect(wakes).toHaveLength(0);
+      const f = await seed();
+      expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("acknowledged");
+      expect(wakes).toHaveLength(1);
+    } finally { unsubscribe(); }
   });
 
   it("keeps the hold when the bridge cannot confirm the stop and bounds attempts per interval", async () => {

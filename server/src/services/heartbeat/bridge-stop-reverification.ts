@@ -7,11 +7,12 @@ import { historicalAdapterType } from "../conversation-continuation.js";
 import { BRIDGE_SESSION_ADAPTER } from "../explicit-native-continuation.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { publishLiveEvent as publishLiveEventDefault } from "../live-events.js";
+import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 
 export const BRIDGE_STOP_REVERIFICATION_PROOF = "bridge_session_reverified";
 export const BRIDGE_STOP_REVERIFICATION_SCHEMA = "ccpocket.bridge-stop-reverification.v1";
 
-/** At most one adapter re-check per run per interval; at least one deferred-receipt sweep (30s). */
+/** At most one adapter re-check per run per interval. An acknowledged stop notifies deferred receipts. */
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -78,20 +79,25 @@ async function acknowledgeBridgeStop(
   options: { proofKind: string; at: Date; publishLiveEvent: typeof publishLiveEventDefault; extra?: Record<string, unknown> },
 ): Promise<Run | null> {
   const existing = parseObject(run.resultJson?.executionCancellation);
-  const acknowledged = await db.update(heartbeatRuns).set({
-    resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
-      executionCancellation: { ...existing, state: "acknowledged", forced: false,
-        acknowledgedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) },
-    })}::jsonb`,
-    updatedAt: options.at,
-  }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
-    eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, run.status), eq(heartbeatRuns.runtimeMode, "legacy"),
-    sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
-    sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
-    sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`,
-    sql`${heartbeatRuns.resultJson}->>'bridgeSessionId' = ${proof.bridgeSessionId}`,
-    sql`${heartbeatRuns.resultJson}->>'nativeSessionId' = ${proof.nativeSessionId}`))
-    .returning();
+  // Opening this gate must wake the deferred interrupt receipts in the same
+  // commit; a stop acknowledged without a signal used to strand them.
+  const acknowledged = await db.transaction(async tx => {
+    await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
+    return tx.update(heartbeatRuns).set({
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+        executionCancellation: { ...existing, state: "acknowledged", forced: false,
+          acknowledgedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) },
+      })}::jsonb`,
+      updatedAt: options.at,
+    }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, run.status), eq(heartbeatRuns.runtimeMode, "legacy"),
+      sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
+      sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
+      sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`,
+      sql`${heartbeatRuns.resultJson}->>'bridgeSessionId' = ${proof.bridgeSessionId}`,
+      sql`${heartbeatRuns.resultJson}->>'nativeSessionId' = ${proof.nativeSessionId}`))
+      .returning();
+  });
   const stopped = acknowledged[0] ?? null;
   if (stopped) {
     options.publishLiveEvent({
