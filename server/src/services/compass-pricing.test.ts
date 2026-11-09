@@ -24,6 +24,15 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
   it("uses the Opus 5.5 rates for compass-opus5.5", () => {
     expect(priceCompassReceipt({ ...claude, model: "compass-opus5.5" }).costUsdExact).toBe("0.270291600");
   });
+  it("prices the [1m] context-window selector at its base 5.5 card and keeps the model id", () => {
+    const priced = priceCompassReceipt({ ...claude, model: "compass-opus5.5[1m]" });
+    expect(priced.costUsdExact).toBe("0.270291600");
+    expect(priced.model).toBe("compass-opus5.5[1m]");
+    expect(priced.pricingProvenance?.evidence).toContain("1M context window");
+    expect(priceCompassReceipt({ ...claude, model: "compass-sonnet5.5[1M]" }).costUsdExact).toBe("0.135145800");
+    expect(priceCompassReceipt({ ...claude, model: "compass-opus5.5" }).pricingProvenance?.evidence)
+      .not.toContain("1M context window");
+  });
   it("prices a GPT-backed model, separating cache writes from plain input", () => {
     // 900k*2 + 400k*0.1 + 100k*2.5 + 50k*10 per million tokens
     expect(priceCompassReceipt(codex).costUsdExact).toBe("2.590000000");
@@ -54,6 +63,7 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
   it.each([
     { complete: false }, { billingType: "unknown" }, { billingType: "credits" }, { billingType: "subscription_included" },
     { biller: "anthropic" }, { biller: "unknown" }, { model: "compass-fable5" }, { model: "compass-test" },
+    { model: "compass-fable5[1m]" }, { model: "[1m]" }, { model: "compass-opus5.5[1m]x" },
     { model: "claude-sonnet-5" }, { model: "constructor" }, { model: undefined },
     { usageBasis: "session_cumulative" }, { costUsd: 0.12 }, { costUsd: 0 }, { costUsdExact: "0.12" }, { cacheAdjustedCostUsd: 0.12 },
     { pricingContext: { serviceTier: "priority" } }, { pricingContext: { contextTier: "long" } },
@@ -70,6 +80,7 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
   it.each([
     { pricingContext: { serviceTier: "flex" } }, { pricingContext: { serviceTier: "batch" } },
     { usage: { inputTokens: 5, cachedInputTokens: 0, cacheWriteTokens: 6, outputTokens: 1 } },
+    { model: "compass-6.1-sol[1m]" }, { model: "compass-6-astra[1m]" },
   ] as Partial<AdapterUsageCheckpoint>[])("preserves GPT receipts it cannot price exactly: %j", override => {
     const original = { ...codex, ...override };
     expect(priceCompassReceipt(original)).toBe(original);
