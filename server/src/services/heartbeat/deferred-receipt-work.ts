@@ -6,7 +6,16 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 
-type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
+type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean; attempts?: number };
+/**
+ * Re-check cadence for an interrupt whose cancelled bridge run still awaits stop re-verification.
+ * That gate opens on external Bridge evidence, which commits no notification until something re-checks it.
+ */
+export const DEFERRED_INTERRUPT_RECHECK_MS = 30_000;
+export const DEFERRED_INTERRUPT_RECHECK_MAX_MS = 600_000;
+export function deferredInterruptRecheckDelay(attempts: number) {
+  return Math.min(DEFERRED_INTERRUPT_RECHECK_MAX_MS, DEFERRED_INTERRUPT_RECHECK_MS * 2 ** Math.min(attempts, 10));
+}
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
   onError(error: unknown): void;
@@ -53,6 +62,7 @@ export function registerDeferredReceiptWork(
           claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
           delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
             or ${agentWakeupRequests.payload}->'executionWait' is not null`,
+          interrupt: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
             where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
               and r.runtime_mode = 'legacy' and r.status = 'cancelled'
@@ -85,7 +95,9 @@ export function registerDeferredReceiptWork(
         return { rows: rows.map(row => {
           const deadline = kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
             : kind === "native" && row.error ? row.updatedAt.getTime() + 30_000
-            : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
+            // The owner-only interrupt resume waits the same 30s grace even
+            // after its run was cancelled; checking earlier drops the receipt.
+            : kind === "deferred" && row.delayed && (!row.interruptedLegacy || row.interrupt) ? row.updatedAt.getTime() + 30_000
             : null;
           const immediate = deadline === null || deadline <= now;
           return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate };
@@ -106,8 +118,8 @@ export function registerDeferredReceiptWork(
           const due = kind === "native" && current.status === "claimed" && current.claimedAt
             ? current.claimedAt.getTime() + 60_000
             : kind === "native" && current.status === "queued" && current.error ? current.updatedAt.getTime() + 30_000
-              : kind === "deferred" && current.status === "deferred_issue_execution" && !current.interruptedLegacy
-                && (current.payload?.queuedCommentInterrupt || current.payload?.executionWait)
+              : kind === "deferred" && current.status === "deferred_issue_execution"
+                && (current.payload?.queuedCommentInterrupt || !current.interruptedLegacy && current.payload?.executionWait)
                 ? current.updatedAt.getTime() + 30_000 : null;
           if (due !== null && due > Date.now()) return { ...entry, dueAt: due, immediate: false };
         }
@@ -125,6 +137,26 @@ export function registerDeferredReceiptWork(
           catch (error) { failed(error); }
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
+        if (kind === "deferred") {
+          // A cancelled bridge run whose unforced stop is still `requested`
+          // holds this exact receipt until the Bridge re-verifies the stop.
+          // That evidence is external and only a later sweep asks for it, so
+          // re-check on a bounded backoff instead of waiting for an unrelated
+          // write. Every other closed gate stays notification-driven and quiet.
+          const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+            .where(and(eq(agentWakeupRequests.companyId, entry.companyId), eq(agentWakeupRequests.id, entry.id),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`exists (select 1 from heartbeat_runs r
+                where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
+                  and r.runtime_mode = 'legacy' and r.status = 'cancelled'
+                  and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text
+                  and r.result_json->'executionCancellation'->>'state' = 'requested'
+                  and coalesce(r.result_json->'executionCancellation'->>'forced', 'false') <> 'true')`));
+          if (pending) {
+            const attempts = entry.attempts ?? 0;
+            return { ...entry, dueAt: Date.now() + deferredInterruptRecheckDelay(attempts), immediate: false, attempts: attempts + 1 };
+          }
+        }
         return next === null ? null : { ...entry, dueAt: next, immediate: false };
       },
     }, canRun);
