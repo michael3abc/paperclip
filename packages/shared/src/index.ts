@@ -2090,6 +2090,7 @@ export {
   issueWorkProductReviewStateSchema,
   COMPANY_ARTIFACTS_DEFAULT_LIMIT,
   COMPANY_ARTIFACTS_MAX_LIMIT,
+  COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID,
   COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,
   companyArtifactGroupBySchema,
   companyArtifactGroupSchema,

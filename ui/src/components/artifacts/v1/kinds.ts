@@ -127,10 +127,10 @@ export function mediaKindOf(subject: ArtifactSubject): MediaKind {
 }
 
 const KIND_BY_EXT: Record<string, ArtifactKind> = {
-  md: "document", markdown: "document", txt: "document",
+  md: "document", markdown: "document", txt: "document", doc: "document", docx: "document", docm: "document", odt: "document",
   pdf: "pdf",
-  ppt: "slides", pptx: "slides", key: "slides",
-  csv: "sheet", tsv: "sheet", xls: "sheet", xlsx: "sheet", numbers: "sheet",
+  ppt: "slides", pptx: "slides", pptm: "slides", key: "slides", odp: "slides",
+  csv: "sheet", tsv: "sheet", xls: "sheet", xlsx: "sheet", xlsm: "sheet", ods: "sheet", numbers: "sheet",
   zip: "archive", tar: "archive", gz: "archive", tgz: "archive", "7z": "archive", rar: "archive",
   html: "code", htm: "code", css: "code", js: "code", ts: "code", tsx: "code", jsx: "code", json: "code", xml: "code", yml: "code", yaml: "code", py: "code", rb: "code", go: "code", rs: "code", sh: "code", sql: "code",
 };

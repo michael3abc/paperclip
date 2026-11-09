@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowLeft, Layers, Package } from "lucide-react";
+import { ArrowLeft, FolderOpen, Layers, Package } from "lucide-react";
 import type { To } from "react-router-dom";
 import {
   artifactsApi,
   type ArtifactGroupBy,
   type ArtifactKindFilter,
+  type CompanyArtifactGroup,
 } from "../api/artifacts";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -24,10 +25,25 @@ const ARTIFACTS_PAGE_SIZE = 30;
 const SEARCH_DEBOUNCE_MS = 250;
 
 const KIND_VALUES = new Set(ARTIFACT_KIND_FILTERS.map((filter) => filter.value));
+/** The page opens on one folder per project; the URL omits this default. */
+const DEFAULT_GROUP_BY: ArtifactGroupBy = "project";
+const NO_PROJECT_GROUP_ID = "none";
 
-function parseGroupBy(value: string | null): ArtifactGroupBy {
-  if (value === "none" || value === "task" || value === "parent_task") return value;
-  return "task";
+function parseGroupBy(value: string | null, hasGroupIssueId: boolean): ArtifactGroupBy {
+  if (value === "none" || value === "task" || value === "parent_task" || value === "project") return value;
+  // Links saved while Task was the default open a stack without naming the grouping.
+  return hasGroupIssueId ? "task" : DEFAULT_GROUP_BY;
+}
+
+function setGroupByParam(next: URLSearchParams, value: ArtifactGroupBy) {
+  if (value === DEFAULT_GROUP_BY) next.delete("groupBy");
+  else next.set("groupBy", value);
+}
+
+/** The URL key that opens a group: a project folder or a task stack. */
+function groupKeyOf(group: CompanyArtifactGroup): string {
+  if (group.groupBy === "project") return group.project?.id ?? NO_PROJECT_GROUP_ID;
+  return group.issue?.id ?? "";
 }
 
 function parseKind(value: string | null): ArtifactKindFilter {
@@ -43,18 +59,21 @@ export function Artifacts() {
   const { enabled: v1 } = useArtifactsV1Enabled();
   const kind = parseKind(searchParams.get("kind"));
   const query = searchParams.get("q") ?? "";
-  const urlGroupBy = parseGroupBy(searchParams.get("groupBy"));
+  const urlGroupBy = parseGroupBy(searchParams.get("groupBy"), searchParams.has("groupIssueId"));
   // Artifacts V1 has one row of views: a kind is always a flat view, so a kind in the URL
   // overrides a grouping there — the view row then says what the page shows.
   const groupBy: ArtifactGroupBy = v1 && kind !== "all" ? "none" : urlGroupBy;
-  const groupIssueId = searchParams.get("groupIssueId") ?? undefined;
+  const byProject = groupBy === "project";
+  const groupIssueId = !byProject ? searchParams.get("groupIssueId") ?? undefined : undefined;
+  const groupProjectId = byProject ? searchParams.get("groupProjectId") ?? undefined : undefined;
+  const selectedGroupKey = byProject ? groupProjectId : groupIssueId;
 
   const [draftQuery, setDraftQuery] = useState(query);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   const grouping = groupBy !== "none";
-  const viewingStackList = grouping && !groupIssueId;
-  const viewingSelectedStack = grouping && !!groupIssueId;
+  const viewingStackList = grouping && !selectedGroupKey;
+  const viewingSelectedStack = grouping && !!selectedGroupKey;
 
   // Keep the search box in sync when the committed query changes from outside
   // (e.g. back/forward navigation or a shared URL), without clobbering in-flight
@@ -102,14 +121,15 @@ export function Artifacts() {
     [updateParams],
   );
 
-  // Artifacts V1: one row of views. Tasks is the task grouping; every other
-  // view is the flat list, filtered by kind. Either way the open stack closes.
+  // Artifacts V1: one row of views. Projects is the project grouping; every other
+  // view is the flat list, filtered by kind. Either way the open folder closes.
   const selectV1View = useCallback(
     (view: ArtifactsV1View) => {
       updateParams((next) => {
         next.delete("groupIssueId");
-        if (view === "tasks") {
-          next.delete("groupBy");
+        next.delete("groupProjectId");
+        if (view === "projects" || view === "tasks") {
+          setGroupByParam(next, view === "projects" ? "project" : "task");
           next.delete("kind");
           return;
         }
@@ -126,9 +146,9 @@ export function Artifacts() {
       updateParams((next) => {
         // Switching the grouping mode always returns to the stack list.
         next.delete("groupIssueId");
-        if (value === "task") next.delete("groupBy");
-        else next.set("groupBy", value);
-        // Artifacts V1: a grouping is the Tasks view, which carries no kind filter.
+        next.delete("groupProjectId");
+        setGroupByParam(next, value);
+        // Artifacts V1: a grouping is the Projects (or Tasks) view, which carries no kind filter.
         if (v1 && value !== "none") next.delete("kind");
       });
     },
@@ -149,11 +169,10 @@ export function Artifacts() {
   );
 
   const stackTo = useCallback(
-    (issueId: string): To =>
+    (group: CompanyArtifactGroup): To =>
       buildTo((next) => {
-        if (groupBy === "task") next.delete("groupBy");
-        else if (groupBy !== "none") next.set("groupBy", groupBy);
-        next.set("groupIssueId", issueId);
+        if (groupBy !== "none") setGroupByParam(next, groupBy);
+        next.set(group.groupBy === "project" ? "groupProjectId" : "groupIssueId", groupKeyOf(group));
       }),
     [buildTo, groupBy],
   );
@@ -161,8 +180,9 @@ export function Artifacts() {
   const backToStacksTo = useMemo<To>(
     () =>
       buildTo((next) => {
-        if (groupBy === "task") next.delete("groupBy");
+        if (groupBy === DEFAULT_GROUP_BY) next.delete("groupBy");
         next.delete("groupIssueId");
+        next.delete("groupProjectId");
       }),
     [buildTo, groupBy],
   );
@@ -176,13 +196,14 @@ export function Artifacts() {
     fetchNextPage,
     error,
   } = useInfiniteQuery({
-    queryKey: queryKeys.artifacts.list(selectedCompanyId!, kind, query, groupBy, groupIssueId, true),
+    queryKey: queryKeys.artifacts.list(selectedCompanyId!, kind, query, groupBy, groupIssueId, true, groupProjectId),
     queryFn: ({ pageParam }) =>
       artifactsApi.list(selectedCompanyId!, {
         kind,
         q: query || undefined,
         groupBy,
         groupIssueId,
+        ...(groupProjectId ? { groupProjectId } : {}),
         mediaOnly: true,
         limit: ARTIFACTS_PAGE_SIZE,
         cursor: pageParam,
@@ -219,7 +240,7 @@ export function Artifacts() {
     if (viewingSelectedStack && selectedGroup) {
       setBreadcrumbs([
         { label: "Artifacts", href: "/artifacts" },
-        { label: `${selectedGroup.issue.identifier} · ${selectedGroup.title}` },
+        { label: selectedGroup.issue ? `${selectedGroup.issue.identifier} · ${selectedGroup.title}` : selectedGroup.title },
       ]);
     } else {
       setBreadcrumbs([{ label: "Artifacts" }]);
@@ -235,14 +256,16 @@ export function Artifacts() {
 
   const emptyMessage = showGroupCards
     ? searching
-      ? "No artifact stacks match this search."
-      : "No media artifact stacks yet."
+      ? byProject ? "No project folders match this search." : "No artifact stacks match this search."
+      : byProject
+        ? "No media artifacts in any project yet. Images, videos, audio, PDF and Office files attached to issues will appear here."
+        : "No media artifact stacks yet."
     : searching
       ? "No artifacts match this search."
       : viewingSelectedStack
-        ? "No artifacts in this stack match the current filters."
+        ? byProject ? "No media artifacts in this project match the current filters." : "No artifacts in this stack match the current filters."
         : kind === "all"
-          ? "No media artifacts yet. Images, videos, audio and PDF attached to issues will appear here."
+          ? "No media artifacts yet. Images, videos, audio, PDF and Office files attached to issues will appear here."
           : "No artifacts of this type yet.";
 
   return (
@@ -265,12 +288,19 @@ export function Artifacts() {
             className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            All stacks
+            {byProject ? "All projects" : "All stacks"}
           </Link>
           {selectedGroup ? (
             <span className="truncate text-muted-foreground">
-              <span className="text-foreground/80">{selectedGroup.issue.identifier}</span>{" "}
+              {selectedGroup.issue ? (
+                <>
+                  <span className="text-foreground/80">{selectedGroup.issue.identifier}</span>{" "}
+                </>
+              ) : (
+                <FolderOpen className="mr-1 inline h-3.5 w-3.5 align-text-bottom" aria-hidden="true" />
+              )}
               {selectedGroup.title}
+              {selectedGroup.issue ? null : ` · ${selectedGroup.count} ${selectedGroup.count === 1 ? "file" : "files"}`}
             </span>
           ) : null}
         </div>
@@ -284,22 +314,26 @@ export function Artifacts() {
         <EmptyState icon={showGroupCards ? Layers : Package} message={emptyMessage} />
       ) : v1 ? (
         <>
-          {/* Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): a task with several artifacts is a stack
-              whose newest artifact is the first page; a task with one, and every flat view, is a single tile. */}
+          {/* Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): a project folder, or a task with several
+              artifacts, is a stack whose newest artifact is the first page; a task with one, and every flat view,
+              is a single tile. */}
           <ArtifactTileGrid>
             {showGroupCards
               ? groups.map((group) => {
                   const preview = group.previewArtifacts[0];
-                  if (group.count > 1 || !preview) {
+                  const folder = group.groupBy === "project";
+                  if (folder || group.count > 1 || !preview) {
+                    const identifier = group.issue?.identifier ?? null;
                     return (
                       <ArtifactStackTile
                         key={group.id}
-                        identifier={group.issue.identifier}
+                        identifier={identifier}
                         title={group.title}
                         count={group.count}
                         updatedAt={group.updatedAt}
-                        front={preview ? subjectFromCompanyArtifact(preview) : { kind: "file", title: group.title, updatedAt: group.updatedAt, taskIdentifier: group.issue.identifier }}
-                        to={stackTo(group.issue.id)}
+                        front={preview ? subjectFromCompanyArtifact(preview) : { kind: "file", title: group.title, updatedAt: group.updatedAt, taskIdentifier: identifier }}
+                        to={stackTo(group)}
+                        testId={folder ? "artifact-v1-folder-tile" : undefined}
                       />
                     );
                   }
@@ -318,7 +352,7 @@ export function Artifacts() {
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
             {showGroupCards
               ? groups.map((group) => (
-                  <ArtifactGroupCard key={group.id} group={group} to={stackTo(group.issue.id)} />
+                  <ArtifactGroupCard key={group.id} group={group} to={stackTo(group)} />
                 ))
               : artifacts.map((artifact) => (
                   <ArtifactCard key={`${artifact.source}:${artifact.id}`} artifact={artifact} />

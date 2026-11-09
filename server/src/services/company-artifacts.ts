@@ -18,12 +18,14 @@ import {
 import {
   attachmentArtifactWorkProductMetadataSchema,
   COMPANY_ARTIFACTS_MAX_LIMIT,
+  COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID,
   companyArtifactsQuerySchema,
   SYSTEM_ISSUE_DOCUMENT_KEYS,
   type CompanyArtifact,
   type CompanyArtifactGroup,
   type CompanyArtifactGroupBy,
   type CompanyArtifactMediaKind,
+  type CompanyArtifactProjectSummary,
   type CompanyArtifactsQuery,
   type CompanyArtifactsResponse,
 } from "@paperclipai/shared";
@@ -41,6 +43,7 @@ type ArtifactCursor = {
 };
 
 type ArtifactGroupBy = Exclude<CompanyArtifactGroupBy, "none">;
+type IssueArtifactGroupBy = Exclude<ArtifactGroupBy, "project">;
 
 type IssueGroupingRow = {
   id: string;
@@ -133,11 +136,34 @@ function contentTypeKindCondition(contentTypeExpression: SQL<string>, kind: Comp
   return undefined;
 }
 
-const GENERIC_CONTENT_TYPES = ["application/octet-stream", "binary/octet-stream"];
+const GENERIC_CONTENT_TYPES = ["application/octet-stream", "binary/octet-stream", "application/x-binary"];
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg", "heic", "heif", "tif", "tiff"];
 const VIDEO_EXTENSIONS = ["mp4", "m4v", "mov", "webm", "mkv", "avi"];
 const AUDIO_EXTENSIONS = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "oga", "opus", "aif", "aiff"];
 const PDF_EXTENSIONS = ["pdf"];
+const OFFICE_EXTENSIONS = [
+  "pptx", "pptm", "ppt", "key", "odp",
+  "docx", "docm", "doc", "odt",
+  "xlsx", "xlsm", "xls", "ods",
+];
+/** Presentations, word-processing documents and spreadsheets (OOXML, legacy Office, OpenDocument, Keynote). */
+const OFFICE_CONTENT_TYPES = ["application/msword", "application/vnd.apple.keynote", "application/x-iwork-keynote-sffkey"];
+const OFFICE_CONTENT_TYPE_PREFIXES = [
+  "application/vnd.openxmlformats-officedocument.presentationml.",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.ms-word",
+  "application/vnd.ms-excel",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+];
+
+function isOfficeContentType(normalized: string) {
+  return OFFICE_CONTENT_TYPES.includes(normalized)
+    || OFFICE_CONTENT_TYPE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
 
 function extensionOf(filename: string | null | undefined) {
   return filename?.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? null;
@@ -149,7 +175,8 @@ function isGenericContentType(contentType: string | null | undefined) {
 }
 
 /**
- * Media-only view: images, videos, audio and PDF. The content type decides first;
+ * Media-only view: images, videos, audio, PDF and Office files (slides, documents,
+ * spreadsheets). The content type decides first;
  * the file extension is consulted only when the type is missing or generic, so a
  * JSON/Markdown file named like media is never admitted.
  */
@@ -160,13 +187,13 @@ function classifyMediaOnlyKind(
   const normalized = (contentType ?? "").trim().toLowerCase();
   if (normalized.startsWith("image/")) return "image";
   if (normalized.startsWith("video/")) return "video";
-  if (normalized.startsWith("audio/") || normalized === "application/pdf") return "file";
+  if (normalized.startsWith("audio/") || normalized === "application/pdf" || isOfficeContentType(normalized)) return "file";
   if (!isGenericContentType(normalized)) return null;
   const ext = extensionOf(filename);
   if (!ext) return null;
   if (IMAGE_EXTENSIONS.includes(ext)) return "image";
   if (VIDEO_EXTENSIONS.includes(ext)) return "video";
-  if (AUDIO_EXTENSIONS.includes(ext) || PDF_EXTENSIONS.includes(ext)) return "file";
+  if (AUDIO_EXTENSIONS.includes(ext) || PDF_EXTENSIONS.includes(ext) || OFFICE_EXTENSIONS.includes(ext)) return "file";
   return null;
 }
 
@@ -182,16 +209,24 @@ function mediaOnlyCondition(
   if (kind === "text" || kind === "document") return sql`false`;
   const imageType = sql`${contentTypeExpression} ILIKE 'image/%'`;
   const videoType = sql`${contentTypeExpression} ILIKE 'video/%'`;
-  const audioPdfType = sql`(${contentTypeExpression} ILIKE 'audio/%' OR lower(${contentTypeExpression}) = 'application/pdf')`;
-  const generic = sql`(${contentTypeExpression} = '' OR lower(${contentTypeExpression}) IN ('application/octet-stream', 'binary/octet-stream'))`;
+  const lowerType = sql`lower(${contentTypeExpression})`;
+  const officeType = sql.join(
+    [
+      sql`${lowerType} IN (${sql.join(OFFICE_CONTENT_TYPES.map((type) => sql`${type}`), sql`, `)})`,
+      ...OFFICE_CONTENT_TYPE_PREFIXES.map((prefix) => sql`starts_with(${lowerType}, ${prefix})`),
+    ],
+    sql` OR `,
+  );
+  const fileType = sql`(${contentTypeExpression} ILIKE 'audio/%' OR ${lowerType} = 'application/pdf' OR ${officeType})`;
+  const generic = sql`(${contentTypeExpression} = '' OR ${lowerType} IN (${sql.join(GENERIC_CONTENT_TYPES.map((type) => sql`${type}`), sql`, `)}))`;
   const ext = (extensions: string[]) => sql`(${generic} AND ${filenameExpression} ~* ${extensionPattern(extensions)})`;
   const image = sql`(${imageType} OR ${ext(IMAGE_EXTENSIONS)})`;
   const video = sql`(${videoType} OR ${ext(VIDEO_EXTENSIONS)})`;
-  const audioPdf = sql`(${audioPdfType} OR ${ext([...AUDIO_EXTENSIONS, ...PDF_EXTENSIONS])})`;
+  const file = sql`(${fileType} OR ${ext([...AUDIO_EXTENSIONS, ...PDF_EXTENSIONS, ...OFFICE_EXTENSIONS])})`;
   if (kind === "image") return image;
   if (kind === "video") return video;
-  if (kind === "file") return audioPdf;
-  return sql`(${image} OR ${video} OR ${audioPdf})`;
+  if (kind === "file") return file;
+  return sql`(${image} OR ${video} OR ${file})`;
 }
 
 function buildIssueHref(companyPrefix: string, identifier: string, anchor: string) {
@@ -202,11 +237,11 @@ function buildArtifactsGroupHref(
   companyPrefix: string,
   query: CompanyArtifactsQuery,
   groupBy: ArtifactGroupBy,
-  groupIssueId: string,
+  groupKey: string,
 ) {
   const params = new URLSearchParams();
   params.set("groupBy", groupBy);
-  params.set("groupIssueId", groupIssueId);
+  params.set(groupBy === "project" ? "groupProjectId" : "groupIssueId", groupKey);
   if (query.kind !== "all") params.set("kind", query.kind);
   if (query.mediaOnly) params.set("mediaOnly", "true");
   if (query.projectId) params.set("projectId", query.projectId);
@@ -307,14 +342,14 @@ function resolveRootIssueId(issueId: string, issueRows: Map<string, IssueGroupin
   return current.id;
 }
 
-function resolveGroupIssueId(groupBy: ArtifactGroupBy, issueId: string, issueRows: Map<string, IssueGroupingRow>) {
+function resolveGroupIssueId(groupBy: IssueArtifactGroupBy, issueId: string, issueRows: Map<string, IssueGroupingRow>) {
   return groupBy === "task" ? issueId : resolveRootIssueId(issueId, issueRows);
 }
 
 function emptyGroup(input: {
   companyPrefix: string;
   query: CompanyArtifactsQuery;
-  groupBy: ArtifactGroupBy;
+  groupBy: IssueArtifactGroupBy;
   issue: IssueGroupingRow;
 }): CompanyArtifactGroup {
   const summary = getIssueSummary(input.issue);
@@ -331,11 +366,83 @@ function emptyGroup(input: {
   };
 }
 
+function sortGroups(groups: Iterable<CompanyArtifactGroup>) {
+  return [...groups].sort((a, b) => {
+    const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    if (dateDiff !== 0) return dateDiff;
+    return b.id.localeCompare(a.id);
+  });
+}
+
+function addArtifactToGroup(group: CompanyArtifactGroup, artifact: CompanyArtifact) {
+  group.count += 1;
+  if (!group.mediaKinds.includes(artifact.mediaKind)) {
+    group.mediaKinds.push(artifact.mediaKind);
+  }
+  if (group.previewArtifacts.length < GROUP_PREVIEW_ARTIFACT_LIMIT) {
+    group.previewArtifacts.push(artifact);
+  }
+  if (Date.parse(artifact.updatedAt) > Date.parse(group.updatedAt)) {
+    group.updatedAt = artifact.updatedAt;
+  }
+}
+
+const NO_PROJECT_GROUP_TITLE = "No project";
+
+function projectGroupKey(project: CompanyArtifactProjectSummary | null) {
+  return project?.id ?? COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID;
+}
+
+function emptyProjectGroup(input: {
+  companyPrefix: string;
+  query: CompanyArtifactsQuery;
+  project: CompanyArtifactProjectSummary | null;
+  updatedAt: string;
+}): CompanyArtifactGroup {
+  const key = projectGroupKey(input.project);
+  return {
+    id: `project:${key}`,
+    groupBy: "project",
+    issue: null,
+    project: input.project,
+    title: input.project?.name ?? NO_PROJECT_GROUP_TITLE,
+    count: 0,
+    mediaKinds: [],
+    previewArtifacts: [],
+    updatedAt: input.updatedAt,
+    href: buildArtifactsGroupHref(input.companyPrefix, input.query, "project", key),
+  };
+}
+
+/** One folder per project (and one for tasks without a project), newest activity first. */
+function buildProjectArtifactGroups(input: {
+  artifacts: CompanyArtifact[];
+  companyPrefix: string;
+  query: CompanyArtifactsQuery;
+}) {
+  const groups = new Map<string, CompanyArtifactGroup>();
+  for (const artifact of input.artifacts) {
+    const key = projectGroupKey(artifact.project);
+    let group = groups.get(key);
+    if (!group) {
+      group = emptyProjectGroup({
+        companyPrefix: input.companyPrefix,
+        query: input.query,
+        project: artifact.project,
+        updatedAt: artifact.updatedAt,
+      });
+      groups.set(key, group);
+    }
+    addArtifactToGroup(group, artifact);
+  }
+  return sortGroups(groups.values());
+}
+
 function buildArtifactGroups(input: {
   artifacts: CompanyArtifact[];
   companyPrefix: string;
   query: CompanyArtifactsQuery;
-  groupBy: ArtifactGroupBy;
+  groupBy: IssueArtifactGroupBy;
   issueRows: Map<string, IssueGroupingRow>;
 }) {
   const groups = new Map<string, CompanyArtifactGroup>();
@@ -358,24 +465,10 @@ function buildArtifactGroups(input: {
       issue: groupIssue,
     });
     if (!existing) groups.set(groupId, group);
-
-    group.count += 1;
-    if (!group.mediaKinds.includes(artifact.mediaKind)) {
-      group.mediaKinds.push(artifact.mediaKind);
-    }
-    if (group.previewArtifacts.length < GROUP_PREVIEW_ARTIFACT_LIMIT) {
-      group.previewArtifacts.push(artifact);
-    }
-    if (Date.parse(artifact.updatedAt) > Date.parse(group.updatedAt)) {
-      group.updatedAt = artifact.updatedAt;
-    }
+    addArtifactToGroup(group, artifact);
   }
 
-  return [...groups.values()].sort((a, b) => {
-    const dateDiff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-    if (dateDiff !== 0) return dateDiff;
-    return b.id.localeCompare(a.id);
-  });
+  return sortGroups(groups.values());
 }
 
 export function companyArtifactsService(db: Db, storage?: StorageService) {
@@ -410,6 +503,15 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.archivedAt} is not null)`,
         ...(options.issueConditions ?? []),
       ];
+      // The selected stack or folder, applied in SQL to every source so its pages are complete.
+      const selectedScopeCondition: SQL | undefined = groupBy === "task" && query.groupIssueId
+        ? eq(issues.id, query.groupIssueId)
+        : groupBy === "project" && query.groupProjectId
+          ? query.groupProjectId === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID
+            // Matches artifacts listed with `project: null`: no project, or none in this company.
+            ? sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.companyId} = ${issues.companyId})`
+            : eq(issues.projectId, query.groupProjectId)
+          : undefined;
       const artifacts: CompanyArtifact[] = [];
       const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
@@ -438,7 +540,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           : sql<Date>`${documents.updatedAt}`;
         const documentCursor = groupBy ? undefined : cursorCondition(documentSortDate, documentArtifactId, cursor);
         if (documentCursor) documentConditions.push(documentCursor);
-        if (groupBy === "task" && query.groupIssueId) documentConditions.push(eq(issues.id, query.groupIssueId));
+        if (selectedScopeCondition) documentConditions.push(selectedScopeCondition);
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
         if (query.agentId) documentConditions.push(sql`coalesce(${createdAgent.id}, ${updatedAgent.id}) = ${query.agentId}`);
         if (q) {
@@ -564,10 +666,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           workProductConditions.push(attachmentBacked);
         }
         if (workProductCursor) workProductConditions.push(workProductCursor);
-        if (groupBy === "task" && query.groupIssueId) {
-          const selectedIssueCondition = eq(issues.id, query.groupIssueId);
-          workProductBaseConditions.push(selectedIssueCondition);
-          workProductConditions.push(selectedIssueCondition);
+        if (selectedScopeCondition) {
+          workProductBaseConditions.push(selectedScopeCondition);
+          workProductConditions.push(selectedScopeCondition);
         }
         if (workProductKind) {
           workProductBaseConditions.push(workProductKind);
@@ -713,7 +814,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           )
           : contentTypeKindCondition(sql<string>`${assets.contentType}`, query.kind);
         if (attachmentCursor) attachmentConditions.push(attachmentCursor);
-        if (groupBy === "task" && query.groupIssueId) attachmentConditions.push(eq(issues.id, query.groupIssueId));
+        if (selectedScopeCondition) attachmentConditions.push(selectedScopeCondition);
         if (attachmentKind) attachmentConditions.push(attachmentKind);
         if (query.projectId) attachmentConditions.push(eq(issues.projectId, query.projectId));
         if (query.agentId) attachmentConditions.push(eq(attachmentAgent.id, query.agentId));
@@ -827,6 +928,42 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         return { artifacts: page, nextCursor };
       }
 
+      if (groupBy === "project") {
+        const groups = buildProjectArtifactGroups({ artifacts: sorted, companyPrefix: company.issuePrefix, query });
+        if (!query.groupProjectId) {
+          const { page, nextCursor } = pageByCursor(groups, query.limit, cursor);
+          return { artifacts: [], groups: page, nextCursor };
+        }
+
+        let selectedGroup = groups.find((group) => projectGroupKey(group.project ?? null) === query.groupProjectId) ?? null;
+        if (!selectedGroup) {
+          if (query.groupProjectId === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID) {
+            selectedGroup = emptyProjectGroup({
+              companyPrefix: company.issuePrefix,
+              query,
+              project: null,
+              updatedAt: new Date(0).toISOString(),
+            });
+          } else {
+            // An empty folder still names its project; a foreign or archived project is not found.
+            const project = await db
+              .select({ id: projects.id, name: projects.name, updatedAt: projects.updatedAt })
+              .from(projects)
+              .where(and(eq(projects.id, query.groupProjectId), eq(projects.companyId, companyId), isNull(projects.archivedAt)))
+              .then((rows) => rows[0] ?? null);
+            if (!project) return { artifacts: [], selectedGroup: null, nextCursor: null };
+            selectedGroup = emptyProjectGroup({
+              companyPrefix: company.issuePrefix,
+              query,
+              project: { id: project.id, name: project.name },
+              updatedAt: project.updatedAt.toISOString(),
+            });
+          }
+        }
+        const { page, nextCursor } = pageByCursor(sorted, query.limit, cursor);
+        return { artifacts: page, selectedGroup, nextCursor };
+      }
+
       const issueSeedIds = new Set(artifacts.map((artifact) => artifact.issue.id));
       if (query.groupIssueId) issueSeedIds.add(query.groupIssueId);
       const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds);
@@ -845,7 +982,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         }
 
         const selectedGroupIssueId = resolveGroupIssueId(groupBy, selectedIssue.id, issueRows);
-        const selectedGroup = groups.find((group) => group.issue.id === selectedGroupIssueId)
+        const selectedGroup = groups.find((group) => group.issue?.id === selectedGroupIssueId)
           ?? emptyGroup({
             companyPrefix: company.issuePrefix,
             query,

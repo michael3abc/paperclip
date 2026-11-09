@@ -1,4 +1,4 @@
-import { Layers } from "lucide-react";
+import { Folder, Layers } from "lucide-react";
 import type { To } from "react-router-dom";
 import type { CompanyArtifactGroup } from "@/api/artifacts";
 import { Link } from "@/lib/router";
@@ -66,9 +66,13 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
 
         <div className="flex flex-1 flex-col gap-1 p-3">
           <div className="flex h-7 items-center gap-2">
-            <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
-              {group.issue.identifier}
-            </span>
+            {group.issue ? (
+              <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+                {group.issue.identifier}
+              </span>
+            ) : (
+              <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" data-testid="artifact-group-folder-icon" />
+            )}
             <h3
               className="min-w-0 flex-1 truncate text-sm font-medium leading-7 text-foreground/85"
               title={group.title}
