@@ -87,7 +87,7 @@ function acceptsExplicitUserTurn(adapterType: string): boolean {
 /** The bridge has no host PID. Its stop proof is the adapter's own receipt,
  * written only after the bridge confirmed the owned turn settled. A forced or
  * unconfirmed stop, or any other terminal state, retains the hold. */
-function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtimeMode" | "resultJson">): boolean {
+export function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtimeMode" | "resultJson">): boolean {
   if (run.runtimeMode !== "legacy" || !["cancelled", "timed_out"].includes(run.status)) return false;
   const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
   return cancellation?.state === "acknowledged" && cancellation.forced === false &&

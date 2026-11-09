@@ -113,6 +113,8 @@ export function normalizeIssueQueuedCommentQueue(
     executionWait: typeof wait?.reason === "string" && typeof wait?.message === "string"
       ? { reason: wait.reason, message: wait.message }
       : null,
+    preemptibleRunId:
+      typeof source?.preemptibleRunId === "string" ? source.preemptibleRunId : null,
   };
 }
 

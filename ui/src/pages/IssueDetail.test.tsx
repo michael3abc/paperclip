@@ -4895,6 +4895,41 @@ describe("IssueDetail", () => {
     }
   });
 
+  it("interrupts the agent's task turn only when the server reports the chat as preemptible", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_review", executionRunId: null, conversationAgentId: "agent-1", conversationUserId: "user-1",
+    }));
+    mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Answer me first" }));
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
+    const waiting = { state: "queued" as const, targetRunId: null, protocol: "legacy" as const, steeringDisposition: "unsupported" as const };
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue(waiting));
+
+    await act(async () => {
+      renderIssueView();
+    });
+    await flushReact();
+    await flushReact();
+    const send = async () => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onAdd: (body: string) => Promise<void> };
+      await act(async () => {
+        await props.onAdd("Answer me first");
+      });
+      await flushReact();
+      await flushReact();
+    };
+
+    // Waiting for capacity without a preemptible task turn keeps the ordinary queue.
+    await send();
+    expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({ ...waiting, preemptibleRunId: "run-task-1" }));
+    await send();
+    await vi.waitFor(() => expect(mockIssuesApi.interruptQueuedComments).toHaveBeenCalledWith("PAP-1", {
+      queueId: "wake-queue-1", revision: "queue-revision-1", targetRunId: "run-task-1",
+    }));
+    expect(mockIssuesApi.interruptQueuedComments).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["native", "legacy"] as const)("projects a native follow-up into the steering well before the post resolves with %s persisted mode", async (runtimeMode) => {
     const postedComment = createDeferred<IssueComment>();
     const activeRun = {
