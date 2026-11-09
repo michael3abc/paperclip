@@ -22,7 +22,10 @@ export const companyArtifactsQuerySchema = z.object({
   groupBy: companyArtifactGroupBySchema.optional().default("none"),
   groupIssueId: z.string().guid().optional(),
   /** With `groupBy=project`: a project id, or `none` for tasks without a project. */
-  groupProjectId: z.union([z.string().guid(), z.literal(COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID)]).optional(),
+  groupProjectId: z.union([
+    z.string().guid().transform((value) => value.toLowerCase()),
+    z.literal(COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID),
+  ]).optional(),
   starred: z.preprocess(
     (value) => value === "true" ? true : value === "false" ? false : value,
     z.boolean(),

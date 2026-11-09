@@ -458,7 +458,7 @@ describe("Artifacts page", () => {
       const back = container.querySelector('[data-testid="artifact-stack-back"]') as HTMLAnchorElement;
       expect(back.getAttribute("href")).toBe("/artifacts");
       expect(back.textContent).toContain("All projects");
-      expect(container.textContent).toContain("Launch site · 1 file");
+      expect(container.textContent).toContain("Launch site · 1 artifact");
       expect(container.textContent).toContain("deck.pptx");
       expect(breadcrumbState.setBreadcrumbs).toHaveBeenLastCalledWith([
         { label: "Artifacts", href: "/artifacts" },
@@ -478,7 +478,9 @@ describe("Artifacts page", () => {
 
     await waitForAssertion(() => {
       expect(artifactsApiMock.list).toHaveBeenCalledWith("company-1", expect.objectContaining({ groupBy: "task", groupIssueId: "issue-1" }));
-      expect(container.querySelector('[data-testid="artifact-stack-back"]')?.textContent).toContain("All stacks");
+      const back = container.querySelector('[data-testid="artifact-stack-back"]') as HTMLAnchorElement;
+      expect(back.textContent).toContain("All stacks");
+      expect(back.getAttribute("href")).toBe("/artifacts?groupBy=task");
     });
 
     flushSync(() => {

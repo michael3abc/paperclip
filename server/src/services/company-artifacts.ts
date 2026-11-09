@@ -433,7 +433,14 @@ function buildProjectArtifactGroups(input: {
       });
       groups.set(key, group);
     }
+    // A folder's cover is its newest picture or video when it has one, not just its newest file.
+    const isVisual = (candidate: CompanyArtifact) => candidate.mediaKind === "image" || candidate.mediaKind === "video";
+    const firstVisual = isVisual(artifact) && !group.previewArtifacts.some(isVisual);
     addArtifactToGroup(group, artifact);
+    if (firstVisual) {
+      group.previewArtifacts = [artifact, ...group.previewArtifacts.filter((preview) => preview.id !== artifact.id)]
+        .slice(0, GROUP_PREVIEW_ARTIFACT_LIMIT);
+    }
   }
   return sortGroups(groups.values());
 }
@@ -493,7 +500,6 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       }
 
       const fetchLimit = Math.min(query.limit + 1, COMPANY_ARTIFACTS_MAX_LIMIT + 1);
-      const sourceFetchLimit = groupBy ? GROUPED_ARTIFACT_FETCH_LIMIT : fetchLimit;
       const q = query.q ? `%${escapeLikePattern(query.q)}%` : null;
       const issueConditions: SQL[] = [
         isNull(issues.hiddenAt),
@@ -503,15 +509,42 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.archivedAt} is not null)`,
         ...(options.issueConditions ?? []),
       ];
-      // The selected stack or folder, applied in SQL to every source so its pages are complete.
-      const selectedScopeCondition: SQL | undefined = groupBy === "task" && query.groupIssueId
-        ? eq(issues.id, query.groupIssueId)
-        : groupBy === "project" && query.groupProjectId
-          ? query.groupProjectId === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID
-            // Matches artifacts listed with `project: null`: no project, or none in this company.
-            ? sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.companyId} = ${issues.companyId})`
-            : eq(issues.projectId, query.groupProjectId)
-          : undefined;
+      const projectScope = (projectKey: string): SQL =>
+        projectKey === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID
+          // Matches artifacts listed with `project: null`: no project, or none in this company.
+          ? sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.companyId} = ${issues.companyId})`
+          : eq(issues.projectId, projectKey);
+
+      /** Projects (or `none`) whose visible tasks carry any artifact source; folders are built per key. */
+      const loadArtifactProjectKeys = async () => {
+        const sourceExists: SQL[] = [
+          sql`exists (select 1 from ${issueAttachments} where ${issueAttachments.issueId} = ${issues.id} and ${issueAttachments.companyId} = ${issues.companyId} and ${issueAttachments.issueCommentId} is null)`,
+          sql`exists (select 1 from ${issueWorkProducts} where ${issueWorkProducts.issueId} = ${issues.id} and ${issueWorkProducts.companyId} = ${issues.companyId} and ${issueWorkProducts.type} = 'artifact' and ${issueWorkProducts.provider} = 'paperclip')`,
+        ];
+        if (!query.mediaOnly) {
+          sourceExists.push(sql`exists (select 1 from ${issueDocuments} where ${issueDocuments.issueId} = ${issues.id} and ${issueDocuments.companyId} = ${issues.companyId})`);
+        }
+        const rows = await db
+          .selectDistinct({ projectId: projects.id })
+          .from(issues)
+          .leftJoin(projects, and(eq(issues.projectId, projects.id), eq(projects.companyId, issues.companyId)))
+          .where(and(
+            eq(issues.companyId, companyId),
+            ...issueConditions,
+            ...(query.projectId ? [eq(issues.projectId, query.projectId)] : []),
+            or(...sourceExists)!,
+          ));
+        return rows.map((row) => row.projectId ?? COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID);
+      };
+
+      /**
+       * Reads every artifact source. `scope` (a selected stack or folder) is applied in SQL to
+       * every source. `paged` applies the cursor in SQL and reads one page per source, so the
+       * merged page is exact; otherwise each source reads up to GROUPED_ARTIFACT_FETCH_LIMIT
+       * rows for grouping and counting.
+       */
+      const collectArtifacts = async (scope: SQL | undefined, paged: boolean) => {
+      const sourceFetchLimit = paged ? fetchLimit : GROUPED_ARTIFACT_FETCH_LIMIT;
       const artifacts: CompanyArtifact[] = [];
       const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
@@ -538,9 +571,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const documentSortDate = query.starred
           ? sql<Date>`${documentMemberships.starredAt}`
           : sql<Date>`${documents.updatedAt}`;
-        const documentCursor = groupBy ? undefined : cursorCondition(documentSortDate, documentArtifactId, cursor);
+        const documentCursor = paged ? cursorCondition(documentSortDate, documentArtifactId, cursor) : undefined;
         if (documentCursor) documentConditions.push(documentCursor);
-        if (selectedScopeCondition) documentConditions.push(selectedScopeCondition);
+        if (scope) documentConditions.push(scope);
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
         if (query.agentId) documentConditions.push(sql`coalesce(${createdAgent.id}, ${updatedAgent.id}) = ${query.agentId}`);
         if (q) {
@@ -652,9 +685,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           ...issueConditions,
         ];
         const workProductConditions: SQL[] = [...workProductBaseConditions];
-        const workProductCursor = groupBy
-          ? undefined
-          : cursorCondition(sql<Date>`${issueWorkProducts.updatedAt}`, workProductArtifactId, cursor);
+        const workProductCursor = paged
+          ? cursorCondition(sql<Date>`${issueWorkProducts.updatedAt}`, workProductArtifactId, cursor)
+          : undefined;
         const workProductFilename = sql<string>`coalesce(${issueWorkProducts.metadata}->>'originalFilename', '')`;
         const workProductKind = query.mediaOnly
           ? mediaOnlyCondition(workProductContentType, workProductFilename, query.kind)
@@ -666,9 +699,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           workProductConditions.push(attachmentBacked);
         }
         if (workProductCursor) workProductConditions.push(workProductCursor);
-        if (selectedScopeCondition) {
-          workProductBaseConditions.push(selectedScopeCondition);
-          workProductConditions.push(selectedScopeCondition);
+        if (scope) {
+          workProductBaseConditions.push(scope);
+          workProductConditions.push(scope);
         }
         if (workProductKind) {
           workProductBaseConditions.push(workProductKind);
@@ -803,9 +836,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           isNotNull(assets.createdByAgentId),
           ...issueConditions,
         ];
-        const attachmentCursor = groupBy
-          ? undefined
-          : cursorCondition(sql<Date>`${issueAttachments.updatedAt}`, attachmentArtifactId, cursor);
+        const attachmentCursor = paged
+          ? cursorCondition(sql<Date>`${issueAttachments.updatedAt}`, attachmentArtifactId, cursor)
+          : undefined;
         const attachmentKind = query.mediaOnly
           ? mediaOnlyCondition(
             sql<string>`coalesce(${assets.contentType}, '')`,
@@ -814,7 +847,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           )
           : contentTypeKindCondition(sql<string>`${assets.contentType}`, query.kind);
         if (attachmentCursor) attachmentConditions.push(attachmentCursor);
-        if (selectedScopeCondition) attachmentConditions.push(selectedScopeCondition);
+        if (scope) attachmentConditions.push(scope);
         if (attachmentKind) attachmentConditions.push(attachmentKind);
         if (query.projectId) attachmentConditions.push(eq(issues.projectId, query.projectId));
         if (query.agentId) attachmentConditions.push(eq(attachmentAgent.id, query.agentId));
@@ -914,8 +947,11 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         artifacts.push(...attachmentArtifacts.filter((artifact): artifact is CompanyArtifact => artifact !== null));
       }
 
-      const sorted = sortArtifacts(artifacts, artifactSortDates);
-      if (!groupBy) {
+      return { artifacts: sortArtifacts(artifacts, artifactSortDates), artifactSortDates };
+      };
+
+      /** One page from a SQL-paged read (cursor applied per source). */
+      const pageOf = ({ artifacts: sorted, artifactSortDates }: Awaited<ReturnType<typeof collectArtifacts>>) => {
         const page = sorted.slice(0, query.limit);
         const last = page[page.length - 1];
         const nextCursor = sorted.length > query.limit
@@ -924,18 +960,29 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             updatedAt: last ? artifactSortDates.get(last.id) ?? last.updatedAt : new Date(0).toISOString(),
           })
           : null;
-
         return { artifacts: page, nextCursor };
+      };
+
+      if (!groupBy) {
+        return pageOf(await collectArtifacts(undefined, true));
       }
 
       if (groupBy === "project") {
-        const groups = buildProjectArtifactGroups({ artifacts: sorted, companyPrefix: company.issuePrefix, query });
         if (!query.groupProjectId) {
-          const { page, nextCursor } = pageByCursor(groups, query.limit, cursor);
+          // Every project with artifacts gets a folder, read per project so a busy project
+          // cannot push a quieter one out of the company-wide fetch window.
+          const groups: CompanyArtifactGroup[] = [];
+          for (const projectKey of await loadArtifactProjectKeys()) {
+            const { artifacts: projectArtifacts } = await collectArtifacts(projectScope(projectKey), false);
+            groups.push(...buildProjectArtifactGroups({ artifacts: projectArtifacts, companyPrefix: company.issuePrefix, query }));
+          }
+          const { page, nextCursor } = pageByCursor(sortGroups(groups), query.limit, cursor);
           return { artifacts: [], groups: page, nextCursor };
         }
 
-        let selectedGroup = groups.find((group) => projectGroupKey(group.project ?? null) === query.groupProjectId) ?? null;
+        const scope = projectScope(query.groupProjectId);
+        const { artifacts: folderArtifacts } = await collectArtifacts(scope, false);
+        let selectedGroup = buildProjectArtifactGroups({ artifacts: folderArtifacts, companyPrefix: company.issuePrefix, query })[0] ?? null;
         if (!selectedGroup) {
           if (query.groupProjectId === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID) {
             selectedGroup = emptyProjectGroup({
@@ -960,11 +1007,13 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             });
           }
         }
-        const { page, nextCursor } = pageByCursor(sorted, query.limit, cursor);
-        return { artifacts: page, selectedGroup, nextCursor };
+        return { ...pageOf(await collectArtifacts(scope, true)), selectedGroup };
       }
 
-      const issueSeedIds = new Set(artifacts.map((artifact) => artifact.issue.id));
+      // A selected task stack is read in SQL scope; parent-task stacks need the issue tree.
+      const taskScope = groupBy === "task" && query.groupIssueId ? eq(issues.id, query.groupIssueId) : undefined;
+      const { artifacts: sorted } = await collectArtifacts(taskScope, false);
+      const issueSeedIds = new Set(sorted.map((artifact) => artifact.issue.id));
       if (query.groupIssueId) issueSeedIds.add(query.groupIssueId);
       const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds);
       const groups = buildArtifactGroups({
@@ -989,6 +1038,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
             groupBy,
             issue: issueRows.get(selectedGroupIssueId) ?? selectedIssue,
           });
+        if (taskScope) {
+          return { ...pageOf(await collectArtifacts(taskScope, true)), selectedGroup };
+        }
         const selectedArtifacts = sorted.filter((artifact) =>
           resolveGroupIssueId(groupBy, artifact.issue.id, issueRows) === selectedGroupIssueId
         );

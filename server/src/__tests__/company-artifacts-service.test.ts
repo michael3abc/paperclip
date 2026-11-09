@@ -1009,6 +1009,50 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     });
   });
 
+  it("keeps a quiet project's folder and pages a busy folder completely beyond the grouping fetch window", async () => {
+    const { companyId, projectId } = await seedArtifacts();
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const busyProjectId = "51515151-5151-4151-8151-515151515151";
+    const busyIssueId = "52525252-5252-4252-8252-525252525252";
+    await db.insert(projects).values({ id: busyProjectId, companyId, name: "Busy", status: "in_progress" });
+    await db.insert(issues).values({ id: busyIssueId, companyId, projectId: busyProjectId, identifier: "PAP-9", title: "Many renders", status: "done", priority: "medium" });
+    const busyCount = 1005;
+    const hex = (index: number) => index.toString(16).padStart(12, "0");
+    await db.insert(assets).values(Array.from({ length: busyCount }, (_, index) => ({
+      id: `53535353-5353-4353-8353-${hex(index)}`,
+      companyId,
+      provider: "local_disk",
+      objectKey: `busy-${index}.png`,
+      contentType: "image/png",
+      byteSize: 10,
+      sha256: `sha256-busy-${index}`,
+      originalFilename: `busy-${index}.png`,
+      createdByAgentId: agentId,
+    })));
+    await db.insert(issueAttachments).values(Array.from({ length: busyCount }, (_, index) => ({
+      companyId,
+      issueId: busyIssueId,
+      assetId: `53535353-5353-4353-8353-${hex(index)}`,
+      updatedAt: new Date(Date.parse("2026-03-01T00:00:00.000Z") + index * 1000),
+    })));
+
+    const service = companyArtifactsService(db, createStorageService());
+    const folders = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 10 });
+    // The older "Artifacts" project is outside the newest 1000 rows company-wide, yet keeps its folder.
+    expect(folders.groups?.map((group) => group.title)).toEqual(["Busy", "Artifacts"]);
+    expect(folders.groups?.find((group) => group.project?.id === projectId)?.count).toBe(2);
+
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const result = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: busyProjectId, limit: 100, cursor });
+      result.artifacts.forEach((artifact) => seen.add(artifact.id));
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
+    }
+    expect(seen.size).toBe(busyCount);
+  });
+
   it("groups media into one folder per project, admits Office files and pages a selected folder", async () => {
     const { companyId, otherCompanyId, projectId, secondIssueId } = await seedArtifacts();
     const agentId = "33333333-3333-4333-8333-333333333333";
@@ -1035,6 +1079,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       { id: "45454545-4545-4545-8545-454545454545", issueId: slidesIssueId, name: "plan.md", type: "text/markdown", day: "14" },
       { id: "46464646-4646-4464-8464-464646464646", issueId: slidesIssueId, name: "bundle.zip", type: "application/zip", day: "15" },
       { id: "47474747-4747-4474-8474-474747474747", issueId: secondIssueId, name: "brief.pdf", type: "application/pdf", day: "16" },
+      { id: "49494949-4949-4494-8494-494949494949", issueId: secondIssueId, name: "cover.png", type: "image/png", day: "09" },
       { id: "48484848-4848-4484-8484-484848484848", issueId: archivedIssueId, name: "old.png", type: "image/png", day: "17" },
     ];
     await db.insert(assets).values(files.map((file) => ({
@@ -1075,7 +1120,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         issue: null,
         project: null,
         title: "No project",
-        count: 1,
+        count: 2,
         href: "/PAP/artifacts?groupBy=project&groupProjectId=none&mediaOnly=true",
       },
       {
@@ -1096,6 +1141,8 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       },
     ]);
     expect(folders.groups?.[1]?.previewArtifacts.map((artifact) => artifact.title)).toEqual(["budget.xlsx", "report.docx", "deck.pptx"]);
+    // A folder's cover is its newest picture, even when a newer PDF exists.
+    expect(folders.groups?.[0]?.previewArtifacts.map((artifact) => artifact.title)).toEqual(["cover.png", "brief.pdf"]);
 
     const firstPage = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 1 });
     expect(firstPage.groups?.map((group) => group.id)).toEqual(["project:none"]);
@@ -1117,8 +1164,8 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(selectedNext.nextCursor).toBeNull();
 
     const noProject = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: "none", limit: 10 });
-    expect(noProject.selectedGroup).toMatchObject({ id: "project:none", project: null, title: "No project", count: 1 });
-    expect(noProject.artifacts.map((artifact) => artifact.title)).toEqual(["brief.pdf"]);
+    expect(noProject.selectedGroup).toMatchObject({ id: "project:none", project: null, title: "No project", count: 2 });
+    expect(noProject.artifacts.map((artifact) => artifact.title)).toEqual(["brief.pdf", "cover.png"]);
 
     const emptyByFilter = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: slidesProjectId, kind: "video", limit: 10 });
     expect(emptyByFilter.selectedGroup).toMatchObject({ project: { id: slidesProjectId, name: "Slides" }, count: 0 });
@@ -1128,6 +1175,9 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       expect(await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: hiddenProjectId, limit: 10 }))
         .toEqual({ artifacts: [], selectedGroup: null, nextCursor: null });
     }
+
+    const upperCase = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: slidesProjectId.toUpperCase(), limit: 10 });
+    expect(upperCase.selectedGroup).toMatchObject({ project: { id: slidesProjectId }, count: 3 });
 
     // Without mediaOnly the folders still carry task documents (opt-in filter).
     const allSources = await service.list(companyId, { groupBy: "project", groupProjectId: "none", limit: 50 });

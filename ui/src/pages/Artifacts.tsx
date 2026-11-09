@@ -180,7 +180,8 @@ export function Artifacts() {
   const backToStacksTo = useMemo<To>(
     () =>
       buildTo((next) => {
-        if (groupBy === DEFAULT_GROUP_BY) next.delete("groupBy");
+        // Name the grouping explicitly: a legacy stack link inferred `task` from groupIssueId alone.
+        setGroupByParam(next, groupBy);
         next.delete("groupIssueId");
         next.delete("groupProjectId");
       }),
@@ -300,7 +301,7 @@ export function Artifacts() {
                 <FolderOpen className="mr-1 inline h-3.5 w-3.5 align-text-bottom" aria-hidden="true" />
               )}
               {selectedGroup.title}
-              {selectedGroup.issue ? null : ` · ${selectedGroup.count} ${selectedGroup.count === 1 ? "file" : "files"}`}
+              {selectedGroup.issue ? null : ` · ${selectedGroup.count} ${selectedGroup.count === 1 ? "artifact" : "artifacts"}`}
             </span>
           ) : null}
         </div>
