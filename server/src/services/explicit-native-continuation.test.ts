@@ -23,6 +23,7 @@ import {
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { createBridgeStopReverification } from "./heartbeat/bridge-stop-reverification.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "./adapter-execution-control.js";
 import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
@@ -657,6 +658,46 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     });
     if (scenario.admitted) expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
     else expect(result).toBeNull();
+  });
+  it.each(["verified", "unverified", "forced"] as const)("admits a held CC Pocket message only after bridge stop re-verification: %s", async scenario => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, processPid: null, processGroupId: null,
+      status: "cancelled", errorCode: "operator_interrupted",
+      runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: {} } },
+      resultJson: { bridgeSessionId: "bridge-1", nativeSessionId: "native-1", replayAllowed: false,
+        executionCancellation: { state: "requested", requestedAt: "2026-09-11T09:20:00Z", ...(scenario === "forced" ? { forced: true } : {}) } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() } },
+    });
+    const admit = () => db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, queuedCommentInterruptId: queueId, dryRun: true });
+    });
+    expect(await admit()).toBeNull();
+    const reverifyCancelledRunStop = vi.fn(async (input: { runId: string }) => scenario === "unverified"
+      ? { verified: false as const, reason: "background_active" }
+      : { verified: true as const, proof: { schema: "ccpocket.bridge-stop-reverification.v1", bridgeSessionId: "bridge-1",
+        nativeSessionId: "native-1", runId: input.runId, acceptedSeq: 3, resultSeq: 5, checkedAt: new Date().toISOString(),
+        background: { known: true, active: [] } } });
+    const reverification = createBridgeStopReverification(db, { getAdapter: () => ({ reverifyCancelledRunStop }),
+      isRunActive: () => false, publishLiveEvent: vi.fn() });
+    expect(await reverification.reconcile(f.sourceRunId, f.companyId))
+      .toBe(scenario === "verified" ? "acknowledged" : scenario === "unverified" ? "unverified" : "skipped");
+    if (scenario === "forced") expect(reverifyCancelledRunStop).not.toHaveBeenCalled();
+    const result = await admit();
+    if (scenario === "verified") expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    else expect(result).toBeNull();
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
   });
   it("dispatches another user's queued legacy message using the consumed board interrupt receipt", async () => {
     const f = await seed();

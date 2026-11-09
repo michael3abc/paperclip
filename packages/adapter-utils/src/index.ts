@@ -35,6 +35,8 @@ export type {
   AdapterRuntimeCommandSpec,
   AcpTargetDescriptor,
   ServerAdapterModule,
+  AdapterStopReverificationInput,
+  AdapterStopReverificationResult,
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,

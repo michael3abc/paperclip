@@ -577,6 +577,21 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(selected).not.toHaveProperty("stdoutExcerpt");
   });
 
+  it.each([
+    ["cancelled", "legacy", true], ["succeeded", "legacy", false], ["cancelled", "native", false],
+  ] as const)("re-verifies a %s %s stop before the saved message's admission only for cancelled legacy runs", async (status, runtimeMode, expected) => {
+    const { run, company } = await strandedMention(runtimeMode);
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, run.id));
+    const deps = callbacks(db), reconcileBridgeStop = vi.fn(async () => "unverified");
+    await createHeartbeatQueue(db, { ...deps, reconcileBridgeStop }).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(1);
+    if (!expected) { expect(reconcileBridgeStop).not.toHaveBeenCalled(); return; }
+    expect(reconcileBridgeStop).toHaveBeenCalledExactlyOnceWith(run.id, company.id);
+    expect(reconcileBridgeStop.mock.invocationCallOrder[0])
+      .toBeLessThan(deps.releaseIssueExecutionAndPromote.mock.invocationCallOrder[0]);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("preserves a former owner's ordinary messages for the assignment handoff", async () => {
     const { pending } = await strandedMention();
     const payload = { ...pending.payload, _paperclipWakeContext: {

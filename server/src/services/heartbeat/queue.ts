@@ -230,6 +230,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
   resumeSavedLegacyComments: (companyId: string, queueId: string) => Promise<unknown>;
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
+  /** Re-verify an unconfirmed bridge stop from bridge evidence before admission re-checks it. Never throws. */
+  reconcileBridgeStop?: (runId: string, companyId: string) => Promise<unknown>;
 }
 
 
@@ -429,6 +431,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     isSameTaskScope,
     runTaskKey,
     filterZombieCoalesceTarget,
+    reconcileBridgeStop,
   } = dependencies;
 
   const { parseHeartbeatPolicy, getHeartbeatDailyCapBlock, hasActionableTimerWork, nextTimerHeartbeatAt } = createHeartbeatTimerPolicy(db);
@@ -1810,6 +1813,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       const releaseSource = `${latest.companyId}:${String(wake.payload?.issueId)}:${latest.id}:${latest.sourceVersion}`;
       if (latest.runtimeMode === "native" && releasedNativeSources.has(releaseSource)) continue;
+      // A cancelled bridge run whose stop was unconfirmed holds the queue until
+      // the adapter re-verifies the stop from bridge evidence; admission below
+      // still applies bridgeSessionStopAcknowledged unchanged.
+      if (latest.runtimeMode === "legacy" && latest.status === "cancelled")
+        await reconcileBridgeStop?.(latest.id, latest.companyId);
       if (latest.runtimeMode === "legacy") {
         const cancelledAdmission = latest.status === "cancelled" && !latest.startedAt &&
           latest.errorCode === "execution_reconciliation_required";
@@ -1850,6 +1858,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
       ));
     for (const run of interruptedQueues) {
+      await reconcileBridgeStop?.(run.id, run.companyId);
       await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
         scope.onError?.(err);
         logger.error({ err, runId: run.id }, "failed to retry interrupted comment queue");

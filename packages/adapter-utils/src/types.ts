@@ -508,6 +508,23 @@ export interface AcpTargetDescriptor {
   };
 }
 
+/** Input for a read-only re-check of a cancelled run whose adapter stop was unconfirmed at cancel time. */
+export interface AdapterStopReverificationInput {
+  runId: string;
+  companyId: string;
+  agentId: string;
+  /** The run's persisted adapter session identity (e.g. bridge/native session ids and an optional state key). */
+  sessionParams: Record<string, unknown> | null;
+}
+
+/**
+ * Stop proof derived from the provider itself, or the reason it could not be derived.
+ * An unverified result must leave the run's stop unacknowledged.
+ */
+export type AdapterStopReverificationResult =
+  | { verified: true; proof: Record<string, unknown> }
+  | { verified: false; reason: string };
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
@@ -602,6 +619,13 @@ export interface ServerAdapterModule {
    * API-key-only vendor) omits it. The capability data holds no secret.
    */
   loginCapability?: import("./login-capability.js").AdapterLoginCapability;
+
+  /**
+   * Optional: re-check, without sending input, interrupting or stopping anything,
+   * that a cancelled run whose stop was unconfirmed has really stopped. Return
+   * proof only from provider evidence; never synthesize it.
+   */
+  reverifyCancelledRunStop?: (input: AdapterStopReverificationInput) => Promise<AdapterStopReverificationResult>;
 }
 
 // ---------------------------------------------------------------------------
