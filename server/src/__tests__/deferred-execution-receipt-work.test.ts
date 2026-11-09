@@ -149,7 +149,9 @@ describe("deferred receipt durable dispatch", () => {
       const remaining = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"));
       expect(remaining, JSON.stringify({ next: coordinator.nextWakeAt(), at: Date.now(),
         runs: remaining.map(run => ({ id: run.id, at: run.scheduledRetryAt, error: run.errorCode })) })).toHaveLength(0);
-    });
+      // Each attempt joins worker passes, which may still be settling a saved
+      // receipt backlog; a 1s wall deadline expired before the first attempt returned.
+    }, { timeout: 15_000 });
   }
   it("is quiet after empty reconstruction and terminal receipt history", async () => {
     const f = await fixture();

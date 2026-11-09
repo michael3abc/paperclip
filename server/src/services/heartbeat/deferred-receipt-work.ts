@@ -63,10 +63,12 @@ export function registerDeferredReceiptWork(
           delayed: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null
             or ${agentWakeupRequests.payload}->'executionWait' is not null`,
           interrupt: sql<boolean>`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+          // Select fields render columns unqualified, which inside this
+          // subquery would bind to heartbeat_runs itself; name the outer row.
           interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
-            where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
+            where r.company_id = "agent_wakeup_requests"."company_id" and r.agent_id = "agent_wakeup_requests"."agent_id"
               and r.runtime_mode = 'legacy' and r.status = 'cancelled'
-              and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,
+              and r.result_json->>'queuedCommentInterruptQueueId' = "agent_wakeup_requests"."id"::text)`,
         }).from(agentWakeupRequests).where(and(
           scope ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
           scope?.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
@@ -105,16 +107,20 @@ export function registerDeferredReceiptWork(
       },
       check: async entry => {
         if (!enabled) return null;
+        // Only a receipt whose owner-only interrupt cancelled a legacy run can
+        // be held by an unverified bridge stop; ordinary backlog rows skip the re-check read.
+        let heldInterrupt = false;
         if (kind !== "task_chat") {
           const [current] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload,
             updatedAt: agentWakeupRequests.updatedAt, claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
             interruptedLegacy: sql<boolean>`exists (select 1 from heartbeat_runs r
-              where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
+              where r.company_id = "agent_wakeup_requests"."company_id" and r.agent_id = "agent_wakeup_requests"."agent_id"
                 and r.runtime_mode = 'legacy' and r.status = 'cancelled'
-                and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,
+                and r.result_json->>'queuedCommentInterruptQueueId' = "agent_wakeup_requests"."id"::text)`,
           }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
             eq(agentWakeupRequests.id, entry.id)));
           if (!current) return null;
+          heldInterrupt = kind === "deferred" && current.status === "deferred_issue_execution" && !!current.interruptedLegacy;
           const due = kind === "native" && current.status === "claimed" && current.claimedAt
             ? current.claimedAt.getTime() + 60_000
             : kind === "native" && current.status === "queued" && current.error ? current.updatedAt.getTime() + 30_000
@@ -137,7 +143,7 @@ export function registerDeferredReceiptWork(
           catch (error) { failed(error); }
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
-        if (kind === "deferred") {
+        if (heldInterrupt) {
           // A cancelled bridge run whose unforced stop is still `requested`
           // holds this exact receipt until the Bridge re-verifies the stop.
           // That evidence is external and only a later sweep asks for it, so
