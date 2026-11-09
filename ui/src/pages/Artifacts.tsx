@@ -176,13 +176,14 @@ export function Artifacts() {
     fetchNextPage,
     error,
   } = useInfiniteQuery({
-    queryKey: queryKeys.artifacts.list(selectedCompanyId!, kind, query, groupBy, groupIssueId),
+    queryKey: queryKeys.artifacts.list(selectedCompanyId!, kind, query, groupBy, groupIssueId, true),
     queryFn: ({ pageParam }) =>
       artifactsApi.list(selectedCompanyId!, {
         kind,
         q: query || undefined,
         groupBy,
         groupIssueId,
+        mediaOnly: true,
         limit: ARTIFACTS_PAGE_SIZE,
         cursor: pageParam,
       }),
@@ -235,13 +236,13 @@ export function Artifacts() {
   const emptyMessage = showGroupCards
     ? searching
       ? "No artifact stacks match this search."
-      : "No artifact stacks yet."
+      : "No media artifact stacks yet."
     : searching
       ? "No artifacts match this search."
       : viewingSelectedStack
         ? "No artifacts in this stack match the current filters."
         : kind === "all"
-          ? "No artifacts yet. Outputs attached to issues will appear here."
+          ? "No media artifacts yet. Images, videos, audio and PDF attached to issues will appear here."
           : "No artifacts of this type yet.";
 
   return (

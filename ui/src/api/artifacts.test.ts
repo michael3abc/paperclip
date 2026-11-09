@@ -41,6 +41,13 @@ describe("artifactsApi.list", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/artifacts");
   });
 
+  it("serializes mediaOnly only when requested", async () => {
+    await artifactsApi.list("company-1", { mediaOnly: true, kind: "file" });
+    expect(mockApi.get).toHaveBeenLastCalledWith("/companies/company-1/artifacts?kind=file&mediaOnly=true");
+    await artifactsApi.list("company-1", { mediaOnly: false });
+    expect(mockApi.get).toHaveBeenLastCalledWith("/companies/company-1/artifacts");
+  });
+
   it("omits the kind param when filtering by all", async () => {
     await artifactsApi.list("company-1", { kind: "all" });
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/artifacts");

@@ -22,6 +22,11 @@ export const companyArtifactsQuerySchema = z.object({
     (value) => value === "true" ? true : value === "false" ? false : value,
     z.boolean(),
   ).optional().default(false),
+  /** Only images, videos, audio and PDF; excludes documents, text and internal state files. */
+  mediaOnly: z.preprocess(
+    (value) => value === "true" ? true : value === "false" ? false : value,
+    z.boolean(),
+  ).optional().default(false),
   limit: z.coerce
     .number()
     .int()
