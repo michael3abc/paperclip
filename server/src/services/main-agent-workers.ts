@@ -12,6 +12,11 @@ type AgentLike = { id: string; companyId: string; adapterType?: string | null; a
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
+/** A project main agent, regardless of whether its project binding is valid. */
+export function isMainAgent(agent: Pick<AgentLike, "adapterType" | "adapterConfig">): boolean {
+  return agent.adapterType === "ccpocket_bridge" && (agent.adapterConfig ?? {}).role === "main";
+}
+
 export function mainAgentProjectId(agent: AgentLike): string | null {
   const config = agent.adapterConfig ?? {};
   if (agent.adapterType !== "ccpocket_bridge" || config.role !== "main") return null;

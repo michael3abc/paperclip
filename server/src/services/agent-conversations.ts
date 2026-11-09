@@ -115,8 +115,24 @@ For status updates, distinguish recorded task status from active execution and v
 
 Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. Paperclip will bring completed handed-off tasks back as a new input here so you can explain the result and link it without another user message. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
 
-export function agentChatDirective(coordinationOnly: boolean): string {
-  if (!coordinationOnly) return AGENT_CHAT_DIRECTIVE;
+/**
+ * Main agents (ccpocket_bridge `role: main`) plan and implement themselves with
+ * native subagents; a separate task is the exception, not the delivery path.
+ * Plan mode still stops at an approval request, and Ask mode stays non-mutating.
+ */
+export const MAIN_AGENT_CHAT_DIRECTIVE = AGENT_CHAT_DIRECTIVE.replace(
+  "Research, clarify, and develop full plans here using the conversation's plan document. Revise the draft as the discussion develops. Planning alone does not create execution tasks. Put implementation and substantial execution into separate tasks.",
+  "Research, clarify, and develop full plans here using the conversation's plan document. Revise the draft as the discussion develops. You are this project's main agent: in Standard mode, plan and implement the requested work directly in this chat, using native subagents for parallel or specialized parts, and verify the result yourself. Create a separate task only when the work needs separate tracking, must outlive this session, or the user asks for one. In Plan mode, only research and write or revise the plan, then ask the user to approve it before implementing anything.",
+).replace(
+  "After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat.",
+  "When you do create an assigned task, let its own run execute that work; do not create its deliverables or change its execution status from this chat.",
+).replace(
+  "An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.",
+  "An accepted plan authorizes you to implement it here, or to hand it off when a separate task is warranted. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan only; implement only after the user approves.",
+);
+
+export function agentChatDirective(coordinationOnly: boolean, options: { mainAgent?: boolean } = {}): string {
+  if (!coordinationOnly) return options.mainAgent ? MAIN_AGENT_CHAT_DIRECTIVE : AGENT_CHAT_DIRECTIVE;
   return AGENT_CHAT_DIRECTIVE.replace(
     'Default the assignee to the agent in this conversation (yourself). Assign a different agent or person only when the user explicitly specifies that owner. A task requested "for me" does not by itself mean assigning it to the user. Do not choose a different agent based on perceived suitability.',
     'You are this project\'s coordination-only PM. Assign execution directly to an authorized shared worker, with the exact project model selection and your native review. Never assign execution to yourself or perform it in this chat. Select workers using the Owner-approved delegation table; a clear execution request authorizes that handoff.',

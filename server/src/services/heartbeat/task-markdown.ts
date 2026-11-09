@@ -68,6 +68,8 @@ export function buildPaperclipTaskMarkdown(input: {
   nativeRunner?: boolean;
   coordinatorWorkspace?: boolean;
   coordinationOnly?: boolean;
+  /** ccpocket_bridge `role: main`: implements in chat instead of handing off by default. */
+  mainAgent?: boolean;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -225,7 +227,7 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
     if (issue.conversationAgentId) {
-      lines.push("", "Chat mode directive:", agentChatDirective(input.coordinationOnly === true), `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      lines.push("", "Chat mode directive:", agentChatDirective(input.coordinationOnly === true, { mainAgent: input.mainAgent === true }), `Current composer mode: ${issue.workMode ?? "standard"}.`);
       if (input.nativeRunner && input.coordinatorWorkspace) {
         lines.push("", "Coordinator task proposals:", COORDINATOR_CHAT_HANDOFF_DIRECTIVE);
       }
