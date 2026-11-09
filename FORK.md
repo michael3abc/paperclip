@@ -354,3 +354,13 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   agent membership stars; terminated, `process` and left agents stay hidden, the
   primary-first/alphabetical order and PM status rules are unchanged, and dispatch and
   roles are untouched. No schema change.
+- Chat always interrupts (2026-11-09): in Agent Chat a message sent while the agent is
+  working now stops that turn through the existing queued-comment interrupt (owner-only,
+  `enableAgentChat`), so it is delivered next instead of waiting. Each chat message keeps
+  its own saved receipt, so the queue stays interruptible once every later message is
+  saved, and the interrupt's successor adopts all of the same user's still-deferred chat
+  messages into one run (coalesced, never cancelled; other users' messages keep waiting).
+  A CC Pocket bridge turn's acknowledged, unforced stop receipt now counts as stop proof
+  for that explicit user turn when the historical and current adapters are both
+  `ccpocket_bridge`; forced, failed or mismatched cases stay blocked. Tasks are unchanged.
+  No schema change.

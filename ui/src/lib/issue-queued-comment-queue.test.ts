@@ -186,4 +186,42 @@ describe("normalizeIssueQueuedCommentQueue", () => {
       "comment-1",
     ]);
   });
+  it("keeps a chat queue interruptible when every later message has its own saved receipt", () => {
+    const first = comment("comment-1", "First message");
+    const authoritativeQueue = normalizeIssueQueuedCommentQueue({
+      issueId: "issue-1", queueId: "wake-1", state: "deferred", targetRunId: "run-1",
+      revision: "rev-1", protocol: "legacy", steeringDisposition: "unsupported",
+      entries: [{ comment: first, position: 0, canEdit: true, canDiscard: true }],
+    }, "issue-1");
+    const base = {
+      issueId: "issue-1",
+      authoritativeQueue,
+      fallbackProtocol: "legacy" as const,
+      separateMessageReceipts: true,
+    };
+
+    const saved = mergePendingIssueQueuedComments({
+      ...base,
+      pendingComments: [
+        { comment: first, targetRunId: "run-1", persisted: true },
+        { comment: comment("comment-2", "Second message"), targetRunId: "run-1", persisted: true },
+      ],
+    });
+    expect(saved?.queueId).toBe("wake-1");
+    expect(saved?.revision).toBe("rev-1");
+    expect(saved?.entries.map((entry) => entry.comment.id)).toEqual(["comment-1", "comment-2"]);
+
+    const sending = mergePendingIssueQueuedComments({
+      ...base,
+      pendingComments: [{ comment: comment("optimistic-2", "Still sending"), targetRunId: "run-1", persisted: false }],
+    });
+    expect(sending?.queueId).toBeNull();
+
+    const task = mergePendingIssueQueuedComments({
+      ...base,
+      separateMessageReceipts: false,
+      pendingComments: [{ comment: comment("comment-2", "Second message"), targetRunId: "run-1", persisted: true }],
+    });
+    expect(task?.queueId).toBeNull();
+  });
 });

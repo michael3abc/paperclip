@@ -4851,6 +4851,50 @@ describe("IssueDetail", () => {
     expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "chat", conversation: true, interrupts: true },
+    { name: "task", conversation: false, interrupts: false },
+  ])("interrupts the running turn after a $name message is saved behind it: $interrupts", async ({ conversation, interrupts }) => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-active-1",
+      ...(conversation ? { conversationAgentId: "agent-1", conversationUserId: "user-1" } : {}),
+    }));
+    mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Stop and do this instead" }));
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      protocol: "legacy", steeringDisposition: "unsupported",
+    }));
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([{
+      id: "run-active-1", status: "running", invocationSource: "issue", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null, startedAt: "2026-04-21T00:00:01.000Z",
+      finishedAt: null, createdAt: "2026-04-21T00:00:01.000Z", agentId: "agent-1",
+      agentName: "Coder", adapterType: "ccpocket_bridge", issueId: "issue-1",
+    }]);
+
+    await act(async () => {
+      renderIssueView();
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    await act(async () => {
+      await props.onAdd("Stop and do this instead");
+    });
+    await flushReact();
+    await flushReact();
+
+    if (interrupts) {
+      expect(mockIssuesApi.interruptQueuedComments).toHaveBeenCalledWith("PAP-1", {
+        queueId: "wake-queue-1", revision: "queue-revision-1", targetRunId: "run-active-1",
+      });
+    } else {
+      expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+    }
+  });
+
   it.each(["native", "legacy"] as const)("projects a native follow-up into the steering well before the post resolves with %s persisted mode", async (runtimeMode) => {
     const postedComment = createDeferred<IssueComment>();
     const activeRun = {

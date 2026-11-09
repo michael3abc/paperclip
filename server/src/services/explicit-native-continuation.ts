@@ -75,6 +75,25 @@ export function isUserCommentContinuationReason(reason: string | null | undefine
   return reason === "issue_commented" || reason === "issue_reopened_via_comment" || reason === "issue_assigned";
 }
 
+// The CC Pocket bridge adapter owns one resident Claude session per agent. A
+// new user message is a new turn in that session, never replay of the stopped
+// turn. Only these explicit user-turn admissions accept it; automatic retry,
+// recovery and replay keep the conservative CONVERSATION_ADAPTER_TYPES contract.
+const BRIDGE_SESSION_ADAPTER = "ccpocket_bridge";
+function acceptsExplicitUserTurn(adapterType: string): boolean {
+  return isConversationAdapter(adapterType) || adapterType === BRIDGE_SESSION_ADAPTER;
+}
+
+/** The bridge has no host PID. Its stop proof is the adapter's own receipt,
+ * written only after the bridge confirmed the owned turn settled. A forced or
+ * unconfirmed stop, or any other terminal state, retains the hold. */
+function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtimeMode" | "resultJson">): boolean {
+  if (run.runtimeMode !== "legacy" || !["cancelled", "timed_out"].includes(run.status)) return false;
+  const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
+  return cancellation?.state === "acknowledged" && cancellation.forced === false &&
+    typeof cancellation.acknowledgedAt === "string";
+}
+
 function processStopped(pid: number): boolean {
   try { process.kill(pid, 0); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -207,7 +226,7 @@ export async function admitExplicitNativeContinuation(input: {
   ));
   if (!retry && !taskRetry && !response && !comment?.body.trim()) return null;
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
-  if (!agent || (!isConversationAdapter(agent.adapterType) && agent.adapterType !== "paperclip_runner")) return null;
+  if (!agent || (!acceptsExplicitUserTurn(agent.adapterType) && agent.adapterType !== "paperclip_runner")) return null;
   const agentIsNative = agent.adapterType === "paperclip_runner";
   const interruptIntent = interruptQueue?.payload?.queuedCommentInterrupt as Record<string, unknown> | undefined;
   const interruptRequestedAt = typeof interruptIntent?.requestedAt === "string" ? new Date(interruptIntent.requestedAt) : null;
@@ -321,18 +340,28 @@ export async function admitExplicitNativeContinuation(input: {
       queuedRequestId: input.queuedCommentRequestId ?? savedChatRequestId });
     const legacyUserTurn = failedPreparation || run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
-      (isConversationAdapter(agent.adapterType) ||
+      (acceptsExplicitUserTurn(agent.adapterType) ||
         (agent.adapterType === "paperclip_runner" && (freshIntent || await hasVerifiedWorkspaceRepair(db, run))));
     // Saved input is a request for a new turn, never permission to undo an
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && (run.contextSnapshot?.wakeCommentId === commentId ||
         (Array.isArray(run.contextSnapshot?.wakeCommentIds) && run.contextSnapshot.wakeCommentIds.includes(commentId)))) return null;
+    let bridgeSessionStopped = false;
     if (legacyUserTurn && !failedPreparation) {
       const historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
-      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+      if (historicalAdapter && !acceptsExplicitUserTurn(historicalAdapter)) return null;
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
+      // A bridge turn is admitted only with immutable bridge history and the
+      // current bridge agent; the current settings never stand in for history.
+      if ((historicalAdapter === BRIDGE_SESSION_ADAPTER || agent.adapterType === BRIDGE_SESSION_ADAPTER) &&
+          (historicalAdapter !== BRIDGE_SESSION_ADAPTER || agent.adapterType !== BRIDGE_SESSION_ADAPTER)) return null;
+      if (historicalAdapter === BRIDGE_SESSION_ADAPTER) {
+        if (!bridgeSessionStopAcknowledged(run)) return blocked("process_identity_missing",
+          "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+        bridgeSessionStopped = true;
+      }
     }
     const interruptedByThisClick = response?.source.requiresFreshSession === true &&
       interruptIntent?.targetRunId === run.id && run.resultJson?.operatorInterrupted === true &&
@@ -431,7 +460,7 @@ export async function admitExplicitNativeContinuation(input: {
         if (freshIntent && (run.processPid || run.processGroupId) && !await recordedLocalExecutionStopped(db, run))
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
         // A missing process identity is not evidence that a provider exited.
-        if (!run.processPid && !run.processGroupId &&
+        if (!run.processPid && !run.processGroupId && !bridgeSessionStopped &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
             !await hasHistoricalSuspendedNativeSession(db, run)) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
