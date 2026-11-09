@@ -341,3 +341,10 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   work products. Stored records are unchanged and other listing callers keep their result.
   Feature commit `ffec9110d`, merged as `2bfd909f8`; no schema change; fc0350d9af-r1 is
   kept for rollback.
+- Compass `[1m]` pricing (2026-11-09): main agents run `compass-opus5.5[1m]`, and the
+  exact-match Compass rate card left those receipts unpriced. Claude Code strips the
+  `[1m]` context-window suffix before the request reaches Compass, and Anthropic 5.5 has a
+  single price tier, so an Anthropic Compass selector with a trailing `[1m]` now uses its
+  base card and notes the 1M window in the evidence; the receipt model id is unchanged and
+  OpenAI selectors stay exact-match. Feature commit `d3b28fea5`; no schema change.
+  Receipts already recorded as unpriced are not repriced automatically.

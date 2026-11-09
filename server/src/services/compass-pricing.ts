@@ -50,7 +50,14 @@ export function priceCompassReceipt(
   )
     return receipt;
   const model = receipt.model ?? "";
-  const card = Object.hasOwn(MODELS, model) ? MODELS[model] : undefined;
+  // Claude Code's `[1m]` selector suffix only enables the 1M context window and
+  // is stripped before the request reaches Compass. Anthropic 5.5 bills the
+  // whole window at one tier, so it uses the base model's card. OpenAI models
+  // have no such suffix and stay exact-match only.
+  const oneMillion = /\[1m\]$/i.test(model);
+  const base = oneMillion ? model.slice(0, -4) : model;
+  const found = Object.hasOwn(MODELS, base) ? MODELS[base] : undefined;
+  const card = found && (!oneMillion || found.vendor === "anthropic") ? found : undefined;
   if (!card) return receipt;
   const context = receipt.pricingContext;
   if (
@@ -84,6 +91,7 @@ export function priceCompassReceipt(
   const costCents = unitsToCents((units + divisor / 2n) / divisor);
   const assumptions = [
     `Compass billed at ${card.upstream} list price`,
+    ...(oneMillion ? ["1M context window at the single 5.5 tier"] : []),
     "standard processing assumed",
     long ? "long per-request context" : "short per-request context assumed",
     card.vendor === "anthropic"
