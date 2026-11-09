@@ -18,6 +18,7 @@ import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js
 import { buildPaperclipWakePayload, ConfigurationIncompleteFailure, readHeartbeatWakeComments, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
 import { pmCoordinationScope } from "../pm-coordination-policy.js";
+import { isMainAgent } from "../main-agent-workers.js";
 import { deriveCommentId, extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
 import { workspacePreferenceService } from "../workspace-preferences.js";
 
@@ -26,7 +27,7 @@ type IssueContext = NonNullable<Awaited<ReturnType<RunPreparation["getIssueExecu
 
 export interface HeartbeatTaskContextInput {
   run: Pick<typeof heartbeatRuns.$inferSelect, "id"> & Partial<Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode">>;
-  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig">;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig"> & Partial<Pick<typeof agents.$inferSelect, "adapterConfig">>;
   task: {
     issueRef: Pick<IssueContext,
       "id" | "identifier" | "title" | "status" | "priority" | "workMode" |
@@ -242,6 +243,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
   const taskMarkdownInput = {
     coordinationOnly: pmCoordinationScope(agent) !== null,
+    mainAgent: isMainAgent(agent),
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })

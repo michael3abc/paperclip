@@ -1135,6 +1135,12 @@ export interface IssueQueuedCommentQueue {
   entries: IssueQueuedCommentEntry[];
   /** Current admission condition for a saved user continuation. */
   executionWait?: { reason: string; message: string } | null;
+  /**
+   * Conversation owner only: the same main agent's running task turn on
+   * another issue that this queued chat is waiting behind. Interrupting it
+   * stops that turn, starts the chat next and continues the task behind it.
+   */
+  preemptibleRunId?: string | null;
 }
 
 interface IssueCommentMetadataRowBase {

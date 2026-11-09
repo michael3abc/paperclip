@@ -19,6 +19,7 @@ import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifi
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
+import { readChatPreemptionMarker } from "../chat-task-preemption.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { normalizeAgentNameKey } from "./retries.js";
@@ -2031,7 +2032,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               : 1
             : 3
           : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
+        // An Owner chat that preempted this agent's task turn starts next, ahead
+        // of the preempted task's own continuation and other queued work.
+        const leftChatRank = readChatPreemptionMarker(left.contextSnapshot) ? -1 : leftRank;
+        const rightChatRank = readChatPreemptionMarker(right.contextSnapshot) ? -1 : rightRank;
+        if (leftChatRank !== rightChatRank) return leftChatRank - rightChatRank;
         const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
         const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
         if (leftPriorityRank !== rightPriorityRank)

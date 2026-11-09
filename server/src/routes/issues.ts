@@ -64,6 +64,14 @@ import {
   acceptSteeredIdentity,
   rejectSteeredIdentity,
 } from "../services/run-identity.js";
+import {
+  CHAT_PREEMPTION_CONTEXT_KEY,
+  CHAT_PREEMPTION_INTERRUPTION_SOURCE,
+  findPreemptibleTaskRun,
+  readChatPreemptionAttribution,
+  readChatPreemptionMarker,
+} from "../services/chat-task-preemption.js";
+import { bridgeSessionStopAcknowledged } from "../services/explicit-native-continuation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -16758,8 +16766,10 @@ export function issueRoutes(
       activeRun: await resolveActiveIssueRun(issue, { queueStateOnly: true }),
       actor: getActorInfo(req),
     });
+    const preemptible = await chatPreemptibleTaskRun(req, issue, queue);
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, queue),
+      await runRedactions.redactForIssue(issue.companyId, issue.id,
+        preemptible ? { ...queue, preemptibleRunId: preemptible.id } : queue),
     );
   });
 
@@ -16825,6 +16835,144 @@ export function issueRoutes(
     },
   );
 
+  type ChatPreemptionIssue = {
+    id: string;
+    companyId: string;
+    assigneeAgentId: string | null;
+    conversationAgentId?: string | null;
+    conversationUserId?: string | null;
+  };
+
+  /**
+   * The conversation owner's queued chat may preempt its own main agent's
+   * running turn on another ordinary task. Other users, other agents and
+   * same-issue turns keep their existing queue behavior.
+   */
+  async function chatPreemptibleTaskRun(
+    req: Request,
+    issue: ChatPreemptionIssue,
+    queue: { queueId: string | null; state: string | null; entries: Array<{ comment: { authorUserId?: string | null } }> },
+    runId?: string,
+  ) {
+    const userId = req.actor.type === "board" ? req.actor.userId : null;
+    const agentId = issue.conversationAgentId;
+    if (!agentId || !userId || userId !== issue.conversationUserId || issue.assigneeAgentId !== agentId ||
+        queue.state !== "queued" || !queue.queueId || !queue.entries.some(entry => entry.comment.authorUserId === userId)) {
+      return null;
+    }
+    if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
+    const run = await findPreemptibleTaskRun(db, { companyId: issue.companyId, conversationIssueId: issue.id, agentId, runId });
+    if (!run) return null;
+    const task = await svc.getById(run.issueId);
+    if (!task || !(await decideIssueAccess(req, task, "issue:mutate")).allowed) return null;
+    return run;
+  }
+
+  /**
+   * Stop the agent's task turn with the chat-interrupt semantics, start the
+   * marked chat run next, then continue the task behind it through one task
+   * Retry receipt per preempted run. A forced or unverified stop leaves the
+   * task's existing reconciliation hold in place.
+   */
+  async function preemptTaskRunForChat(req: Request, issue: ChatPreemptionIssue, taskRunId: string) {
+    const actor = getActorInfo(req);
+    const agentId = issue.conversationAgentId!;
+    const queueId = req.body.queueId as string;
+    if (!(await chatPreemptibleTaskRun(req, issue, { queueId, state: "queued",
+      entries: [{ comment: { authorUserId: req.actor.userId } }] }, taskRunId))) {
+      const [stopped] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, taskRunId), eq(heartbeatRuns.companyId, issue.companyId))).limit(1);
+      const attribution = readChatPreemptionAttribution(stopped?.resultJson);
+      if (attribution?.chatQueueId !== queueId || attribution.conversationIssueId !== issue.id) {
+        throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
+      }
+    }
+    const preemption = await db.transaction(async (tx) => {
+      const lockInput = { tx, issue, actor, queueId };
+      const locked = await lockQueuedCommentState(lockInput);
+      assertQueueMutationTarget({ queue: locked.queue, queueId, revision: req.body.revision });
+      if (locked.state !== "queued" || !locked.queueRun || locked.wake.agentId !== agentId ||
+          lockInput.issue.assigneeAgentId !== agentId ||
+          !locked.queue.entries.some(entry => entry.comment.authorUserId === req.actor.userId)) {
+        throw conflict("This queue does not support interruption");
+      }
+      const running = await findPreemptibleTaskRun(tx, { companyId: issue.companyId, conversationIssueId: issue.id,
+        agentId, runId: taskRunId, lock: true });
+      let taskIssueId = running?.issueId ?? null;
+      if (!running) {
+        // An idempotent repeat of this queue's own preemption.
+        const [stopped] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, taskRunId),
+          eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.agentId, agentId))).for("update").limit(1);
+        const attribution = readChatPreemptionAttribution(stopped?.resultJson);
+        const stoppedIssueId = readObject(stopped?.contextSnapshot).issueId;
+        if (!stopped || stopped.status === "running" || attribution?.chatQueueId !== queueId ||
+            attribution.conversationIssueId !== issue.id || typeof stoppedIssueId !== "string") {
+          throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
+        }
+        taskIssueId = stoppedIssueId;
+      }
+      const commentIds = locked.queue.entries.map(entry => entry.comment.id);
+      const snapshot = readObject(locked.queueRun.contextSnapshot);
+      if (!readChatPreemptionMarker(snapshot)) {
+        await tx.update(heartbeatRuns).set({
+          contextSnapshot: { ...snapshot, [CHAT_PREEMPTION_CONTEXT_KEY]: {
+            preemptedRunId: taskRunId, preemptedIssueId: taskIssueId, conversationIssueId: issue.id,
+            chatQueueId: queueId, actorId: actor.actorId, requestedAt: new Date().toISOString(),
+          } },
+          updatedAt: new Date(),
+        }).where(and(eq(heartbeatRuns.id, locked.queueRun.id), eq(heartbeatRuns.status, "queued")));
+      }
+      return { taskIssueId: taskIssueId!, running: Boolean(running), commentIds };
+    });
+
+    // Never hold the issue lock while joining the adapter.
+    let cancelError: unknown = null;
+    if (preemption.running) {
+      const options = operatorInterruptCancelOptions({ issueId: preemption.taskIssueId, actor });
+      try {
+        await heartbeat.cancelRun(taskRunId, "Interrupted by the owner's chat message", {
+          ...options,
+          suppressImmediateRecovery: true,
+          resultJson: { ...options.resultJson, interruptionSource: CHAT_PREEMPTION_INTERRUPTION_SOURCE,
+            chatPreemption: { conversationIssueId: issue.id, chatQueueId: queueId,
+              commentIds: preemption.commentIds, actorId: actor.actorId } },
+        });
+      } catch (error) {
+        cancelError = error;
+      }
+    }
+    const stopped = await heartbeat.getRun(taskRunId);
+    // The marked chat run is first in line for the freed slot.
+    await heartbeat.resumeQueuedRunsForAgent(issue.companyId, agentId);
+    const cancellation = readObject(readObject(stopped?.resultJson).executionCancellation);
+    const stop = stopped && bridgeSessionStopAcknowledged(stopped) ? "acknowledged"
+      : cancellation.forced === true ? "forced" : "unverified";
+    let continuation: { requestId: string | null; accepted: boolean; stale: boolean; chatActionId?: string } | null = null;
+    if (stop === "acknowledged") {
+      const { requestTaskRetry } = await import("../services/task-retry.js");
+      continuation = await requestTaskRetry({ db, companyId: issue.companyId, issueId: preemption.taskIssueId,
+        actorId: actor.actorId, actorSource: req.actor.source, idempotencyKey: `chat-preempt:${taskRunId}`,
+        observedRunId: taskRunId, prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
+      if (continuation.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(continuation.chatActionId)
+        .catch(err => logger.warn({ err, issueId: preemption.taskIssueId }, "Preempted task continuation remains queued"));
+      else if (continuation.accepted && continuation.requestId) {
+        await heartbeat.resumeTaskRetry(issue.companyId, continuation.requestId).catch(err =>
+          logger.warn({ err, issueId: preemption.taskIssueId }, "Preempted task continuation remains queued"));
+      }
+    }
+    await logActivity(db, {
+      companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.chat_preempted", entityType: "issue", entityId: preemption.taskIssueId,
+      details: {
+        preemptedRunId: taskRunId, preemptedAgentId: agentId, conversationIssueId: issue.id, chatQueueId: queueId,
+        commentIds: preemption.commentIds, stop, continuationRequestId: continuation?.requestId ?? null,
+        outcome: continuation?.accepted ? "continued" : continuation ? "stale" : "held",
+      },
+    });
+    if (cancelError) throw cancelError;
+  }
+
   router.post(
     "/issues/:id/queued-comments/interrupt",
     validate(queuedCommentInterruptTargetSchema),
@@ -16839,6 +16987,22 @@ export function issueRoutes(
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (req.actor.userId !== issue.conversationUserId) {
           throw forbidden("Only the conversation owner can interrupt a chat to send queued messages");
+        }
+        const targetRunId = req.body.targetRunId as string | null | undefined;
+        const [target] = targetRunId ? await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, targetRunId), eq(heartbeatRuns.companyId, issue.companyId)))
+          .limit(1) : [];
+        const targetContext = readObject(target?.contextSnapshot);
+        if (targetRunId && target && targetContext.issueId !== issue.id && targetContext.taskId !== issue.id) {
+          // A chat waiting behind the same agent's turn on another task.
+          await preemptTaskRunForChat(req, issue, targetRunId);
+          const currentIssue = await svc.getById(issue.id);
+          const queue = await buildQueuedCommentQueue({
+            executor: db, issue: currentIssue ?? issue,
+            activeRun: await resolveActiveIssueRun(currentIssue ?? issue), actor: getActorInfo(req),
+          });
+          res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+          return;
         }
       }
       const actor = getActorInfo(req);

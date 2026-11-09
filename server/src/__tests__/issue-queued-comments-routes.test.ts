@@ -3,7 +3,7 @@ import { runningProcesses } from "../adapters/index.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -33,6 +33,7 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -432,6 +433,136 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect((successor.contextSnapshot as { wakeCommentIds: string[] }).wakeCommentIds).toEqual([firstId, secondId]);
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
+
+  async function seedChatPreemption(input: { forced: boolean }) {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { role: "main" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, seeded.agentId));
+    await db.update(issues).set({ conversationAgentId: seeded.agentId, conversationUserId: "queue-owner",
+      conversationState: "active" }).where(eq(issues.id, seeded.issueId));
+    const [firstId] = seeded.commentIds;
+    await db.update(agentWakeupRequests).set({ reason: "issue_commented", idempotencyKey: `conversation-comment:${firstId}` })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    // The chat wake waits for capacity as a queued run, not behind its own issue.
+    const chatRunId = await promoteQueue(seeded);
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, chatRunId));
+    const startTask = async (agentId: string, identifier: string) => {
+      const taskIssueId = randomUUID(), taskRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: taskRunId, companyId: seeded.companyId, agentId,
+        invocationSource: "assignment", status: "running", runtimeMode: "legacy",
+        runtimeModeResolvedAt: new Date("2026-08-22T15:00:00.000Z"),
+        startedAt: new Date("2026-08-22T15:00:00.000Z"), contextSnapshot: { issueId: taskIssueId },
+        runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: {} } } });
+      await db.insert(issues).values({ id: taskIssueId, companyId: seeded.companyId, identifier,
+        title: "Long task", status: "in_progress", priority: "medium", assigneeAgentId: agentId,
+        executionRunId: taskRunId, checkoutRunId: taskRunId });
+      // The bridge acknowledges Stop like the CC Pocket adapter: a terminal
+      // receipt, then legacy reconciliation holds the task until continued.
+      const control = createAdapterExecutionControl();
+      control.controller.signal.addEventListener("abort", () => void (async () => {
+        const finishedAt = new Date();
+        await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt,
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+            executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString(), forced: input.forced },
+          })}::jsonb` }).where(eq(heartbeatRuns.id, taskRunId));
+        await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null })
+          .where(eq(issues.id, taskIssueId));
+        await db.insert(issueRecoveryActions).values({ companyId: seeded.companyId, sourceIssueId: taskIssueId,
+          kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation",
+          fingerprint: `legacy-execution:${taskRunId}`, status: "resolved", outcome: "blocked",
+          nextAction: "Automatic recovery stopped.",
+          evidence: { runId: taskRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } });
+      })().finally(() => { adapterExecutionControls.delete(taskRunId); control.finish(); }));
+      adapterExecutionControls.set(taskRunId, control);
+      return { taskIssueId, taskRunId };
+    };
+    const task = await startTask(seeded.agentId, "QUE-2");
+    // Occupy the agent's slot on another task so this test never invokes a model.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", startedAt: new Date("2026-08-22T14:00:00.000Z"), contextSnapshot: { issueId: randomUUID() } });
+    return { ...seeded, ...task, chatRunId, startTask };
+  }
+
+  it.each([
+    { name: "owner preempts the same main agent's task", actor: "queue-owner", target: "own", forced: false },
+    { name: "another user's message queues normally", actor: "other-operator", target: "own", forced: false },
+    { name: "another agent's run is never preempted", actor: "queue-owner", target: "other", forced: false },
+    { name: "a forced bridge stop keeps the task blocked", actor: "queue-owner", target: "own", forced: true },
+  ] as const)("chat preemption: $name", async ({ actor, target, forced }) => {
+    const seeded = await seedChatPreemption({ forced });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: seeded.companyId, name: "Other main agent",
+      role: "engineer", status: "idle", adapterType: "ccpocket_bridge", adapterConfig: { role: "main" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } }, permissions: {} });
+    const other = await seeded.startTask(otherAgentId, "QUE-3");
+    const targetRunId = target === "own" ? seeded.taskRunId : other.taskRunId;
+    const path = `/api/issues/${seeded.issueId}/queued-comments`;
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      // Only the owner sees the preemptible turn: its own agent's other task.
+      const ownerQueue = await request(app(seeded.companyId)).get(path).expect(200);
+      expect(ownerQueue.body).toMatchObject({ state: "queued", queueId: seeded.wakeId, preemptibleRunId: seeded.taskRunId });
+      const client = app(seeded.companyId, actor);
+      const queue = await request(client).get(path).expect(200);
+      if (actor !== "queue-owner") expect(queue.body.preemptibleRunId).toBeUndefined();
+      const body = { queueId: seeded.wakeId, revision: queue.body.revision, targetRunId };
+      const expected = actor !== "queue-owner" ? 403 : target === "other" ? 409 : 200;
+      await request(client).post(`${path}/interrupt`).send(body).expect(expected);
+      const runs = new Map((await db.select().from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, seeded.companyId))).map(run => [run.id, run]));
+      const retries = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,
+        `task-retry:chat-preempt:${seeded.taskRunId}`));
+      expect(runs.get(other.taskRunId)?.status).toBe("running");
+      if (expected !== 200) {
+        expect(runs.get(seeded.taskRunId)?.status).toBe("running");
+        expect(readChatMarker(runs.get(seeded.chatRunId))).toBeUndefined();
+        expect(retries).toHaveLength(0);
+        return;
+      }
+      // The task turn stopped with chat-interrupt semantics and attribution.
+      expect(runs.get(seeded.taskRunId)).toMatchObject({ status: "cancelled", errorCode: "operator_interrupted",
+        resultJson: { interruptionSource: "agent_chat_preemption", chatPreemption: {
+          conversationIssueId: seeded.issueId, chatQueueId: seeded.wakeId, actorId: "queue-owner" } } });
+      // The chat run starts next once the agent has capacity.
+      expect(runs.get(seeded.chatRunId)).toMatchObject({ status: "queued" });
+      expect(readChatMarker(runs.get(seeded.chatRunId))).toMatchObject({ preemptedRunId: seeded.taskRunId,
+        preemptedIssueId: seeded.taskIssueId, actorId: "queue-owner" });
+      const [receipt] = await db.select().from(activityLog).where(and(eq(activityLog.companyId, seeded.companyId),
+        eq(activityLog.action, "issue.chat_preempted")));
+      expect(receipt).toMatchObject({ entityId: seeded.taskIssueId, actorId: "queue-owner", details: {
+        preemptedRunId: seeded.taskRunId, conversationIssueId: seeded.issueId, chatQueueId: seeded.wakeId,
+        stop: forced ? "forced" : "acknowledged", outcome: forced ? "held" : "continued" } });
+      const [hold] = await db.select().from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, seeded.taskIssueId));
+      expect(hold).toBeTruthy();
+      if (forced) {
+        // Without the bridge's unforced stop receipt the turn may still be alive.
+        expect(retries).toHaveLength(0);
+        expect((await db.select().from(issues).where(eq(issues.id, seeded.taskIssueId)))[0].status).toBe("blocked");
+        return;
+      }
+      // Exactly one continuation is queued behind the chat, even on a repeat.
+      await request(client).post(`${path}/interrupt`).send(body).expect(200);
+      const continuations = await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, seeded.companyId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${seeded.taskIssueId}`));
+      // One per-run Retry receipt and its single dispatch, sharing one queued run.
+      const [continuation] = continuations.filter(wake => wake.idempotencyKey === `task-retry:chat-preempt:${seeded.taskRunId}`);
+      expect(continuation).toMatchObject({ reason: "task_retry", requestedByActorId: "queue-owner" });
+      expect(continuations.map(wake => wake.idempotencyKey).sort()).toEqual([
+        `task-retry-dispatch:${continuation.id}`, `task-retry:chat-preempt:${seeded.taskRunId}`,
+      ].sort());
+      expect(new Set(continuations.map(wake => wake.runId)).size).toBe(1);
+      expect(receipt.details).toMatchObject({ continuationRequestId: continuation.id });
+      const taskRuns = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId)))
+        .filter(run => (run.contextSnapshot as { issueId?: string }).issueId === seeded.taskIssueId);
+      expect(taskRuns.map(run => run.status).sort()).toEqual(["cancelled", "queued"]);
+    } finally {
+      adapterExecutionControls.delete(seeded.taskRunId);
+      adapterExecutionControls.delete(other.taskRunId);
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
+    }
   });
 
   it("allows only the exact task mutation that stopped its own run to commit", async () => {
@@ -1043,6 +1174,10 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await heartbeatService(db).resumeQueuedRuns();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
   });
+
+  function readChatMarker(run?: { contextSnapshot: unknown } | null) {
+    return (run?.contextSnapshot as Record<string, unknown> | undefined)?.paperclipChatPreemption;
+  }
 
   async function promoteQueue(seeded: Awaited<ReturnType<typeof seedQueue>>) {
     const queueRunId = randomUUID();

@@ -375,3 +375,16 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   longer appear there. Task grouping stays in the Group by menu, and saved
   `?groupIssueId=` links still open their stack. Stored records are unchanged; no schema
   change.
+- Chat preempts the main agent's task (2026-11-09): an owner Agent Chat message
+  (`enableAgentChat`) that waits for capacity behind its own main agent's running turn on
+  a different, ordinary task now gracefully interrupts that turn with the chat-interrupt
+  stop semantics. `GET /issues/:id/queued-comments` reports `preemptibleRunId` only to the
+  conversation owner, and the chat send interrupts that run instead of returning on
+  "queued". The chat run carries a `paperclipChatPreemption` marker so the scheduler starts
+  it first; after an acknowledged, unforced CC Pocket stop the task continues behind it
+  through the existing task Retry receipt `chat-preempt:<runId>` (one per preempted run,
+  never a replay). The task records an `issue.chat_preempted` activity receipt. Forced,
+  failed or mismatched stops keep the existing blocked/hold behavior. Other users' messages,
+  other agents' runs and same-issue chat behavior are unchanged. Main agents are also told
+  to implement in chat and create tasks only when separate tracking is needed
+  (`890f9672d`). No schema change.

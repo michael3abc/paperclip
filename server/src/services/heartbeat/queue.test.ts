@@ -667,6 +667,32 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.setRunStatus).not.toHaveBeenCalled();
   });
 
+  it("starts a chat run that preempted the agent's task ahead of that task's older continuation", async () => {
+    const { company, agent, issue, run: task } = await fixture("queued");
+    const singleSlot = { ...agent, runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } };
+    await db.update(agents).set({ runtimeConfig: singleSlot.runtimeConfig }).where(eq(agents.id, agent.id));
+    await db.update(issues).set({ status: "in_progress", executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, issue.id));
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 60_000), responsibleUserId: "queue-test-user" })
+      .where(eq(heartbeatRuns.id, task.id));
+    const [chatIssue] = await db.insert(issues).values({ companyId: company.id, title: "Owner chat", status: "todo",
+      assigneeAgentId: agent.id }).returning();
+    const [chatWake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "on_demand", status: "queued" }).returning();
+    const [chat] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "queued",
+      invocationSource: "on_demand", wakeupRequestId: chatWake.id, responsibleUserId: "queue-test-user", contextSnapshot: { issueId: chatIssue.id,
+        paperclipChatPreemption: { preemptedRunId: crypto.randomUUID(), preemptedIssueId: issue.id,
+          conversationIssueId: chatIssue.id, chatQueueId: chatWake.id, actorId: "owner", requestedAt: new Date().toISOString() } },
+    }).returning();
+    await db.update(agentWakeupRequests).set({ runId: chat.id }).where(eq(agentWakeupRequests.id, chatWake.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(singleSlot);
+    expect(await createHeartbeatQueue(db, deps).startNextQueuedRunForAgent(agent.id))
+      .toEqual([expect.objectContaining({ id: chat.id, status: "running" })]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, task.id)))[0]).toMatchObject({ status: "queued", startedAt: null });
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(chat.id);
+  });
+
   it("admits the same queued input after the external connection is repaired", async () => {
     const { run, agent } = await fixture("queued");
     await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user" }).where(eq(heartbeatRuns.id, run.id));

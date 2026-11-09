@@ -6831,18 +6831,26 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [feedbackDataSharingPreference, feedbackVoteMutation],
   );
   const interruptChatAfterSend = useCallback(
-    async (runId: string) => {
+    async (runId: string | null) => {
       try {
         // The message receipt is saved before the comment response returns,
         // but the queue read can briefly trail it. Stop once the run changes.
-        for (let attempt = 0; attempt < 5; attempt += 1) {
+        // Without a same-issue run, only a chat waiting behind the agent's
+        // own task turn on another issue is interrupted (server-verified).
+        const attempts = runId ? 5 : 2;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
           const queue = await issuesApi.getQueuedComments(issueId!);
           if (queue.targetRunId && queue.targetRunId !== runId) return;
-          if (queue.queueId && queue.state === "deferred" && queue.entries.length > 0) {
+          if (runId && queue.queueId && queue.state === "deferred" && queue.entries.length > 0) {
             await interruptQueuedComment.mutateAsync(queue.targetRunId ?? null);
             return;
           }
-          if (queue.state === "queued") return;
+          if (queue.state === "queued") {
+            if (queue.queueId && queue.preemptibleRunId && queue.entries.length > 0) {
+              await interruptQueuedComment.mutateAsync(queue.preemptibleRunId);
+            }
+            return;
+          }
           await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
         }
       } catch (err) {
@@ -6883,7 +6891,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         ? readIssueRunStateFromCache(queryClient, issueId!, issue).interruptibleIssueRun?.id ?? null
         : null;
       await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
-      if (queuedBehindRunId) void interruptChatAfterSend(queuedBehindRunId);
+      if (issue?.conversationAgentId) void interruptChatAfterSend(queuedBehindRunId);
     },
     [addComment, addCommentAndReassign, interruptChatAfterSend, issue, issueId, queryClient],
   );

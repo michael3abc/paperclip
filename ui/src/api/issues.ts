@@ -554,11 +554,14 @@ export const issuesApi = {
   ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
   interruptLatestQueuedComments: async (id: string, expectedTargetRunId: string | null): Promise<IssueQueuedCommentQueue> => {
     const queue = await issuesApi.getQueuedComments(id);
-    if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== expectedTargetRunId)) {
+    // A chat waiting behind its own main agent's task turn targets that turn.
+    const targetRunId = queue.targetRunId ??
+      (queue.state === "queued" ? queue.preemptibleRunId ?? null : null);
+    if (!queue.queueId || (targetRunId && targetRunId !== expectedTargetRunId)) {
       throw new Error("The queued messages changed. Refresh and try again.");
     }
     return issuesApi.interruptQueuedComments(id, {
-      queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId,
+      queueId: queue.queueId, revision: queue.revision, targetRunId,
     });
   },
   steerQueuedComment: (
