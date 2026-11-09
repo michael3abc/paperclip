@@ -17,7 +17,11 @@ import { projectSessionRecords, projectWorkProductRecords } from "../services/pr
 import { agentService } from "../services/agents.js";
 
 vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof import("../adapters/registry.js")>(),
-  listAdapterModels: async () => [{ id: "gpt-6.1-sol", label: "Sol" }],
+  listAdapterModels: async (type: string) => type === "ccpocket_bridge" ? [
+    { id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", efforts: ["low", "high"] },
+    { id: "michael-server/claude/compass-opus5.5", label: "Claude via Bridge", efforts: ["high"] },
+    { id: "other-host/antigravity/gemini-test", label: "Another host", efforts: [] },
+  ] : [{ id: "gpt-6.1-sol", label: "Sol" }],
 }));
 
 describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with owned database and real files", (instructionLayout) => {
@@ -194,6 +198,42 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     await agentService(db).update(pmId, { runtimeConfig }, options);
     expect((await readAgent()).runtimeConfig).toEqual(runtimeConfig);
     expect((await pmWorkerPolicyService(db).read(companyId, pmId, actor)).documentPath).toBe(next.workerDocumentPath);
+  });
+
+  it("offers a plain CC Pocket Antigravity shared worker with explicit Full access, never Bridge main agents or Claude/Codex cards", async () => {
+    const agyId = randomUUID(), mainId = randomUUID(), bridgeClaudeId = randomUUID();
+    const bridge = { hostId: "michael-server", model: "michael-server/antigravity/gemini-test", permissionMode: "fullAccess" };
+    await db.insert(agents).values([
+      { id: agyId, companyId, name: "Antigravity worker", status: "active", adapterType: "ccpocket_bridge", adapterConfig: { ...bridge, provider: "antigravity" }, runtimeConfig: { requireProjectWorkspace: true } },
+      { id: mainId, companyId, name: "Main", status: "active", adapterType: "ccpocket_bridge", adapterConfig: { ...bridge, provider: "antigravity", role: "main", projectId }, runtimeConfig: { requireProjectWorkspace: true } },
+      { id: bridgeClaudeId, companyId, name: "Bridge Claude", status: "active", adapterType: "ccpocket_bridge", adapterConfig: { hostId: "michael-server", provider: "claude", model: "michael-server/claude/compass-opus5.5" }, runtimeConfig: { requireProjectWorkspace: true } },
+    ]);
+    const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
+    expect(before.catalog.map(item => item.agentId)).not.toContain(mainId);
+    expect(before.catalog.map(item => item.agentId)).not.toContain(bridgeClaudeId);
+    expect(before.catalog.find(item => item.agentId === agyId)).toEqual({ agentId: agyId, name: "Antigravity worker", harness: "ccpocket_bridge",
+      permissions: ["default", "full-access"], models: [{ id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", thinking: ["low", "high"], speeds: ["standard"] }] });
+    const [full, standard] = [randomUUID(), randomUUID()];
+    const agy: PmWorkerPolicy = { version: 2, defaultSelectionId: full, workers: [{ agentId: agyId, harness: "ccpocket_bridge", selections: [
+      { id: full, model: "michael-server/antigravity/gemini-test", thinking: "high", permission: "full-access", speed: "standard", purpose: "Antigravity coding" },
+      { id: standard, model: "michael-server/antigravity/gemini-test", thinking: null, permission: "default", speed: "standard" }] }] };
+    for (const patch of [{ permission: "approve-all" as const }, { speed: "fast" as const }, { thinking: "xhigh" }, { model: "other-host/antigravity/gemini-test" }, { model: "michael-server/claude/compass-opus5.5" }]) {
+      const invalid = structuredClone(agy); Object.assign(invalid.workers[0]!.selections[0]!, patch);
+      await expect(svc.save(companyId, pmId, { policy: invalid, baseRevision: before.revision, baseHash: before.documentHash }, actor)).rejects.toThrow("not supported");
+    }
+    const asMain = structuredClone(agy); asMain.workers[0]!.agentId = mainId;
+    await expect(svc.save(companyId, pmId, { policy: asMain, baseRevision: before.revision, baseHash: before.documentHash }, actor)).rejects.toThrow("unavailable");
+    await svc.save(companyId, pmId, { policy: agy, baseRevision: before.revision, baseHash: before.documentHash }, actor);
+    const after = await svc.read(companyId, pmId, actor);
+    expect(after.policy).toEqual(agy); expect(after.warnings).toEqual([]);
+    expect(after.document).toContain("michael-server/antigravity/gemini-test");
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).resolves.toEqual({ assigneeAgentId: agyId, assigneeAdapterOverrides: { workerSelectionId: full,
+      adapterConfig: { model: "michael-server/antigravity/gemini-test", effort: "high", permissionMode: "fullAccess", dangerouslyBypassApprovalsAndSandbox: true } } });
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId, assigneeAdapterOverrides: { workerSelectionId: standard } })).resolves.toMatchObject({
+      assigneeAdapterOverrides: { adapterConfig: { effort: null, permissionMode: "default", dangerouslyBypassApprovalsAndSandbox: false } } });
+    // A worker that later becomes a Bridge main agent (or Claude/Codex card) is no longer a dispatch target.
+    await db.update(agents).set({ adapterConfig: { ...bridge, provider: "antigravity", role: "main", projectId } }).where(eq(agents.id, agyId));
+    await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).rejects.toThrow("unavailable");
   });
 
 });

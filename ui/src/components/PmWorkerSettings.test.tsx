@@ -113,5 +113,19 @@ describe("PM worker settings", () => {
     expect(preview().workers[0].selections[0].aiConnection).toBeUndefined();
     expect(button("Save workers").disabled).toBe(true);
   });
+  it("labels a CC Pocket Antigravity worker and saves its explicit Full access choice", async () => {
+    const data = fixture();
+    data.catalog = [{ agentId: workerId, name: "Antigravity worker", harness: "ccpocket_bridge", permissions: ["default", "full-access"],
+      models: [{ id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", thinking: ["low", "high"], speeds: ["standard"] }] }];
+    api.workerPolicy.mockResolvedValue(data);
+    await render(); await click(button("Add worker option"));
+    expect(container.querySelector('[aria-label="Worker 1 harness"]')!.textContent).toContain("Antigravity · Antigravity worker");
+    await select("harness", workerId); await select("model", "michael-server/antigravity/gemini-test");
+    await select("thinking", "high"); await select("permission", "full-access");
+    await click(container.querySelector("input[type=radio]")!);
+    expect(button("Save workers").disabled).toBe(false);
+    expect(preview().workers[0]).toMatchObject({ agentId: workerId, harness: "ccpocket_bridge",
+      selections: [{ model: "michael-server/antigravity/gemini-test", thinking: "high", permission: "full-access", speed: "standard" }] });
+  });
 
 });

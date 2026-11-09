@@ -5,7 +5,7 @@ import { agentInstructionsService } from "./agent-instructions.js";
 import { pmWorkerPolicyRevision } from "./pm-worker-policy.js";
 import { workerPolicyLayout } from "./main-agent-workers.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
-import { validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
+import { isPmWorkerAgent, validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
 import { HttpError } from "../errors.js";
 import type { PmCoordinationScope } from "./pm-coordination-policy.js";
 
@@ -29,7 +29,7 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
   for (const group of policy.workers) for (const choice of group.selections) {
     const worker = workers.find(w => w.id === group.agentId);
     let blocker: string | null = null;
-    if (!worker || worker.adapterType !== group.harness || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
+    if (!worker || worker.adapterType !== group.harness || !isPmWorkerAgent(worker) || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
       || ["paused", "terminated", "pending_approval"].includes(worker.status) || worker.lifecycleState !== "ready") {
       blocker = "PM_WORKER_UNAVAILABLE";
     } else {
@@ -38,7 +38,7 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
         validateWorkerChoices({ version: 2, defaultSelectionId: choice.id, workers: [{ ...group, selections: [choice] }] }, [{
           agentId: worker.id, name: worker.name, harness: group.harness,
           defaultAiConnection: binding?.mode === "responsible_user" ? undefined : binding,
-          permissions: workerPermissionChoices(worker.adapterConfig ?? {}), models: await pmWorkerModels(db, worker, choice.aiConnection),
+          permissions: workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType), models: await pmWorkerModels(db, worker, choice.aiConnection),
         }]);
       } catch (error) {
         if (!(error instanceof HttpError) || error.status < 400 || error.status >= 500) throw error;

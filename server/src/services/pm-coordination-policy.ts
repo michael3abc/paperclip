@@ -2,7 +2,7 @@ import { pmInstructionLayout, type PmInstructionLayoutVersion, aiConnectionBindi
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { workerPolicyLayout } from "./main-agent-workers.js";
 import { isDeepStrictEqual } from "node:util";
-import { workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
+import { isPmWorkerAgent, workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { agents, issues, issueApprovals, heartbeatRuns, projectWorkspaces, executionWorkspaces, type Db } from "@paperclipai/db";
@@ -145,7 +145,7 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     }
   }
   const [worker] = await db.select().from(agents).where(and(eq(agents.id, String(input.assigneeAgentId)), eq(agents.companyId, scope.companyId))).limit(1);
-  if (!worker || !["claude_local", "codex_local"].includes(worker.adapterType) || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
+  if (!worker || !isPmWorkerAgent(worker) || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
     || ["paused", "terminated", "pending_approval"].includes(worker.status)) {
     throw forbidden("The selected shared worker is unavailable; inspect its recorded status", { code: "PM_WORKER_UNAVAILABLE" });
   }
@@ -159,9 +159,9 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     const parsedBinding = aiConnectionBindingSchema.safeParse(worker.runtimeConfig?.aiConnection).data;
     validateWorkerChoices({ version: 2, defaultSelectionId: choice.id, workers: [{ ...group, selections: [choice] }] }, [{
       agentId: worker.id, name: worker.name, harness: group.harness,
-      permissions: workerPermissionChoices(worker.adapterConfig ?? {}), defaultAiConnection: parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding, models: await pmWorkerModels(db, worker, choice.aiConnection),
+      permissions: workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType), defaultAiConnection: parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding, models: await pmWorkerModels(db, worker, choice.aiConnection),
     }]);
-    if (group.harness !== worker.adapterType || !workerPermissionChoices(worker.adapterConfig ?? {}).includes(choice.permission)) {
+    if (group.harness !== worker.adapterType || !workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType).includes(choice.permission)) {
       throw forbidden("Shared worker harness or permission support changed; review its worker settings");
     }
   }

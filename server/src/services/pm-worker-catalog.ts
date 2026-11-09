@@ -3,12 +3,18 @@ import { agents, toolConnections, connectionGrants, toolConnectionInstalls, type
 import { aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding, type PmWorkerCatalogEntry } from "@paperclipai/shared";
 import { listAdapterModels } from "../adapters/registry.js";
 import { unprocessable } from "../errors.js";
-import { workerModelChoices } from "./pm-worker-options.js";
+import { antigravityWorkerModelPrefix, workerModelChoices } from "./pm-worker-options.js";
 
-type Worker = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig">;
+type Worker = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig"> & { adapterConfig?: Record<string, unknown> | null };
 /** Metadata only. Credential sharing is independently checked on save and every run. */
 export async function pmWorkerModels(db: Db, worker: Worker, requested?: AiConnectionBinding): Promise<PmWorkerCatalogEntry["models"]> {
   const harness = worker.adapterType as PmWorkerCatalogEntry["harness"];
+  if (harness === "ccpocket_bridge") {
+    // Antigravity signs in with the host account inside the Bridge; Paperclip AI connections never apply.
+    if (requested) throw unprocessable("Antigravity workers do not use AI connections", { code: "PM_WORKER_CONNECTION_UNAVAILABLE" });
+    const prefix = antigravityWorkerModelPrefix(worker.adapterConfig ?? {});
+    return workerModelChoices(harness, (await listAdapterModels(harness)).filter(model => model.id.startsWith(prefix)));
+  }
   const raw = requested ?? worker.runtimeConfig?.aiConnection;
   if (!raw) return workerModelChoices(harness, await listAdapterModels(harness));
   const binding = aiConnectionBindingSchema.parse(raw);

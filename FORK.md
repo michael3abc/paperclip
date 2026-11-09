@@ -439,3 +439,9 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   cancelled a legacy run, so ordinary saved backlog rows skip it; and the invalidated-backlog
   Retry test's `scheduled_retry` wait uses a 15s deadline (its first attempt joins worker passes
   settling the saved backlog, which the 1s default could not cover).
+- Antigravity shared worker (2026-11-09): worker policies admit a third harness, `ccpocket_bridge`,
+  only for a plain CC Pocket Antigravity shared worker (provider `antigravity`, no main role,
+  project_pm binding or Bridge worker preset). Its catalog lists the host's Antigravity models,
+  rejects AI connections and offers Default or explicit Full access; dispatch, diagnostics and save
+  re-checks fail an agent that stops being eligible. Policies hold up to three workers
+  (`64a101064`). No schema change.
