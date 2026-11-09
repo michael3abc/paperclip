@@ -28,6 +28,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
@@ -356,6 +357,79 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
     expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: seeded.commentIds, previousRunId: seeded.runId,
       forceFreshSession: true });
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
+
+  it.each([
+    { forced: false, delivered: true },
+    { forced: true, delivered: false },
+  ])("delivers every chat message behind an interrupted CC Pocket turn in one run (forced stop: $forced)", async ({ forced, delivered }) => {
+    const seeded = await seedQueue();
+    const [firstId, secondId] = seeded.commentIds;
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", errorCode: "operator_interrupted",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+      runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: {} } },
+      resultJson: { executionCancellation: { state: "acknowledged", acknowledgedAt: "2026-08-22T15:03:00.000Z", forced } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ status: "blocked", executionRunId: null, conversationAgentId: seeded.agentId,
+      conversationUserId: "queue-owner", conversationState: "active" }).where(eq(issues.id, seeded.issueId));
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.companyId, sourceIssueId: seeded.issueId,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: seeded.runId,
+      status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+      evidence: { runId: seeded.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    });
+    // Chat keeps one receipt per message; the second message has its own wake.
+    const wakeContext = (commentId: string) => ({ issueId: seeded.issueId, commentId,
+      _paperclipWakeContext: { commentId, wakeCommentId: commentId, wakeCommentIds: [commentId], wakeReason: "issue_commented" } });
+    await db.update(agentWakeupRequests).set({ reason: "issue_commented", idempotencyKey: `conversation-comment:${firstId}`,
+      requestedAt: new Date("2026-08-22T15:01:00.000Z"), payload: wakeContext(firstId),
+    }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const [sibling] = await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "queue-owner", idempotencyKey: `conversation-comment:${secondId}`,
+      requestedAt: new Date("2026-08-22T15:02:00.000Z"), payload: wakeContext(secondId),
+    }).returning();
+    // Another person's saved message is not part of this person's interrupt.
+    const strangerComment = randomUUID();
+    await db.insert(issueComments).values({ id: strangerComment, companyId: seeded.companyId, issueId: seeded.issueId,
+      authorType: "user", authorUserId: "other-operator", body: "Someone else",
+      createdAt: new Date("2026-08-22T15:02:30.000Z"), updatedAt: new Date("2026-08-22T15:02:30.000Z") });
+    const [stranger] = await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "other-operator", idempotencyKey: `conversation-comment:${strangerComment}`,
+      requestedAt: new Date("2026-08-22T15:02:30.000Z"), payload: wakeContext(strangerComment),
+    }).returning();
+    // Occupy the agent's slot on another task so this test never invokes a model.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.queueId).toBe(seeded.wakeId);
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
+      }).expect(200);
+    } finally { await instanceSettingsService(db).updateExperimental({ enableAgentChat: false }); }
+    const wakes = new Map((await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, seeded.companyId))).map(wake => [wake.id, wake]));
+    expect(wakes.get(stranger.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    if (!delivered) {
+      // Without the bridge's unforced stop receipt the stopped turn may still be alive.
+      expect(wakes.get(seeded.wakeId)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(wakes.get(sibling.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      return;
+    }
+    const first = wakes.get(seeded.wakeId)!;
+    expect(first.status).toBe("coalesced");
+    expect(wakes.get(sibling.id)).toMatchObject({ status: "coalesced", runId: first.runId });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first.runId!));
+    expect(successor.contextSnapshot).toMatchObject({ previousRunId: seeded.runId });
+    expect((successor.contextSnapshot as { wakeCommentIds: string[] }).wakeCommentIds).toEqual([firstId, secondId]);
     await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
   });

@@ -624,6 +624,40 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, queueId));
     expect(await attempt()).toBeNull();
   });
+  it.each([
+    { name: "acknowledged bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", admitted: true },
+    { name: "forced bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", forced: true, admitted: false },
+    { name: "unacknowledged bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", state: "requested", admitted: false },
+    { name: "failed bridge run", current: "ccpocket_bridge", historical: "ccpocket_bridge", status: "failed", admitted: false },
+    { name: "bridge receipt on a local run", current: "claude_local", historical: "ccpocket_bridge", admitted: false },
+    { name: "local run moved to the bridge", current: "ccpocket_bridge", historical: "claude_local", admitted: false },
+  ])("a CC Pocket chat interrupt accepts only the bridge's unforced stop receipt: $name", async scenario => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: scenario.current }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, processPid: null, processGroupId: null,
+      status: scenario.status ?? "cancelled", errorCode: "operator_interrupted",
+      runnerProfileJson: { adapterDispatch: { adapterType: scenario.historical, adapterConfig: {} } },
+      resultJson: { executionCancellation: { state: scenario.state ?? "acknowledged",
+        acknowledgedAt: "2026-09-11T09:20:00Z", forced: scenario.forced ?? false } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() } },
+    });
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
+        queuedCommentInterruptId: queueId, dryRun: true });
+    });
+    if (scenario.admitted) expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    else expect(result).toBeNull();
+  });
   it("dispatches another user's queued legacy message using the consumed board interrupt receipt", async () => {
     const f = await seed();
     await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));

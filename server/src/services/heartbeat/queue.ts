@@ -87,6 +87,7 @@ import {
   gte,
   inArray,
   isNull,
+  like,
   lte,
   ne,
   or,
@@ -4303,6 +4304,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // External input owns an exact authorized source batch. Board input
           // must retain its separate receipt, including during normal resume.
           const canCoalesceComments = !durableRequest && !isConversation(issue) && opts.allowRunCoalescing !== false;
+          // An Interrupt in chat delivers every message the same person left
+          // behind the stopped turn. Each message keeps its own receipt, now
+          // coalesced into this run, so delivery and authority stay per message.
+          const conversationInterruptAdoption = isConversation(issue) && !durableRequest &&
+            !!opts.queuedCommentInterruptId && opts.queuedCommentInterruptId === executionWaitRequestId &&
+            opts.requestedByActorType === "user" && !!opts.requestedByActorId;
           // A resumed receipt already passed admission under this issue lock.
           // Consume it with its successor even when chat keeps other messages
           // in separate turns, or finalization will deliver it a second time.
@@ -4321,7 +4328,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                       // Chat Retry already pins its complete authorized source
                       // batch. Keep separate board input for its own admission.
                       canCoalesceComments || (opts.taskRetryRequestId && !failedChatRetry)
-                        ? undefined : eq(agentWakeupRequests.id, executionWaitRequestId!),
+                        ? undefined
+                        : conversationInterruptAdoption
+                          ? or(
+                              eq(agentWakeupRequests.id, executionWaitRequestId!),
+                              and(
+                                like(agentWakeupRequests.idempotencyKey, "conversation-comment:%"),
+                                eq(agentWakeupRequests.requestedByActorType, "user"),
+                                eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId!),
+                                isNull(agentWakeupRequests.runId),
+                              ),
+                            )
+                          : eq(agentWakeupRequests.id, executionWaitRequestId!),
                     ),
                   )
                   .orderBy(asc(agentWakeupRequests.requestedAt))

@@ -119,6 +119,8 @@ export function normalizeIssueQueuedCommentQueue(
 export interface PendingIssueQueuedComment {
   comment: IssueComment;
   targetRunId: string | null;
+  /** The server saved this message with its own receipt (not an optimistic echo). */
+  persisted?: boolean;
 }
 
 /**
@@ -127,19 +129,25 @@ export interface PendingIssueQueuedComment {
  * included every local entry, queue mutations are withheld by clearing the
  * queue id; local discard remains available through the optimistic comment
  * cancellation path.
+ *
+ * Chat saves each message with its own receipt, so the server queue lists only
+ * the first one. An Interrupt delivers every saved message from the same
+ * person, so persisted chat messages keep the queue actionable.
  */
 export function mergePendingIssueQueuedComments(params: {
   issueId: string;
   authoritativeQueue: IssueQueuedCommentQueue | null | undefined;
   pendingComments: PendingIssueQueuedComment[];
   fallbackProtocol: IssueQueuedCommentProtocol;
+  separateMessageReceipts?: boolean;
 }): IssueQueuedCommentQueue | null {
   const authoritativeEntries = params.authoritativeQueue?.entries ?? [];
   const authoritativeIds = new Set(
     authoritativeEntries.map((entry) => entry.comment.id),
   );
-  const pendingEntries = params.pendingComments
-    .filter(({ comment }) => !authoritativeIds.has(comment.id))
+  const unacknowledged = params.pendingComments
+    .filter(({ comment }) => !authoritativeIds.has(comment.id));
+  const pendingEntries = unacknowledged
     .map(({ comment }, position) => ({
       comment,
       position: authoritativeEntries.length + position,
@@ -151,7 +159,10 @@ export function mergePendingIssueQueuedComments(params: {
   );
   if (entries.length === 0) return null;
 
-  const queueAcknowledged = pendingEntries.length === 0;
+  const queueAcknowledged = pendingEntries.length === 0 || (
+    params.separateMessageReceipts === true &&
+    unacknowledged.every((entry) => entry.persisted === true)
+  );
   const authoritativeOwnsQueue = Boolean(params.authoritativeQueue?.queueId);
   const fallbackTargetRunId =
     params.pendingComments.find((entry) => entry.targetRunId)?.targetRunId ??

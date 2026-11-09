@@ -2208,7 +2208,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           : comment.queueState === "queued"
             ? (comment.queueTargetRunId ?? null)
             : null);
-      return targetRunId ? [{ comment, targetRunId }] : [];
+      const persisted = !("clientStatus" in comment && comment.clientStatus);
+      return targetRunId ? [{ comment, targetRunId, persisted }] : [];
     });
     const fallbackProtocol =
       liveRuntimeRun?.adapterType === "paperclip_runner" ||
@@ -2220,10 +2221,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       authoritativeQueue: visibleAuthoritativeQueue,
       pendingComments,
       fallbackProtocol,
+      separateMessageReceipts: Boolean(conversationMode),
     });
   }, [
     authoritativeQueuedCommentQueue,
     commentsWithRunMeta,
+    conversationMode,
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
     issueId,
@@ -6827,6 +6830,33 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     [feedbackDataSharingPreference, feedbackVoteMutation],
   );
+  const interruptChatAfterSend = useCallback(
+    async (runId: string) => {
+      try {
+        // The message receipt is saved before the comment response returns,
+        // but the queue read can briefly trail it. Stop once the run changes.
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          const queue = await issuesApi.getQueuedComments(issueId!);
+          if (queue.targetRunId && queue.targetRunId !== runId) return;
+          if (queue.queueId && queue.state === "deferred" && queue.entries.length > 0) {
+            await interruptQueuedComment.mutateAsync(queue.targetRunId ?? null);
+            return;
+          }
+          if (queue.state === "queued") return;
+          await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+        }
+      } catch (err) {
+        pushToast({
+          title: "Message queued",
+          body: err instanceof Error
+            ? `Couldn't interrupt the current turn automatically: ${err.message}`
+            : "Couldn't interrupt the current turn automatically. Use Interrupt to send it now.",
+          tone: "error",
+        });
+      }
+    },
+    [interruptQueuedComment, issueId, pushToast],
+  );
   const handleChatAdd = useCallback(
     async (
       body: string,
@@ -6847,9 +6877,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
         return;
       }
+      // Chat always interrupts: a message sent while the agent is working
+      // stops that turn and is delivered next with the earlier queued messages.
+      const queuedBehindRunId = issue?.conversationAgentId
+        ? readIssueRunStateFromCache(queryClient, issueId!, issue).interruptibleIssueRun?.id ?? null
+        : null;
       await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
+      if (queuedBehindRunId) void interruptChatAfterSend(queuedBehindRunId);
     },
-    [addComment, addCommentAndReassign, issue?.conversationAgentId],
+    [addComment, addCommentAndReassign, interruptChatAfterSend, issue, issueId, queryClient],
   );
   const handleCommentImageUpload = useCallback(
     async (file: File) => {
