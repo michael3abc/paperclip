@@ -24,11 +24,16 @@ function useStatusReadError(companyId: string | null | undefined, source: string
   }, [companyId, source, title, isError, error, errorUpdatedAt, pushToast]);
 }
 
-/** Presentation only; callers retain live-run ownership and shared polling. */
+/**
+ * Presentation only; callers retain live-run ownership and shared polling.
+ * `selfRunAgentIds` opts listed non-PM agents (project main agents) into
+ * `working` for their own running runs; the viewer's exclusions still apply.
+ */
 export function useProjectPmSidebarStatus(
   companyId: string | null | undefined,
   userId: string | null | undefined,
   liveRuns: readonly LiveRunForIssue[] | undefined,
+  options: { selfRunAgentIds?: readonly string[] } = {},
 ) {
   const bindings = useQuery({
     queryKey: queryKeys.pmWorkspaces(companyId!),
@@ -37,10 +42,13 @@ export function useProjectPmSidebarStatus(
     staleTime: 60_000,
   });
   const hasBindings = (bindings.data?.length ?? 0) > 0;
+  const selfRunAgentIds = options.selfRunAgentIds;
+  const hasSelfRunAgents = (selfRunAgentIds?.length ?? 0) > 0;
   const preferences = useQuery({
     queryKey: queryKeys.sidebarPreferences.projectOrder(companyId ?? "__none__", userId ?? "__anon__"),
     queryFn: () => sidebarPreferencesApi.getProjectOrder(companyId!),
-    enabled: !!companyId && !!userId && hasBindings,
+    // Exclusions apply to own-run status too, so it waits for the same list.
+    enabled: !!companyId && !!userId && (hasBindings || (!!bindings.data && hasSelfRunAgents)),
   });
   // Deliberate full-feed navigation exception for bound PMs. Share the page's
   // complete snapshot and invalidation prefix; the count-only key stays separate.
@@ -61,12 +69,21 @@ export function useProjectPmSidebarStatus(
   return useMemo(() => {
     // Unknown snapshots are not empty snapshots. React Query retains successful
     // data after a refetch failure; keep that status while reporting the failure.
-    if (!userId || !bindings.data || !Array.isArray(exclusions) || !attention.data) {
+    // Bindings decide which rules an agent follows, so they are always required.
+    if (!userId || !bindings.data || !Array.isArray(exclusions)) {
       return new Map<string, AgentSidebarStatus>();
     }
+    // PM rows need the complete attention snapshot even for blue. Until it
+    // loads, bound agents claim nothing; own-run rows do not depend on it.
+    const pmReady = !!attention.data;
+    const boundIds = new Set(bindings.data.map(binding => binding.agentId));
     return deriveProjectPmSidebarStatus({
-      liveRuns, pmWorkspaces: bindings.data, attentionItems: attention.data.items, excludedAgentIds: exclusions,
+      liveRuns,
+      pmWorkspaces: pmReady ? bindings.data : [],
+      attentionItems: attention.data?.items ?? [],
+      excludedAgentIds: exclusions,
+      selfRunAgentIds: selfRunAgentIds?.filter(id => !boundIds.has(id)),
     });
     // Refetch timestamps re-evaluate snooze expiry even for unchanged data.
-  }, [userId, bindings.data, exclusions, attention.data, attention.dataUpdatedAt, liveRuns]);
+  }, [userId, bindings.data, exclusions, attention.data, attention.dataUpdatedAt, liveRuns, selfRunAgentIds]);
 }

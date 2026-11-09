@@ -303,13 +303,25 @@ describe("Coordinator agents section", () => {
       expect(status()).toBeNull();
     });
 
-    it("never infers status from unbound agents, open tasks or chat-only state", async () => {
-      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-amy", status: "running" }]);
+    it("never infers status from agent status, unlisted agents' runs, open tasks or chat-only state", async () => {
+      // a-amy's agent record says running, but it has no live run; the worker run is outside every project.
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-worker", status: "running" }]);
       fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", conversationState: "active" }];
       await renderSidebar(); await settle();
       expect(section()?.querySelector("[data-agent-status]")).toBeNull();
       expect(fixture.openWork).not.toHaveBeenCalled();
       expect(rows().some(row => row.className.includes("ring-(--dashboard-run-accent)"))).toBe(false);
+    });
+
+    it("shows an unbound listed agent working only while its own run is live", async () => {
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "a-amy", status: "running" }]);
+      await renderSidebar(); await settle();
+      expect(byLabel("amy").getAttribute("data-agent-status")).toBe("working");
+      expect(byLabel("amy").textContent).toContain("working");
+      expect(status()).toBeNull();
+      fixture.liveRuns.mockResolvedValue([]);
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.liveRuns("company") }); }); await settle();
+      expect(byLabel("amy").getAttribute("data-agent-status")).toBeNull();
     });
 
     it("keeps unread and selected state on a working row without the legacy ring", async () => {
@@ -393,6 +405,54 @@ describe("Coordinator agents section", () => {
       expect(fixture.pmWorkspaces).toHaveBeenCalledTimes(bindingsReads);
       expect(fixture.attention).toHaveBeenCalledTimes(attentionReads);
       expect(fixture.openWork).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("project main agent status without PM bindings", () => {
+    // Project main agents have no project_pm binding and are listed because the person starred them.
+    const mains: FixtureAgent[] = [
+      { id: "a-main", name: "All-Set", role: "engineer", urlKey: "all-set", status: "running", adapterType: "ccpocket_bridge" },
+      { id: "a-ceo", name: "momo", role: "ceo", urlKey: "momo", status: "running", adapterType: "paperclip_runner" },
+      { id: "a-worker", name: "Shared worker", role: "engineer", urlKey: "worker", status: "running" },
+    ];
+    const byLabel = (label: string) => rows().find(row => row.textContent?.startsWith(label))!;
+    async function settle() { await flush(); await flush(); await flush(); }
+    beforeEach(() => {
+      fixture.agents = mains;
+      fixture.listMemberships.mockResolvedValue({ agentMemberships: {}, projectMemberships: {}, starredAgentIds: ["a-main"] });
+      fixture.liveRuns.mockResolvedValue([
+        { id: "run-main", agentId: "a-main", status: "running", projectId: "project-a", execution: { phase: "working" } },
+        { id: "run-momo", agentId: "a-ceo", status: "running", execution: { phase: "working" } },
+        { id: "run-worker", agentId: "a-worker", status: "running", projectId: "project-a" },
+      ]);
+    });
+
+    it("marks the main agent working from its own run, honors exclusions and reads no full attention feed", async () => {
+      fixture.preferences.mockResolvedValue({ orderedIds: [], excludedPmStatusAgentIds: ["a-ceo"], updatedAt: null });
+      await renderSidebar(); await settle();
+      expect(rows().map(row => row.getAttribute("href"))).toEqual(["/chats/all-set", "/chats/momo"]);
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBe("working");
+      expect(byLabel("momo").getAttribute("data-agent-status")).toBeNull();
+      expect(fixture.preferences).toHaveBeenCalled();
+      expect(fixture.attention).not.toHaveBeenCalled();
+    });
+
+    it("claims no status while the exclusion list is unknown and reports the failure", async () => {
+      fixture.preferences.mockRejectedValue(new Error("unavailable"));
+      await renderSidebar(); await settle();
+      expect(section()?.querySelector("[data-agent-status]")).toBeNull();
+      expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: "sidebar-pm-status-preference:company" }));
+    });
+
+    it("clears when the main agent's run fails or waits for an answer", async () => {
+      await renderSidebar(); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBe("working");
+      fixture.liveRuns.mockResolvedValue([{ id: "run-main", agentId: "a-main", status: "running", execution: { phase: "waiting_for_answer" } }]);
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.liveRuns("company") }); }); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBeNull();
+      fixture.liveRuns.mockResolvedValue([{ id: "run-main", agentId: "a-main", status: "failed" }]);
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.liveRuns("company") }); }); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBeNull();
     });
   });
 

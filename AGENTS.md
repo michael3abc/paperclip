@@ -139,8 +139,12 @@ or is the PM's own run. Orange frame and `needs input`, which overrides blue: an
 Owner-addressed `issue_thread_interaction`, `approval` or `decision` item of that
 project is pending. Zero-slot PMs work through shared workers, so attribute through
 `GET /companies/:id/pm-workspaces` and the live run's `projectId` (omitted on runs the
-viewer cannot read), never `run.agentId`; agents that are not a project PM (momo and
-the personal agent rows) get no status. Read the
+viewer cannot read), never `run.agentId`. In the Coordinator only, a listed agent that is
+not a project PM (a project main agent; momo and personal agent rows unless the person
+excluded them) shows blue `working` while its own readable run is working, by
+`run.agentId` only: no project attribution, no `needs input`, no full attention read, and
+the person's exclusion list must be loaded first. Classic SidebarAgents keeps its live dot
+for such agents. Read the
 complete attention snapshot (`attentionApi.list(..., { all: true })`), not the ranked
 first page; `approval` attention items must carry their linked issue's `project`
 (`issueContext`), and approvals the viewer cannot read stay excluded. Queued,

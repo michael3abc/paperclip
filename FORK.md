@@ -375,3 +375,13 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   longer appear there. Task grouping stays in the Group by menu, and saved
   `?groupIssueId=` links still open their stack. Stored records are unchanged; no schema
   change.
+- Main agent working status (2026-11-09): project main agents have no `project_pm`
+  binding, so the Coordinator Agents section never showed blue `working` for them, even
+  while their own run (and the native subagents inside it) was executing; the classic
+  sidebar's live dot was the only signal. The Coordinator now passes its listed agents
+  to `useProjectPmSidebarStatus` as `selfRunAgentIds`: an unbound listed agent is
+  `working` while its own readable run is working (`run.agentId` only; queued, answer
+  waits and ended or failed runs clear it), after the bindings and the viewer's
+  exclusion list load. It gets no project attribution and no `needs input`, starts no
+  full attention read, and excluded agents (such as momo) stay plain. PM rules and the
+  classic sidebars are unchanged. Frontend only; no schema change.

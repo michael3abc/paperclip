@@ -2965,8 +2965,11 @@ control. All three sidebar entries share project PM status through
 useProjectPmSidebarStatus and SidebarNavItem. A readable running project task or
 bound PM's own live run shows blue working; pending Owner-addressed interaction,
 approval or decision for the project shows orange needs input with priority. Shared
-workers attribute work by project binding, never by the worker's identity. Unbound,
-excluded and chat-only rows get no status. The old Coordinator task-tree/active-chat
+workers attribute work by project binding, never by the worker's identity. A listed
+unbound agent (a project main agent, whose native subagents run inside its own run)
+shows blue working only while its own readable run is working; it gets no project
+attribution or needs input, and excluded and chat-only rows get no status. Own-run
+status waits for the bindings and the viewer's exclusion list, never the full feed. The old Coordinator task-tree/active-chat
 outline is superseded; row order, selection, unread and recents stay unchanged.
 
 Binding, viewer-preference and complete attention snapshots must all be known before

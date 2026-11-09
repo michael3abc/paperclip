@@ -103,20 +103,25 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const liveRuns = useQuery({ queryKey: liveRunsQueryKey, queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
     enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns.data, liveRuns.dataUpdatedAt);
-  const pmStatusByAgent = useProjectPmSidebarStatus(companyId, userId, liveRuns.data);
+  const listedAgents = useMemo(() => (agents.data ?? [])
+    // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
+    // Agents the person starred are listed too, so a project's main agent with an ordinary role can be pinned here.
+    .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
+      && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm"
+        || (agentMemberships.isSuccess && isStarred(agentMemberships.data, "agent", agent.id)))
+      && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
+    .sort((left, right) => Number(right.id === primaryAgentId) - Number(left.id === primaryAgentId)
+      || left.name.localeCompare(right.name, undefined, { sensitivity: "base" })),
+  [agents.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId]);
+  // Listed agents that are not project PMs (project main agents) work in their
+  // own runs, including native subagents inside that run, so their own running
+  // run marks them working. PM-bound agents keep the project rules.
+  const listedAgentIds = useMemo(() => listedAgents.map(agent => agent.id), [listedAgents]);
+  const pmStatusByAgent = useProjectPmSidebarStatus(companyId, userId, liveRuns.data, { selfRunAgentIds: listedAgentIds });
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
-    return (agents.data ?? [])
-      // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
-      // Agents the person starred are listed too, so a project's main agent with an ordinary role can be pinned here.
-      .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
-        && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm"
-          || (agentMemberships.isSuccess && isStarred(agentMemberships.data, "agent", agent.id)))
-        && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
-      .sort((left, right) => Number(right.id === primaryAgentId) - Number(left.id === primaryAgentId)
-        || left.name.localeCompare(right.name, undefined, { sensitivity: "base" }))
-      .map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), status: pmStatusByAgent.get(agent.id) }));
-  }, [agents.data, chats.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId, pmStatusByAgent]);
+    return listedAgents.map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), status: pmStatusByAgent.get(agent.id) }));
+  }, [listedAgents, chats.data, pmStatusByAgent]);
   const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
   const agentsFailed = agents.isError;
   const agentsLoading = agents.isPending && agents.fetchStatus === "fetching";

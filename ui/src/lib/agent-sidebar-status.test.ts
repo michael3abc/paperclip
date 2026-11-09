@@ -316,6 +316,67 @@ describe("deriveProjectPmSidebarStatus", () => {
     });
   });
 
+  describe("own-run status for listed non-PM agents (selfRunAgentIds)", () => {
+    it("marks a listed main agent working for its own running run, without any PM workspaces", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [run({ agentId: "main-a", projectId: "project-a" }), run({ agentId: "worker-1", projectId: "project-a" })],
+        pmWorkspaces: [],
+        attentionItems: [item({ project: { id: "project-a" } })],
+        selfRunAgentIds: ["main-a", "main-b"],
+        now: NOW,
+      });
+
+      // Only its own run counts: no project attribution and no needs_input.
+      expect([...result.entries()]).toEqual([["main-a", "working"]]);
+    });
+
+    it("clears when the run is queued, waiting for an answer or no longer live", () => {
+      for (const liveRuns of [
+        [run({ agentId: "main-a", status: "queued" })],
+        [run({ agentId: "main-a", execution: { phase: "waiting_for_answer" } })],
+        [run({ agentId: "main-a", status: "succeeded" })],
+        [run({ agentId: "main-a", status: "failed" })],
+        [],
+      ]) {
+        const result = deriveProjectPmSidebarStatus({ liveRuns, pmWorkspaces: [], attentionItems: [], selfRunAgentIds: ["main-a"], now: NOW });
+        expect(result.size).toBe(0);
+      }
+    });
+
+    it("counts a just-started run patched from queued to running", () => {
+      const queued = [run({ id: "run-m", agentId: "main-a", status: "queued", execution: { phase: "queued" } })] as never;
+      const { next } = patchRunStatusInList(queued, "run-m", "running");
+      const result = deriveProjectPmSidebarStatus({ liveRuns: next, pmWorkspaces: [], attentionItems: [], selfRunAgentIds: ["main-a"], now: NOW });
+      expect(result.get("main-a")).toBe("working");
+    });
+
+    it("honors the viewer's exclusions and ignores agents that are not listed", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [run({ agentId: "momo" }), run({ agentId: "main-a" }), run({ agentId: "unlisted" })],
+        pmWorkspaces: [],
+        attentionItems: [],
+        excludedAgentIds: ["momo"],
+        selfRunAgentIds: ["momo", "main-a"],
+        now: NOW,
+      });
+
+      expect([...result.entries()]).toEqual([["main-a", "working"]]);
+    });
+
+    it("leaves PM-bound agents on the project rules, including terminated and excluded bindings", () => {
+      const result = deriveProjectPmSidebarStatus({
+        liveRuns: [run({ agentId: "pm-old", projectId: null }), run({ agentId: "pm-excluded", projectId: null })],
+        pmWorkspaces: [pm("pm-old", "project-a", "terminated"), pm("pm-excluded", "project-b"), pm("pm-a", "project-a")],
+        attentionItems: [item({ project: { id: "project-a" } })],
+        excludedAgentIds: ["pm-excluded"],
+        selfRunAgentIds: ["pm-old", "pm-excluded", "pm-a"],
+        now: NOW,
+      });
+
+      expect([...result.entries()]).toEqual([["pm-a", "needs_input"]]);
+    });
+  });
+
   describe("approval items as the attention feed returns them", () => {
     // Shape of an approval row from the real GET /attention response after the
     // server carries the linked task's project: the nested project object
