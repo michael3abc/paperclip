@@ -1183,6 +1183,71 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     const allSources = await service.list(companyId, { groupBy: "project", groupProjectId: "none", limit: 50 });
     expect(allSources.artifacts.map((artifact) => artifact.title)).toEqual(expect.arrayContaining(["Review Notes", "brief.pdf"]));
   });
+
+  it("files an agent chat's media under the one active project its agent leads", async () => {
+    const { companyId, projectId } = await seedArtifacts();
+    const leadAgentId = "37373737-3737-4373-8373-373737373737";
+    const twoProjectAgentId = "38383838-3838-4383-8383-383838383838";
+    const archivedLeadAgentId = "39393939-3939-4393-8393-393939393939";
+    await db.insert(agents).values([
+      { id: leadAgentId, companyId, name: "Comfy", role: "engineer" },
+      { id: twoProjectAgentId, companyId, name: "Both", role: "engineer" },
+      { id: archivedLeadAgentId, companyId, name: "Retired", role: "engineer" },
+    ]);
+    const leadProjectId = "3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a";
+    await db.insert(projects).values([
+      { id: leadProjectId, companyId, name: "Comfy", status: "in_progress", leadAgentId },
+      { id: "3b3b3b3b-3b3b-43b3-83b3-3b3b3b3b3b3b", companyId, name: "Left", status: "in_progress", leadAgentId: twoProjectAgentId },
+      { id: "3c3c3c3c-3c3c-43c3-83c3-3c3c3c3c3c3c", companyId, name: "Right", status: "in_progress", leadAgentId: twoProjectAgentId },
+      { id: "3d3d3d3d-3d3d-43d3-83d3-3d3d3d3d3d3d", companyId, name: "Gone", status: "in_progress", leadAgentId: archivedLeadAgentId, archivedAt: new Date("2026-01-01T00:00:00.000Z") },
+    ]);
+    const chat = (id: string, agentId: string, identifier: string, extra: Partial<typeof issues.$inferInsert> = {}) => ({
+      id, companyId, identifier, title: `Chat ${identifier}`, status: "in_progress", priority: "medium",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: "owner", conversationState: "active" as const, ...extra,
+    });
+    const leadChatId = "3e3e3e3e-3e3e-43e3-83e3-3e3e3e3e3e3e";
+    const twoProjectChatId = "3f3f3f3f-3f3f-43f3-83f3-3f3f3f3f3f3f";
+    const archivedChatId = "40404040-4040-4404-8404-404040404040";
+    const pinnedChatId = "50505050-5050-4505-8505-505050505050";
+    await db.insert(issues).values([
+      chat(leadChatId, leadAgentId, "PAP-6"),
+      chat(twoProjectChatId, twoProjectAgentId, "PAP-7"),
+      chat(archivedChatId, archivedLeadAgentId, "PAP-8"),
+      // An explicit project still wins over the lead fallback.
+      chat(pinnedChatId, leadAgentId, "PAP-9", { projectId, conversationUserId: "someone-else" }),
+    ]);
+    const files = [
+      { id: "51515151-5151-4515-8515-515151515151", issueId: leadChatId, name: "render.png" },
+      { id: "52525252-5252-4525-8525-525252525252", issueId: twoProjectChatId, name: "both.png" },
+      { id: "53535353-5353-4535-8535-535353535353", issueId: archivedChatId, name: "retired.png" },
+      { id: "54545454-5454-4545-8545-545454545454", issueId: pinnedChatId, name: "pinned.png" },
+    ];
+    await db.insert(assets).values(files.map((file) => ({
+      id: file.id, companyId, provider: "local_disk", objectKey: file.name, contentType: "image/png",
+      byteSize: 10, sha256: `sha256-${file.name}`, originalFilename: file.name, createdByAgentId: leadAgentId,
+    })));
+    await db.insert(issueAttachments).values(files.map((file) => ({ companyId, issueId: file.issueId, assetId: file.id })));
+
+    const service = companyArtifactsService(db, createStorageService());
+    const titlesIn = async (groupProjectId: string) =>
+      (await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId, limit: 50 })).artifacts.map((a) => a.title).sort();
+
+    expect(await titlesIn(leadProjectId)).toEqual(["render.png"]);
+    expect(await titlesIn(projectId)).toEqual(expect.arrayContaining(["pinned.png"]));
+    expect(await titlesIn(projectId)).not.toContain("render.png");
+    const noProject = await titlesIn("none");
+    expect(noProject).toEqual(expect.arrayContaining(["both.png", "retired.png"]));
+    expect(noProject).not.toContain("render.png");
+
+    const folders = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 10 });
+    expect(folders.groups?.find((group) => group.project?.id === leadProjectId)).toMatchObject({ title: "Comfy", count: 1 });
+
+    const listed = await service.list(companyId, { mediaOnly: true, limit: 50 });
+    expect(listed.artifacts.find((a) => a.title === "render.png")?.project).toEqual({ id: leadProjectId, name: "Comfy" });
+    // The project page (projectId filter) lists the chat's media too.
+    const projectPage = await service.list(companyId, { mediaOnly: true, projectId: leadProjectId, limit: 50 });
+    expect(projectPage.artifacts.map((a) => a.title)).toEqual(["render.png"]);
+  });
 });
 
 describe("company artifacts route authorization", () => {

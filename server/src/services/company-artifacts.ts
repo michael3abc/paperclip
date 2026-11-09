@@ -229,6 +229,20 @@ function mediaOnlyCondition(
   return sql`(${image} OR ${video} OR ${file})`;
 }
 
+/**
+ * The project an issue's artifacts are filed under. Agent chats carry no project of their
+ * own, so a chat counts under the one active project its agent leads (a project main
+ * agent); a chat whose agent leads no project, or several, stays under "No project".
+ * Read-only: no issue or project row changes.
+ */
+const artifactProjectId = sql<string | null>`coalesce(${issues.projectId}, case when ${issues.conversationAgentId} is not null then (
+  select (array_agg(lead_project.id))[1] from ${projects} lead_project
+  where lead_project.lead_agent_id = ${issues.conversationAgentId}
+    and lead_project.company_id = ${issues.companyId}
+    and lead_project.archived_at is null
+  having count(*) = 1
+) end)`;
+
 function buildIssueHref(companyPrefix: string, identifier: string, anchor: string) {
   return `/${encodeURIComponent(companyPrefix)}/issues/${encodeURIComponent(identifier)}#${anchor}`;
 }
@@ -506,14 +520,14 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         isNull(issues.harnessKind),
         // Archiving a project is how the UI "deletes" it; its artifacts must leave the list too.
         // A subquery (not projects.archivedAt) because the work-product dedupe query does not join projects.
-        sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.archivedAt} is not null)`,
+        sql`not exists (select 1 from ${projects} where ${projects.id} = ${artifactProjectId} and ${projects.archivedAt} is not null)`,
         ...(options.issueConditions ?? []),
       ];
       const projectScope = (projectKey: string): SQL =>
         projectKey === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID
           // Matches artifacts listed with `project: null`: no project, or none in this company.
-          ? sql`not exists (select 1 from ${projects} where ${projects.id} = ${issues.projectId} and ${projects.companyId} = ${issues.companyId})`
-          : eq(issues.projectId, projectKey);
+          ? sql`not exists (select 1 from ${projects} where ${projects.id} = ${artifactProjectId} and ${projects.companyId} = ${issues.companyId})`
+          : eq(artifactProjectId, projectKey);
 
       /** Projects (or `none`) whose visible tasks carry any artifact source; folders are built per key. */
       const loadArtifactProjectKeys = async () => {
@@ -527,11 +541,11 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const rows = await db
           .selectDistinct({ projectId: projects.id })
           .from(issues)
-          .leftJoin(projects, and(eq(issues.projectId, projects.id), eq(projects.companyId, issues.companyId)))
+          .leftJoin(projects, and(eq(artifactProjectId, projects.id), eq(projects.companyId, issues.companyId)))
           .where(and(
             eq(issues.companyId, companyId),
             ...issueConditions,
-            ...(query.projectId ? [eq(issues.projectId, query.projectId)] : []),
+            ...(query.projectId ? [eq(artifactProjectId, query.projectId)] : []),
             or(...sourceExists)!,
           ));
         return rows.map((row) => row.projectId ?? COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID);
@@ -574,7 +588,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const documentCursor = paged ? cursorCondition(documentSortDate, documentArtifactId, cursor) : undefined;
         if (documentCursor) documentConditions.push(documentCursor);
         if (scope) documentConditions.push(scope);
-        if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
+        if (query.projectId) documentConditions.push(eq(artifactProjectId, query.projectId));
         if (query.agentId) documentConditions.push(sql`coalesce(${createdAgent.id}, ${updatedAgent.id}) = ${query.agentId}`);
         if (q) {
           documentConditions.push(sql`(
@@ -628,7 +642,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           .leftJoin(
             projects,
             and(
-              eq(issues.projectId, projects.id),
+              eq(artifactProjectId, projects.id),
               eq(projects.companyId, issues.companyId),
             ),
           )
@@ -708,7 +722,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           workProductConditions.push(workProductKind);
         }
         if (query.projectId) {
-          const projectCondition = eq(issues.projectId, query.projectId);
+          const projectCondition = eq(artifactProjectId, query.projectId);
           workProductBaseConditions.push(projectCondition);
           workProductConditions.push(projectCondition);
         }
@@ -753,7 +767,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           .leftJoin(
             projects,
             and(
-              eq(issues.projectId, projects.id),
+              eq(artifactProjectId, projects.id),
               eq(projects.companyId, issueWorkProducts.companyId),
             ),
           )
@@ -849,7 +863,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         if (attachmentCursor) attachmentConditions.push(attachmentCursor);
         if (scope) attachmentConditions.push(scope);
         if (attachmentKind) attachmentConditions.push(attachmentKind);
-        if (query.projectId) attachmentConditions.push(eq(issues.projectId, query.projectId));
+        if (query.projectId) attachmentConditions.push(eq(artifactProjectId, query.projectId));
         if (query.agentId) attachmentConditions.push(eq(attachmentAgent.id, query.agentId));
         if (q) {
           attachmentConditions.push(sql`(
@@ -895,7 +909,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           .leftJoin(
             projects,
             and(
-              eq(issues.projectId, projects.id),
+              eq(artifactProjectId, projects.id),
               eq(projects.companyId, issues.companyId),
             ),
           )
