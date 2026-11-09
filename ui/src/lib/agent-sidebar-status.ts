@@ -5,7 +5,8 @@ import type { LiveRunForIssue } from "../api/heartbeats";
  * Sidebar status for a project PM row.
  *
  * - `needs_input`: a request is waiting on the human Owner personally.
- * - `working`: a task of the PM's project (subtasks included) is executing.
+ * - `working`: a task of the PM's project (subtasks included) is executing, or
+ *   an opted-in agent (`selfRunAgentIds`) is executing its own run.
  *
  * `needs_input` outranks `working`: a person is the bottleneck, so that is the
  * signal worth interrupting the eye for.
@@ -74,6 +75,13 @@ export interface ProjectPmSidebarStatusInput {
    * preference). Absent or empty means every PM-bound agent shows its status.
    */
   excludedAgentIds?: readonly string[] | null;
+  /**
+   * Agents that are not project PMs but whose own readable working run marks
+   * them `working` (the Coordinator lists project main agents, which do their
+   * work in their own runs). Only `run.agentId` counts here: no project
+   * attribution and no `needs_input`. PM-bound and excluded agents are ignored.
+   */
+  selfRunAgentIds?: readonly string[] | null;
   now?: number;
 }
 
@@ -82,22 +90,27 @@ export interface ProjectPmSidebarStatusInput {
  * executes on shared workers. So status is attributed by project, through the
  * PM workspace bindings, instead of by `run.agentId`. Agents that are not a
  * project PM, and PMs the viewer excluded in their sidebar preference, never
- * appear in the result.
+ * appear in the result, except that an agent listed in `selfRunAgentIds` (and
+ * not excluded) is `working` while its own run executes.
  */
 export function deriveProjectPmSidebarStatus({
   liveRuns,
   pmWorkspaces,
   attentionItems,
   excludedAgentIds,
+  selfRunAgentIds,
   now = Date.now(),
 }: ProjectPmSidebarStatusInput): Map<string, AgentSidebarStatus> {
   const result = new Map<string, AgentSidebarStatus>();
-  if (!pmWorkspaces?.length) return result;
+  if (!pmWorkspaces?.length && !selfRunAgentIds?.length) return result;
   const excluded = new Set(excludedAgentIds ?? []);
 
   const pmIdsByProject = new Map<string, Set<string>>();
   const pmIds = new Set<string>();
-  for (const workspace of pmWorkspaces) {
+  // Every bound agent, terminated or excluded included, stays on the PM rules.
+  const boundIds = new Set((pmWorkspaces ?? []).map(workspace => workspace.agentId));
+  const selfIds = new Set((selfRunAgentIds ?? []).filter(id => !boundIds.has(id) && !excluded.has(id)));
+  for (const workspace of pmWorkspaces ?? []) {
     if (workspace.status === "terminated" || !workspace.projectId) continue;
     // An excluded agent never joins either lookup, so none of the run or
     // attention paths below can reach it.
@@ -114,7 +127,7 @@ export function deriveProjectPmSidebarStatus({
   for (const run of liveRuns ?? []) {
     if (!isWorkingLiveRun(run)) continue;
     // Work of the project's tasks, wherever it executes, plus the PM's own runs.
-    if (pmIds.has(run.agentId)) result.set(run.agentId, "working");
+    if (pmIds.has(run.agentId) || selfIds.has(run.agentId)) result.set(run.agentId, "working");
     const projectPms = run.projectId ? pmIdsByProject.get(run.projectId) : undefined;
     if (projectPms) for (const agentId of projectPms) result.set(agentId, "working");
   }
