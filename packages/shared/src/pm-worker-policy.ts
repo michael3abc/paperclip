@@ -2,6 +2,16 @@ import { z } from "zod";
 import { aiConnectionBindingSchema } from "./ai-connections.js";
 import type { PmInstructionLayoutVersion } from "./pm-instruction-layout.js";
 
+/**
+ * Shared worker harnesses. `ccpocket_bridge` is admitted only as a plain Antigravity shared worker (provider
+ * `antigravity`, no main/PM role); the server enforces that eligibility.
+ */
+export const PM_WORKER_HARNESSES = ["claude_local", "codex_local", "ccpocket_bridge"] as const;
+export type PmWorkerHarness = (typeof PM_WORKER_HARNESSES)[number];
+export function pmWorkerHarnessLabel(harness: PmWorkerHarness): string {
+  return harness === "claude_local" ? "Claude" : harness === "codex_local" ? "Codex" : "Antigravity";
+}
+
 export const pmWorkerSelectionSchema = z.object({
   id: z.string().uuid(),
   model: z.string().trim().min(1).max(200),
@@ -17,9 +27,9 @@ export const pmWorkerPolicySchema = z.object({
   defaultSelectionId: z.string().uuid(),
   workers: z.array(z.object({
     agentId: z.string().uuid(),
-    harness: z.enum(["claude_local", "codex_local"]),
+    harness: z.enum(PM_WORKER_HARNESSES),
     selections: z.array(pmWorkerSelectionSchema).min(1).max(50),
-  }).strict()).min(1).max(2),
+  }).strict()).min(1).max(PM_WORKER_HARNESSES.length),
 }).strict().superRefine((policy, ctx) => {
   const ids = policy.workers.flatMap(worker => worker.selections.map(selection => selection.id));
   if (new Set(ids).size !== ids.length || !ids.includes(policy.defaultSelectionId)) {
@@ -42,7 +52,7 @@ export type SavePmWorkerPolicy = z.infer<typeof savePmWorkerPolicySchema>;
 export interface PmWorkerCatalogEntry {
   agentId: string;
   name: string;
-  harness: "claude_local" | "codex_local";
+  harness: PmWorkerHarness;
   permissions: PmWorkerSelection["permission"][];
   defaultAiConnection?: PmWorkerSelection["aiConnection"];
   models: { aiConnection?: PmWorkerSelection["aiConnection"]; id: string; label: string; thinking: string[]; speeds: PmWorkerSelection["speed"][] }[];
@@ -77,14 +87,14 @@ export function renderPmWorkerPolicy(policy: PmWorkerPolicy, layout?: PmWorkerDo
     return [PM_WORKERS_START, "## Worker 選用", "Owner 在 Agent 設定維護此表。派 worker 任務時以 assigneeAdapterOverrides.workerSelectionId 指定選項 ID（省略則用預設）；做法見 paperclip skill。",
       "| 選項 ID | 用途 | Worker | 模型 | 思考程度 | 速度 | 預設 |", "| --- | --- | --- | --- | --- | --- | --- |",
       ...policy.workers.flatMap(worker => worker.selections.map(choice =>
-        `| ${[choice.id, choice.purpose ?? "", worker.harness === "claude_local" ? "Claude" : "Codex", choice.model, choice.thinking ?? "auto", choice.speed, choice.id === policy.defaultSelectionId ? "是" : ""].map(cell).join(" | ")} |`)),
+        `| ${[choice.id, choice.purpose ?? "", pmWorkerHarnessLabel(worker.harness), choice.model, choice.thinking ?? "auto", choice.speed, choice.id === policy.defaultSelectionId ? "是" : ""].map(cell).join(" | ")} |`)),
       PM_WORKERS_END].join("\n");
   }
   if (layout === "compact-v1") {
     return [PM_WORKERS_START, "## Worker 選用", "平台維護此表；派工時查詢目前選項與可用性。",
       "| 用途 | Worker | 模型 | 思考程度 | 速度 | 預設 |", "| --- | --- | --- | --- | --- | --- |",
       ...policy.workers.flatMap(worker => worker.selections.map(choice =>
-        `| ${[choice.purpose ?? "", worker.harness === "claude_local" ? "Claude" : "Codex", choice.model, choice.thinking ?? "auto", choice.speed, choice.id === policy.defaultSelectionId ? "是" : ""].map(cell).join(" | ")} |`)),
+        `| ${[choice.purpose ?? "", pmWorkerHarnessLabel(worker.harness), choice.model, choice.thinking ?? "auto", choice.speed, choice.id === policy.defaultSelectionId ? "是" : ""].map(cell).join(" | ")} |`)),
       PM_WORKERS_END].join("\n");
   }
   return [PM_WORKERS_START, "## Worker selections (managed by Agent settings)",
