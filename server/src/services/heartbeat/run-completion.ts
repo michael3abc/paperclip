@@ -5,6 +5,7 @@ import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js"
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
+import { settleBridgeHandoff } from "./bridge-stop-reverification.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
@@ -748,6 +749,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     );
 
     const finalizedRun = persistedRun ?? (await getRun(run.id));
+    // A successor that took over an interrupted bridge turn records that turn's stop only
+    // from the adapter's own observation; best-effort, never affects this run's outcome.
+    if (finalizedRun?.resultJson?.bridgeHandoff) await settleBridgeHandoff(db, finalizedRun);
     const settleAgent = () => finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
       keepIdleOnFailure:
         outcome === "failed" &&
