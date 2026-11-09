@@ -432,3 +432,10 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   external Bridge evidence); and acknowledging a bridge stop notifies deferred receipts in the
   same transaction. All other closed gates stay notification-driven and idle-quiet. Nothing is
   replayed and no stop proof is synthesized (`4198469a5`). No schema change.
+  Addendum (`6b300f0c2`): Drizzle renders column references in a select-field `sql` template
+  unqualified, so the `interruptedLegacy` subquery bound its `id`/`company_id`/`agent_id` to
+  `heartbeat_runs` itself and the flag was always false; the outer `agent_wakeup_requests` row is
+  now named explicitly. The pending re-arm read runs only for receipts whose owner-only interrupt
+  cancelled a legacy run, so ordinary saved backlog rows skip it; and the invalidated-backlog
+  Retry test's `scheduled_retry` wait uses a 15s deadline (its first attempt joins worker passes
+  settling the saved backlog, which the 1s default could not cover).
