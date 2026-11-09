@@ -388,3 +388,14 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   other agents' runs and same-issue chat behavior are unchanged. Main agents are also told
   to implement in chat and create tasks only when separate tracking is needed
   (`890f9672d`). No schema change.
+- Bridge stop re-verification (2026-11-09): a cancelled, legacy `ccpocket_bridge` run whose
+  unforced Stop stayed `requested` (the adapter could not confirm it at cancel time) blocked
+  that task's queued messages with `process_identity_missing` forever. Adapters may now expose
+  a read-only `reverifyCancelledRunStop` hook. Before a deferred-receipt sweep releases or
+  promotes a held message, and after a remote-stop acknowledgement, the server asks it for
+  `ccpocket.bridge-stop-reverification.v1` proof bound to this run and its recorded bridge and
+  native sessions, with known and empty background work. Only that proof is persisted, through a
+  compare-and-set on the exact requested cancellation (`proof: bridge_session_reverified`); the
+  run status event is published afterwards. Unverified, timed-out, failed or mismatched checks
+  keep the hold, forced or failed stops are never acknowledged, attempts are limited to one per
+  run per minute, and nothing is replayed (`30a30590e`). No schema change.
