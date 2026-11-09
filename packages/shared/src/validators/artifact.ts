@@ -8,7 +8,10 @@ export const companyArtifactSourceSchema = z.enum(["document", "attachment", "wo
 
 export const companyArtifactMediaKindSchema = z.enum(["image", "video", "text", "document", "file", "empty"]);
 
-export const companyArtifactGroupBySchema = z.enum(["none", "task", "parent_task"]);
+export const companyArtifactGroupBySchema = z.enum(["none", "task", "parent_task", "project"]);
+
+/** Selects a project folder when grouping by project; `none` is the folder of tasks without a project. */
+export const COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID = "none";
 
 export const companyArtifactsQuerySchema = z.object({
   kind: z.enum(["image", "video", "text", "document", "file", "all"]).optional().default("all"),
@@ -18,11 +21,16 @@ export const companyArtifactsQuerySchema = z.object({
   q: z.string().trim().max(COMPANY_ARTIFACTS_MAX_QUERY_LENGTH).optional(),
   groupBy: companyArtifactGroupBySchema.optional().default("none"),
   groupIssueId: z.string().guid().optional(),
+  /** With `groupBy=project`: a project id, or `none` for tasks without a project. */
+  groupProjectId: z.union([
+    z.string().guid().transform((value) => value.toLowerCase()),
+    z.literal(COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID),
+  ]).optional(),
   starred: z.preprocess(
     (value) => value === "true" ? true : value === "false" ? false : value,
     z.boolean(),
   ).optional().default(false),
-  /** Only images, videos, audio and PDF; excludes documents, text and internal state files. */
+  /** Only images, videos, audio, PDF and Office files; excludes documents, text and internal state files. */
   mediaOnly: z.preprocess(
     (value) => value === "true" ? true : value === "false" ? false : value,
     z.boolean(),
@@ -67,11 +75,17 @@ export const companyArtifactSchema = z.object({
 export const companyArtifactGroupSchema = z.object({
   id: z.string().min(1),
   groupBy: companyArtifactGroupBySchema.exclude(["none"]),
+  /** The task (or root task) of a task group; null for a project group. */
   issue: z.object({
     id: z.string().guid(),
     identifier: z.string(),
     title: z.string(),
-  }),
+  }).nullable(),
+  /** The project of a project group; null for the folder of tasks without a project. Absent on task groups. */
+  project: z.object({
+    id: z.string().guid(),
+    name: z.string(),
+  }).nullable().optional(),
   title: z.string(),
   count: z.number().int().min(0),
   mediaKinds: z.array(companyArtifactMediaKindSchema),

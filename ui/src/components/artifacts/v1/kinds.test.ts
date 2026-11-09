@@ -52,6 +52,8 @@ describe("kindFor", () => {
   it("names the artwork kind from the extension first and the content type second", () => {
     expect(kindFor("pdf", "application/pdf")).toBe("pdf");
     expect(kindFor("pptx", null)).toBe("slides");
+    expect(kindFor("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")).toBe("document");
+    expect(kindFor("ods", null)).toBe("sheet");
     expect(kindFor("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).toBe("sheet");
     expect(kindFor("md", "text/markdown")).toBe("document");
     expect(kindFor(undefined, "text/html")).toBe("code");

@@ -808,8 +808,8 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       groupBy: "task",
       limit: 20,
     });
-    expect(grouped.groups?.some((group) => group.issue.identifier === "OTH-1")).toBe(false);
-    expect(grouped.groups?.some((group) => group.issue.title === "Other output")).toBe(false);
+    expect(grouped.groups?.some((group) => group.issue?.identifier === "OTH-1")).toBe(false);
+    expect(grouped.groups?.some((group) => group.issue?.title === "Other output")).toBe(false);
     expect(grouped.groups?.some((group) =>
       group.previewArtifacts.some((artifact) => artifact.project?.name === "Foreign Project")
     )).toBe(false);
@@ -837,7 +837,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(grouped.artifacts).toEqual([]);
     expect(grouped.nextCursor).toBeNull();
     expect(grouped.groups?.map((group) => ({
-      issue: group.issue.identifier,
+      issue: group.issue?.identifier,
       count: group.count,
       mediaKinds: group.mediaKinds,
       href: group.href,
@@ -855,7 +855,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         href: "/PAP/artifacts?groupBy=task&groupIssueId=66666666-6666-4666-8666-666666666666",
       },
     ]);
-    expect(grouped.groups?.find((group) => group.issue.id === issueId)?.previewArtifacts.map((artifact) => artifact.title))
+    expect(grouped.groups?.find((group) => group.issue?.id === issueId)?.previewArtifacts.map((artifact) => artifact.title))
       .toEqual(["direct-video.mp4", "Primary Cut", "notes.txt"]);
 
     const projectVideos = await companyArtifactsService(db, storage).list(companyId, {
@@ -865,7 +865,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       limit: 10,
     });
     expect(projectVideos.groups?.map((group) => ({
-      issue: group.issue.identifier,
+      issue: group.issue?.identifier,
       count: group.count,
       href: group.href,
     }))).toEqual([
@@ -882,7 +882,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       q: "review document",
       limit: 10,
     });
-    expect(search.groups?.map((group) => ({ issue: group.issue.identifier, count: group.count }))).toEqual([
+    expect(search.groups?.map((group) => ({ issue: group.issue?.identifier, count: group.count }))).toEqual([
       { issue: "PAP-2", count: 1 },
     ]);
   });
@@ -894,7 +894,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       groupBy: "task",
       limit: 1,
     });
-    expect(firstPage.groups?.map((group) => group.issue.identifier)).toEqual(["PAP-2"]);
+    expect(firstPage.groups?.map((group) => group.issue?.identifier)).toEqual(["PAP-2"]);
     expect(firstPage.nextCursor).toEqual(expect.any(String));
 
     const secondPage = await companyArtifactsService(db, createStorageService()).list(companyId, {
@@ -902,7 +902,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       limit: 10,
       cursor: firstPage.nextCursor ?? undefined,
     });
-    expect(secondPage.groups?.map((group) => group.issue.identifier)).toEqual(["PAP-1"]);
+    expect(secondPage.groups?.map((group) => group.issue?.identifier)).toEqual(["PAP-1"]);
     expect(secondPage.nextCursor).toBeNull();
   });
 
@@ -947,7 +947,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
 
     expect(grouped.artifacts).toEqual([]);
     expect(grouped.groups?.map((group) => ({
-      issue: group.issue.identifier,
+      issue: group.issue?.identifier,
       count: group.count,
       previewTitles: group.previewArtifacts.map((artifact) => artifact.title),
     }))).toEqual([
@@ -1007,6 +1007,181 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       selectedGroup: null,
       nextCursor: null,
     });
+  });
+
+  it("keeps a quiet project's folder and pages a busy folder completely beyond the grouping fetch window", async () => {
+    const { companyId, projectId } = await seedArtifacts();
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const busyProjectId = "51515151-5151-4151-8151-515151515151";
+    const busyIssueId = "52525252-5252-4252-8252-525252525252";
+    await db.insert(projects).values({ id: busyProjectId, companyId, name: "Busy", status: "in_progress" });
+    await db.insert(issues).values({ id: busyIssueId, companyId, projectId: busyProjectId, identifier: "PAP-9", title: "Many renders", status: "done", priority: "medium" });
+    const busyCount = 1005;
+    const hex = (index: number) => index.toString(16).padStart(12, "0");
+    await db.insert(assets).values(Array.from({ length: busyCount }, (_, index) => ({
+      id: `53535353-5353-4353-8353-${hex(index)}`,
+      companyId,
+      provider: "local_disk",
+      objectKey: `busy-${index}.png`,
+      contentType: "image/png",
+      byteSize: 10,
+      sha256: `sha256-busy-${index}`,
+      originalFilename: `busy-${index}.png`,
+      createdByAgentId: agentId,
+    })));
+    await db.insert(issueAttachments).values(Array.from({ length: busyCount }, (_, index) => ({
+      companyId,
+      issueId: busyIssueId,
+      assetId: `53535353-5353-4353-8353-${hex(index)}`,
+      updatedAt: new Date(Date.parse("2026-03-01T00:00:00.000Z") + index * 1000),
+    })));
+
+    const service = companyArtifactsService(db, createStorageService());
+    const folders = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 10 });
+    // The older "Artifacts" project is outside the newest 1000 rows company-wide, yet keeps its folder.
+    expect(folders.groups?.map((group) => group.title)).toEqual(["Busy", "Artifacts"]);
+    expect(folders.groups?.find((group) => group.project?.id === projectId)?.count).toBe(2);
+
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const result = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: busyProjectId, limit: 100, cursor });
+      result.artifacts.forEach((artifact) => seen.add(artifact.id));
+      if (!result.nextCursor) break;
+      cursor = result.nextCursor;
+    }
+    expect(seen.size).toBe(busyCount);
+  });
+
+  it("groups media into one folder per project, admits Office files and pages a selected folder", async () => {
+    const { companyId, otherCompanyId, projectId, secondIssueId } = await seedArtifacts();
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const slidesProjectId = "31313131-3131-4131-8131-313131313131";
+    const archivedProjectId = "32323232-3232-4232-8232-323232323232";
+    const foreignProjectId = "34343434-3434-4343-8343-343434343434";
+    const slidesIssueId = "35353535-3535-4353-8353-353535353535";
+    const archivedIssueId = "36363636-3636-4363-8363-363636363636";
+    await db.insert(projects).values([
+      { id: slidesProjectId, companyId, name: "Slides", status: "in_progress" },
+      { id: archivedProjectId, companyId, name: "Old", status: "in_progress", archivedAt: new Date("2026-01-01T00:00:00.000Z") },
+      { id: foreignProjectId, companyId: otherCompanyId, name: "Foreign", status: "in_progress" },
+    ]);
+    await db.insert(issues).values([
+      { id: slidesIssueId, companyId, projectId: slidesProjectId, identifier: "PAP-4", title: "Board deck", status: "done", priority: "medium" },
+      { id: archivedIssueId, companyId, projectId: archivedProjectId, identifier: "PAP-5", title: "Old render", status: "done", priority: "medium" },
+    ]);
+    const files = [
+      { id: "41414141-4141-4141-8141-414141414141", issueId: slidesIssueId, name: "deck.pptx", type: "application/vnd.openxmlformats-officedocument.presentationml.presentation", day: "10" },
+      { id: "42424242-4242-4242-8242-424242424242", issueId: slidesIssueId, name: "report.docx", type: "application/octet-stream", day: "11" },
+      { id: "43434343-4343-4343-8343-434343434343", issueId: slidesIssueId, name: "budget.xlsx", type: "application/vnd.ms-excel.sheet.macroenabled.12", day: "12" },
+      // Not media, whatever the file is called.
+      { id: "44444444-4444-4444-8444-444444444445", issueId: slidesIssueId, name: "fake.pptx", type: "application/json", day: "13" },
+      { id: "45454545-4545-4545-8545-454545454545", issueId: slidesIssueId, name: "plan.md", type: "text/markdown", day: "14" },
+      { id: "46464646-4646-4464-8464-464646464646", issueId: slidesIssueId, name: "bundle.zip", type: "application/zip", day: "15" },
+      { id: "47474747-4747-4474-8474-474747474747", issueId: secondIssueId, name: "brief.pdf", type: "application/pdf", day: "16" },
+      { id: "49494949-4949-4494-8494-494949494949", issueId: secondIssueId, name: "cover.png", type: "image/png", day: "09" },
+      { id: "48484848-4848-4484-8484-484848484848", issueId: archivedIssueId, name: "old.png", type: "image/png", day: "17" },
+    ];
+    await db.insert(assets).values(files.map((file) => ({
+      id: file.id,
+      companyId,
+      provider: "local_disk",
+      objectKey: file.name,
+      contentType: file.type,
+      byteSize: 10,
+      sha256: `sha256-${file.name}`,
+      originalFilename: file.name,
+      createdByAgentId: agentId,
+    })));
+    await db.insert(issueAttachments).values(files.map((file) => ({
+      companyId,
+      issueId: file.issueId,
+      assetId: file.id,
+      updatedAt: new Date(`2026-02-${file.day}T00:00:00.000Z`),
+    })));
+
+    const service = companyArtifactsService(db, createStorageService());
+    const officeFiles = await service.list(companyId, { mediaOnly: true, kind: "file", limit: 50 });
+    expect(officeFiles.artifacts.map((artifact) => artifact.title).sort()).toEqual(["brief.pdf", "budget.xlsx", "deck.pptx", "report.docx"]);
+
+    const folders = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 10 });
+    expect(folders.artifacts).toEqual([]);
+    expect(folders.nextCursor).toBeNull();
+    expect(folders.groups?.map((group) => ({
+      id: group.id,
+      issue: group.issue,
+      project: group.project,
+      title: group.title,
+      count: group.count,
+      href: group.href,
+    }))).toEqual([
+      {
+        id: "project:none",
+        issue: null,
+        project: null,
+        title: "No project",
+        count: 2,
+        href: "/PAP/artifacts?groupBy=project&groupProjectId=none&mediaOnly=true",
+      },
+      {
+        id: `project:${slidesProjectId}`,
+        issue: null,
+        project: { id: slidesProjectId, name: "Slides" },
+        title: "Slides",
+        count: 3,
+        href: `/PAP/artifacts?groupBy=project&groupProjectId=${slidesProjectId}&mediaOnly=true`,
+      },
+      {
+        id: `project:${projectId}`,
+        issue: null,
+        project: { id: projectId, name: "Artifacts" },
+        title: "Artifacts",
+        count: 2,
+        href: `/PAP/artifacts?groupBy=project&groupProjectId=${projectId}&mediaOnly=true`,
+      },
+    ]);
+    expect(folders.groups?.[1]?.previewArtifacts.map((artifact) => artifact.title)).toEqual(["budget.xlsx", "report.docx", "deck.pptx"]);
+    // A folder's cover is its newest picture, even when a newer PDF exists.
+    expect(folders.groups?.[0]?.previewArtifacts.map((artifact) => artifact.title)).toEqual(["cover.png", "brief.pdf"]);
+
+    const firstPage = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 1 });
+    expect(firstPage.groups?.map((group) => group.id)).toEqual(["project:none"]);
+    const restPage = await service.list(companyId, { mediaOnly: true, groupBy: "project", limit: 10, cursor: firstPage.nextCursor ?? undefined });
+    expect(restPage.groups?.map((group) => group.title)).toEqual(["Slides", "Artifacts"]);
+
+    const selected = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: slidesProjectId, limit: 2 });
+    expect(selected.groups).toBeUndefined();
+    expect(selected.selectedGroup).toMatchObject({ id: `project:${slidesProjectId}`, title: "Slides", count: 3, issue: null });
+    expect(selected.artifacts.map((artifact) => artifact.title)).toEqual(["budget.xlsx", "report.docx"]);
+    const selectedNext = await service.list(companyId, {
+      mediaOnly: true,
+      groupBy: "project",
+      groupProjectId: slidesProjectId,
+      limit: 2,
+      cursor: selected.nextCursor ?? undefined,
+    });
+    expect(selectedNext.artifacts.map((artifact) => artifact.title)).toEqual(["deck.pptx"]);
+    expect(selectedNext.nextCursor).toBeNull();
+
+    const noProject = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: "none", limit: 10 });
+    expect(noProject.selectedGroup).toMatchObject({ id: "project:none", project: null, title: "No project", count: 2 });
+    expect(noProject.artifacts.map((artifact) => artifact.title)).toEqual(["brief.pdf", "cover.png"]);
+
+    const emptyByFilter = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: slidesProjectId, kind: "video", limit: 10 });
+    expect(emptyByFilter.selectedGroup).toMatchObject({ project: { id: slidesProjectId, name: "Slides" }, count: 0 });
+    expect(emptyByFilter.artifacts).toEqual([]);
+
+    for (const hiddenProjectId of [archivedProjectId, foreignProjectId]) {
+      expect(await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: hiddenProjectId, limit: 10 }))
+        .toEqual({ artifacts: [], selectedGroup: null, nextCursor: null });
+    }
+
+    const upperCase = await service.list(companyId, { mediaOnly: true, groupBy: "project", groupProjectId: slidesProjectId.toUpperCase(), limit: 10 });
+    expect(upperCase.selectedGroup).toMatchObject({ project: { id: slidesProjectId }, count: 3 });
+
+    // Without mediaOnly the folders still carry task documents (opt-in filter).
+    const allSources = await service.list(companyId, { groupBy: "project", groupProjectId: "none", limit: 50 });
+    expect(allSources.artifacts.map((artifact) => artifact.title)).toEqual(expect.arrayContaining(["Review Notes", "brief.pdf"]));
   });
 });
 

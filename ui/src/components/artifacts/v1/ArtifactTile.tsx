@@ -69,7 +69,8 @@ export function ArtifactTile({ label, to, onClick, children, caption, testId }: 
 }
 
 export interface StackTileProps {
-  identifier: string;
+  /** The task identifier pill; a project folder has none. */
+  identifier?: string | null;
   title: string;
   count: number;
   updatedAt: string;
@@ -78,12 +79,13 @@ export interface StackTileProps {
   to?: To;
   onClick?: () => void;
   now?: Date;
+  testId?: string;
 }
 
-/** A task with several artifacts: its newest one on top of a stack, the task's title underneath. */
-export function ArtifactStackTile({ identifier, title, count, updatedAt, front, to, onClick, now }: StackTileProps) {
+/** A task (or project folder) with several artifacts: its newest one on top of a stack, the title underneath. */
+export function ArtifactStackTile({ identifier, title, count, updatedAt, front, to, onClick, now, testId = "artifact-v1-stack-tile" }: StackTileProps) {
   return (
-    <ArtifactTile label={`Open ${identifier} ${title}, ${countLabel(count)}`} to={to} onClick={onClick} testId="artifact-v1-stack-tile" caption={<ArtifactCaption title={title} identifier={identifier} facts={[countLabel(count), `Updated ${updatedLabel(updatedAt, now)}`]} />}>
+    <ArtifactTile label={`Open ${identifier ? `${identifier} ` : ""}${title}, ${countLabel(count)}`} to={to} onClick={onClick} testId={testId} caption={<ArtifactCaption title={title} identifier={identifier} facts={[countLabel(count), `Updated ${updatedLabel(updatedAt, now)}`]} />}>
       <ArtifactStack front={front} />
     </ArtifactTile>
   );

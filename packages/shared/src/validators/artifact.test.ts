@@ -56,9 +56,17 @@ describe("companyArtifactsQuerySchema", () => {
     });
   });
 
+  it("accepts project folders, including the folder of tasks without a project", () => {
+    const projectId = "33333333-3333-4333-8333-333333333333";
+    expect(companyArtifactsQuerySchema.parse({ groupBy: "project", groupProjectId: projectId, mediaOnly: "true" }))
+      .toMatchObject({ groupBy: "project", groupProjectId: projectId, mediaOnly: true });
+    expect(companyArtifactsQuerySchema.parse({ groupBy: "project", groupProjectId: "none" }).groupProjectId).toBe("none");
+  });
+
   it("rejects invalid grouped artifact query parameters", () => {
     expect(() => companyArtifactsQuerySchema.parse({ groupBy: "agent" })).toThrow();
     expect(() => companyArtifactsQuerySchema.parse({ groupIssueId: "PAP-1" })).toThrow();
+    expect(() => companyArtifactsQuerySchema.parse({ groupProjectId: "Slides" })).toThrow();
   });
 });
 
@@ -89,5 +97,22 @@ describe("companyArtifactsResponseSchema", () => {
       selectedGroup: group,
       nextCursor: null,
     });
+  });
+
+  it("accepts project folder groups without an issue", () => {
+    const projectGroup = {
+      id: "project:none",
+      groupBy: "project",
+      issue: null,
+      project: null,
+      title: "No project",
+      count: 1,
+      mediaKinds: ["file"],
+      previewArtifacts: [artifact],
+      updatedAt: "2026-06-06T12:00:00.000Z",
+      href: "/PAP/artifacts?groupBy=project&groupProjectId=none",
+    };
+    expect(companyArtifactsResponseSchema.parse({ artifacts: [], groups: [projectGroup], nextCursor: null }).groups)
+      .toEqual([projectGroup]);
   });
 });

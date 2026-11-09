@@ -71,6 +71,13 @@ describe("artifactsApi.list", () => {
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/artifacts");
   });
 
+  it("serializes project grouping and the selected project folder", async () => {
+    await artifactsApi.list("company-1", { groupBy: "project", groupProjectId: "none", mediaOnly: true });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/artifacts?groupBy=project&groupProjectId=none&mediaOnly=true",
+    );
+  });
+
   it("serializes groupBy and the selected stack issue", async () => {
     await artifactsApi.list("company-1", {
       groupBy: "parent_task",

@@ -2,7 +2,7 @@ export type CompanyArtifactSource = "document" | "attachment" | "work_product";
 
 export type CompanyArtifactMediaKind = "image" | "video" | "text" | "document" | "file" | "empty";
 
-export type CompanyArtifactGroupBy = "none" | "task" | "parent_task";
+export type CompanyArtifactGroupBy = "none" | "task" | "parent_task" | "project";
 
 export interface CompanyArtifactIssueSummary {
   id: string;
@@ -40,7 +40,10 @@ export interface CompanyArtifact {
 export interface CompanyArtifactGroup {
   id: string;
   groupBy: Exclude<CompanyArtifactGroupBy, "none">;
-  issue: CompanyArtifactIssueSummary;
+  /** The task (or root task) of a task group; null for a project group. */
+  issue: CompanyArtifactIssueSummary | null;
+  /** The project of a project group; null for the folder of tasks without a project. Absent on task groups. */
+  project?: CompanyArtifactProjectSummary | null;
   title: string;
   count: number;
   mediaKinds: CompanyArtifactMediaKind[];

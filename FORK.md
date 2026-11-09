@@ -364,3 +364,14 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   for that explicit user turn when the historical and current adapters are both
   `ccpocket_bridge`; forced, failed or mismatched cases stay blocked. Tasks are unchanged.
   No schema change.
+- Artifacts project folders (HOM-266, 2026-11-09): the Artifacts page opens on a
+  Projects view, one folder per project plus a "No project" folder, built from the
+  `mediaOnly` projection through the new opt-in `groupBy=project` grouping; opening a
+  folder (`groupProjectId`, a project id or `none`) filters every source in SQL and pages
+  by cursor, and archived or foreign projects return no folder. `mediaOnly` now also
+  admits Office files (pptx/ppt/key/odp, docx/doc/odt, xlsx/xls/ods) by content type,
+  using the extension only for generic types, so Markdown/JSON named like media stay out.
+  The project page's Artifacts tab requests `mediaOnly` too, so task plans and notes no
+  longer appear there. Task grouping stays in the Group by menu, and saved
+  `?groupIssueId=` links still open their stack. Stored records are unchanged; no schema
+  change.

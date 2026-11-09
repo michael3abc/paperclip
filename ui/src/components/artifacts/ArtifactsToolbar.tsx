@@ -11,11 +11,12 @@ export const ARTIFACT_KIND_FILTERS: { value: ArtifactKindFilter; label: string }
   { value: "all", label: "All" },
   { value: "image", label: "Images" },
   { value: "video", label: "Videos" },
-  { value: "file", label: "Audio & PDF" },
+  { value: "file", label: "Audio, PDF & Office" },
 ];
 
 export const ARTIFACT_GROUP_OPTIONS: { value: ArtifactGroupBy; label: string }[] = [
   { value: "none", label: "None" },
+  { value: "project", label: "Project" },
   { value: "task", label: "Task" },
   { value: "parent_task", label: "Parent task" },
 ];

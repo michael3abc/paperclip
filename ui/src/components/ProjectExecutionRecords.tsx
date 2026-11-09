@@ -28,15 +28,16 @@ export function ProjectSessions({ projectId }: { projectId: string }) {
 }
 
 export function ProjectArtifacts({ companyId, projectId }: { companyId: string; projectId: string }) {
-  const query = useInfiniteQuery({ queryKey: ["project-native-artifacts", companyId, projectId], initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => artifactsApi.list(companyId, { projectId, limit: 30, cursor: pageParam }),
+  // Same projection as the project's folder on the Artifacts page: media files only, no task documents.
+  const query = useInfiniteQuery({ queryKey: ["project-native-artifacts", companyId, projectId, "media-only"], initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => artifactsApi.list(companyId, { projectId, mediaOnly: true, limit: 30, cursor: pageParam }),
     getNextPageParam: page => page.nextCursor ?? undefined, retry: false });
   return <section className="space-y-4" aria-label="Native project artifacts">
     <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-medium">Artifacts</h2><Button variant="outline" onClick={() => void query.refetch()}>Refresh</Button></div>
-    <p className="text-sm text-muted-foreground">Registered task documents, attachments and artifact work products. Files remaining only in a workspace are not automatically published.</p>
+    <p className="text-sm text-muted-foreground">Images, videos, audio, PDF and Office files registered on this project's tasks. Task documents such as plans and notes are not listed, and files remaining only in a workspace are not automatically published.</p>
     {query.error && <p role="alert" className="text-destructive">{query.error.message}</p>}
     {query.isPending && <p>Loading artifacts…</p>}
-    {!query.error && query.data && query.data.pages.every(page => !page.artifacts.length) && <p>No registered artifacts in this project.</p>}
+    {!query.error && query.data && query.data.pages.every(page => !page.artifacts.length) && <p>No media artifacts in this project.</p>}
     <ProjectDeliveries projectId={projectId} />
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">{query.data?.pages.flatMap(page => page.artifacts).map(artifact => <ArtifactCard key={`${artifact.source}:${artifact.id}`} artifact={artifact} />)}</div>
     {query.hasNextPage && <Button variant="outline" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>Load more artifacts</Button>}
