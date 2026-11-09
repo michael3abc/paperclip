@@ -333,3 +333,11 @@ issue creation by the main agent is unchanged. Without a saved policy nothing
 changes. The main agent is not a zero-slot PM and gains no PM decision authority.
 Commit `f92bdcc5b`. Released as a backend release (no schema change) after
 related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
+
+- Artifacts media filter (HOM-241, released by HOM-249): the company Artifacts API
+  accepts an opt-in `mediaOnly` flag, enabled only by the Artifacts page. The filter
+  runs in SQL so counts, pagination and grouping agree, keeps image/video/audio/PDF
+  attachments and hides task documents, text/JSON/Markdown attachments and non-attachment
+  work products. Stored records are unchanged and other listing callers keep their result.
+  Feature commit `ffec9110d`, merged as `2bfd909f8`; no schema change; fc0350d9af-r1 is
+  kept for rollback.
