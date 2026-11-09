@@ -79,7 +79,7 @@ export function isUserCommentContinuationReason(reason: string | null | undefine
 // new user message is a new turn in that session, never replay of the stopped
 // turn. Only these explicit user-turn admissions accept it; automatic retry,
 // recovery and replay keep the conservative CONVERSATION_ADAPTER_TYPES contract.
-const BRIDGE_SESSION_ADAPTER = "ccpocket_bridge";
+export const BRIDGE_SESSION_ADAPTER = "ccpocket_bridge";
 function acceptsExplicitUserTurn(adapterType: string): boolean {
   return isConversationAdapter(adapterType) || adapterType === BRIDGE_SESSION_ADAPTER;
 }

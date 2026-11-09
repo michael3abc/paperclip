@@ -3,6 +3,7 @@ import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.j
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
+import { createBridgeStopReverification } from "./heartbeat/bridge-stop-reverification.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
 import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
 import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
@@ -386,7 +387,7 @@ import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import {
   providerTraceStore,
 } from "./provider-trace-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import { findActiveServerAdapter, getServerAdapter, runningProcesses } from "../adapters/index.js";
 
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import {
@@ -969,6 +970,18 @@ export function heartbeatService(
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
+  const bridgeStopReverification = createBridgeStopReverification(db, {
+    getAdapter: findActiveServerAdapter,
+    isRunActive: id => liveRunExecutions.has(id) || adapterExecutionControls.has(id),
+  });
+  // Recovery sweeps re-enter the deferred-receipt admission after an
+  // acknowledgement; the queue's own sweep re-checks admission directly.
+  async function reconcileBridgeStopAndResume(runId: string, companyId: string) {
+    if (await bridgeStopReverification.reconcile(runId, companyId) !== "acknowledged") return;
+    await heartbeatQueue.resumeDeferredExecutionReceipts({ companyId }).catch(error => {
+      logger.warn({ err: error, runId }, "could not reconsider messages after bridge stop re-verification");
+    });
+  }
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
@@ -1073,6 +1086,7 @@ export function heartbeatService(
     environmentsSvc,
     acknowledgeRemoteStop,
     resumeRemoteStopComments,
+    reconcileBridgeStop: reconcileBridgeStopAndResume,
     setRunStatusFromLive,
     instructionCopies,
     dispatchPendingNativeStatusWakeups,
@@ -1271,6 +1285,7 @@ export function heartbeatService(
   });
 
   const heartbeatQueue = createHeartbeatQueue(db, {
+    reconcileBridgeStop: (runId, companyId) => bridgeStopReverification.reconcile(runId, companyId),
     canStartNewExternalBotWork: async agent => {
       if (agent.adapterType !== "paperclip_runner" || agent.adapterConfig.provider !== "grok_bot") return true;
       const aiConnection = aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig?.aiConnection);

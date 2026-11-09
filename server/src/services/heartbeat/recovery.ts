@@ -169,6 +169,8 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   }) => Promise<void>;
   acknowledgeRemoteStop: (runId: string, companyId: string) => Promise<void>;
   resumeRemoteStopComments: (run: HeartbeatRun) => Promise<void>;
+  /** Re-verify an unconfirmed bridge stop from bridge evidence; on success the deferred wake is reconsidered. Never throws. */
+  reconcileBridgeStop?: (runId: string, companyId: string) => Promise<void>;
   dispatchPendingNativeStatusWakeups: () => Promise<unknown>;
   cancelRunInternal: (runId: string, reason?: string, options?: Pick<CancelRunOptions, "resultJson" | "expectedStatus" | "errorCode">) => Promise<unknown>;
   startNextQueuedRunForAgent: (agentId: string) => Promise<unknown>;
@@ -394,6 +396,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     environmentsSvc,
     acknowledgeRemoteStop,
     resumeRemoteStopComments,
+    reconcileBridgeStop,
     setRunStatusFromLive,
     instructionCopies,
     dispatchPendingNativeStatusWakeups,
@@ -1862,6 +1865,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // message can still use the persisted receipt on its next admission.
         await (async () => {
           await acknowledgeRemoteStop(lease.heartbeatRunId!, lease.companyId);
+          await reconcileBridgeStop?.(lease.heartbeatRunId!, lease.companyId);
           const run = await getRun(lease.heartbeatRunId!);
           if (run) await resumeRemoteStopComments(run);
         })().catch(() => logger.warn({ leaseId: lease.id }, "could not reconsider messages after cleanup retry"));
@@ -2792,7 +2796,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           return;
         }
         const outcome = await releaseSettledNativeRunProcess(db, scope.runId, scope);
-        if (outcome !== "pending") await acknowledgeRemoteStop(scope.runId, scope.companyId);
+        if (outcome !== "pending") {
+          await acknowledgeRemoteStop(scope.runId, scope.companyId);
+          await reconcileBridgeStop?.(scope.runId, scope.companyId);
+        }
       },
       orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),
       shutdown: scope => sweepLegacyShutdownWorkspaceSettlements(db, new Date(), scope),
