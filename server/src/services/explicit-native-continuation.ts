@@ -94,6 +94,24 @@ export function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtime
     typeof cancellation.acknowledgedAt === "string";
 }
 
+/** A same-session handoff from a bridge turn whose interrupt was requested but
+ * not yet confirmed. The successor's adapter re-sends the interrupt, waits for
+ * that turn to settle in the same native session and only then delivers the new
+ * message. It is not stop proof: the predecessor keeps its `requested` record
+ * until real Bridge evidence settles it. A forced stop, missing session
+ * identity or any other cancellation state never qualifies. */
+export type BridgeSessionHandoff = { fromRunId: string; bridgeSessionId: string; nativeSessionId: string };
+export function bridgeSessionHandoffFor(run: Pick<Run, "id" | "status" | "runtimeMode" | "resultJson">): BridgeSessionHandoff | null {
+  if (run.runtimeMode !== "legacy" || !["cancelled", "timed_out"].includes(run.status)) return null;
+  const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
+  if (cancellation?.state !== "requested" || cancellation.forced === true) return null;
+  const bridgeSessionId = run.resultJson?.bridgeSessionId;
+  const nativeSessionId = run.resultJson?.nativeSessionId;
+  if (typeof bridgeSessionId !== "string" || !bridgeSessionId.trim() ||
+      typeof nativeSessionId !== "string" || !nativeSessionId.trim()) return null;
+  return { fromRunId: run.id, bridgeSessionId, nativeSessionId };
+}
+
 function processStopped(pid: number): boolean {
   try { process.kill(pid, 0); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -152,7 +170,7 @@ export async function admitExplicitNativeContinuation(input: {
   durableChatRequest?: DurableChatWakeupRequest;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
-}): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness } | null> {
+}): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness; bridgeSessionHandoff?: BridgeSessionHandoff } | null> {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
   const blocked = (reason: string, message: string) => { input.onBlocked?.(reason, message); return null; };
   if (input.actorType !== "user" || !actorId) return null;
@@ -301,6 +319,7 @@ export async function admitExplicitNativeContinuation(input: {
   const freshSources = new Map<string, string>();
   const stoppedSessions: Array<{ evidence: Record<string, unknown>; retire: () => boolean }> = [];
   const cancelledStartupIds = new Set<string>();
+  const handoffs: BridgeSessionHandoff[] = [];
   for (const action of sourceChecks) {
     const runId = action.evidence.runId ?? action.evidence.sourceRunId;
     if (typeof runId !== "string") return blocked("source_missing", "The stopped run could not be identified. Your message is saved.");
@@ -358,8 +377,14 @@ export async function admitExplicitNativeContinuation(input: {
       if ((historicalAdapter === BRIDGE_SESSION_ADAPTER || agent.adapterType === BRIDGE_SESSION_ADAPTER) &&
           (historicalAdapter !== BRIDGE_SESSION_ADAPTER || agent.adapterType !== BRIDGE_SESSION_ADAPTER)) return null;
       if (historicalAdapter === BRIDGE_SESSION_ADAPTER) {
-        if (!bridgeSessionStopAcknowledged(run)) return blocked("process_identity_missing",
-          "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+        if (!bridgeSessionStopAcknowledged(run)) {
+          // An unconfirmed, unforced interrupt continues as a same-session
+          // handoff; the adapter waits for that turn before delivering.
+          const handoff = bridgeSessionHandoffFor(run);
+          if (!handoff) return blocked("process_identity_missing",
+            "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+          handoffs.push(handoff);
+        }
         bridgeSessionStopped = true;
       }
     }
@@ -497,13 +522,19 @@ export async function admitExplicitNativeContinuation(input: {
   )).limit(1);
   if (active) return blocked("execution_active", "Waiting for the current run. Your message is saved.");
   const previous = executedSources.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]!;
+  // The resident session can wait for only its latest turn; an older unconfirmed
+  // stop has no handoff and keeps the hold.
+  if (handoffs.length > 1 || (handoffs.length && handoffs[0]!.fromRunId !== previous.id))
+    return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
+  const bridgeSessionHandoff = handoffs[0];
   // Prove required task history is available before retiring any hold.
   await buildExecutionContinuation({ db, companyId, issueId, agentId,
     context: { previousRunId: previous.id, wakeCommentId: commentId },
     summary: null, exposeLowTrustRaw: false });
   const continuation = { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId! } : {}),
-    ...(taskRetry ? { taskRetryRequestId: input.taskRetryRequestId! } : {}), ...(readiness ? { readiness } : {}) };
+    ...(taskRetry ? { taskRetryRequestId: input.taskRetryRequestId! } : {}), ...(readiness ? { readiness } : {}),
+    ...(bridgeSessionHandoff ? { bridgeSessionHandoff } : {}) };
   if (input.dryRun) return continuation;
   for (const stopped of stoppedSessions) {
     if (!stopped.retire()) return blocked("local_cleanup", "The previous provider cleanup changed. Your message is saved.");
@@ -584,7 +615,7 @@ export async function admitExplicitNativeContinuation(input: {
 export async function admitExplicitContinuationRetry(input: {
   db: Db; companyId: string; issueId: string; agentId: string;
   parentRunId: string; successorRunId: string; now: Date;
-}): Promise<{ previousRunId: string; commentId: string } | null> {
+}): Promise<{ previousRunId: string; commentId: string; bridgeSessionHandoff?: BridgeSessionHandoff } | null> {
   const { db, companyId, issueId, agentId } = input;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -646,7 +677,14 @@ export async function admitExplicitContinuationRetry(input: {
       "continuation_source_context_missing", "continuation_task_ownership_changed"].includes(error.message)) return null;
     throw error;
   }
-  const continuation = { previousRunId: parent.id, commentId };
+  // A handoff the failed parent never settled still names the bridge turn it was
+  // waiting for; the adapter revalidates it against its own session state.
+  const handoff = explicit.bridgeSessionHandoff as Record<string, unknown> | undefined;
+  const unsettledHandoff = handoff && !parent.resultJson?.bridgeHandoff &&
+    [handoff.fromRunId, handoff.bridgeSessionId, handoff.nativeSessionId].every(value => typeof value === "string" && value)
+    ? { fromRunId: handoff.fromRunId as string, bridgeSessionId: handoff.bridgeSessionId as string,
+        nativeSessionId: handoff.nativeSessionId as string } : undefined;
+  const continuation = { previousRunId: parent.id, commentId, ...(unsettledHandoff ? { bridgeSessionHandoff: unsettledHandoff } : {}) };
   await db.insert(issueRecoveryActions).values({
     companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
     cause: "explicit_user_continuation_retry", fingerprint: input.successorRunId,

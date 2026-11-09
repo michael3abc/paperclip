@@ -71,7 +71,7 @@ import {
   readChatPreemptionAttribution,
   readChatPreemptionMarker,
 } from "../services/chat-task-preemption.js";
-import { bridgeSessionStopAcknowledged } from "../services/explicit-native-continuation.js";
+import { bridgeSessionHandoffFor, bridgeSessionStopAcknowledged } from "../services/explicit-native-continuation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -16945,8 +16945,10 @@ export function issueRoutes(
     // The marked chat run is first in line for the freed slot.
     await heartbeat.resumeQueuedRunsForAgent(issue.companyId, agentId);
     const cancellation = readObject(readObject(stopped?.resultJson).executionCancellation);
+    // "handoff": the bridge turn is still finishing; an explicit user continuation may take over the
+    // same session and settle it from bridge evidence. It is not an acknowledged stop.
     const stop = stopped && bridgeSessionStopAcknowledged(stopped) ? "acknowledged"
-      : cancellation.forced === true ? "forced" : "unverified";
+      : cancellation.forced === true ? "forced" : stopped && bridgeSessionHandoffFor(stopped) ? "handoff" : "unverified";
     let continuation: { requestId: string | null; accepted: boolean; stale: boolean; chatActionId?: string } | null = null;
     if (stop === "acknowledged") {
       const { requestTaskRetry } = await import("../services/task-retry.js");

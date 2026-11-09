@@ -68,6 +68,93 @@ export function validBridgeStopProof(
 }
 
 /**
+ * Compare-and-set a bridge run's requested, unforced cancellation to acknowledged with validated bridge proof.
+ * The exact existing cancellation and both recorded session IDs must still match; otherwise nothing is written.
+ */
+async function acknowledgeBridgeStop(
+  db: Db,
+  run: Run,
+  proof: BridgeStopProof,
+  options: { proofKind: string; at: Date; publishLiveEvent: typeof publishLiveEventDefault; extra?: Record<string, unknown> },
+): Promise<Run | null> {
+  const existing = parseObject(run.resultJson?.executionCancellation);
+  const acknowledged = await db.update(heartbeatRuns).set({
+    resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+      executionCancellation: { ...existing, state: "acknowledged", forced: false,
+        acknowledgedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) },
+    })}::jsonb`,
+    updatedAt: options.at,
+  }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+    eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, run.status), eq(heartbeatRuns.runtimeMode, "legacy"),
+    sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
+    sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
+    sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`,
+    sql`${heartbeatRuns.resultJson}->>'bridgeSessionId' = ${proof.bridgeSessionId}`,
+    sql`${heartbeatRuns.resultJson}->>'nativeSessionId' = ${proof.nativeSessionId}`))
+    .returning();
+  const stopped = acknowledged[0] ?? null;
+  if (stopped) {
+    options.publishLiveEvent({
+      companyId: stopped.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(stopped),
+    });
+  }
+  return stopped;
+}
+
+export const BRIDGE_HANDOFF_SETTLED_PROOF = "bridge_handoff_settled";
+export type BridgeHandoffSettlement = "acknowledged" | "unverified" | "skipped";
+
+/**
+ * After a successor run that took over a busy bridge session ends, record the stop of the interrupted
+ * predecessor only from the adapter's own observation (`resultJson.bridgeHandoff.proof`). The successor must
+ * have been admitted with that exact handoff; the predecessor must still be the requested, unforced bridge
+ * cancellation it named. Without valid proof the predecessor is left unchanged. Never throws.
+ */
+export async function settleBridgeHandoff(
+  db: Db,
+  successor: Pick<Run, "id" | "companyId" | "agentId" | "contextSnapshot" | "resultJson">,
+  options: { now?: () => number; publishLiveEvent?: typeof publishLiveEventDefault } = {},
+): Promise<BridgeHandoffSettlement> {
+  try {
+    const admitted = parseObject(parseObject(parseObject(successor.contextSnapshot).explicitUserContinuation).bridgeSessionHandoff);
+    const reported = parseObject(successor.resultJson?.bridgeHandoff);
+    if (!nonEmpty(admitted.fromRunId) || reported.fromRunId !== admitted.fromRunId || admitted.fromRunId === successor.id) return "skipped";
+    if (!nonEmpty(admitted.bridgeSessionId) || !nonEmpty(admitted.nativeSessionId)) return "skipped";
+    const [predecessor] = await db.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, admitted.fromRunId), eq(heartbeatRuns.companyId, successor.companyId),
+        eq(heartbeatRuns.agentId, successor.agentId))).limit(1);
+    if (!predecessor || !["cancelled", "timed_out"].includes(predecessor.status) || predecessor.runtimeMode !== "legacy") return "skipped";
+    const cancellation = parseObject(predecessor.resultJson?.executionCancellation);
+    if (cancellation.state !== "requested" || cancellation.forced === true) return "skipped";
+    if (predecessor.resultJson?.bridgeSessionId !== admitted.bridgeSessionId ||
+        predecessor.resultJson?.nativeSessionId !== admitted.nativeSessionId) return "skipped";
+    if (await historicalAdapterType(db, predecessor) !== BRIDGE_SESSION_ADAPTER) return "skipped";
+    const proof = validBridgeStopProof({ verified: true, proof: reported.proof } as AdapterStopReverificationResult, {
+      runId: predecessor.id, bridgeSessionId: admitted.bridgeSessionId, nativeSessionId: admitted.nativeSessionId,
+    });
+    if (!proof) {
+      logger.info({ runId: predecessor.id, successorRunId: successor.id, outcome: reported.outcome ?? null },
+        "bridge handoff carried no stop proof; the interrupted run keeps its requested cancellation");
+      return "unverified";
+    }
+    const stopped = await acknowledgeBridgeStop(db, predecessor, proof, {
+      proofKind: BRIDGE_HANDOFF_SETTLED_PROOF,
+      at: new Date((options.now ?? Date.now)()),
+      publishLiveEvent: options.publishLiveEvent ?? publishLiveEventDefault,
+      extra: { observedByRunId: successor.id },
+    });
+    if (!stopped) return "skipped";
+    logger.info({ runId: stopped.id, successorRunId: successor.id }, "bridge stop settled from handoff evidence");
+    return "acknowledged";
+  } catch (error) {
+    logger.warn({ err: error, successorRunId: successor.id }, "bridge handoff settlement failed; the interrupted run is unchanged");
+    return "unverified";
+  }
+}
+
+/**
  * Server-owned reconciliation of a CC Pocket bridge run whose Stop was requested
  * but never confirmed by the adapter. The bridge has no host PID, so the only
  * acceptable stop proof is the adapter's read-only bridge re-check. Verified
@@ -141,28 +228,10 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
     }
     if (deps.isRunActive(run.id)) return "skipped";
 
-    const existing = parseObject(run.resultJson?.executionCancellation);
-    const acknowledged = await db.update(heartbeatRuns).set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
-        executionCancellation: { ...existing, state: "acknowledged", forced: false,
-          acknowledgedAt: new Date(now()).toISOString(), proof: BRIDGE_STOP_REVERIFICATION_PROOF, bridgeStopProof: proof },
-      })}::jsonb`,
-      updatedAt: new Date(now()),
-    }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
-      eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.runtimeMode, "legacy"),
-      sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
-      sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
-      sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`,
-      sql`${heartbeatRuns.resultJson}->>'bridgeSessionId' = ${bridgeSessionId}`,
-      sql`${heartbeatRuns.resultJson}->>'nativeSessionId' = ${nativeSessionId}`))
-      .returning();
-    const stopped = acknowledged[0];
-    if (!stopped) return "skipped";
-    publishLiveEvent({
-      companyId: stopped.companyId,
-      type: "heartbeat.run.status",
-      payload: buildHeartbeatRunStatusLiveEventPayload(stopped),
+    const stopped = await acknowledgeBridgeStop(db, run, proof, {
+      proofKind: BRIDGE_STOP_REVERIFICATION_PROOF, at: new Date(now()), publishLiveEvent,
     });
+    if (!stopped) return "skipped";
     logger.info({ runId: stopped.id, companyId }, "bridge stop re-verified from bridge evidence");
     return "acknowledged";
   }
