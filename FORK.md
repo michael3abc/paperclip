@@ -422,3 +422,13 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   (`proof: bridge_handoff_settled`). Without that proof the predecessor stays `requested`.
   Forced stops, missing session IDs, adapter mismatches and automatic recovery remain
   blocked, and nothing is replayed (`4dbb3aadf`). No schema change.
+- Deferred sweep re-check (2026-11-09): stuck interrupt messages were only re-processed after an
+  unrelated write, because the deferred receipt worker drops an entry after one resume pass and
+  only reconstructs on startup or a committed notification (its 30-second interval throttles;
+  it never polls). Interrupt receipts whose legacy run was cancelled now wait the same 30s
+  `updatedAt` grace as the owner-only interrupt resume instead of being checked inside it; a
+  receipt held by a cancelled `ccpocket_bridge` run whose unforced stop is still `requested`
+  is re-checked on a 30s-doubling backoff capped at 10 minutes (that gate opens only on
+  external Bridge evidence); and acknowledging a bridge stop notifies deferred receipts in the
+  same transaction. All other closed gates stay notification-driven and idle-quiet. Nothing is
+  replayed and no stop proof is synthesized (`4198469a5`). No schema change.
