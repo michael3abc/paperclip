@@ -389,6 +389,12 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   filesystem, service, process and Git-dirty checks it cannot see, while writers on the
   same remote source still queue. Worker policies and the worker catalog accept such a
   worker only for projects with a source on the same host. No schema change.
+- Artifacts open the file (HOM-265, 2026-11-10): on the Artifacts page (single tiles and
+  classic cards) and the project Artifacts tab, a file-backed artifact (attachment or work
+  product with `openPath`/`contentPath`) opens its stored file instead of its task: a PDF in
+  the shared in-app PdfPreviewProvider dialog, anything else in a new tab. The classic card
+  keeps the task one click away as a secondary action. Documents and work products without a
+  file still open their task. UI only (`ui/src/lib/artifact-file-link.ts`); no API change.
 - Failed bridge turn handoff (HOM-265, 2026-11-10): a `ccpocket_bridge` run the adapter
   reports as `failed` (for example a provider error after a failed context compaction)
   may leave its resident session working, and it has no stop record, so the next explicit

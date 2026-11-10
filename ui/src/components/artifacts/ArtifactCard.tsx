@@ -1,6 +1,8 @@
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
-import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
+import { Download, ExternalLink, MessageSquare, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
+import { artifactFileLink } from "@/lib/artifact-file-link";
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
 
@@ -170,18 +172,21 @@ export function ArtifactPreview({ artifact }: { artifact: PreviewArtifact }) {
 function SecondaryAction({
   href,
   download,
+  sameTab,
   title,
   children,
 }: {
   href: string;
   download?: boolean;
+  /** An in-app page (the artifact's task) opens in place. */
+  sameTab?: boolean;
   title: string;
   children: React.ReactNode;
 }) {
   return (
     <a
       href={href}
-      {...(download ? { download: "" } : { target: "_blank", rel: "noreferrer" })}
+      {...(download ? { download: "" } : sameTab ? {} : { target: "_blank", rel: "noreferrer" })}
       title={title}
       aria-label={title}
       onClick={(event) => event.stopPropagation()}
@@ -192,16 +197,18 @@ function SecondaryAction({
   );
 }
 
+const CARD_CLASS = "group flex flex-col overflow-hidden rounded-lg border border-border bg-card cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+/**
+ * A file-backed artifact opens its stored file (a PDF in the in-app preview,
+ * anything else in a new tab); the task stays one click away. Documents and
+ * work products without a file keep opening their task.
+ */
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
-  return (
-    <Link
-      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
-      to={artifact.href}
-      disableIssueQuicklook
-      data-testid="artifact-card"
-      data-media-kind={artifact.mediaKind}
-      className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
+  const file = artifactFileLink(artifact);
+  const onPdfClick = usePdfLink();
+  const body = (
+    <>
       <ArtifactPreview artifact={artifact} />
 
       <div className="flex flex-1 flex-col gap-1 p-3">
@@ -213,7 +220,11 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
             {artifact.title}
           </h3>
           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            {artifact.openPath ? (
+            {file ? (
+              <SecondaryAction href={artifact.href} sameTab title={`Open ${artifact.issue.identifier}`}>
+                <MessageSquare className="h-3.5 w-3.5" />
+              </SecondaryAction>
+            ) : artifact.openPath ? (
               <SecondaryAction href={artifact.openPath} title="Open file in new tab">
                 <ExternalLink className="h-3.5 w-3.5" />
               </SecondaryAction>
@@ -236,6 +247,34 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
           ) : null}
         </div>
       </div>
+    </>
+  );
+  if (file) {
+    return (
+      // design-allow(card-pattern): file <a> card, as the navigation <Link> card below; Card renders a div and would break anchor semantics.
+      <a
+        href={file.href}
+        target="_blank"
+        rel="noreferrer"
+        data-testid="artifact-card"
+        data-media-kind={artifact.mediaKind}
+        className={CARD_CLASS}
+        onClick={(event) => { onPdfClick(event, { href: file.href, filename: file.filename, contentType: file.contentType }); }}
+      >
+        {body}
+      </a>
+    );
+  }
+  return (
+    <Link
+      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
+      to={artifact.href}
+      disableIssueQuicklook
+      data-testid="artifact-card"
+      data-media-kind={artifact.mediaKind}
+      className={CARD_CLASS}
+    >
+      {body}
     </Link>
   );
 }

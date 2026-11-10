@@ -630,6 +630,23 @@ describe("Artifacts page — Artifacts V1 (Settings > Experimental)", () => {
     flushSync(() => root.unmount());
   });
 
+  it("opens a media file in a folder as the file itself, not its task's session", async () => {
+    artifactsApiMock.list.mockResolvedValue({
+      artifacts: [sampleArtifact({ id: "hero", source: "attachment", mediaKind: "image", contentType: "image/png", title: "hero.png",
+        contentPath: "/api/attachments/hero/content", openPath: "/api/attachments/hero/content", href: "/PAP/issues/PAP-42#attachment-hero" })],
+      selectedGroup: sampleProjectGroup({ count: 1 }),
+      nextCursor: null,
+    });
+    const { root } = renderArtifacts(container, ["/artifacts?groupProjectId=project-1"]);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="artifact-v1-single-tile"]')).not.toBeNull();
+    });
+    const tile = container.querySelector<HTMLAnchorElement>('[data-testid="artifact-v1-single-tile"]')!;
+    expect(tile.getAttribute("href")).toBe("/api/attachments/hero/content");
+    expect(tile.getAttribute("target")).toBe("_blank");
+    flushSync(() => root.unmount());
+  });
+
   it("renders an open stack as single tiles behind the All stacks row", async () => {
     artifactsApiMock.list.mockResolvedValue({
       artifacts: [sampleArtifact(), sampleArtifact({ id: "artifact-2", title: "Deck", href: "/PAP/issues/PAP-42#deck" })],
