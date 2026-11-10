@@ -70,11 +70,12 @@ export function workspaceBindingConflict(reason: string, message: string): never
 /**
  * The directory for controller-local setup (Git context discovery, launchers).
  * A remote-host PM binding's run cwd (the worker root, or the native PM home)
- * exists only on its registered host, so controller probes use the agent's
- * controller home instead.
+ * and a remote-host fixed directory exist only on their registered host, so
+ * controller probes use the agent's controller home instead.
  */
-export function controllerLocalCwd(binding: FixedWorkspaceBinding | null | undefined, cwd: string): string {
-  return binding?.projectPm?.workerHostId ? binding.projectPm.agentHome : cwd;
+export function controllerLocalCwd(binding: FixedWorkspaceBinding | null | undefined, cwd: string, agentId: string): string {
+  if (binding?.projectPm?.workerHostId) return binding.projectPm.agentHome;
+  return binding?.hostId ? resolveDefaultAgentWorkspaceDir(agentId) : cwd;
 }
 
 /**
@@ -394,6 +395,9 @@ export function assertFixedWorkspacePolicy(input: {
   if (input.binding.projectPm && environment.driver !== "local") {
     projectPmConflict("environment_conflict", "Project PM agents run on a local path only.");
   }
+  if (input.binding.hostId && environment.driver !== "local") {
+    workspaceBindingConflict("environment_conflict", "A remote-host fixed directory is reached through the CC Pocket host; select the local environment.");
+  }
   if (environment.driver === "ssh" && (environment.config.workspaceMode !== "in_place" || environment.config.remoteWorkspacePath !== input.binding.cwd)) {
     workspaceBindingConflict("environment_conflict", "SSH fixed execution requires in_place mode and the exact configured remote workspace path.");
   }
@@ -407,10 +411,25 @@ export function assertFixedWorkspacePolicy(input: {
   }
 }
 
-export function assertFixedProjectWorkspace(binding: FixedWorkspaceBinding, workspace: { cwd: string | null } | null, configured: boolean): void {
+export function assertFixedProjectWorkspace(binding: FixedWorkspaceBinding, workspace: { cwd: string | null; sourceType?: string | null } | null, configured: boolean): void {
   if (configured && (!workspace?.cwd || path.posix.normalize(workspace.cwd).replace(/\/$/, "") !== path.posix.normalize(binding.cwd).replace(/\/$/, ""))) {
     workspaceBindingConflict("project_conflict", "The selected project's working directory differs from the agent's fixed working directory.");
   }
+  // A remote-host directory is only valid for a project source that is itself remote.
+  if (binding.hostId && configured && workspace?.sourceType !== "remote_managed") {
+    workspaceBindingConflict("project_conflict", "A remote-host fixed directory requires the project's remote-managed source.");
+  }
+}
+
+/**
+ * A remote-host fixed directory is never inspected on the controller: it must be
+ * a canonical POSIX path, used by a CC Pocket agent on the same registry host.
+ */
+export function assertRemoteFixedBinding(binding: FixedWorkspaceBinding, agent: { adapterType: string; adapterConfig: unknown }): void {
+  if (!binding.hostId) return;
+  if (agent.adapterType !== "ccpocket_bridge") workspaceBindingConflict("environment_conflict", "Remote-host fixed directories require the CC Pocket adapter.");
+  if (record(agent.adapterConfig).hostId !== binding.hostId) workspaceBindingConflict("environment_conflict", "The agent's CC Pocket host differs from its fixed directory's host.");
+  if (path.posix.normalize(binding.cwd) !== binding.cwd || binding.cwd.endsWith("/")) workspaceBindingConflict("path_alias", "Use the canonical absolute working directory on the remote host.");
 }
 
 export async function validateFixedLocalDirectory(binding: FixedWorkspaceBinding): Promise<void> {

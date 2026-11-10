@@ -452,3 +452,9 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   rejects AI connections and offers Default or explicit Full access; dispatch, diagnostics and save
   re-checks fail an agent that stops being eligible. Policies hold up to three workers
   (`64a101064`). No schema change.
+- Remote-host main agents (2026-11-10, Shopee): a fixed workspace binding may name a `hostId`
+  for a CC Pocket main agent on a non-shared host (`60ceedfb9`). The run keeps the Local
+  execution environment and never stats the remote cwd on the controller (its local cwd is the
+  agent home); the binding requires a `remote_managed` project workspace with the same canonical
+  path, the local driver, and a `ccpocket_bridge` adapter whose `adapterConfig.hostId` matches.
+  Agents without `hostId` are unchanged. No schema change.

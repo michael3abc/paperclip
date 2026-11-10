@@ -3012,7 +3012,7 @@ export function heartbeatService(
       if (issueId && (!executionTarget || executionTarget.kind === "local")) {
         await recordLegacyCaseHandoffCleanupIntent(db, { runId: run.id, issueId, controllerBootId: legacyControllerBootId, scratch: runScratch });
       }
-      const controllerCwd = controllerLocalCwd(readWorkspaceBinding(agent.runtimeConfig, context), executionWorkspace.cwd);
+      const controllerCwd = controllerLocalCwd(readWorkspaceBinding(agent.runtimeConfig, context), executionWorkspace.cwd, agent.id);
       if (controllerCwd !== executionWorkspace.cwd) await fs.mkdir(controllerCwd, { recursive: true });
       const gitExecutionEnv = await timePreparation("github_environment", () => prepareGitHubExecutionEnvironment({
         target: executionTarget,
