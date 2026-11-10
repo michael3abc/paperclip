@@ -482,3 +482,9 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   agent home); the binding requires a `remote_managed` project workspace with the same canonical
   path, the local driver, and a `ccpocket_bridge` adapter whose `adapterConfig.hostId` matches.
   Agents without `hostId` are unchanged. No schema change.
+
+- Native session bridge pilot (michael/session-bridge, 2026-11-10): scoped non-run
+  keys, durable bidirectional conversation receipts, approved worker MCP dispatch
+  and assigned connector gateway calls. Additive JSON/text contracts, no migration.
+  See doc/plans/2026-11-10-session-bridge-key-scope.md. Release from michael/main;
+  preserve the previous release and verify only related tests.

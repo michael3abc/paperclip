@@ -28,6 +28,7 @@ import type {
   InboxAgentPolicyMode,
   PermissionKey,
   PrincipalType,
+  SessionBridgeAgentKeyScope,
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
@@ -128,6 +129,12 @@ export type AuthorizationResource =
       originKind?: string | null;
       originId?: string | null;
       status?: string | null;
+      /**
+       * Narrows an `issue:mutate` check to a document write. Only session-bridge
+       * keys read it: they may write documents on any in-scope issue but may
+       * otherwise change only the issues they created.
+       */
+      intent?: "document_write";
     };
 
 export type AuthorizationDecision = {
@@ -1572,6 +1579,94 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return denyBridge("Task bridge key cannot use this API action.");
   }
 
+  async function decideSessionBridgeAccess(input: {
+    actorAgentId: string;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope: SessionBridgeAgentKeyScope;
+    keyId: string;
+  }): Promise<AuthorizationDecision> {
+    const denyBridge = (explanation: string) =>
+      deny({ action: input.action, reason: "deny_scope", explanation });
+    const allowBridge = (explanation: string) =>
+      allow({ action: input.action, reason: "allow_explicit_grant", explanation });
+    const projectIds = input.scope.projectIds;
+    const inScopeProject = (projectId: string | null | undefined) =>
+      Boolean(projectId && projectIds.includes(projectId));
+    const createdByThisKey = (originKind: string | null | undefined, originId: string | null | undefined) =>
+      originKind === "session_bridge" && originId === input.keyId;
+
+    if (input.action === "project:read") {
+      if (input.resource.type !== "project") return denyBridge("Session bridge project access requires a project resource.");
+      return inScopeProject(input.resource.projectId)
+        ? allowBridge("Project is inside the session bridge key boundary.")
+        : denyBridge("Session bridge key is outside its approved project boundary.");
+    }
+
+    if (input.action === "tasks:assign") {
+      if (input.resource.type !== "issue") return denyBridge("Session bridge assignment requires an issue resource.");
+      if (!input.scope.allowCreateTasks) return denyBridge("Session bridge key may not create or assign tasks.");
+      if (input.resource.assigneeUserId) return denyBridge("Session bridge keys cannot assign work to board users.");
+      if (input.resource.assigneeAgentId && input.resource.assigneeAgentId !== input.actorAgentId) {
+        const [owner] = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents)
+          .where(and(eq(agents.id, input.actorAgentId), eq(agents.companyId, input.resource.companyId)));
+        const policy = owner?.runtimeConfig?.pmDelegation as { version?: number; workers?: Array<{ agentId: string }> } | undefined;
+        const targetAgentId = input.resource.assigneeAgentId;
+        if (input.resource.issueId || policy?.version !== 2 || !policy.workers?.some(w => w.agentId === targetAgentId))
+          return denyBridge("Select an Owner-approved shared worker for a new task.");
+      }
+      if (input.resource.issueId) {
+        const existing = await loadIssue(input.resource.issueId);
+        if (!existing || existing.companyId !== input.resource.companyId
+          || !createdByThisKey(existing.originKind, existing.originId)) {
+          return denyBridge("Session bridge key can only reassign issues it created.");
+        }
+        return allowBridge("Allowed for a session bridge-created issue.");
+      }
+      if (inScopeProject(input.resource.projectId)) return allowBridge("Allowed by session bridge create boundary.");
+      if (input.resource.parentIssueId) {
+        const parent = await loadIssue(input.resource.parentIssueId);
+        if (parent?.companyId === input.resource.companyId && inScopeProject(parent.projectId)) {
+          return allowBridge("Allowed by session bridge create boundary.");
+        }
+      }
+      return denyBridge("Session bridge key is outside its approved project boundary.");
+    }
+
+    if (input.action === "issue:read" || input.action === "issue:comment" || input.action === "issue:mutate") {
+      if (input.resource.type !== "issue" || !input.resource.issueId) {
+        return denyBridge("Session bridge issue access requires an issue resource.");
+      }
+      const issue = await loadIssue(input.resource.issueId);
+      if (!issue || issue.companyId !== input.resource.companyId) {
+        return denyBridge("Session bridge key cannot access that issue.");
+      }
+      if (input.action === "issue:mutate" && createdByThisKey(issue.originKind, issue.originId)) {
+        return allowBridge("Allowed for a session bridge-created issue.");
+      }
+      let inScope = inScopeProject(issue.projectId);
+      if (!inScope && input.scope.conversationAgentId === input.actorAgentId) {
+        // The agent's own chat issue is not in a project; it is addressed by
+        // its conversation identity instead.
+        const conversation = await db
+          .select({ conversationAgentId: issues.conversationAgentId })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .then((rows) => rows[0] ?? null);
+        inScope = conversation?.conversationAgentId === input.actorAgentId;
+      }
+      if (!inScope) return denyBridge("Session bridge key is outside its approved project or conversation boundary.");
+      if (input.action === "issue:mutate" && input.resource.intent !== "document_write") {
+        return denyBridge("Session bridge key can only change issues it created.");
+      }
+      return allowBridge("Allowed inside the session bridge key boundary.");
+    }
+
+    // Default deny: company-wide reads, peers, wakeups, decision queues,
+    // runtime and workspace control, secrets and connections stay out of reach.
+    return denyBridge("Session bridge key cannot use this API action.");
+  }
+
   function decideSkillTestAccess(input: {
     action: AuthorizationAction;
     resource: AuthorizationResource;
@@ -2275,8 +2370,10 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     }
 
     if (isConnectionManagementAction(input.action) &&
-        (input.actor.keyScope?.kind === "skill_test" || input.actor.keyScope?.kind === "task_bridge")) {
-      return deny({ action: input.action, reason: "deny_scope", explanation: "Scoped test and task bridge credentials cannot administer connections." });
+        (input.actor.keyScope?.kind === "skill_test"
+          || input.actor.keyScope?.kind === "task_bridge"
+          || input.actor.keyScope?.kind === "session_bridge")) {
+      return deny({ action: input.action, reason: "deny_scope", explanation: "Scoped test, task bridge and session bridge credentials cannot administer connections." });
     }
 
     if (input.actor.keyScope?.kind === "skill_test") {
@@ -2305,6 +2402,24 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         keyId,
       });
       if (taskBridgeDecision) return taskBridgeDecision;
+    }
+
+    if (input.actor.keyScope?.kind === "session_bridge") {
+      const keyId = input.actor.keyId ?? null;
+      if (!keyId) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Session bridge key context is missing.",
+        });
+      }
+      return decideSessionBridgeAccess({
+        actorAgentId,
+        action: input.action,
+        resource: input.resource,
+        scope: input.actor.keyScope,
+        keyId,
+      });
     }
 
     const trustResolution = await resolveActorTrust({

@@ -143,7 +143,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   async function proposalAgentContext(req: Parameters<typeof assertBoard>[0]) {
     const context = agentSecretContext(req);
-    if (req.actor.source !== "agent_jwt" || req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test") {
+    if (req.actor.source !== "agent_jwt" || req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test" || req.actor.keyScope?.kind === "session_bridge") {
       throw forbidden("Secret proposals require a verified run-bound agent token");
     }
     const decision = await access.decide({

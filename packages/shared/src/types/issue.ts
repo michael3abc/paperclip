@@ -1072,7 +1072,7 @@ export interface IssueComment {
   issueId: string;
   authorType: IssueCommentAuthorType;
   /** Server-generated receipt provenance; not writable by comment callers. */
-  origin?: "comment" | "fast_response";
+  origin?: "comment" | "fast_response" | "external_mirror" | "session_bridge_input";
   fastResponseRequestId?: string | null;
   authorAgentId: string | null;
   authorUserId: string | null;
@@ -1199,6 +1199,7 @@ export interface IssueCommentMetadataSection {
 }
 
 export interface IssueCommentMetadata {
+  sessionBridge?: { state: "delivering" | "delivered"; claimId: string; nativeSessionId: string; keyId: string; updatedAt: string };
   version: 1;
   chatMessage?: {
     sourceTaskId: string;

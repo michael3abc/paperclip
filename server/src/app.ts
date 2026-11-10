@@ -31,6 +31,7 @@ import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
 import { createDotRunnerMcpTools, dotRunnerBroker } from "./services/dot-runner-broker.js";
 import { agentProfileAvatarRoutes } from "./routes/agent-profile-avatar.js";
+import { sessionBridgeRoutes } from "./routes/session-bridge.js";
 import { museTransportRoutes, museBoardRoutes } from "./routes/muse.js";
 import { museQualificationRoutes } from "./routes/muse-qualification.js";
 import { startMuseMaintenance } from "./services/muse-maintenance.js";
@@ -71,6 +72,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { skillAccessRequestContext } from "./services/skill-access.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { pmCoordinationMiddleware } from "./middleware/pm-coordination.js";
+import { sessionBridgeGuardMiddleware } from "./middleware/session-bridge-guard.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import {
   privateHostnameGuard,
@@ -595,6 +597,10 @@ export async function createApp(
   // REPLACES whatever actor the request otherwise resolved to, and only on
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
+  // Default-deny HTTP surface for long-lived session-bridge keys; a no-op for
+  // every other actor. Runs before any route so no list/search path is reachable
+  // that the key's scope was not explicitly opened for.
+  app.use(sessionBridgeGuardMiddleware());
   app.use("/api", pmCoordinationMiddleware(db));
   app.use(connectionEventWakeRoutes(db));
   app.use(skillAccessRequestContext);
@@ -783,6 +789,7 @@ export async function createApp(
   );
   api.use(assetRoutes(db, opts.storageService));
   api.use(agentProfileAvatarRoutes(db, opts.storageService));
+  api.use(sessionBridgeRoutes(db));
   api.use(projectToolRoutes(db));
   api.use(taskWorkspaceRoutes(db));
   api.use(projectRoutes(db));

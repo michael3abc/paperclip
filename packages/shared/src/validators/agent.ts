@@ -292,6 +292,23 @@ export const taskBridgeAgentKeyScopeSchema = z.object({
   }
 });
 
+/**
+ * Long-lived key held by a CC Pocket Bridge for one project card's native
+ * session. It reads and comments within `projectIds` (plus the agent's own
+ * conversation) without a heartbeat run. It never checks out work, manages
+ * connections or secrets, or writes outside its projects. See
+ * doc/plans/2026-11-10-session-bridge-key-scope.md.
+ */
+export const sessionBridgeAgentKeyScopeSchema = z.object({
+  kind: z.literal("session_bridge"),
+  projectIds: z.array(z.string().guid()).min(1).max(50),
+  /** Agent whose Agent Chat conversation this key may mirror into. */
+  conversationAgentId: z.string().guid().optional().nullable(),
+  /** Permit creating issues inside `projectIds` (stamped originKind=session_bridge). */
+  allowCreateTasks: z.boolean().optional(),
+  allowAssignedTools: z.boolean().optional(),
+}).strict();
+
 export const standardAgentKeyScopeSchema = z.object({
   kind: z.literal("standard"),
 }).strict();
@@ -305,10 +322,12 @@ export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
   skillTestAgentKeyScopeSchema,
+  sessionBridgeAgentKeyScopeSchema,
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
 export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
+export type SessionBridgeAgentKeyScope = z.infer<typeof sessionBridgeAgentKeyScopeSchema>;
 export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
 
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {

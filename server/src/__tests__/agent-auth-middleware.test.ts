@@ -32,7 +32,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string; lifecycleHolds?: string[] };
-  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
+  agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null; scopeConfig?: Record<string, unknown> | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null;
     status?: string; contextSnapshot?: Record<string, unknown>; resultJson?: Record<string, unknown> };
 }) {
@@ -51,7 +51,7 @@ function createDbState(input: {
         keyHash: input.agentKey.keyHash,
         responsibleUserId: input.agentKey.responsibleUserId ?? null,
         revokedAt: null,
-        scopeConfig: null,
+        scopeConfig: input.agentKey.scopeConfig ?? null,
       }
     : null;
   const runRow = input.run
@@ -529,6 +529,67 @@ describe("agent auth middleware", () => {
 
     expect(readRes.status).toBe(401);
     expect(writeRes.status).toBe(401);
+  });
+
+  it("attributes a session-bridge key by key id and ignores the run header", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const keyId = randomUUID();
+    const projectId = randomUUID();
+    const token = "pcp_test_session_bridge_key";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId, status: "paused" },
+      agentKey: {
+        id: keyId,
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+        scopeConfig: { kind: "session_bridge", projectIds: [projectId] },
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", randomUUID());
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      companyId,
+      keyId,
+      keyScope: { kind: "session_bridge", projectIds: [projectId] },
+      source: "agent_key",
+    });
+    // The header must not hand the key a live run's issue-write context.
+    expect(res.body.runId).toBeUndefined();
+  });
+
+  it("keeps the run header for a standard agent key", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const token = "pcp_test_standard_key_with_run";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ keyScope: { kind: "standard" }, runId, source: "agent_key" });
   });
 
   it("populates agent-key actors from the key responsible user binding", async () => {

@@ -15,7 +15,7 @@ export function agentProfileAvatarRoutes(db: Db, storage: StorageService) {
     const agentId = z.uuid().parse(req.params.agentId);
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "agent") {
-      if (req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test") {
+      if (req.actor.keyScope?.kind === "task_bridge" || req.actor.keyScope?.kind === "skill_test" || req.actor.keyScope?.kind === "session_bridge") {
         throw forbidden("Task-scoped credentials cannot update agent profiles");
       }
       if (req.actor.agentId !== agentId) throw forbidden("Agents can update only their own avatar");

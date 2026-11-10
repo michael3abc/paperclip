@@ -1,3 +1,4 @@
+import { sessionBridgeChatBinding } from "../services/session-bridge-chat.js";
 import type { ToolReviewActor } from "../services/tool-action-review.js";
 import { getDelegatedRequest } from "../services/delegated-requests.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
@@ -402,6 +403,7 @@ import {
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
+import { observeSessionBridgeWrite } from "../services/session-bridge-write-limit.js";
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
@@ -3739,6 +3741,34 @@ export function issueRoutes(
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
+    // A session-bridge key is a long-lived credential attributed by key id: it
+    // has no heartbeat run to anchor the per-run counter. Its authorization
+    // scope already confines it to its own projects and chat; here it gets the
+    // equivalent rolling per-key rate backstop instead of a run context.
+    if (isSessionBridgeKeyActor(req)) {
+      if (!req.actor.agentId || !req.actor.keyId)
+        throw crossIssueInfluenceRunContextError();
+      const bridgeDecision = await observeSessionBridgeWrite(db, {
+        companyId: issue.companyId,
+        keyId: req.actor.keyId,
+        agentId: req.actor.agentId,
+        responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+        targetIssueId: issue.id,
+        targetIssueIdentifier: issue.identifier ?? null,
+        kind,
+      });
+      if (bridgeDecision.allowed) return true;
+      res.status(429).json({
+        error: "Session bridge write rate exceeded for this key",
+        details: {
+          code: "session_bridge_write_rate_exceeded",
+          cap: bridgeDecision.cap,
+          count: bridgeDecision.count,
+          windowSeconds: Math.round(bridgeDecision.windowMs / 1000),
+        },
+      });
+      return false;
+    }
     if (!req.actor.agentId || !req.actor.runId)
       throw crossIssueInfluenceRunContextError();
 
@@ -5026,12 +5056,27 @@ export function issueRoutes(
       : null;
   }
 
+  function isSessionBridgeKeyActor(req: Request) {
+    return (
+      req.actor.type === "agent" &&
+      req.actor.source === "agent_key" &&
+      req.actor.keyScope?.kind === "session_bridge"
+    );
+  }
+
+  /** Issues a session-bridge key creates are stamped so it can only edit its own. */
+  function sessionBridgeOriginForActor(req: Request) {
+    return isSessionBridgeKeyActor(req) && req.actor.keyId
+      ? { originKind: "session_bridge", originId: req.actor.keyId }
+      : null;
+  }
+
   async function assertTaskBridgeCreateAllowed(
     req: Request,
     companyId: string,
     assignmentScope: TaskAssignmentAuthorizationScope,
   ) {
-    if (!isTaskBridgeKeyActor(req)) return;
+    if (!isTaskBridgeKeyActor(req) && !isSessionBridgeKeyActor(req)) return;
     await assertCanAssignTasks(req, companyId, assignmentScope);
   }
 
@@ -5047,6 +5092,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    options: { intent?: "document_write" } = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -5060,6 +5106,7 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         status: issue.status,
+        ...(options.intent ? { intent: options.intent } : {}),
       },
       scope: {
         issueId: issue.id,
@@ -5693,7 +5740,7 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: { allowVisibleIssueWrite?: boolean; intent?: "document_write" } = {},
   ) {
     if (!(await assertIssueReadAllowed(req, res, issue))) return false;
     if (req.actor.type !== "agent") return true;
@@ -5742,6 +5789,7 @@ export function issueRoutes(
       req,
       issue,
       "issue:mutate",
+      { intent: options.intent },
     );
     if (!boundaryDecision.allowed) {
       return denyIssueWrite(
@@ -8411,6 +8459,10 @@ export function issueRoutes(
       res.status(403).json({ error: "Task bridge keys cannot use company-wide issue list APIs" });
       return;
     }
+    if (isSessionBridgeKeyActor(req)) {
+      res.status(403).json({ error: "Session bridge keys cannot use company-wide issue summary APIs" });
+      return;
+    }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ error: "ids must be the only query parameter and contain one to five comma-separated UUIDs" });
@@ -8584,6 +8636,25 @@ export function issueRoutes(
         error: "Task bridge keys cannot use company-wide issue list APIs",
       });
       return;
+    }
+    // List SQL is privacy-aware but not key-scope-aware, so a session-bridge key
+    // may only list inside one of its own projects (the filter is ANDed into
+    // every list query below). The HTTP-edge guard enforces the same bound.
+    if (isSessionBridgeKeyActor(req)) {
+      const bridgeScope = req.actor.keyScope;
+      const listProjectId =
+        typeof req.query.projectId === "string" ? req.query.projectId : null;
+      if (
+        bridgeScope?.kind !== "session_bridge" ||
+        !listProjectId ||
+        !bridgeScope.projectIds.includes(listProjectId)
+      ) {
+        res.status(403).json({
+          error: "Session bridge keys can only list issues in their own projects",
+          details: { code: "SESSION_BRIDGE_API_DENIED" },
+        });
+        return;
+      }
     }
     const assigneeUserFilterRaw = req.query.assigneeUserId as
       string | undefined;
@@ -8946,6 +9017,12 @@ export function issueRoutes(
     if (isTaskBridgeKeyActor(req)) {
       res.status(403).json({
         error: "Task bridge keys cannot use company-wide issue count APIs",
+      });
+      return;
+    }
+    if (isSessionBridgeKeyActor(req)) {
+      res.status(403).json({
+        error: "Session bridge keys cannot use company-wide issue count APIs",
       });
       return;
     }
@@ -11074,7 +11151,22 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (
+        !(await assertAgentIssueMutationAllowed(req, res, issue, {
+          // Documents are the only issue mutation a session-bridge key may make
+          // on an existing in-scope issue it did not create.
+          intent: "document_write",
+          allowVisibleIssueWrite: isSessionBridgeKeyActor(req),
+        }))
+      )
+        return;
+      // Run-attributed agents are bounded by the per-run influence cap elsewhere;
+      // a session-bridge key has no run, so its document writes use the key rate.
+      if (
+        isSessionBridgeKeyActor(req) &&
+        !(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "update"))
+      )
+        return;
       if (
         !(await assertDeliverableMutationAllowedByRunContext(req, res, issue))
       )
@@ -12653,6 +12745,7 @@ export function issueRoutes(
         }
         if (
           !isTaskBridgeKeyActor(req) &&
+          !isSessionBridgeKeyActor(req) &&
           !(await assertIssueWriteInfluenceAllowed(req, res, createParent))
         )
           return;
@@ -12837,6 +12930,7 @@ export function issueRoutes(
         workspaceSelectionActor: req.actor,
         projectId: createAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
+        ...(sessionBridgeOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
         originIdentityContextId: req.actor.identityContextId ?? null,
@@ -13096,6 +13190,7 @@ export function issueRoutes(
       if (!parent) return;
       if (
         !isTaskBridgeKeyActor(req) &&
+        !isSessionBridgeKeyActor(req) &&
         !(await assertIssueWriteInfluenceAllowed(req, res, parent))
       )
         return;
@@ -13202,6 +13297,7 @@ export function issueRoutes(
         workspaceSelectionActor: req.actor,
         projectId: childAssignmentScope.projectId,
         ...(taskBridgeOriginForActor(req) ?? {}),
+        ...(sessionBridgeOriginForActor(req) ?? {}),
         id: issueId,
         executionPolicy,
         ...(currentSerializedChild
@@ -19208,6 +19304,10 @@ export function issueRoutes(
         if (req.body.body.trim() !== "/new" && !(await assertBoardCommentNotPaused(req, res, issue))) return;
         const actor = getActorInfo(req);
         const userId = req.actor.userId;
+        const nativeBinding = await sessionBridgeChatBinding(db, issue.companyId, issue.conversationAgentId);
+        if (nativeBinding && nativeBinding.conversationIssueId !== issue.id) throw conflict("This agent is linked to another native conversation");
+        if (nativeBinding && (req.body.body.trim() === "/new" || req.body.attachmentIds?.length))
+          throw unprocessable("Use CC Pocket for native session reset or attachments; this linked composer accepts text");
         const publications: ActivityPublication[] = [];
         const comment = await db.transaction(async (tx) => {
           await tx.select({ id: issueRows.id }).from(issueRows).where(and(
@@ -19225,7 +19325,11 @@ export function issueRoutes(
             action: "issue.comment_added", entityType: "issue", entityId: issue.id,
             details: { commentId: saved.id, identifier: issue.identifier },
           }, publications);
-          if (!existing) await enqueueFastResponse(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, agentId: issue.conversationAgentId,
+          if (nativeBinding && !existing) {
+            await tx.update(issueComments).set({ origin: "session_bridge_input" }).where(eq(issueComments.id, saved.id));
+            saved.origin = "session_bridge_input";
+          }
+          if (!nativeBinding && !existing) await enqueueFastResponse(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, agentId: issue.conversationAgentId,
             responsibleUserId: userId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt), sessionGeneration: issue.conversationSessionGeneration });
           return saved;
         });

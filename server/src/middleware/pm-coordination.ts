@@ -168,8 +168,13 @@ export function pmCoordinationMiddleware(db: Db): RequestHandler {
         const pm = await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId });
         if (pm) await assertPmApiRequest(db, pm, { method: req.method, path: req.path,
           query: req.query, body: req.body ?? {}, runId: req.actor.runId });
-        else if (req.body && typeof req.body === "object") await applyMainAgentDispatch(db, { agentId: req.actor.agentId, companyId: req.actor.companyId },
-          { method: req.method, path: req.path, body: req.body });
+        else if (req.body && typeof req.body === "object") {
+          const applied = await applyMainAgentDispatch(db, { agentId: req.actor.agentId, companyId: req.actor.companyId },
+            { method: req.method, path: req.path, body: req.body });
+          if (req.actor.keyScope?.kind === "session_bridge" && req.method === "POST" && /^\/companies\/[^/]+\/issues\/?$/.test(req.path)
+            && req.body.assigneeAgentId && req.body.assigneeAgentId !== req.actor.agentId && !applied)
+            throw forbidden("Session bridge dispatch requires an approved worker selection");
+        }
       }
       next();
     } catch (error) { next(error); }

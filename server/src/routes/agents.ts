@@ -4133,6 +4133,7 @@ export function agentRoutes(
     if (
       req.actor.keyScope?.kind === "task_bridge"
       || req.actor.keyScope?.kind === "skill_test"
+      || req.actor.keyScope?.kind === "session_bridge"
     ) {
       res.json({
         id: agent.id,
@@ -4175,11 +4176,16 @@ export function agentRoutes(
       getExperimental: () => instanceSettingsService(db).getExperimental(),
     });
     const isWorktreeRuntime = isTruthyRuntimeEnvValue(process.env.PAPERCLIP_IN_WORKTREE);
-    const eligibleRows = !isWorktreeRuntime
+    const worktreeRows = !isWorktreeRuntime
       ? rows
       : worktreeActivation.armed
       ? rows.filter((issue) => new Date(issue.createdAt) >= new Date(worktreeActivation.cutoff))
       : [];
+    // A session-bridge key sees only assignments inside its own projects.
+    const bridgeScope = req.actor.keyScope;
+    const eligibleRows = bridgeScope?.kind === "session_bridge"
+      ? worktreeRows.filter((issue) => issue.projectId !== null && bridgeScope.projectIds.includes(issue.projectId))
+      : worktreeRows;
     const issueIds = eligibleRows.map((issue) => issue.id);
     const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
@@ -6119,6 +6125,23 @@ export function agentRoutes(
     const agent = await getAccessibleAgent(req, res, id);
     if (!agent) {
       return;
+    }
+    const requestedScope = req.body.scope;
+    if (requestedScope?.kind === "session_bridge") {
+      // A session-bridge key is long-lived and readable by a fullAccess session,
+      // so its project boundary must be real: every project must belong to the
+      // agent's company, and a conversation binding can only name the agent itself.
+      const projectIds: string[] = [...new Set<string>(requestedScope.projectIds as string[])];
+      const owned = await db
+        .select({ id: projectsTable.id })
+        .from(projectsTable)
+        .where(and(eq(projectsTable.companyId, agent.companyId), inArray(projectsTable.id, projectIds)));
+      if (owned.length !== projectIds.length) {
+        throw unprocessable("Every session bridge project must belong to the agent's company");
+      }
+      if (requestedScope.conversationAgentId && requestedScope.conversationAgentId !== agent.id) {
+        throw unprocessable("A session bridge key can only be bound to its own agent's conversation");
+      }
     }
     const key = await svc.createApiKey(id, req.body.name, req.body.scope, {
       responsibleUserId: req.actor.userId ?? null,

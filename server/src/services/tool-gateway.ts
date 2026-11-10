@@ -1,4 +1,5 @@
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
+import { sessionBridgeToolIdentity } from "./session-bridge-tools.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
@@ -404,6 +405,8 @@ export function deduplicateToolDescriptors(tools: readonly ToolGatewayDescriptor
 }
 
 interface ExecuteGatewayToolInput {
+  /** Internal session-bridge route only; ordinary gateway authentication is unchanged. */
+  sessionBridge?: boolean;
   signal?: AbortSignal;
   sessionToken: string;
   gatewayId?: string | null;
@@ -2104,6 +2107,7 @@ export function createToolGatewayService(
       protocolMethod: McpGatewayProtocolMethod;
       callerHeaders?: Record<string, string | string[] | undefined>;
     },
+    sessionBridge = false,
   ): Promise<ToolGatewaySession> {
     const token = sessionToken.trim();
     if (!token) {
@@ -2113,6 +2117,7 @@ export function createToolGatewayService(
         "session_invalid",
       );
     }
+    if (sessionBridge) return captureSessionIdentity(await sessionBridgeToolIdentity(db, token));
     if (namedGatewayTokenId(token)) {
       return namedGatewaySessionFromBearer({
         gatewayId: namedGatewayProtocol?.gatewayId ?? null,
@@ -9433,11 +9438,17 @@ export function createToolGatewayService(
 
     async listToolsForSession(
       sessionToken: string,
-      options: { signal?: AbortSignal } = {},
+      options: { signal?: AbortSignal; sessionBridge?: boolean } = {},
     ): Promise<ToolGatewayDescriptor[]> {
       options.signal?.throwIfAborted();
-      const session = await getActiveSession(sessionToken);
-      const tools = await listToolsForContext(session, options.signal);
+      const session = await getActiveSession(sessionToken, undefined, options.sessionBridge);
+      // The native bridge already supplies bounded search; return actual assigned
+      // connectors, including on-demand targets, rather than virtual run_tool.
+      const tools = options.sessionBridge
+        ? (await decideToolsForListing(await connectionToolsForContext(session),
+          tool => policyInputForTool({ session, tool }), createToolAccessDecisionCache(), options.signal))
+          .filter(({ decision }) => decision.allowed || decision.decision === "require_approval").map(({ tool }) => tool)
+        : await listToolsForContext(session, options.signal);
       await writeAudit({
         session,
         companyId: session.companyId,
@@ -10345,7 +10356,7 @@ export function createToolGatewayService(
         gatewayPublicId: input.gatewayPublicId ?? null,
         protocolMethod: "tools/call",
         callerHeaders: input.callerHeaders,
-      });
+      }, input.sessionBridge);
       await assertGatewayTokenAction(session, "tools/call");
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
@@ -11162,6 +11173,7 @@ export function createToolGatewayService(
 
       try {
         await assertCurrentGatewayIssuer(session, tool, effectiveParameters, invocationId, !!input.approvedActionRequestId);
+        if (input.sessionBridge) await sessionBridgeToolIdentity(db, input.sessionToken);
         const executionTimeoutMs = timeoutMs(input.timeoutMs, tool);
         if (
           tool.providerType === "paperclip_plugin" &&

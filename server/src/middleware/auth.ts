@@ -511,18 +511,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const keyScope = normalizeAgentApiKeyScope(key.scopeConfig);
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
+      keyScope,
       onBehalfOfUserId: responsibleUserId,
       onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
         companyId: key.companyId,
         userId: responsibleUserId,
       }),
-      runId: runIdHeader || undefined,
+      // A session-bridge key is attributed by key id, never by a run. Ignoring
+      // the header keeps it from borrowing a live run's issue-write context.
+      runId: keyScope.kind === "session_bridge" ? undefined : runIdHeader || undefined,
       source: "agent_key",
     };
     if (isCloudManagedInstance() && req.actor.onBehalfOfMemberships?.length) {
