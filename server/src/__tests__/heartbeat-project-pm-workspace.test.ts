@@ -134,7 +134,7 @@ suite("project PM role and workspace at claim", () => {
     expect(rejected.calls).toHaveLength(0);
     const planning = await runToEnd(pm.agentId, { issueId: pm.inboxIssueId });
     expect(planning.run.status).toBe("failed");
-    expect(planning.run.error).toContain("qualified local native Claude ACP runtime");
+    expect(planning.run.error).toContain("qualified local native Claude ACP or Codex runtime");
     expect(planning.calls).toHaveLength(0);
   }, 60_000);
 
