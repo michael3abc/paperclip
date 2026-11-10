@@ -742,6 +742,15 @@ describe("fetchCodexQuota", () => {
 });
 
 describe("mapCodexRpcQuota", () => {
+  it("identifies a weekly primary by duration, without inventing a disabled 5h window", () => {
+    expect(mapCodexRpcQuota({ rateLimits: { limitId: "codex", primary: {
+      usedPercent: 99, windowDurationMins: 10_080, resetsAt: 1_763_500_000,
+    } } }).windows).toMatchObject([{ label: "Weekly limit", usedPercent: 99 }]);
+    expect(mapCodexRpcQuota({ rateLimits: { primary: { usedPercent: 0 } } }).windows[0].label)
+      .toBe("Usage limit (duration not reported)");
+    expect(mapCodexRpcQuota({ rateLimits: { primary: { usedPercent: 0, windowDurationMins: 15 } } }).windows[0].label)
+      .toBe("15m limit");
+  });
   it("maps account and model-specific Codex limits into quota windows", () => {
     const snapshot = mapCodexRpcQuota(
       {

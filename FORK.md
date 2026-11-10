@@ -488,3 +488,9 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   and assigned connector gateway calls. Additive JSON/text contracts, no migration.
   See doc/plans/2026-11-10-session-bridge-key-scope.md. Release from michael/main;
   preserve the previous release and verify only related tests.
+- Host subscription dashboard (2026-11-10): opt-in administrator-only cards read
+  this host's Codex, Claude and Antigravity subscription logins independently of
+  managed AI connections. Visible-page refreshes coalesce behind a 60-second
+  cache; provider work respects maintenance admission and starts no inference.
+  Quota groups, unknown values and failures stay explicit. Codex RPC duration
+  determines the label even when a weekly bucket is primary. No schema change.

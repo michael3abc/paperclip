@@ -1,12 +1,14 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { dashboardService } from "../services/dashboard.js";
+import { companyService } from "../services/companies.js";
+import { fetchHostSubscriptionQuotas } from "../services/host-subscription-quotas.js";
 import {
   DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT,
   MAX_WINDOW_WEEKS,
   recoveryObservabilityService,
 } from "../services/recovery-observability.js";
-import { assertCompanyAccess } from "./authz.js";
+import { assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
 
 function parsePositiveNumber(
   value: unknown,
@@ -23,6 +25,18 @@ export function dashboardRoutes(db: Db) {
   const router = Router();
   const svc = dashboardService(db);
   const recoveryObservability = recoveryObservabilityService(db);
+
+  router.get("/companies/:companyId/dashboard/subscription-quotas", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+    if (!await companyService(db).getById(companyId)) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+    res.set("Cache-Control", "no-store");
+    res.json(await fetchHostSubscriptionQuotas());
+  });
 
   router.get("/companies/:companyId/dashboard", async (req, res) => {
     const companyId = req.params.companyId as string;

@@ -1,5 +1,38 @@
 # Developing
 
+## Host subscription quota dashboard
+
+Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service
+to show Codex, Claude and Antigravity subscription cards on Dashboard. This is
+off by default. GET /api/companies/:companyId/dashboard/subscription-quotas
+requires an instance administrator (or local implicit board), existing company
+access and a real company before reading credentials. Other members and agent
+keys cannot read the host's subscriptions. No database migration is required.
+
+The source is this server host's existing CLI login, not an AI Connection or an
+agent's selected billing route. Codex reads account RPCs without creating a turn;
+its window labels use reported durations. Claude uses the existing local CLI
+credential reader and subscription usage parser. Antigravity reads its existing
+antigravity-oauth-token under ~/.gemini/antigravity-cli and the native
+retrieveUserQuotaSummary endpoint with its product User-Agent. When expiry is
+near, the finite native agy models command refreshes that CLI's own login before
+the quota read; it opens no conversation. No OAuth credentials are imported,
+copied into Paperclip, logged or returned, and AI credit overages stay unchanged.
+The Claude and Antigravity service interfaces are native client interfaces;
+provider changes or refusals must remain visible failures, without a fallback.
+
+The visible page checks every 60 seconds and offers Refresh. Requests coalesce
+and cache for 60 seconds server-side, including failures; Refresh respects that
+cache. There is no timer/daemon or provider traffic when no page requests data.
+Provider reads are tracked until actual settlement and blocked under an idle
+maintenance drain. Percentage bars show consumption with remaining percentages,
+reset countdowns, host and last-check time. Missing windows, resets, remaining
+fractions and model groups stay unknown; a previous successful response after
+an HTTP refresh failure is explicitly stale. Quotas are account-wide and include
+usage outside Paperclip; they never change billing, budgets or agent permissions.
+This first integration reads the local host only. Remote-host logins and Compass
+credits are separate sources and are not merged or inferred.
+
 This project can run fully in local dev without setting up PostgreSQL manually.
 
 ## Persistent case handoffs
