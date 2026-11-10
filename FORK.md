@@ -494,3 +494,7 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   cache; provider work respects maintenance admission and starts no inference.
   Quota groups, unknown values and failures stay explicit. Codex RPC duration
   determines the label even when a weekly bucket is primary. No schema change.
+
+- Session bridge catalog repair (2026-11-10): isolate session-only MCP definitions
+  from the Runner legacy inventory, regenerate source anchors, and align connector
+  decision-text and capability-count regressions with the existing contracts.
