@@ -100,6 +100,28 @@ export function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtime
  * message. It is not stop proof: the predecessor keeps its `requested` record
  * until real Bridge evidence settles it. A forced stop, missing session
  * identity or any other cancellation state never qualifies. */
+/** A Bridge turn that failed before it could own any session work. The adapter
+ * rejects it while starting the resident session, or before delivery when the
+ * previous Chat boundary is still unsettled, so no input was sent and nothing
+ * can still be running. The run has no Bridge/native session ids, no host process
+ * and no stop request. `execution_uncertain` is excluded: its input may have been
+ * accepted. The adapter still re-checks that the resident session is idle and has
+ * no background work before it delivers a new turn. */
+export const BRIDGE_NEVER_STARTED_ERROR_CODES: readonly string[] = ["session_start_failed", "session_busy"];
+export function bridgeSessionNeverStarted(
+  run: Pick<Run, "status" | "runtimeMode" | "errorCode" | "resultJson" | "processPid" | "processGroupId" | "nativeSessionId">,
+): boolean {
+  if (run.runtimeMode !== "legacy" || run.status !== "failed") return false;
+  if (typeof run.errorCode !== "string" || !BRIDGE_NEVER_STARTED_ERROR_CODES.includes(run.errorCode)) return false;
+  if (run.processPid || run.processGroupId || run.nativeSessionId) return false;
+  const result = run.resultJson as Record<string, unknown> | null | undefined;
+  if (result?.executionCancellation !== undefined && result.executionCancellation !== null) return false;
+  for (const key of ["bridgeSessionId", "nativeSessionId"]) {
+    const value = result?.[key];
+    if (value !== undefined && value !== null && value !== "") return false;
+  }
+  return true;
+}
 export type BridgeSessionHandoff = { fromRunId: string; bridgeSessionId: string; nativeSessionId: string };
 export function bridgeSessionHandoffFor(run: Pick<Run, "id" | "status" | "runtimeMode" | "resultJson">): BridgeSessionHandoff | null {
   if (run.runtimeMode !== "legacy") return null;
@@ -387,7 +409,7 @@ export async function admitExplicitNativeContinuation(input: {
       if ((historicalAdapter === BRIDGE_SESSION_ADAPTER || agent.adapterType === BRIDGE_SESSION_ADAPTER) &&
           (historicalAdapter !== BRIDGE_SESSION_ADAPTER || agent.adapterType !== BRIDGE_SESSION_ADAPTER)) return null;
       if (historicalAdapter === BRIDGE_SESSION_ADAPTER) {
-        if (!bridgeSessionStopAcknowledged(run)) {
+        if (!bridgeSessionStopAcknowledged(run) && !bridgeSessionNeverStarted(run)) {
           // An unconfirmed, unforced interrupt continues as a same-session
           // handoff; the adapter waits for that turn before delivering.
           const handoff = bridgeSessionHandoffFor(run);
