@@ -2176,12 +2176,21 @@ export function agentRoutes(
    * Validate a `project_pm` binding against server state and store its canonical
    * form: the agent home is always this agent's default workspace directory.
    */
+  /** A remote-host fixed directory is reached only through the CC Pocket adapter. */
+  function assertRemoteFixedBindingAdapter(runtimeConfig: Record<string, unknown> | null | undefined, adapterType: string) {
+    const binding = asRecord(runtimeConfig?.workspaceBinding);
+    if (binding?.mode === "fixed" && binding.hostId !== undefined && adapterType !== "ccpocket_bridge") {
+      throw badRequest("Remote-host fixed directories require the CC Pocket adapter.");
+    }
+  }
+
   async function canonicalizeProjectPmRuntimeConfig(
     companyId: string,
     agentId: string,
     runtimeConfig: Record<string, unknown>,
     adapterType: string,
   ): Promise<Record<string, unknown>> {
+    assertRemoteFixedBindingAdapter(runtimeConfig, adapterType);
     const binding = readProjectPmBinding(runtimeConfig);
     if (!binding) return runtimeConfig;
     if (binding.workerHostId && adapterType !== 'ccpocket_bridge') throw badRequest('Remote PM workers require the CC Pocket adapter.');
@@ -5639,6 +5648,7 @@ export function agentRoutes(
     if (readProjectPmBinding(requestedRuntimeConfig ?? existing.runtimeConfig)?.workerHostId && nextAdapterType !== "ccpocket_bridge") {
       throw badRequest("Remote PM workers require the CC Pocket adapter.");
     }
+    assertRemoteFixedBindingAdapter(requestedRuntimeConfig ?? existing.runtimeConfig, nextAdapterType);
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");

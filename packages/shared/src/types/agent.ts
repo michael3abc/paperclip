@@ -34,6 +34,11 @@ export interface AgentProjectAccess {
 export interface AgentFixedWorkspaceBinding {
   mode: "fixed";
   cwd: string;
+  /**
+   * Optional CC Pocket host that owns `cwd`. The run stays on the local
+   * environment; the controller never probes the remote path.
+   */
+  hostId?: string;
 }
 
 export type ProjectPmWorkerIsolation = "shared" | "worktree";

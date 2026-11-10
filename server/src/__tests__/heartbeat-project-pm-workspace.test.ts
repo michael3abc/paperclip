@@ -270,6 +270,29 @@ suite("project PM role and workspace at claim", () => {
     expect(context.paperclipWorkspace.cwd).toBe(pmHome);
   }, 60_000);
 
+  it("runs a remote-host main agent's task in its fixed remote source without probing it locally", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = "/remote-only/" + companyId + "/Product_Matching";
+    await db.insert(companies).values({ id: companyId, name: "Remote main company", issuePrefix: `Q${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Remote main", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Repo", sourceType: "remote_managed", cwd, isPrimary: true });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Main", role: "engineer", status: "idle", adapterType: "ccpocket_bridge",
+      adapterConfig: { hostId: "shopee-e", role: "main", cwd }, runtimeConfig: { workspaceBinding: { mode: "fixed", cwd, hostId: "shopee-e" } }, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Remote task", status: "todo", assigneeAgentId: agentId });
+    const taskRun = await runToEnd(agentId, { issueId });
+    expect({ status: taskRun.run.status, error: taskRun.run.error }).toEqual({ status: "succeeded", error: null });
+    expect(taskRun.calls[0]![0].context.paperclipWorkspace.cwd).toBe(cwd);
+    const chatRun = await runToEnd(agentId, {});
+    expect({ status: chatRun.run.status, error: chatRun.run.error }).toEqual({ status: "succeeded", error: null });
+    expect(chatRun.calls[0]![0].context.paperclipWorkspace.cwd).toBe(cwd);
+    // Another host's adapter configuration is refused before the adapter starts.
+    await db.update(agents).set({ adapterConfig: { hostId: "shopee-d", role: "main", cwd } }).where(eq(agents.id, agentId));
+    const mismatched = await runToEnd(agentId, {});
+    expect(mismatched.run.status).toBe("failed");
+    expect(mismatched.calls).toHaveLength(0);
+  }, 60_000);
+
   it("runs one PM turn beside up to workerSlots worker turns and keeps a full role queued", async () => {
     const pm = await seedPm();
     const gates = new Map<string, () => void>();

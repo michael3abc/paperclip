@@ -91,9 +91,16 @@ export const PROJECT_PM_MIN_WORKER_SLOTS = 0;
 export const PROJECT_PM_MAX_WORKER_SLOTS = 4;
 export const PROJECT_PM_DEFAULT_WORKER_SLOTS = 0;
 
+/**
+ * A fixed working directory. `hostId` names a CC Pocket host registry entry:
+ * the directory then exists only on that host (a project's `remote_managed`
+ * source), the run uses the local environment, and the adapter verifies the
+ * path on the host before dispatch. The controller never stats it.
+ */
 export const agentFixedWorkspaceBindingSchema = z.object({
   mode: z.literal("fixed"),
   cwd: absoluteWorkspacePathSchema("Fixed working directory must be an absolute path"),
+  hostId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/).optional(),
 }).strict();
 
 /**
