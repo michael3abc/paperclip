@@ -572,3 +572,8 @@ connector gateway separate. session_bridge keys may invoke assigned connectors
 only with allowAssignedTools; they cannot manage connections or fabricate runs.
 Retain uncertain provider sends without automatic replay. Update the canonical
 contract in doc/plans/2026-11-10-session-bridge-key-scope.md with protocol changes.
+
+Session-bridge-only MCP definitions live in packages/mcp-server/src/session-bridge-tools.ts;
+keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate the
+Runner capability source anchors when legacy definitions move, and verify both
+catalog surfaces without granting session-only tools to heartbeat clients.

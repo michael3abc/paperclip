@@ -160,3 +160,8 @@ and a real HTTP fixture connector call with runId=null. Retain failures and fixe
 Production acceptance checks the original native ID, both chat directions, assigned
 connector discovery/read, and a new bounded worker task. Never claim external
 message sending was tested without a separate explicitly authorized recipient.
+
+Session-bridge-only MCP definitions live in packages/mcp-server/src/session-bridge-tools.ts;
+keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate the
+Runner capability source anchors when legacy definitions move, and verify both
+catalog surfaces without granting session-only tools to heartbeat clients.
