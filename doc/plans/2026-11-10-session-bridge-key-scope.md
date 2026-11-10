@@ -116,6 +116,8 @@ A lost acknowledgement can be resent without resending input. A crash in sending
 is uncertain and blocks replay with a visible Bridge notice; elapsed time is not
 stop or delivery proof. There is no exactly-once claim across a provider crash.
 Responses are mirrored while the original Paperclip human comment is not echoed.
+The UI presentation model consumes the shared comment origin type and preserves
+external_mirror/session_bridge_input provenance through the chat adapter.
 Other sessions sharing the project directory cannot mirror into the pinned chat.
 Text is the pilot composer contract; native resets and attachments remain in CC
 Pocket and are explicitly rejected here instead of silently dropping them.

@@ -6,6 +6,12 @@ import {
 } from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
+  it.each(["external_mirror", "session_bridge_input"] as const)("preserves native %s provenance", origin => {
+    const comment = { id: "native-message", authorType: "user", authorUserId: "owner",
+      body: "Native message", origin } as IssueChatComment;
+    expect(commentsToTaskChatItems([comment], { currentUserId: "owner" })[0])
+      .toMatchObject({ id: "native-message", origin, author: "human", isCurrentUser: true });
+  });
   it("preserves distinct human IDs, photos and viewer ownership, including after a profile refresh", () => {
     const comments = ["alex", "sam"].map(authorUserId => ({
       id: `comment-${authorUserId}`, authorType: "user", authorUserId,

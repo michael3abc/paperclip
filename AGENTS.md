@@ -561,6 +561,9 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Chat presentation uses the shared IssueComment origin type so native inbox and
+mirrored messages retain their provenance through the UI adapter.
+
 The Shopee-D pilot uses the explicit runtimeConfig.sessionBridge binding; Bridge
 owns the pinned native session. New chat comments use a durable receipt inbox and
 must never fall back to a heartbeat on disconnect or replay historical comments.
