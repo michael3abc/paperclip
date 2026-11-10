@@ -11,6 +11,7 @@ import { addNestedRepositoryWorktree, isVerifiedNestedRepositoryBase, nestedRepo
 export { materializeManagedProjectWorkspace } from "../managed-repository-checkout.js";
 import { sql } from "drizzle-orm";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { remoteBridgeWorkerHost, selectRemoteWorkerSource } from "./remote-bridge-worker.js";
 import { resolveInPlaceAnchor } from "@paperclipai/adapter-utils/ssh-in-place";
 import { assertFixedProjectWorkspace, assertRemoteFixedBinding, readWorkspaceBinding, validateFixedLocalDirectory, workspaceBindingConflict } from "../agent-workspace-binding.js";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
@@ -3549,6 +3550,22 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         workspaceId: selected?.id ?? null, repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
         workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [], localPathOnlyWorkspace: true };
     }
+    const remoteWorkerHost = remoteBridgeWorkerHost(agent);
+    if (remoteWorkerHost) {
+      // A remote Bridge worker works in its own host's copy of the task's remote-managed source. The controller
+      // never opens that path; the CC Pocket adapter and that host's Bridge verify it there.
+      if (opts?.executionEnvironmentDriver && opts.executionEnvironmentDriver !== "local") {
+        throw new WorkspaceValidationFailure("Remote Bridge workers run through the local CC Pocket adapter.", { workspaceValidation: { reason: "remote_worker_environment_conflict" } });
+      }
+      if (!workspaceProjectId) {
+        throw new WorkspaceValidationFailure("A remote Bridge worker requires a task in a project with a source on its host.", { workspaceValidation: { reason: "remote_worker_project_required", hostId: remoteWorkerHost } });
+      }
+      const selected = selectRemoteWorkerSource(projectWorkspaceRows, preferredProjectWorkspaceId, remoteWorkerHost);
+      if (!selected.ok) throw new WorkspaceValidationFailure(selected.message, { workspaceValidation: { reason: selected.reason, hostId: remoteWorkerHost } });
+      return { cwd: selected.cwd, source: "project_primary", projectId: selected.row.projectId, workspaceId: selected.row.id,
+        repoUrl: selected.row.repoUrl ?? null, repoRef: selected.row.repoRef ?? null, workspaceHints, warnings: [],
+        baseCwdFallback: false, materializationFailures: [], localPathOnlyWorkspace: true };
+    }
         const inPlace = resolveInPlaceAnchor({ rows: projectWorkspaceRows, preferredId: preferredProjectWorkspaceId, driver: opts?.executionEnvironmentDriver, config: opts?.executionEnvironmentConfig, projectId: resolvedProjectId, workspaceHints });
         if (inPlace) return inPlace;
 
@@ -3767,7 +3784,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       previousSessionParams,
       opts,
     );
-    if (!isMultiProjectWorkspaceSyncEnabled()) {
+    // Referenced projects are controller-local trees; a remote Bridge worker sees only its host's source.
+    if (!isMultiProjectWorkspaceSyncEnabled() || remoteBridgeWorkerHost(agent)) {
       return {
         ...anchor,
         additionalWorkspaces: [],

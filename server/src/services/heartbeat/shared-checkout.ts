@@ -57,13 +57,20 @@ export async function claimSharedCheckout(db: Db, input: {
   companyId: string; agentId: string; runId: string; issueId: string;
   projectWorkspaceId: string; cwd: string; deferralAttempt: number;
   requireGit?: boolean;
+  /** A CC Pocket Bridge host other than the controller. Its filesystem is not visible here: claims key on
+   * that host and the source's canonical registered path, and the remote Bridge verifies the directory. */
+  remoteHostId?: string | null;
   context: Record<string, unknown>;
 }): Promise<SharedCheckoutClaim> {
-  const source = await sharedSource(input.cwd);
-  if (input.requireGit && source.kind !== "git") throw new WorkspaceValidationFailure(
+  const remote = input.remoteHostId ?? null;
+  const source = remote ? null : await sharedSource(input.cwd);
+  if (remote && (!input.cwd.startsWith("/") || path.posix.normalize(input.cwd) !== input.cwd || (input.cwd.length > 1 && input.cwd.endsWith("/")))) {
+    throw new WorkspaceValidationFailure("The remote project source path is not a canonical absolute path.", { reason: "remote_worker_path_invalid" });
+  }
+  if (input.requireGit && source?.kind !== "git") throw new WorkspaceValidationFailure(
     "This source declares a Git repository or revision but its directory is not a Git checkout. Repair that source or select an ordinary document directory without Git settings.",
     { reason: "shared_workspace_git_required" });
-  const claim: SharedCheckoutClaim = { version: 1, host: hostname(), ...source,
+  const claim: SharedCheckoutClaim = { version: 1, ...(source ? { host: hostname(), ...source } : { host: `ccpocket:${remote}`, path: input.cwd }),
     issueId: input.issueId, acquiredAt: new Date().toISOString() };
   await db.transaction(async tx => {
     // Serialize only the admission transaction per host, so parent and child
@@ -74,7 +81,7 @@ export async function claimSharedCheckout(db: Db, input: {
       .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
         eq(heartbeatRuns.agentId, input.agentId))).for("update");
     if (current?.status !== "running") throw new Error("shared_checkout_run_not_running");
-    const services = await tx.execute(sql`select 1 from workspace_runtime_services
+    const services = remote ? [] : await tx.execute(sql`select 1 from workspace_runtime_services
       where status <> 'stopped' and (cwd = ${claim.path} or starts_with(cwd, rtrim(${claim.path}, '/') || '/')
         or starts_with(${claim.path}, rtrim(cwd, '/') || '/')) limit 1`);
     if (services.length) throw new WorkspaceValidationFailure(
@@ -108,10 +115,10 @@ export async function claimSharedCheckout(db: Db, input: {
         issueId: holder.issue_id, issueIdentifier: null }, projectWorkspaceId: input.projectWorkspaceId,
         deferralAttempt: input.deferralAttempt, wasIssueAssignee: true });
     }
-    if ((await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
+    if (!remote && (await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
       "Another local process still uses this checkout. Release that writer or service; production needs a separate fixed development checkout.",
       { reason: "shared_checkout_process_active" });
-    const dirty = source.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "--untracked-files=normal"],
+    const dirty = source?.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "--untracked-files=normal"],
       { timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout : "";
     const prior = await tx.execute<{ issue_id: string }>(sql`select r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id from heartbeat_runs r
       where r.company_id = ${input.companyId}

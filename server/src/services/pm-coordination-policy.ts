@@ -2,7 +2,7 @@ import { pmInstructionLayout, type PmInstructionLayoutVersion, aiConnectionBindi
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { workerPolicyLayout } from "./main-agent-workers.js";
 import { isDeepStrictEqual } from "node:util";
-import { isPmWorkerAgent, workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
+import { agentHost, DEFAULT_BRIDGE_HOST, isPmWorkerAgent, projectSourceHost, workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { agents, issues, issueApprovals, heartbeatRuns, projectWorkspaces, executionWorkspaces, type Db } from "@paperclipai/db";
@@ -130,14 +130,16 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   if (input.executionWorkspaceSettings != null && Object.keys(input.executionWorkspaceSettings).some(key => !["mode", "sharedWorkspaceConcurrency"].includes(key))) {
     throw forbidden("PM dispatch may select a configured workspace, but cannot change runtime, environment or network grants", { code: "PM_WORKSPACE_POLICY_DENIED" });
   }
+  let sourceHost: string | null | undefined;
   if (input.workspaceSelection != null) {
     const selected = taskWorkspaceSelectionSchema.parse(input.workspaceSelection);
     if (selected.kind === "configured_source") {
-      const [source] = await db.select({ projectId: projectWorkspaces.projectId, metadata: projectWorkspaces.metadata }).from(projectWorkspaces)
+      const [source] = await db.select({ projectId: projectWorkspaces.projectId, metadata: projectWorkspaces.metadata, sourceType: projectWorkspaces.sourceType }).from(projectWorkspaces)
         .where(and(eq(projectWorkspaces.id, selected.projectWorkspaceId), eq(projectWorkspaces.companyId, scope.companyId))).limit(1);
       if (source?.projectId !== scope.projectId) throw forbidden("Workspace source is outside this PM's project", { code: "PM_PROJECT_DENIED" });
       if (selected.mode === "shared" && source.metadata?.usage === "production") throw unprocessable(
         "This source serves production. Select the project's fixed development checkout.", { code: "PM_DEVELOPMENT_SOURCE_REQUIRED" });
+      sourceHost = projectSourceHost(source);
     } else if (selected.kind === "existing") {
       const [workspace] = await db.select({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
         .where(and(eq(executionWorkspaces.id, selected.workspaceId), eq(executionWorkspaces.companyId, scope.companyId))).limit(1);
@@ -148,6 +150,12 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   if (!worker || !isPmWorkerAgent(worker) || !(worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
     || ["paused", "terminated", "pending_approval"].includes(worker.status)) {
     throw forbidden("The selected shared worker is unavailable; inspect its recorded status", { code: "PM_WORKER_UNAVAILABLE" });
+  }
+  // A Bridge worker runs on its own host and can only open a source that lives on that host.
+  const workerHost = agentHost(worker);
+  if (sourceHost !== undefined ? sourceHost !== workerHost : workerHost !== DEFAULT_BRIDGE_HOST) {
+    throw unprocessable("The selected worker runs on a different host than this task's configured source; choose a worker on the source's host.",
+      { code: "PM_WORKER_HOST_MISMATCH", workerHost, sourceHost: sourceHost ?? null });
   }
   if (worker.runtimeConfig?.requireTaskWorktree === true && (input.workspaceSelection as { mode?: string })?.mode === "shared") {
     throw unprocessable("This worker still requires isolated worktrees; its Owner-managed workspace policy has not been changed.", { code: "PM_WORKER_WORKSPACE_POLICY_CONFLICT" });

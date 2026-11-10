@@ -145,3 +145,22 @@ it.each([false,true])("requires a retained process-stop receipt before another w
     location:"local", state:"captured", receipt:{}, processStoppedAt:new Date() });
   await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
 });
+
+it("keys a remote Bridge worker's claim on its host and registered path without touching the controller filesystem", async () => {
+  const [a,b] = await fixture(false);
+  const remotePath = "/home/yoyo/Projects/Remote_Only";
+  a.cwd = remotePath; b.cwd = remotePath;
+  const first = await claimSharedCheckout(db, { ...a, remoteHostId: "shopee-e", requireGit: false });
+  expect(first).toMatchObject({ host: "ccpocket:shopee-e", path: remotePath, issueId: a.issueId });
+  expect(first.kind).toBeUndefined();
+  await expect(access(remotePath)).rejects.toMatchObject({ code: "ENOENT" });
+  // A second writer on the same host and path queues; the same path on another host is an independent checkout.
+  await expect(claimSharedCheckout(db, { ...b, remoteHostId: "shopee-e" })).rejects.toMatchObject({ code: "workspace_busy" });
+  await expect(claimSharedCheckout(db, { ...b, remoteHostId: "shopee-d" })).resolves.toMatchObject({ host: "ccpocket:shopee-d", path: remotePath });
+});
+
+it.each(["relative/path", "/home/yoyo/../etc", "/home/yoyo/Projects/"])("rejects a non-canonical remote path %s", async remotePath => {
+  const [a] = await fixture(false);
+  await expect(claimSharedCheckout(db, { ...a, cwd: remotePath, remoteHostId: "shopee-e" }))
+    .rejects.toMatchObject({ resultJson: { reason: "remote_worker_path_invalid" } });
+});

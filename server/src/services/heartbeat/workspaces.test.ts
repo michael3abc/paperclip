@@ -158,6 +158,26 @@ describe("heartbeat workspace module", () => {
       { executionEnvironmentDriver: "plugin" })).rejects.toMatchObject({ code: "workspace_validation_failed" });
   });
 
+  it("anchors a remote Bridge worker on its host's source without touching the controller filesystem", async () => {
+    const remoteWorker = { ...agent(), adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", hostId: "shopee-e" }, runtimeConfig: {} } as typeof agents.$inferSelect;
+    const remoteSource = (id: string, hostId: string) => ({ ...workspace(id, "project-one", `/home/yoyo/Projects/${id}`),
+      sourceType: "remote_managed", isPrimary: true, metadata: { hostId } }) as typeof projectWorkspaces.$inferSelect;
+    const stat = vi.spyOn(fs, "stat"); const mkdir = vi.spyOn(fs, "mkdir");
+    try {
+      const result = await createHeartbeatWorkspaceResolver(databaseWithResults([remoteSource("cctv", "shopee-e")]).db)
+        .resolveWorkspaceForRun(remoteWorker, { projectId: "project-one" }, null);
+      expect(result).toMatchObject({ cwd: "/home/yoyo/Projects/cctv", projectId: "project-one", workspaceId: "cctv",
+        source: "project_primary", baseCwdFallback: false, additionalWorkspaces: [] });
+      expect(stat).not.toHaveBeenCalled(); expect(mkdir).not.toHaveBeenCalled();
+      await expect(createHeartbeatWorkspaceResolver(databaseWithResults([remoteSource("video", "shopee-d")]).db)
+        .resolveWorkspaceForRun(remoteWorker, { projectId: "project-one" }, null)).rejects.toMatchObject({
+        code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "remote_worker_host_mismatch", hostId: "shopee-e" } } });
+      await expect(createHeartbeatWorkspaceResolver(databaseWithResults().db)
+        .resolveWorkspaceForRun(remoteWorker, {}, null)).rejects.toMatchObject({
+        resultJson: { workspaceValidation: { reason: "remote_worker_project_required" } } });
+    } finally { stat.mockRestore(); mkdir.mockRestore(); }
+  });
+
   it("fails closed with workspace diagnostics when a configured directory is unavailable", async () => {
     const missingCwd = path.join(testRoot, "missing-configured-workspace");
     const database = databaseWithResults([workspace("selected", "project-one", missingCwd)]);

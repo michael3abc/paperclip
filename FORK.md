@@ -382,6 +382,13 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   filter and each artifact's `project`. An explicit project wins; an agent leading none
   or several active projects stays under "No project". Read-only; no stored issue or
   project changes, no schema change.
+- Remote Bridge shared workers (Shopee, 2026-11-10): a plain shared `ccpocket_bridge`
+  worker whose `hostId` is another CC Pocket host runs in the project's `remote_managed`
+  source registered on that host (`metadata.hostId`). Its shared-checkout claim keys on
+  `ccpocket:<host>` plus the canonical registered path; the controller skips local
+  filesystem, service, process and Git-dirty checks it cannot see, while writers on the
+  same remote source still queue. Worker policies and the worker catalog accept such a
+  worker only for projects with a source on the same host. No schema change.
 - Failed bridge turn handoff (HOM-265, 2026-11-10): a `ccpocket_bridge` run the adapter
   reports as `failed` (for example a provider error after a failed context compaction)
   may leave its resident session working, and it has no stop record, so the next explicit

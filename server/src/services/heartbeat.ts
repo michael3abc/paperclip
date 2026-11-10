@@ -60,6 +60,7 @@ import {
 import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectionEnabled } from "./execution-workspace-policy.js";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 import { readWorkspaceBinding, controllerLocalCwd } from "./agent-workspace-binding.js";
+import { remoteBridgeWorkerHost } from "./heartbeat/remote-bridge-worker.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -3012,7 +3013,9 @@ export function heartbeatService(
       if (issueId && (!executionTarget || executionTarget.kind === "local")) {
         await recordLegacyCaseHandoffCleanupIntent(db, { runId: run.id, issueId, controllerBootId: legacyControllerBootId, scratch: runScratch });
       }
-      const controllerCwd = controllerLocalCwd(readWorkspaceBinding(agent.runtimeConfig, context), executionWorkspace.cwd, agent.id);
+      // A remote Bridge worker's cwd exists only on its host; controller-side helpers use the agent home.
+      const controllerCwd = remoteBridgeWorkerHost(agent) ? resolveDefaultAgentWorkspaceDir(agent.id)
+        : controllerLocalCwd(readWorkspaceBinding(agent.runtimeConfig, context), executionWorkspace.cwd, agent.id);
       if (controllerCwd !== executionWorkspace.cwd) await fs.mkdir(controllerCwd, { recursive: true });
       const gitExecutionEnv = await timePreparation("github_environment", () => prepareGitHubExecutionEnvironment({
         target: executionTarget,
@@ -3130,6 +3133,7 @@ export function heartbeatService(
         branchName: executionWorkspace.branchName,
         worktreePath: executionWorkspace.worktreePath,
         realization: workspaceRealization,
+        ...(remoteBridgeWorkerHost(agent) ? { remoteHostId: remoteBridgeWorkerHost(agent) } : {}),
         agentHome: await (async () => {
           const home = resolveDefaultAgentWorkspaceDir(agent.id);
           await fs.mkdir(home, { recursive: true });
