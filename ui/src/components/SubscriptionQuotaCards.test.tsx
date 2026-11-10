@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { SubscriptionQuotaPanels, quotaResetLabel } from "./SubscriptionQuotaCards";
 import type { ProviderQuotaResult } from "@paperclipai/shared";
+import { QuotaBar } from "./QuotaBar";
 
 const account: ProviderQuotaResult = { provider: "openai", ok: true, accountLabel: "test-host", capturedAt: "2026-11-10T00:00:00Z", windows: [
   { label: "Weekly limit", usedPercent: 99, resetsAt: null, valueLabel: null },
@@ -22,6 +23,33 @@ describe("subscription quota cards", () => {
     expect(html).toContain("Remaining quota not reported");
     expect(html).toContain("Reset time not reported");
     expect(html).not.toContain("100% remaining");
+    const view = document.createElement("div");
+    view.innerHTML = html;
+    const bar = view.querySelector<HTMLElement>('[role="progressbar"]')!;
+    expect(bar.style.width).toBe("1%");
+    expect(bar.getAttribute("aria-valuenow")).toBe("1");
+    expect(bar.getAttribute("aria-label")).toBe("Weekly limit: 1% remaining");
+    expect(bar.className).toContain("bg-(--status-task-blocked)");
+  });
+  it.each([
+    { usedPercent: 0, remaining: 100, color: "done" },
+    { usedPercent: 10, remaining: 90, color: "done" },
+    { usedPercent: 100, remaining: 0, color: "blocked" },
+  ])("fills $remaining% for a reported usage of $usedPercent%", ({ usedPercent, remaining, color }) => {
+    const view = document.createElement("div");
+    view.innerHTML = render([{ ...account, windows: [{ ...account.windows[0], usedPercent }] }]);
+    const bar = view.querySelector<HTMLElement>('[role="progressbar"]')!;
+    expect(bar.style.width).toBe(remaining + "%");
+    expect(bar.getAttribute("aria-valuenow")).toBe(String(remaining));
+    expect(bar.className).toContain("bg-(--status-task-" + color + ")");
+  });
+  it("keeps existing spending bars expressed as consumption", () => {
+    const view = document.createElement("div");
+    view.innerHTML = renderToStaticMarkup(<QuotaBar label="Period spend" percentUsed={99} leftLabel="99% used" />);
+    const bar = view.querySelector<HTMLElement>('[role="progressbar"]')!;
+    expect(bar.style.width).toBe("99%");
+    expect(bar.getAttribute("aria-valuenow")).toBe("99");
+    expect(bar.getAttribute("aria-label")).toBe("Period spend: 99%");
   });
   it("distinguishes a failed refresh and provider refusal from successful values", () => {
     const html = render([account, { provider: "anthropic", ok: false, error: "Login expired", windows: [] }], true);

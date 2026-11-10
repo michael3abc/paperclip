@@ -25,7 +25,9 @@ The visible page checks every 60 seconds and offers Refresh. Requests coalesce
 and cache for 60 seconds server-side, including failures; Refresh respects that
 cache. There is no timer/daemon or provider traffic when no page requests data.
 Provider reads are tracked until actual settlement and blocked under an idle
-maintenance drain. Percentage bars show consumption with remaining percentages,
+maintenance drain. Subscription bars fill by the remaining percentage and expose
+that same remaining value to assistive technology; low remaining quota retains
+the warning color. The provider API still reports usedPercent. Cards also show
 reset countdowns, host and last-check time. Missing windows, resets, remaining
 fractions and model groups stay unknown; a previous successful response after
 an HTTP refresh failure is explicitly stale. Quotas are account-wide and include

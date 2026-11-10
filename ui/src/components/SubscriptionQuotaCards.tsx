@@ -68,7 +68,7 @@ export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefres
                           <p>{window.valueLabel ?? "Remaining quota not reported"}</p>
                         </div>
                       ) : (
-                        <QuotaBar label={window.label} percentUsed={window.usedPercent}
+                        <QuotaBar label={window.label} percentUsed={window.usedPercent} valueMode="remaining"
                           leftLabel={new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(100 - window.usedPercent) + "% remaining"} />
                       )}
                       {window.usedPercent != null && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
