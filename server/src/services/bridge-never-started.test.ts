@@ -10,6 +10,17 @@ describe("bridgeSessionNeverStarted", () => {
   it("accepts a Bridge run that failed before any session work existed", () => {
     expect(bridgeSessionNeverStarted(run())).toBe(true);
     expect(bridgeSessionNeverStarted(run({ errorCode: "session_busy", resultJson: {} }))).toBe(true);
+    expect(bridgeSessionNeverStarted(run({ errorCode: "adapter_error", resultJson: { status: "needs_attention" } }))).toBe(true);
+  });
+
+  it("accepts a vanished Bridge card but only without a native thread", () => {
+    expect(bridgeSessionNeverStarted(run({ errorCode: "session_not_found", resultJson: { bridgeSessionId: "b1" } }))).toBe(true);
+    expect(bridgeSessionNeverStarted(run({ errorCode: "session_not_found", resultJson: { bridgeSessionId: "b1", nativeSessionId: "n1" } }))).toBe(false);
+  });
+
+  it("keeps an adapter error with a Bridge session on hold", () => {
+    expect(bridgeSessionNeverStarted(run({ errorCode: "adapter_error", resultJson: { bridgeSessionId: "b1" } }))).toBe(false);
+    expect(bridgeSessionNeverStarted(run({ errorCode: "session_busy", resultJson: { bridgeSessionId: "b1" } }))).toBe(false);
   });
 
   it("never treats input-uncertain or unrelated failures as stopped", () => {

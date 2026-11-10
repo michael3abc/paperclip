@@ -101,13 +101,19 @@ export function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtime
  * until real Bridge evidence settles it. A forced stop, missing session
  * identity or any other cancellation state never qualifies. */
 /** A Bridge turn that failed before it could own any session work. The adapter
- * rejects it while starting the resident session, or before delivery when the
- * previous Chat boundary is still unsettled, so no input was sent and nothing
- * can still be running. The run has no Bridge/native session ids, no host process
- * and no stop request. `execution_uncertain` is excluded: its input may have been
- * accepted. The adapter still re-checks that the resident session is idle and has
- * no background work before it delivers a new turn. */
-export const BRIDGE_NEVER_STARTED_ERROR_CODES: readonly string[] = ["session_start_failed", "session_busy"];
+ * rejects it while starting the resident session, before delivery when the
+ * previous Chat boundary is still unsettled, or when the host cannot be reached
+ * at all, so no input was sent and nothing can still be running. The run has no
+ * native session id, no host process and no stop request. `session_start_failed`,
+ * `session_busy` and `adapter_error` additionally carry no Bridge session id:
+ * without a session nothing could have been delivered. `session_not_found` names
+ * the Bridge card that no longer exists (it is only raised for a card without a
+ * native thread, before any input), so that one id is allowed. `execution_uncertain`
+ * is excluded: its input may have been accepted. The adapter still re-checks that
+ * the resident session is idle and has no background work before it delivers a
+ * new turn. */
+export const BRIDGE_NEVER_STARTED_ERROR_CODES: readonly string[] =
+  ["session_start_failed", "session_busy", "session_not_found", "adapter_error"];
 export function bridgeSessionNeverStarted(
   run: Pick<Run, "status" | "runtimeMode" | "errorCode" | "resultJson" | "processPid" | "processGroupId" | "nativeSessionId">,
 ): boolean {
@@ -116,7 +122,8 @@ export function bridgeSessionNeverStarted(
   if (run.processPid || run.processGroupId || run.nativeSessionId) return false;
   const result = run.resultJson as Record<string, unknown> | null | undefined;
   if (result?.executionCancellation !== undefined && result.executionCancellation !== null) return false;
-  for (const key of ["bridgeSessionId", "nativeSessionId"]) {
+  const keys = run.errorCode === "session_not_found" ? ["nativeSessionId"] : ["bridgeSessionId", "nativeSessionId"];
+  for (const key of keys) {
     const value = result?.[key];
     if (value !== undefined && value !== null && value !== "") return false;
   }
