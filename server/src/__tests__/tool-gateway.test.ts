@@ -5995,7 +5995,7 @@ rl.on("line", (line) => {
     const listedTool = (await gateway.listToolsForSession(session.token))
       .find((tool) => tool.name === "mcp-remote-fixture:update_note");
     expect(listedTool?.description).toBe(
-      "Remote HTTP MCP fixture that simulates a side-effecting write. Requires human approval: calling it posts an approval card on your task and you will be woken with the result once decided.",
+      "Remote HTTP MCP fixture that simulates a side-effecting write. Requires a formal decision: calling it posts a request on your task for the authorized reviewer and you will be woken with the result once decided.",
     );
     expect((await gateway.listToolsForSession(session.token))
       .find((tool) => tool.name === "mcp-remote-fixture:echo")?.description).toBe(

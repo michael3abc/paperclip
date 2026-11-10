@@ -18,37 +18,9 @@ import {
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
-import { formatErrorResponse, formatTextResponse } from "./format.js";
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  schema: z.ZodObject;
-  execute: (input: Record<string, unknown>) => Promise<{
-    content: Array<{ type: "text"; text: string }>;
-  }>;
-}
-
-function makeTool<TSchema extends z.ZodRawShape>(
-  name: string,
-  description: string,
-  schema: z.ZodObject<TSchema>,
-  execute: (input: z.infer<typeof schema>) => Promise<unknown>,
-): ToolDefinition {
-  return {
-    name,
-    description,
-    schema,
-    execute: async (input) => {
-      try {
-        const parsed = schema.parse(input);
-        return formatTextResponse(await execute(parsed));
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    },
-  };
-}
+import { makeTool, type ToolDefinition } from "./tool-definition.js";
+import { createSessionBridgeTools } from "./session-bridge-tools.js";
+export type { ToolDefinition } from "./tool-definition.js";
 
 function parseOptionalJson(raw: string | undefined | null): unknown {
   if (!raw || raw.trim().length === 0) return undefined;
@@ -268,20 +240,11 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
 }
 
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
-  const nativeTools = new Set(["paperclipListWorkerSelections", "paperclipSearchAssignedTools", "paperclipCallAssignedTool"]);
-  const nativeSurface = new Set([...nativeTools, "paperclipMe", "paperclipInboxLite", "paperclipListIssues", "paperclipGetIssue",
+  const nativeSurface = new Set(["paperclipMe", "paperclipInboxLite", "paperclipListIssues", "paperclipGetIssue",
     "paperclipGetHeartbeatContext", "paperclipListComments", "paperclipGetComment", "paperclipListDocuments", "paperclipGetDocument",
     "paperclipListDocumentRevisions", "paperclipListProjects", "paperclipGetProject", "paperclipCreateIssue", "paperclipUpdateIssue",
     "paperclipAddComment", "paperclipUpsertIssueDocument"]);
   const definitions = [
-    makeTool("paperclipListWorkerSelections", "Read this main agent’s approved worker selections and project sources. Use a ready selection ID in paperclipCreateIssue.assigneeAdapterOverrides.workerSelectionId and a configured_source workspaceSelection. Never substitute models.",
-      z.object({}), async () => client.requestJson("GET", "/agents/me/session-bridge/workers")),
-    makeTool("paperclipSearchAssignedTools", "Search connectors already assigned to this native session’s Paperclip agent. Returns current tool schemas. This does not create connections or grants.",
-      z.object({ query: z.string().max(200).default(""), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(20).optional() }),
-      async input => client.requestJson("POST", "/agents/me/session-bridge/tools-search", { body: input })),
-    makeTool("paperclipCallAssignedTool", "Call an exact tool returned by paperclipSearchAssignedTools. Existing grants, approval and audit apply. Keep the same idempotencyKey for the same operation; inspect an uncertain result, never repeat a write with a new key.",
-      z.object({ name: z.string().min(1).max(300), arguments: z.record(z.string(), z.unknown()), idempotencyKey: z.string().min(1).max(200), approvedActionRequestId: z.uuid().optional() }),
-      async input => client.requestJson("POST", "/agents/me/session-bridge/tools-call", { body: input })),
     makeTool(
       "connections_search",
       CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
@@ -701,5 +664,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       },
     ),
   ];
-  return definitions.filter(tool => client.defaults.sessionBridge ? nativeSurface.has(tool.name) : !nativeTools.has(tool.name));
+  return client.defaults.sessionBridge
+    ? [...createSessionBridgeTools(client), ...definitions.filter(tool => nativeSurface.has(tool.name))]
+    : definitions;
 }

@@ -26,6 +26,13 @@ function mockJsonResponse(body: unknown, status = 200) {
 }
 
 describe("paperclip MCP tools", () => {
+  it("keeps session-only tools out of the heartbeat catalog", () => {
+    const names = createToolDefinitions(makeClient()).map(tool => tool.name);
+    expect(names).toContain("paperclipCheckoutIssue");
+    for (const name of ["paperclipListWorkerSelections", "paperclipSearchAssignedTools", "paperclipCallAssignedTool"]) {
+      expect(names).not.toContain(name);
+    }
+  });
   it("publishes only the native scoped surface and preserves worker selections without a run", async () => {
     const client = new PaperclipApiClient({ apiUrl: "http://localhost:3100/api", apiKey: "test", companyId: "11111111-1111-4111-8111-111111111111", agentId: null, runId: null, sessionBridge: true });
     const tools = createToolDefinitions(client);
