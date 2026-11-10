@@ -561,6 +561,15 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
+through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the
+queued-comment reservation before provider I/O, preserve original run/result
+correlation, and remove only acknowledged IDs from the latest queue. Uncertain
+delivery blocks queue mutation and promotion until its original durable receipt
+settles; never interrupt, replay, start an idle turn or resend it automatically.
+Other harnesses retain Chat interrupt behavior; ordinary task queues are unchanged.
+Attachments and interaction responses retain their normal turn boundaries.
+
 Chat presentation uses the shared IssueComment origin type so native inbox and
 mirrored messages retain their provenance through the UI adapter.
 

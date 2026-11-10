@@ -169,6 +169,12 @@ async function runReleaseDrain(
     }
     processedWakeIds.add(candidate.id);
 
+    // A committed same-turn attempt may already be in the provider. Never
+    // promote it (or later queues) until the original delivery is reconciled.
+    if (candidate.payload.bridgeChatSteering !== undefined) {
+      return { outcome: { kind: "released" }, postCommitEffects };
+    }
+
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
     // comment ID so coalesced human or unrelated input is never hidden.

@@ -146,12 +146,12 @@ function SortableQueuedMessage({
         {label}
       </span>
 
-      {(queue.targetRunId || queue.state === "deferred") && (!queue.targetRunId || queue.protocol === "legacy" || entry.source?.requiresFreshSession ? (
+      {(queue.targetRunId || queue.state === "deferred") && (!queue.targetRunId || (queue.protocol === "legacy" && queue.chatDeliveryMode !== "steer") || entry.source?.requiresFreshSession ? (
         <button
           type="button"
           onClick={onInterrupt}
           aria-label={!queue.targetRunId ? "Send queued messages" : undefined}
-          disabled={busy || !queue.queueId || !onInterrupt}
+          disabled={busy || queueMutationDisabled || !queue.queueId || !onInterrupt}
           title={queue.targetRunId ? "Interrupt the active turn and send queued messages" : "Send queued messages now"}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
@@ -186,6 +186,7 @@ function SortableQueuedMessage({
         onClick={onDiscard}
         disabled={
           busy ||
+          Boolean(queue.steeringDelivery) ||
           (!queue.queueId && !entry.comment.id.startsWith("optimistic-")) ||
           !entry.canDiscard
         }
@@ -415,7 +416,7 @@ export function TaskChatQueuedMessages({
               pending?.commentId === entry.comment.id ? pending.action : null;
             const busy = Boolean(pending || reordering);
             const queueMutationDisabled = Boolean(
-              !queue.queueId || pending || reordering,
+              !queue.queueId || pending || reordering || queue.steeringDelivery,
             );
             return (
               <SortableQueuedMessage
@@ -439,6 +440,7 @@ export function TaskChatQueuedMessages({
         </SortableContext>
       </DndContext>
       {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message}</p> : null}
+      {queue.steeringDelivery ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{queue.executionWait?.message}</p> : null}
       {visibleError ? (
         <div
           role="status"

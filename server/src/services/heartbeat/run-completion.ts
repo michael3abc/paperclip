@@ -1,4 +1,5 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { preserveQueuedSteeringAcknowledgementsSql } from "../issue-queued-comment-queue.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -628,7 +629,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       mergeRunStopMetadataForAgent(agent, outcome, {
         resultJson: mergeAdapterRecoveryMetadata({
           resultJson: {
-            ...(adapterResult.nativeFinalization || outcome === "cancelled"
+            ...(adapterResult.nativeFinalization || outcome === "cancelled" || latestRun?.resultJson?.queuedSteeringAcknowledgements
               ? parseObject(latestRun?.resultJson)
               : {}),
             ...parseObject(adapterResult.resultJson),
@@ -694,9 +695,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           .update(heartbeatRuns)
           .set({
             ...finalRunPatch,
-            resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(
+            resultJson: preserveQueuedSteeringAcknowledgementsSql(preserveWorkspaceRestoreRecoveryMetadataSql(
               cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage) ?? null,
-            ),
+            )),
 
             usageJson: preserveAcceptedRunUsageProjectionSql({ ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) }),
             finishedAt:

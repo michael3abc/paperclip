@@ -105,6 +105,17 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain("Second queued message");
   });
 
+  it.each(["sending", "uncertain"] as const)("preserves the saved rows and disables actions during %s supplementary delivery", status => {
+    render({ queue: { ...queue, protocol: "legacy", chatDeliveryMode: "steer",
+      steeringDelivery: { commentId: "comment-1", status },
+      executionWait: { reason: "steering_unconfirmed", message: "Supplementary input delivery is unconfirmed. It will not be sent again." } },
+      onInterrupt: vi.fn() });
+    expect(container.textContent).toContain("First queued message");
+    expect(container.textContent).toContain("will not be sent again");
+    expect(container.querySelector('[data-testid^="task-chat-queued-interrupt-"]')).toBeNull();
+    expect([...container.querySelectorAll<HTMLButtonElement>("button")].every(button => button.disabled)).toBe(true);
+  });
+
   it.each(["legacy", "native", "native-plan"] as const)("shows a read-only response and sends it only on click for %s", async (runtime) => {
     const entry = { ...queue.entries[0], canEdit: false, canDiscard: false,
       comment: { ...queue.entries[0].comment, body: 'Accepted: Build the app\n\n{"revision": "v1"}' },

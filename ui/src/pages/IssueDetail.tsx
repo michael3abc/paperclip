@@ -6830,6 +6830,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     [feedbackDataSharingPreference, feedbackVoteMutation],
   );
+  const chatDeliveryChain = useRef<Promise<void>>(Promise.resolve());
   const interruptChatAfterSend = useCallback(
     async (runId: string | null) => {
       try {
@@ -6841,6 +6842,23 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           const queue = await issuesApi.getQueuedComments(issueId!);
           if (queue.targetRunId && queue.targetRunId !== runId) return;
+          if (queue.chatDeliveryMode === "steer") {
+            // A Codex message supplements the same run. An unavailable/unknown
+            // turn stays queued; never turn that into an interrupt or a replay.
+            if (queue.steeringDelivery || queue.state !== "deferred" ||
+                !queue.queueId || !queue.targetRunId || queue.steeringDisposition !== "available") return;
+            let pending = queue;
+            for (let count = 0; count < queue.entries.length; count += 1) {
+              const first = pending.entries[0];
+              if (!first || !pending.queueId || pending.targetRunId !== runId || pending.steeringDisposition !== "available") return;
+              pending = await issuesApi.steerQueuedComment(issueId!, first.comment.id, {
+                queueId: pending.queueId, revision: pending.revision, targetRunId: runId!,
+              });
+              queryClient.setQueryData(queryKeys.issues.queuedComments(issueId!), pending);
+            }
+            void queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+            return;
+          }
           if (runId && queue.queueId && queue.state === "deferred" && queue.entries.length > 0) {
             await interruptQueuedComment.mutateAsync(queue.targetRunId ?? null);
             return;
@@ -6857,13 +6875,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         pushToast({
           title: "Message queued",
           body: err instanceof Error
-            ? `Couldn't interrupt the current turn automatically: ${err.message}`
-            : "Couldn't interrupt the current turn automatically. Use Interrupt to send it now.",
+            ? `Couldn't deliver the saved message: ${err.message}`
+            : "Couldn't deliver the saved message. Check its delivery status.",
           tone: "error",
         });
       }
     },
-    [interruptQueuedComment, issueId, pushToast],
+    [interruptQueuedComment, issueId, pushToast, queryClient],
   );
   const handleChatAdd = useCallback(
     async (
@@ -6885,13 +6903,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
         return;
       }
-      // Chat always interrupts: a message sent while the agent is working
-      // stops that turn and is delivered next with the earlier queued messages.
+      // Server-selected Codex Chats steer the existing turn; other harnesses
+      // retain their explicit owner-interrupt delivery contract.
       const queuedBehindRunId = issue?.conversationAgentId
         ? readIssueRunStateFromCache(queryClient, issueId!, issue).interruptibleIssueRun?.id ?? null
         : null;
       await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
-      if (issue?.conversationAgentId) void interruptChatAfterSend(queuedBehindRunId);
+      if (issue?.conversationAgentId) {
+        chatDeliveryChain.current = chatDeliveryChain.current.then(() => interruptChatAfterSend(queuedBehindRunId));
+      }
     },
     [addComment, addCommentAndReassign, interruptChatAfterSend, issue, issueId, queryClient],
   );

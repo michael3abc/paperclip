@@ -404,6 +404,7 @@ import {
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import { observeSessionBridgeWrite } from "../services/session-bridge-write-limit.js";
+import { bridgeChatSteeringService, bridgeSteeringAttempt, isCodexBridgeChatDispatch } from "../services/bridge-chat-steering.js";
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
@@ -7484,6 +7485,7 @@ export function issueRoutes(
           'interactionId', ${agentWakeupRequests.payload}->'interactionId',
           'interactionStatus', ${agentWakeupRequests.payload}->'interactionStatus',
           'externalChatContinuation', ${agentWakeupRequests.payload}->'externalChatContinuation',
+          'bridgeChatSteering', ${agentWakeupRequests.payload}->'bridgeChatSteering',
           'executionWait', jsonb_build_object(
             'reason', ${agentWakeupRequests.payload}->'executionWait'->'reason',
             'message', ${agentWakeupRequests.payload}->'executionWait'->'message'),
@@ -7579,7 +7581,8 @@ export function issueRoutes(
     );
     const assignedAgent = input.issue.assigneeAgentId
       ? await input.executor
-          .select({ adapterType: agents.adapterType })
+          .select({ adapterType: agents.adapterType, adapterConfig: sql<Record<string, unknown>>`jsonb_build_object(
+            'provider', ${agents.adapterConfig}->'provider', 'role', ${agents.adapterConfig}->'role', 'model', ${agents.adapterConfig}->'model')` })
           .from(agents)
           .where(
             and(
@@ -7597,8 +7600,17 @@ export function issueRoutes(
       assignedAgentAdapterType: assignedAgent?.adapterType ?? null,
       queuedCommentCount: comments.length,
     });
+    const chatSteers = Boolean(input.issue.conversationAgentId && isCodexBridgeChatDispatch(input.activeRun ?? {
+      runnerProfileJson: { adapterDispatch: assignedAgent },
+    }));
+    const pendingSteering = bridgeSteeringAttempt(wake?.payload);
     const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-      input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
+      chatSteers ? pendingSteering || !input.activeRun || input.steeringDisposition !== undefined
+        ? "temporarily_unavailable"
+        : await bridgeChatSteeringService(db).state({ companyId: input.issue.companyId, issueId: input.issue.id,
+          agentId: input.activeRun.agentId, runId: input.activeRun.id }).then(s => s.disposition)
+          .catch(() => "temporarily_unavailable" as const)
+      : input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
         ? steering.kind
         : input.steeringDisposition
           ?? (await getNativeSessionSteeringState(steering.steeringRunId)
@@ -7618,6 +7630,14 @@ export function issueRoutes(
       actorType: input.actor.actorType,
       actorId: input.actor.actorId,
     });
+    if (input.issue.conversationAgentId) queue.chatDeliveryMode = chatSteers ? "steer" : "interrupt";
+    if (pendingSteering) {
+      queue.steeringDelivery = { commentId: pendingSteering.commentId, status: pendingSteering.status };
+      queue.executionWait = { reason: "steering_unconfirmed", message: pendingSteering.status === "sending"
+        ? "Delivering supplementary input to the current turn…"
+        : "Supplementary input delivery is unconfirmed. It will not be sent again." };
+      queue.entries = queue.entries.map(entry => ({ ...entry, canEdit: false, canDiscard: false }));
+    }
     if (wake && queuedInteractionId(wake.payload)) {
       const response = await readQueuedInteractionResponse(input.executor as Db, input.issue.companyId, input.issue.id, wake.payload);
       if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
@@ -7631,6 +7651,7 @@ export function issueRoutes(
     queueId: string;
     revision: string;
   }) {
+    if (input.queue.steeringDelivery) throw conflict("Supplementary input delivery is awaiting confirmation", { code: "steering_uncertain" });
     if (input.queue.queueId !== input.queueId) {
       throw conflict("The queued message targets a stale queue", {
         code: "queued_comment_stale_queue",
@@ -16856,6 +16877,10 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const pending = issue.conversationAgentId ? await findQueuedCommentWake(db, issue) : null;
+    if (pending?.wake && bridgeSteeringAttempt(pending.wake.payload)) {
+      await bridgeChatSteeringService(db).reconcile(issue.companyId, issue.id, pending.wake.id, pending.wake.payload);
+    }
     const queue = await buildQueuedCommentQueue({
       executor: db,
       issue,
@@ -17177,10 +17202,19 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       const actor = getActorInfo(req);
+      if (issue.conversationAgentId) {
+        if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
+        await bridgeChatSteeringService(db).deliver({ companyId: issue.companyId, issueId: issue.id,
+          actorId: req.actor.userId, commentId, ...req.body });
+        const currentIssue = await svc.getById(issue.id) ?? issue;
+        const queue = await buildQueuedCommentQueue({ executor: db, issue: currentIssue,
+          activeRun: await resolveActiveIssueRun(currentIssue, { queueStateOnly: true }), actor });
+        res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+        return;
+      }
       const responseWake = await db.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
       )).then(rows => rows[0]);

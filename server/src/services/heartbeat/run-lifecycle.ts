@@ -3,6 +3,7 @@ import { readNativeStartupCleanup } from "../native-runtime/native-startup-clean
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
+import { preserveQueuedSteeringAcknowledgementsSql } from "../issue-queued-comment-queue.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
@@ -1143,7 +1144,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
-              ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson) } : {}),
+              ...(patch?.resultJson !== undefined ? { resultJson: preserveQueuedSteeringAcknowledgementsSql(
+                status === "failed" ? preserveNativeExecutionObligationsSql(patch.resultJson) : patch.resultJson,
+              ) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -1254,7 +1257,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
-              ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) } : {}),
+              ...(patch?.resultJson !== undefined ? { resultJson: preserveQueuedSteeringAcknowledgementsSql(
+                status === "failed" ? preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) : patch.resultJson,
+              ) } : {}),
               ...(patch?.usageJson ? { usageJson: preserveAcceptedRunUsageProjectionSql(patch.usageJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),

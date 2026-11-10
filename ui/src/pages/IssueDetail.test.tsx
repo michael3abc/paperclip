@@ -4853,8 +4853,11 @@ describe("IssueDetail", () => {
 
   it.each([
     { name: "chat", conversation: true, interrupts: true },
+    { name: "Codex chat", conversation: true, interrupts: false, steer: true },
+    { name: "unavailable Codex chat", conversation: true, interrupts: false, steer: true, unavailable: true },
+    { name: "unconfirmed Codex chat", conversation: true, interrupts: false, steer: true, uncertain: true },
     { name: "task", conversation: false, interrupts: false },
-  ])("interrupts the running turn after a $name message is saved behind it: $interrupts", async ({ conversation, interrupts }) => {
+  ])("interrupts the running turn after a $name message is saved behind it: $interrupts", async ({ conversation, interrupts, steer, unavailable, uncertain }) => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       status: "in_progress",
       executionRunId: "run-active-1",
@@ -4862,8 +4865,11 @@ describe("IssueDetail", () => {
     }));
     mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Stop and do this instead" }));
     mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
-      protocol: "legacy", steeringDisposition: "unsupported",
+      protocol: "legacy", steeringDisposition: unavailable || uncertain ? "temporarily_unavailable" : steer ? "available" : "unsupported",
+      ...(steer ? { chatDeliveryMode: "steer" } : {}),
+      ...(uncertain ? { steeringDelivery: { commentId: "queued-comment-1", status: "uncertain" } } : {}),
     }));
+    if (steer) mockIssuesApi.steerQueuedComment.mockResolvedValue(createQueuedCommentQueue({ entries: [], state: null, queueId: null, chatDeliveryMode: "steer" }));
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([{
       id: "run-active-1", status: "running", invocationSource: "issue", triggerDetail: null,
       contextCommentId: null, contextWakeCommentId: null, startedAt: "2026-04-21T00:00:01.000Z",
@@ -4892,6 +4898,15 @@ describe("IssueDetail", () => {
       });
     } else {
       expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+    }
+    if (steer && !unavailable && !uncertain) {
+      expect(mockIssuesApi.steerQueuedComment).toHaveBeenCalledWith("PAP-1", expect.any(String),
+        { queueId: "wake-queue-1", revision: "queue-revision-1", targetRunId: "run-active-1" });
+      expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
+    }
+    if (unavailable || uncertain) {
+      expect(mockIssuesApi.steerQueuedComment).not.toHaveBeenCalled();
+      expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
     }
   });
 

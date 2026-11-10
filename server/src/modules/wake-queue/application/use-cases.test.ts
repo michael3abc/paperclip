@@ -146,6 +146,19 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it("retains an uncertain supplementary delivery without promoting it or later queues", async () => {
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => wakeCandidate({
+      queuedCommentIds: ["saved-comment"], payload: { bridgeChatSteering: { status: "uncertain", commentId: "saved-comment" } },
+    })) });
+    const host = createFakeHost();
+    const release = createReleaseIssueExecution({ issueLock: createFakeIssueLock(host, transaction), recovery: createFakeRecovery() });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("released");
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(transaction.findNextDeferredWake).toHaveBeenCalledTimes(1);
+  });
   it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
     const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
     const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });

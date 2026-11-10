@@ -256,6 +256,10 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           .then((rows) => rows[0] ?? null);
 
         const wakePayload = parseObject(wakeRow?.payload);
+        if (wakePayload.bridgeChatSteering !== undefined) {
+          throw new QueuedCommentMutationError("queued_comment_already_dispatching",
+            "Supplementary input is awaiting delivery confirmation; it cannot be changed or sent again");
+        }
         const lookup = decideQueuedCommentWakeLookup({
           wakePresent: wakeRow !== null,
           wakeIssueIdMatches: readNonEmptyString(wakePayload.issueId) === input.issue.id,

@@ -22,6 +22,7 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
 import { isInterruptedNativePreparation, isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { preserveQueuedSteeringAcknowledgementsSql } from "./issue-queued-comment-queue.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -155,6 +156,7 @@ export async function terminalizeLegacyExecution(input: {
       .set({
         status: input.recordRestoreFailureOnly ? current.status : status,
         ...patch,
+        ...(patch?.resultJson !== undefined ? { resultJson: preserveQueuedSteeringAcknowledgementsSql(patch.resultJson) } : {}),
         executionStatusDeliveryId: input.recordRestoreFailureOnly || current.status !== status || Object.keys(patch ?? {}).length > 0
           ? randomUUID() : current.executionStatusDeliveryId,
         updatedAt: new Date(),

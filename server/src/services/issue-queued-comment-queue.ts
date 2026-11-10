@@ -1,5 +1,17 @@
 import { createHash } from "node:crypto";
+import { SQL, sql } from "drizzle-orm";
+import { heartbeatRuns } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
+
+/** Delivery settlement owns acknowledgements. Completion snapshots must not
+ * replace receipts committed after their read, including after waiting on a lock. */
+export function preserveQueuedSteeringAcknowledgementsSql(incoming: Record<string, unknown> | null | SQL): SQL {
+  const value = incoming instanceof SQL ? incoming : sql`${JSON.stringify(incoming)}::jsonb`;
+  return sql`case when jsonb_typeof(${heartbeatRuns.resultJson}->'queuedSteeringAcknowledgements') = 'object'
+    then coalesce(nullif(${value}, 'null'::jsonb), '{}'::jsonb) || jsonb_build_object(
+      'queuedSteeringAcknowledgements', ${heartbeatRuns.resultJson}->'queuedSteeringAcknowledgements')
+    else ${value} end`;
+}
 
 const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
 const QUEUE_IDS_KEY = "wakeCommentIds";

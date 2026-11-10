@@ -1124,6 +1124,10 @@ export interface IssueQueuedCommentEntry {
  * browser cannot overwrite newer queue content or ordering.
  */
 export interface IssueQueuedCommentQueue {
+  /** Server-selected Chat delivery; explicit Interrupt remains a separate action. */
+  chatDeliveryMode?: "steer" | "interrupt";
+  /** A persisted attempt fences automatic promotion and mutation until its outcome is known. */
+  steeringDelivery?: { commentId: string; status: "sending" | "uncertain" };
   issueId: string;
   queueId: string | null;
   state: IssueQueuedCommentQueueState | null;

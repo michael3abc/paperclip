@@ -2709,6 +2709,26 @@ They read only the queued run's runtime mode. Mutation locks retain complete
 wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
+Codex main-agent Chats on `ccpocket_bridge` select `chatDeliveryMode=steer` from
+the active run's saved adapter dispatch, rather than mutable agent settings. The
+UI saves each comment then calls the existing queued-comment steer endpoint in
+order. `bridge-chat-steering.ts` checks the Chat owner, queue revision and original
+run, commits a reservation, and binds native session/turn IDs before one adapter
+send. The adapter registers only its live original run and uses Bridge
+`paperclip_codex_steer_v1` (`input`, `deliveryMode=immediate`, paired
+`expectedNativeSessionId`/`expectedTurnId`), which invokes native `turn/steer`.
+Neither layer interrupts, creates a replacement run or sends to an idle turn.
+Other harnesses retain Chat interruption; task queues retain normal admission.
+
+Adapter receipts survive reload. Queue reads reconcile receipts; ambiguous sends
+stay visibly unconfirmed, freeze queue edits/discards and block promotion of that
+queue and its successors. They are never automatically retried. A definite
+rejection leaves the saved comment queued. Acknowledgement removes only that
+comment from the latest queue and records its original-run receipt transactionally;
+terminal metadata writers preserve DB-current acknowledgements. No new polling
+timer is installed. Text-only supplementary delivery is supported; comments with
+attachments and interaction responses wait for their existing turn boundary.
+
 Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
 It owns bounded run projections, database encoding checks, task session reads and
 writes, explicit resumes, session compaction, and usage/billing helpers.

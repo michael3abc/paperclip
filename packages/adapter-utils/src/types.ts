@@ -526,6 +526,15 @@ export type AdapterStopReverificationResult =
   | { verified: false; reason: string };
 
 export interface ServerAdapterModule {
+  /** Same-run Chat guidance. A send is attempted once, bound to an exact native turn.
+   * receipt is read-only and must survive adapter reload; unknown delivery never authorizes replay. */
+  chatSteering?: {
+    state(input: AdapterChatSteeringScope): Promise<{ disposition: "available" | "unsupported" | "temporarily_unavailable";
+      turnId?: string; nativeSessionId?: string; bridgeSessionId?: string }>;
+    send(input: AdapterChatSteeringScope & { commentId: string; message: string; turnId: string;
+      nativeSessionId: string; bridgeSessionId: string }): Promise<{ status: string; turnId: string }>;
+    receipt(input: AdapterChatSteeringScope & { commentId: string }): Promise<{ status: string; turnId: string } | null>;
+  };
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
@@ -626,6 +635,10 @@ export interface ServerAdapterModule {
    * proof only from provider evidence; never synthesize it.
    */
   reverifyCancelledRunStop?: (input: AdapterStopReverificationInput) => Promise<AdapterStopReverificationResult>;
+}
+
+export interface AdapterChatSteeringScope {
+  companyId: string; agentId: string; issueId: string; runId: string;
 }
 
 // ---------------------------------------------------------------------------

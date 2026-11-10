@@ -372,7 +372,11 @@ const heartbeatRunIssueControlColumns = {
   contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
     then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId') else null end`,
   runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
-    then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType'))
+    then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType') ||
+      case when ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'ccpocket_bridge' then
+      jsonb_build_object('adapterConfig', jsonb_build_object('provider', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterConfig'->'provider',
+        'role', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterConfig'->'role',
+        'model', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterConfig'->'model')) else '{}'::jsonb end)
     else null end`,
 } as const;
 
