@@ -8,6 +8,7 @@ import {
   type ArtifactKindFilter,
   type CompanyArtifactGroup,
 } from "../api/artifacts";
+import { artifactFileLink } from "../lib/artifact-file-link";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -338,10 +339,10 @@ export function Artifacts() {
                       />
                     );
                   }
-                  return <ArtifactSingleTile key={group.id} subject={subjectFromCompanyArtifact(preview)} to={preview.href} />;
+                  return <ArtifactSingleTile key={group.id} subject={subjectFromCompanyArtifact(preview)} to={preview.href} file={artifactFileLink(preview)} />;
                 })
               : artifacts.map((artifact) => (
-                  <ArtifactSingleTile key={`${artifact.source}:${artifact.id}`} subject={subjectFromCompanyArtifact(artifact)} to={artifact.href} />
+                  <ArtifactSingleTile key={`${artifact.source}:${artifact.id}`} subject={subjectFromCompanyArtifact(artifact)} to={artifact.href} file={artifactFileLink(artifact)} />
                 ))}
           </ArtifactTileGrid>
           <div ref={loadMoreRef} className="flex min-h-10 items-center justify-center pb-2 text-xs text-muted-foreground">

@@ -49,10 +49,13 @@ function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact
 }
 
 describe("ArtifactCard", () => {
-  it("renders an image preview with cover image and links to the issue anchor", () => {
+  it("renders an image preview with cover image and opens the file itself, with the task one click away", () => {
     const markup = renderToStaticMarkup(<ArtifactCard artifact={makeArtifact()} />);
+    // The card is the file: a new tab, never the task's session.
+    expect(markup).toMatch(/<a href="\/files\/art-1\.png" target="_blank" rel="noreferrer" data-testid="artifact-card"/);
     expect(markup).toContain('href="/issues/PAP-10306#attachment-art-1"');
-    expect(markup).toContain('data-disable-issue-quicklook="true"');
+    expect(markup).toContain('aria-label="Open PAP-10306"');
+    expect(markup).not.toContain('aria-label="Open file in new tab"');
     expect(markup).toContain('data-media-kind="image"');
     expect(markup).toContain("rounded-lg");
     expect(markup).toContain('src="/files/art-1.png"');
@@ -253,6 +256,10 @@ describe("ArtifactCard", () => {
     );
     expect(markup).not.toContain('aria-label="Download file"');
     expect(markup).not.toContain('aria-label="Open file in new tab"');
+    // A document has no file, so the card still opens its task.
+    expect(markup).toContain('href="/issues/PAP-10306#attachment-art-1"');
+    expect(markup).toContain('data-disable-issue-quicklook="true"');
+    expect(markup).not.toContain('target="_blank" rel="noreferrer" data-testid="artifact-card"');
   });
 
   it("reserves the same title row height when file actions are absent", () => {

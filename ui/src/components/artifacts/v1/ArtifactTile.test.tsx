@@ -2,10 +2,11 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactSingleTile, ArtifactStackTile, ArtifactTileGrid } from "./ArtifactTile";
 import { testSubject } from "./test-subject";
+import { PdfPreviewProvider } from "@/components/PdfPreviewProvider";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: null, selectedCompanyId: null, companies: [] }),
@@ -95,6 +96,48 @@ describe("the Artifacts page tiles", () => {
     expect(button?.getAttribute("aria-label")).toBe("Open brand-strategy-brief.md");
     expect(container.querySelector('[data-artifact-sheet="preview"]')?.textContent).toContain("Brand strategy");
     expect(container.querySelector("[data-artifact-front]")).not.toBeNull();
+  });
+
+  it("opens a single file artifact as the file itself: a new tab, or the in-app preview for a PDF, never its task", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ArtifactTileGrid>
+            <ArtifactSingleTile subject={testSubject({ kind: "image", filename: "hero.png", thumbnailUrl: "/api/attachments/hero/content" })} to="/PAP/issues/PAP-1#attachment-hero" file={{ href: "/api/attachments/hero/content", filename: "hero.png", contentType: "image/png" }} now={NOW} />
+          </ArtifactTileGrid>
+        </MemoryRouter>,
+      ),
+    );
+    const tile = container.querySelector<HTMLAnchorElement>('a[data-testid="artifact-v1-single-tile"]');
+    expect(tile?.getAttribute("href")).toBe("/api/attachments/hero/content");
+    expect(tile?.getAttribute("target")).toBe("_blank");
+    expect(tile?.getAttribute("rel")).toBe("noreferrer");
+    expect(tile?.getAttribute("aria-label")).toBe("Open hero.png");
+  });
+
+  it("previews a PDF tile in place without leaving the page", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("%PDF-1.7\n", { headers: { "content-type": "application/pdf" } })));
+    const where: string[] = [];
+    function Probe() { where.push(useLocation().pathname); return null; }
+    act(() =>
+      root.render(
+        <MemoryRouter initialEntries={["/PAP/artifacts"]}>
+          <PdfPreviewProvider>
+            <Routes><Route path="*" element={<Probe />} /></Routes>
+            <ArtifactTileGrid>
+              <ArtifactSingleTile subject={testSubject({ kind: "file", filename: "brief.pdf" })} to="/PAP/issues/PAP-1#attachment-brief" file={{ href: "/api/attachments/brief/content", filename: "brief.pdf", contentType: "application/pdf" }} now={NOW} />
+            </ArtifactTileGrid>
+          </PdfPreviewProvider>
+        </MemoryRouter>,
+      ),
+    );
+    const tile = container.querySelector<HTMLAnchorElement>('a[data-testid="artifact-v1-single-tile"]')!;
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    act(() => { tile.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.querySelector('[data-slot="dialog-content"]')).not.toBeNull();
+    expect(where.at(-1)).toBe("/PAP/artifacts");
+    vi.unstubAllGlobals();
   });
 
   it("keeps the 4:3 print until a single picture loads, and shows the icon sheet when its file cannot be loaded", () => {

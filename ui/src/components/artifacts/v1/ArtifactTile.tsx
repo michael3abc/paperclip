@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
+import type { ArtifactFileLink } from "@/lib/artifact-file-link";
+import { usePdfLink } from "@/components/PdfPreviewProvider";
 import { ArtifactFront } from "./ArtifactFront";
 import { ArtifactStack } from "./ArtifactStack";
 import type { ArtifactSubject } from "./kinds";
@@ -44,8 +46,13 @@ export function ArtifactCaption({ title, identifier, facts }: { title: string; i
 const TILE =
   "artifact-tile flex h-(--artifact-tile-h) w-full flex-col items-center gap-5 rounded-(--artifact-tile-radius) px-5 text-left outline-none transition-colors hover:bg-(--artifact-tile-hover) focus-visible:bg-(--artifact-tile-hover) focus-visible:ring-2 focus-visible:ring-ring";
 
-/** The cell: a link when it has somewhere to go, a button otherwise. text-left keeps a sheet's title from centring. */
-export function ArtifactTile({ label, to, onClick, children, caption, testId }: { label: string; to?: To; onClick?: () => void; children: ReactNode; caption: ReactNode; testId?: string }) {
+/**
+ * The cell: the stored file when it has one (a PDF opens in the in-app preview,
+ * anything else in a new tab), else a link when it has somewhere to go, a
+ * button otherwise. text-left keeps a sheet's title from centring.
+ */
+export function ArtifactTile({ label, to, file, onClick, children, caption, testId }: { label: string; to?: To; file?: ArtifactFileLink | null; onClick?: () => void; children: ReactNode; caption: ReactNode; testId?: string }) {
+  const onPdfClick = usePdfLink();
   const body = (
     <>
       <div className="flex h-(--artifact-frame-h) w-full shrink-0 items-end justify-center">{children}</div>
@@ -54,7 +61,20 @@ export function ArtifactTile({ label, to, onClick, children, caption, testId }: 
   );
   return (
     <li className="min-w-0">
-      {to ? (
+      {file ? (
+        // design-allow(card-pattern): file <a> cell, as the navigation cell below; Card renders a div and would break anchor semantics.
+        <a
+          href={file.href}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={label}
+          data-testid={testId}
+          className={TILE}
+          onClick={(event) => { onPdfClick(event, { href: file.href, filename: file.filename, contentType: file.contentType }); }}
+        >
+          {body}
+        </a>
+      ) : to ? (
         // design-allow(card-pattern): navigation <Link> cell, as ArtifactGroupCard; Card renders a div and would break anchor semantics.
         <Link to={to} aria-label={label} data-testid={testId} className={TILE}>
           {body}
@@ -92,10 +112,10 @@ export function ArtifactStackTile({ identifier, title, count, updatedAt, front, 
 }
 
 /** One artifact on its own: its file name (or title) underneath. */
-export function ArtifactSingleTile({ subject, to, onClick, now }: { subject: ArtifactSubject; to?: To; onClick?: () => void; now?: Date }) {
+export function ArtifactSingleTile({ subject, to, file, onClick, now }: { subject: ArtifactSubject; to?: To; file?: ArtifactFileLink | null; onClick?: () => void; now?: Date }) {
   const name = subject.filename ?? subject.title;
   return (
-    <ArtifactTile label={`Open ${name}`} to={to} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [`Updated ${updatedLabel(subject.updatedAt, now)}`] : []} />}>
+    <ArtifactTile label={`Open ${name}`} to={to} file={file} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [`Updated ${updatedLabel(subject.updatedAt, now)}`] : []} />}>
       <ArtifactFront subject={subject} />
     </ArtifactTile>
   );
