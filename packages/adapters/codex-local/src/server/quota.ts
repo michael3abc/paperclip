@@ -391,8 +391,15 @@ function unixSecondsToIso(value: number | null | undefined): string | null {
 
 function buildCodexRpcWindow(label: string, window: CodexRpcWindow | null | undefined): QuotaWindow | null {
   if (!window) return null;
+  // Codex can promote its weekly bucket to primary when the short window is
+  // disabled. Position is not a duration; preserve any model-specific prefix.
+  const duration = window.windowDurationMins;
+  const prefix = label.includes(" · ") ? label.slice(0, label.lastIndexOf(" · ") + 3) : "";
+  const durationLabel = duration === 10_080 ? "Weekly limit" : duration === 300 ? "5h limit"
+    : typeof duration === "number" && Number.isFinite(duration) && duration > 0
+      ? duration + "m limit" : "Usage limit (duration not reported)";
   return {
-    label,
+    label: prefix + durationLabel,
     usedPercent: normalizeCodexUsedPercent(window.usedPercent),
     resetsAt: unixSecondsToIso(window.resetsAt),
     valueLabel: null,

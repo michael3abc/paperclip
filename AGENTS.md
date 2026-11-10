@@ -442,6 +442,16 @@ If anything cannot be run, explicitly report what was not run and why.
 
 ## 8. API and Auth Expectations
 
+Host subscription quotas are an explicit operator feature, enabled only with
+PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1. The dashboard endpoint requires instance
+admin and existing company access before any host login is read. Keep these
+snapshots separate from company-managed AI connections and billing. Poll only
+while the Dashboard is visible, cache for 60 seconds, track provider work through
+maintenance admission, and preserve unknown values and provider failures. Codex
+window labels derive from durations, never primary/secondary position. Antigravity
+shows only its reported quota groups; never infer Gemini quota or enable credits.
+See doc/DEVELOPING.md, Host subscription quota dashboard.
+
 - Base path: `/api`
 - Board access is treated as full-control operator context
 - Agent access uses bearer API keys (`agent_api_keys`), hashed at rest

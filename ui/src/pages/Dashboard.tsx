@@ -41,6 +41,7 @@ import { InlineBanner } from "../components/InlineBanner";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { SubscriptionQuotaCards } from "../components/SubscriptionQuotaCards";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -459,6 +460,7 @@ export function Dashboard() {
             />
           </div>
 
+          <SubscriptionQuotaCards companyId={selectedCompanyId!} />
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
           <div className={cn("grid grid-cols-2 gap-4", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
