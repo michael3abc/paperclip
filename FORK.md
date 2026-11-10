@@ -382,6 +382,15 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   filter and each artifact's `project`. An explicit project wins; an agent leading none
   or several active projects stays under "No project". Read-only; no stored issue or
   project changes, no schema change.
+- Failed bridge turn handoff (HOM-265, 2026-11-10): a `ccpocket_bridge` run the adapter
+  reports as `failed` (for example a provider error after a failed context compaction)
+  may leave its resident session working, and it has no stop record, so the next explicit
+  user message was held forever with `process_identity_missing`. `bridgeSessionHandoffFor`
+  now also admits a legacy `failed` run that has both session IDs and no
+  `executionCancellation`, as a same-session handoff: the adapter waits for the session
+  to settle before delivering. The failed run is not rewritten as acknowledged; a stop
+  request on record (forced or not), missing IDs or adapter mismatches stay blocked.
+  Nothing is replayed; no schema change.
 - Chat preempts the main agent's task (2026-11-09): an owner Agent Chat message
   (`enableAgentChat`) that waits for capacity behind its own main agent's running turn on
   a different, ordinary task now gracefully interrupts that turn with the chat-interrupt

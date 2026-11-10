@@ -102,9 +102,19 @@ export function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtime
  * identity or any other cancellation state never qualifies. */
 export type BridgeSessionHandoff = { fromRunId: string; bridgeSessionId: string; nativeSessionId: string };
 export function bridgeSessionHandoffFor(run: Pick<Run, "id" | "status" | "runtimeMode" | "resultJson">): BridgeSessionHandoff | null {
-  if (run.runtimeMode !== "legacy" || !["cancelled", "timed_out"].includes(run.status)) return null;
+  if (run.runtimeMode !== "legacy") return null;
   const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
-  if (cancellation?.state !== "requested" || cancellation.forced === true) return null;
+  if (run.status === "failed") {
+    // An adapter-reported failure (for example a provider error event such as a
+    // failed context compaction) is not evidence that the resident bridge turn
+    // ended: the native session can keep working. With no stop request on record
+    // it is the same unconfirmed state as an unforced interrupt, so the next
+    // explicit user message waits for that session in place of holding forever.
+    if (cancellation !== undefined && cancellation !== null) return null;
+  } else {
+    if (!["cancelled", "timed_out"].includes(run.status)) return null;
+    if (cancellation?.state !== "requested" || cancellation.forced === true) return null;
+  }
   const bridgeSessionId = run.resultJson?.bridgeSessionId;
   const nativeSessionId = run.resultJson?.nativeSessionId;
   if (typeof bridgeSessionId !== "string" || !bridgeSessionId.trim() ||
