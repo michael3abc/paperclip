@@ -268,7 +268,20 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
 }
 
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
-  return [
+  const nativeTools = new Set(["paperclipListWorkerSelections", "paperclipSearchAssignedTools", "paperclipCallAssignedTool"]);
+  const nativeSurface = new Set([...nativeTools, "paperclipMe", "paperclipInboxLite", "paperclipListIssues", "paperclipGetIssue",
+    "paperclipGetHeartbeatContext", "paperclipListComments", "paperclipGetComment", "paperclipListDocuments", "paperclipGetDocument",
+    "paperclipListDocumentRevisions", "paperclipListProjects", "paperclipGetProject", "paperclipCreateIssue", "paperclipUpdateIssue",
+    "paperclipAddComment", "paperclipUpsertIssueDocument"]);
+  const definitions = [
+    makeTool("paperclipListWorkerSelections", "Read this main agent’s approved worker selections and project sources. Use a ready selection ID in paperclipCreateIssue.assigneeAdapterOverrides.workerSelectionId and a configured_source workspaceSelection. Never substitute models.",
+      z.object({}), async () => client.requestJson("GET", "/agents/me/session-bridge/workers")),
+    makeTool("paperclipSearchAssignedTools", "Search connectors already assigned to this native session’s Paperclip agent. Returns current tool schemas. This does not create connections or grants.",
+      z.object({ query: z.string().max(200).default(""), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(20).optional() }),
+      async input => client.requestJson("POST", "/agents/me/session-bridge/tools-search", { body: input })),
+    makeTool("paperclipCallAssignedTool", "Call an exact tool returned by paperclipSearchAssignedTools. Existing grants, approval and audit apply. Keep the same idempotencyKey for the same operation; inspect an uncertain result, never repeat a write with a new key.",
+      z.object({ name: z.string().min(1).max(300), arguments: z.record(z.string(), z.unknown()), idempotencyKey: z.string().min(1).max(200), approvedActionRequestId: z.uuid().optional() }),
+      async input => client.requestJson("POST", "/agents/me/session-bridge/tools-call", { body: input })),
     makeTool(
       "connections_search",
       CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
@@ -688,4 +701,5 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       },
     ),
   ];
+  return definitions.filter(tool => client.defaults.sessionBridge ? nativeSurface.has(tool.name) : !nativeTools.has(tool.name));
 }

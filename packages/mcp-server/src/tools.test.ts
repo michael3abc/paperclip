@@ -26,6 +26,23 @@ function mockJsonResponse(body: unknown, status = 200) {
 }
 
 describe("paperclip MCP tools", () => {
+  it("publishes only the native scoped surface and preserves worker selections without a run", async () => {
+    const client = new PaperclipApiClient({ apiUrl: "http://localhost:3100/api", apiKey: "test", companyId: "11111111-1111-4111-8111-111111111111", agentId: null, runId: null, sessionBridge: true });
+    const tools = createToolDefinitions(client);
+    expect(tools.map(t => t.name)).toContain("paperclipListWorkerSelections");
+    expect(tools.map(t => t.name)).toContain("paperclipCallAssignedTool");
+    expect(tools.map(t => t.name)).not.toContain("paperclipCheckoutIssue");
+    expect(tools.map(t => t.name)).not.toContain("connection_request");
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "created" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const selection = "22222222-2222-4222-8222-222222222222", source = "33333333-3333-4333-8333-333333333333";
+    await tools.find(t => t.name === "paperclipCreateIssue")!.execute({ title: "Implement",
+      assigneeAdapterOverrides: { workerSelectionId: selection }, workspaceSelection: { kind: "configured_source", projectWorkspaceId: source, mode: "shared" }, idempotencyKey: "new-work" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(init.body as string)).toMatchObject({ assigneeAdapterOverrides: { workerSelectionId: selection }, workspaceSelection: { projectWorkspaceId: source } });
+    expect(init.headers).not.toHaveProperty("X-Paperclip-Run-Id");
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -123,6 +140,8 @@ describe("paperclip MCP tools", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       title: "Assigned follow-up",
+      visibility: "open",
+      allowDuplicate: false,
       workMode: "standard",
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",

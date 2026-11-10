@@ -548,3 +548,14 @@ Retained task-directory anchors carry their source identity and local-path contr
 through the final Claude/Codex launch guard; process-adapter tests alone cannot prove it.
 Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
 and task APIs for legacy adapters. Never require a native-only tool in a legacy run.
+
+## Native session bridge
+
+The Shopee-D pilot uses the explicit runtimeConfig.sessionBridge binding; Bridge
+owns the pinned native session. New chat comments use a durable receipt inbox and
+must never fall back to a heartbeat on disconnect or replay historical comments.
+Keep native MCP scope, worker selection/workspace validation and the configured
+connector gateway separate. session_bridge keys may invoke assigned connectors
+only with allowAssignedTools; they cannot manage connections or fabricate runs.
+Retain uncertain provider sends without automatic replay. Update the canonical
+contract in doc/plans/2026-11-10-session-bridge-key-scope.md with protocol changes.

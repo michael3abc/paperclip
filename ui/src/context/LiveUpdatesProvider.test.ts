@@ -16,6 +16,17 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes mirrored replies on the bound conversation", () => {
+    const client = new QueryClient();
+    const own = queryKeys.issues.comments("chat-1"), other = queryKeys.issues.comments("chat-2");
+    client.setQueryData(own, []); client.setQueryData(other, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "chat-1", action: "issue.external_turn_mirrored",
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(own)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+    client.clear();
+  });
   it("discovers first proactive deliveries without invalidating another human's chat list", () => {
     const client = new QueryClient();
     const mine = queryKeys.agentChats.list("company-1", "user-1");

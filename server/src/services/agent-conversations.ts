@@ -1,3 +1,4 @@
+import { sessionBridgeChatBinding } from "./session-bridge-chat.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -282,6 +283,9 @@ export async function prepareConversationTurn(
           eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
           isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId), isNull(issueComments.authorAgentId),
           sql`${issueComments.authorUserId} is not null`,
+          // A session-bridge mirror turn is a record of a native session's input,
+          // never a message waiting for this conversation's agent.
+          sql`${issueComments.origin} <> 'external_mirror'`,
           comment ? sql`(${issueComments.createdAt}, ${issueComments.id}) > (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${comment.id}::uuid)` : sql`false`,
         )).orderBy(issueComments.createdAt, issueComments.id);
         let replyBoundary = commentId;
@@ -409,6 +413,7 @@ export async function settleConversationTurn(
               eq(issueComments.issueId, issueId),
               isNull(issueComments.deletedAt),
               sql`${issueComments.authorUserId} is not null`,
+              sql`${issueComments.origin} <> 'external_mirror'`,
               sql`(${issueComments.createdAt}, ${issueComments.id}) > (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${wake.id}::uuid)`,
             ),
           )
@@ -618,6 +623,7 @@ export async function deliverConversationComments(
   ) => Promise<unknown>,
 ) {
   if (!issue.conversationAgentId) return;
+  if (await sessionBridgeChatBinding(db, issue.companyId, issue.conversationAgentId)) return;
   const canDeliver = async (connection: Db) => {
     const [agent] = await connection.select().from(agents).where(and(
       eq(agents.id, issue.conversationAgentId!), eq(agents.companyId, issue.companyId),

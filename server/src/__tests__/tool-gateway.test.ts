@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentApiKeys,
   agentWakeupRequests,
   companySecretBindings,
   companySecrets,
@@ -590,6 +591,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(projects);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(agentApiKeys);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -597,6 +599,42 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
   afterAll(async () => {
     await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
+  });
+
+  it("uses assigned connectors with a native key, no run, and fresh revocation checks", async () => {
+    const company = await createCompany(db), agent = await createAgent(db, company.id);
+    const [project] = await db.insert(projects).values({ companyId: company.id, name: "Native source" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Native conversation",
+      conversationAgentId: agent.id, assigneeAgentId: agent.id, conversationUserId: "native-owner", conversationState: "active" }).returning();
+    await db.update(agents).set({ status: "idle", lifecycleState: "ready", runtimeConfig: { sessionBridge: { version: 1,
+      projectId: project.id, conversationIssueId: issue.id, nativeSessionId: "native" } } }).where(eq(agents.id, agent.id));
+    await createActiveMember(db, company.id, "native-owner");
+    const token = randomUUID();
+    const [key] = await db.insert(agentApiKeys).values({ companyId: company.id, agentId: agent.id, name: "Native key",
+      responsibleUserId: "native-owner", keyHash: createHash("sha256").update(token).digest("hex"),
+      scopeConfig: { kind: "session_bridge", projectIds: [project.id], conversationAgentId: agent.id, allowAssignedTools: true } }).returning();
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({ body: { jsonrpc: "2.0", id: body?.id,
+      result: { content: [{ type: "text", text: "native connector ok" }] } } }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, { url: remote.url, toolName: "native_read", riskLevel: "read" });
+      await db.update(toolCatalogEntries).set({ inputSchema: { type: "object", properties: {}, additionalProperties: false } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey, connectionId: connection.id, toolName: catalogEntry.toolName });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const gateway = createTestToolGatewayService(db);
+      await expect(gateway.listToolsForSession(token)).rejects.toThrow();
+      expect((await gateway.listToolsForSession(token, { sessionBridge: true })).map(t => t.name)).toContain(toolName);
+      const result = await gateway.executeTool({ sessionToken: token, sessionBridge: true, tool: toolName, parameters: {}, idempotencyKey: "native-one" });
+      expect(result.status).toBe("completed");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, company.id))).toEqual([]);
+      expect(await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id)))
+        .toEqual([expect.objectContaining({ runId: null, agentId: agent.id, issueId: issue.id, status: "succeeded" })]);
+      await gateway.executeTool({ sessionToken: token, sessionBridge: true, tool: toolName, parameters: {}, idempotencyKey: "native-one" });
+      expect(remote.requests.filter(r => r.body?.method === "tools/call")).toHaveLength(1);
+      await db.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.id, key.id));
+      await expect(gateway.listToolsForSession(token, { sessionBridge: true })).rejects.toThrow("not authorized");
+      await expect(gateway.executeTool({ sessionToken: token, sessionBridge: true, tool: toolName, parameters: {}, idempotencyKey: "native-two" })).rejects.toThrow("not authorized");
+      expect(remote.requests.filter(r => r.body?.method === "tools/call")).toHaveLength(1);
+    } finally { await remote.close(); }
   });
 
   it("preserves provider tool errors in MCP responses and failed invocation audits", async () => {

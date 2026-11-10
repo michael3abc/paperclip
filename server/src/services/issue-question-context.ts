@@ -26,6 +26,7 @@ export function historicalQuestionCondition() {
       and ${issueComments.issueId} = ${issueThreadInteractions.issueId}
       and ${issueComments.createdAt} > ${issueThreadInteractions.createdAt}
       and ${issueComments.deletedAt} is null
+      and ${issueComments.origin} <> 'external_mirror'
       and ${issueComments.authorUserId} is not null
       and ${issueComments.authorAgentId} is null
       and ${issueComments.createdByRunId} is null
