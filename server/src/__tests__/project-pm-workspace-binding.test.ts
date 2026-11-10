@@ -144,7 +144,7 @@ describe("project_pm binding schema and role table", () => {
     expect(readPaperclipPmWorkspaceContext(pm)).toEqual(pm);
     const fixed = readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: pm });
     expect(fixed?.cwd).toBe(pmHome);
-    expect(controllerLocalCwd(fixed, fixed!.cwd)).toBe('/home/pm');
+    expect(controllerLocalCwd(fixed, fixed!.cwd, 'agent-1')).toBe('/home/pm');
     // The run context and the stored binding must agree on the PM home.
     const { pmHome: _dropped, ...withoutHome } = binding;
     expect(() => readWorkspaceBinding({ workspaceBinding: withoutHome }, { paperclipPmWorkspace: pm })).toThrow(/does not match/);
@@ -159,11 +159,11 @@ describe("project_pm binding schema and role table", () => {
     const remote = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
     const remoteWorker = readWorkspaceBinding({ workspaceBinding: remote }, { paperclipPmWorkspace: buildPaperclipPmWorkspaceContext(remote, 'worker', randomUUID()) });
     expect(remoteWorker?.cwd).toBe('/projects/app');
-    expect(controllerLocalCwd(remoteWorker, remoteWorker!.cwd)).toBe('/home/pm');
+    expect(controllerLocalCwd(remoteWorker, remoteWorker!.cwd, 'agent-1')).toBe('/home/pm');
     const local = { ...remote, workerHostId: undefined };
     const localWorker = readWorkspaceBinding({ workspaceBinding: local }, { paperclipPmWorkspace: buildPaperclipPmWorkspaceContext(local, 'worker', randomUUID()) });
-    expect(controllerLocalCwd(localWorker, localWorker!.cwd)).toBe('/projects/app');
-    expect(controllerLocalCwd(null, '/workspace')).toBe('/workspace');
+    expect(controllerLocalCwd(localWorker, localWorker!.cwd, 'agent-1')).toBe('/projects/app');
+    expect(controllerLocalCwd(null, '/workspace', 'agent-1')).toBe('/workspace');
   });
 
   it("projects the binding to the claim-time role cwd and rejects a missing or forged context", () => {
