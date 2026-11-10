@@ -705,6 +705,47 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
   });
   it.each([
+    { name: "provider error with both sessions", admitted: true },
+    { name: "missing native session", admitted: false, resultJson: { bridgeSessionId: "bridge-1" } },
+    { name: "forced stop on record", admitted: false,
+      resultJson: { bridgeSessionId: "bridge-1", nativeSessionId: "native-1", executionCancellation: { state: "requested", forced: true } } },
+    { name: "historical local adapter", admitted: false, historical: "claude_local" },
+  ])("hands a message after a failed bridge turn to the same session without stop proof: $name", async scenario => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    // An adapter-reported provider error (e.g. failed compaction) while the resident session may still run.
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, processPid: null, processGroupId: null,
+      status: "failed", errorCode: "provider_error",
+      runnerProfileJson: { adapterDispatch: { adapterType: scenario.historical ?? "ccpocket_bridge", adapterConfig: {} } },
+      resultJson: scenario.resultJson ?? { bridgeSessionId: "bridge-1", nativeSessionId: "native-1", replayAllowed: false,
+        stopReason: "adapter_failed" },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() } },
+    });
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, queuedCommentInterruptId: queueId, dryRun: true });
+    });
+    if (scenario.admitted) {
+      expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId,
+        bridgeSessionHandoff: { fromRunId: f.sourceRunId, bridgeSessionId: "bridge-1", nativeSessionId: "native-1" } });
+      // The failed run is not rewritten into a stop acknowledgement.
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+      expect(source.status).toBe("failed");
+      expect(source.resultJson?.executionCancellation).toBeUndefined();
+    } else {
+      expect(result).toBeNull();
+    }
+  });
+  it.each([
     { name: "missing session ids", resultJson: { executionCancellation: { state: "requested" } } },
     { name: "historical local adapter", historical: "claude_local" },
     { name: "current local adapter", current: "claude_local" },
