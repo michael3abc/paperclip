@@ -4,6 +4,7 @@ interface QuotaBarProps {
   label: string;
   // value between 0 and 100
   percentUsed: number;
+  valueMode?: "used" | "remaining";
   leftLabel: string;
   rightLabel?: string;
   // shows a 2px destructive notch at the fill tip when true
@@ -20,12 +21,14 @@ function fillColor(pct: number): string {
 export function QuotaBar({
   label,
   percentUsed,
+  valueMode = "used",
   leftLabel,
   rightLabel,
   showDeficitNotch = false,
   className,
 }: QuotaBarProps) {
-  const clampedPct = Math.min(100, Math.max(0, percentUsed));
+  const usedPct = Math.min(100, Math.max(0, percentUsed));
+  const clampedPct = valueMode === "remaining" ? 100 - usedPct : usedPct;
   // keep the notch visible even near the edges
   const notchLeft = Math.min(clampedPct, 97);
 
@@ -50,10 +53,10 @@ export function QuotaBar({
           aria-valuenow={Math.round(clampedPct)}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-label={`${label}: ${Math.round(clampedPct)}%`}
+          aria-label={`${label}: ${Math.round(clampedPct)}%${valueMode === "remaining" ? " remaining" : ""}`}
           className={cn(
             "absolute inset-y-0 left-0 transition-(--tp-width-background-color) duration-150",
-            fillColor(clampedPct),
+            fillColor(usedPct),
           )}
           style={{ width: `${clampedPct}%` }}
         />

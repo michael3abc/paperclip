@@ -448,8 +448,10 @@ admin and existing company access before any host login is read. Keep these
 snapshots separate from company-managed AI connections and billing. Poll only
 while the Dashboard is visible, cache for 60 seconds, track provider work through
 maintenance admission, and preserve unknown values and provider failures. Codex
-window labels derive from durations, never primary/secondary position. Antigravity
-shows only its reported quota groups; never infer Gemini quota or enable credits.
+window labels derive from durations, never primary/secondary position. Subscription
+bar fill, percentage labels and accessible values all show remaining quota; warning
+colors still reflect depletion. Other spending bars retain consumption semantics.
+Antigravity shows only its reported quota groups; never infer Gemini quota or enable credits.
 See doc/DEVELOPING.md, Host subscription quota dashboard.
 
 - Base path: `/api`
