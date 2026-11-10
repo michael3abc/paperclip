@@ -67,7 +67,7 @@ function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial:
             <label>Harness<NativeSelect aria-label={`Worker ${index + 1} harness`} value={row.agentId} onChange={event => {
               const worker = base.catalog.find(worker => worker.agentId === event.target.value)!;
               change(row.id, { agentId: worker.agentId, harness: worker.harness, aiConnection: undefined, model: "", thinking: null, permission: "" as Row["permission"], speed: "standard" });
-            }}><option value="" disabled>Choose harness</option>{base.catalog.map(worker => <option key={worker.agentId} value={worker.agentId}>{pmWorkerHarnessLabel(worker.harness)} · {worker.name}</option>)}
+            }}><option value="" disabled>Choose harness</option>{base.catalog.map(worker => <option key={worker.agentId} value={worker.agentId}>{pmWorkerHarnessLabel(worker.harness, worker.provider)} · {worker.name}</option>)}
               {row.agentId && !catalog && <option value={row.agentId}>Unavailable worker</option>}</NativeSelect></label>
             <label>Model<NativeSelect aria-label={`Worker ${index + 1} model`} value={modelKey(row.model, row.aiConnection ?? catalog?.defaultAiConnection)} onChange={event => {
               const selected = catalog?.models.find(item => modelKey(item.id, item.aiConnection) === event.target.value);

@@ -6,43 +6,78 @@ import { unprocessable } from "../errors.js";
 
 type WorkerAgent = { adapterType: string; adapterConfig?: Record<string, unknown> | null; runtimeConfig?: Record<string, unknown> | null };
 
+/** The controller's own Bridge host; the CC Pocket adapter uses it when `hostId` is unset. */
+export const DEFAULT_BRIDGE_HOST = "michael-server";
+export type BridgeWorkerProvider = "claude" | "codex" | "antigravity";
+
 /**
- * CC Pocket Bridge agents become policy workers only as plain Antigravity shared workers: explicit provider
- * `antigravity`, no main-agent role, no project-PM binding and no Bridge worker-preset fields. Claude/Codex
- * through the Bridge stay main agents or PMs; the adapter fails Antigravity closed for those roles too.
+ * CC Pocket Bridge agents become policy workers only as plain shared workers: explicit provider `claude`, `codex`
+ * or `antigravity`, no main-agent role, no project-PM binding, no fixed workspace binding and no Bridge
+ * worker-preset fields. The worker runs on its own Bridge host (`hostId`, default michael-server) and is offered
+ * only to main agents on that same host.
  */
-export function isAntigravityBridgeWorker(agent: WorkerAgent): boolean {
+export function bridgeWorkerProvider(agent: WorkerAgent): BridgeWorkerProvider | null {
   const config = agent.adapterConfig ?? {};
   const binding = agent.runtimeConfig?.workspaceBinding as { mode?: unknown } | undefined;
-  return agent.adapterType === "ccpocket_bridge" && config.provider === "antigravity"
-    && (config.role === undefined || config.role === "") && binding?.mode !== "project_pm"
-    && ["defaultWorker", "allowedWorkers", "isolation", "worker"].every(key => config[key] === undefined || config[key] === "");
+  if (agent.adapterType !== "ccpocket_bridge" || !["claude", "codex", "antigravity"].includes(config.provider as string)) return null;
+  if ((config.role !== undefined && config.role !== "") || binding !== undefined && binding !== null) return null;
+  if (!["defaultWorker", "allowedWorkers", "isolation", "worker"].every(key => config[key] === undefined || config[key] === "")) return null;
+  return config.provider as BridgeWorkerProvider;
+}
+
+export function isBridgeWorker(agent: WorkerAgent): boolean {
+  return bridgeWorkerProvider(agent) !== null;
+}
+
+/** Historical name: plain Antigravity Bridge worker. */
+export function isAntigravityBridgeWorker(agent: WorkerAgent): boolean {
+  return bridgeWorkerProvider(agent) === "antigravity";
 }
 
 /** Agents that may appear in an Owner-managed worker policy (status and workspace gates are checked separately). */
 export function isPmWorkerAgent(agent: WorkerAgent): agent is WorkerAgent & { adapterType: PmWorkerHarness } {
-  return agent.adapterType === "claude_local" || agent.adapterType === "codex_local" || isAntigravityBridgeWorker(agent);
+  return agent.adapterType === "claude_local" || agent.adapterType === "codex_local" || isBridgeWorker(agent);
 }
 
-/** Bridge host whose Antigravity models a CC Pocket worker can run (the adapter's own default host when unset). */
+/** Bridge host that runs an agent: the CC Pocket `hostId`, otherwise the controller's own host. */
+export function agentHost(agent: WorkerAgent): string {
+  const hostId = agent.adapterType === "ccpocket_bridge" ? agent.adapterConfig?.hostId : undefined;
+  return typeof hostId === "string" && hostId ? hostId : DEFAULT_BRIDGE_HOST;
+}
+
+/** Host that holds a project source: a remote-managed source names its host; others live on the controller. */
+export function projectSourceHost(source: { sourceType?: string | null; metadata?: Record<string, unknown> | null }): string | null {
+  if (source.sourceType !== "remote_managed") return DEFAULT_BRIDGE_HOST;
+  const hostId = source.metadata?.hostId;
+  return typeof hostId === "string" && hostId ? hostId : null;
+}
+
+/** Model ID prefix (`<host>/<engine>/`) a CC Pocket worker can run. */
+export function bridgeWorkerModelPrefix(agent: WorkerAgent): string | null {
+  const provider = bridgeWorkerProvider(agent);
+  return provider ? `${agentHost(agent)}/${provider}/` : null;
+}
+
+/** Historical helper kept for callers that only know the adapter config of an Antigravity worker. */
 export function antigravityWorkerModelPrefix(config: Record<string, unknown>): string {
-  return `${typeof config.hostId === "string" && config.hostId ? config.hostId : "michael-server"}/antigravity/`;
+  return `${typeof config.hostId === "string" && config.hostId ? config.hostId : DEFAULT_BRIDGE_HOST}/antigravity/`;
 }
 
 export function workerPermissionChoices(config: Record<string, unknown>, harness?: string): PmWorkerCatalogEntry["permissions"] {
   if ([config.extraArgs, config.args].some(value => Array.isArray(value) && value.length > 0)) return [];
-  // Antigravity: Bridge default (agy --mode accept-edits) or explicit Full access (--dangerously-skip-permissions).
-  if (harness === "ccpocket_bridge") return config.provider === "antigravity" ? ["default", "full-access"] : [];
+  // Bridge workers: the Bridge's default permission mode or explicit Full access (Antigravity
+  // --dangerously-skip-permissions, Claude bypassPermissions, Codex danger-full-access).
+  if (harness === "ccpocket_bridge") return ["claude", "codex", "antigravity"].includes(config.provider as string) ? ["default", "full-access"] : [];
   const engine = config.engine ?? "auto";
   if (engine === "cli") return ["default", "full-access"];
   if (engine === "auto" || engine === "acp") return ["deny-all", "approve-reads", "approve-all"];
   return [];
 }
 
-export function workerModelChoices(harness: PmWorkerCatalogEntry["harness"], models: { id: string; label: string }[]): PmWorkerCatalogEntry["models"] {
+export function workerModelChoices(harness: PmWorkerCatalogEntry["harness"], models: { id: string; label: string }[], engine: BridgeWorkerProvider = "antigravity"): PmWorkerCatalogEntry["models"] {
   if (harness === "ccpocket_bridge") {
-    // CC Pocket model IDs are `<host>/<engine>/<model>`; efforts come from the host's own agy probe. No fast tier.
-    return models.filter(model => model.id.split("/")[1] === "antigravity").map(model => {
+    // CC Pocket model IDs are `<host>/<engine>/<model>`; efforts come from the host's own engine probe. No fast tier.
+    return models.filter(model => model.id.split("/")[1] === engine).map(model => {
       const efforts = (model as { efforts?: unknown }).efforts;
       return { id: model.id, label: model.label, speeds: ["standard"],
         thinking: Array.isArray(efforts) ? efforts.filter((value): value is string => typeof value === "string" && value.length > 0) : [] };
@@ -69,10 +104,12 @@ export function workerSelectionOverrides(harness: PmWorkerCatalogEntry["harness"
   };
 }
 
-export function validateWorkerChoices(policy: PmWorkerPolicy, catalog: PmWorkerCatalogEntry[]) {
+export function validateWorkerChoices(policy: PmWorkerPolicy, catalog: PmWorkerCatalogEntry[], unavailableCode = "PM_WORKER_UNAVAILABLE") {
   for (const worker of policy.workers) {
     const available = catalog.find(entry => entry.agentId === worker.agentId && entry.harness === worker.harness);
-    if (!available) throw unprocessable("The selected shared worker is unavailable", { code: "PM_WORKER_UNAVAILABLE", agentId: worker.agentId });
+    if (!available) throw unprocessable(unavailableCode === "PM_WORKER_HOST_MISMATCH"
+      ? "The selected shared worker runs on a different Bridge host than this agent" : "The selected shared worker is unavailable",
+    { code: unavailableCode, agentId: worker.agentId });
     for (const choice of worker.selections) {
       const model = available.models.find(model => model.id === choice.model && isDeepStrictEqual(model.aiConnection, choice.aiConnection ?? available.defaultAiConnection));
       if (!model || (choice.thinking !== null && !model.thinking.includes(choice.thinking))

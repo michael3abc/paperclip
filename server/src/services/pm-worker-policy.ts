@@ -15,7 +15,7 @@ import { materializeInstructionBytes } from "./agent-instruction-files.js";
 import { pmCoordinationScope, pmDelegationSchema } from "./pm-coordination-policy.js";
 import { mainAgentProjectId, workerPolicyLayout } from "./main-agent-workers.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
-import { isPmWorkerAgent, validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
+import { agentHost, bridgeWorkerProvider, isPmWorkerAgent, validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
 
 export function pmWorkerPolicyRevision(value: unknown): string | null {
   const canonical = (input: unknown): unknown => Array.isArray(input) ? input.map(canonical)
@@ -32,7 +32,8 @@ export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string
   return Promise.all(eligible.map(async worker => {
     const harness = worker.adapterType as PmWorkerCatalogEntry["harness"];
     const permissions = workerPermissionChoices(worker.adapterConfig ?? {}, harness);
-    if (harness === "ccpocket_bridge") return { agentId: worker.id, name: worker.name, harness, permissions, models: await pmWorkerModels(db, worker) };
+    if (harness === "ccpocket_bridge") return { agentId: worker.id, name: worker.name, harness, provider: bridgeWorkerProvider(worker)!,
+      hostId: agentHost(worker), permissions, models: await pmWorkerModels(db, worker) };
     const parsedBinding = aiConnectionBindingSchema.safeParse(worker.runtimeConfig?.aiConnection).data;
     const defaultAiConnection = parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding;
     const models = await pmWorkerModels(db, worker);
@@ -49,8 +50,14 @@ export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string
       }
       models.push(...await pmWorkerModels(db, worker, binding));
     }
-    return { agentId: worker.id, name: worker.name, harness, permissions, models, ...(defaultAiConnection ? { defaultAiConnection } : {}) };
+    return { agentId: worker.id, name: worker.name, harness, hostId: agentHost(worker), permissions, models, ...(defaultAiConnection ? { defaultAiConnection } : {}) };
   }));
+}
+
+/** Catalog entries whose worker runs on the same Bridge host as the main agent or PM that dispatches them. */
+export function sameHostCatalog(catalog: PmWorkerCatalogEntry[], owner: Parameters<typeof agentHost>[0]): PmWorkerCatalogEntry[] {
+  const host = agentHost(owner);
+  return catalog.filter(entry => (entry.hostId ?? "michael-server") === host);
 }
 
 export function pmWorkerPolicyService(db: Db) {
@@ -62,9 +69,11 @@ export function pmWorkerPolicyService(db: Db) {
   };
   return {
     read: async (companyId: string, agentId: string, actor: AuthorizationActor): Promise<PmWorkerPolicyView> => {
-      const catalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
+      const fullCatalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
       return files.locked(companyId, agentId, actor, false, async (_tx, agent, root) => {
         requirePm(agent);
+        // Workers run on their own Bridge host; offer only those on the main agent's host.
+        const catalog = sameHostCatalog(fullCatalog, agent);
         const layout = workerPolicyLayout(agent);
         const bytes = await readAgentFile(root, layout.workerDocumentPath);
         const document = bytes?.toString("utf8") ?? "";
@@ -94,13 +103,15 @@ export function pmWorkerPolicyService(db: Db) {
     save: async (companyId: string, agentId: string, input: SavePmWorkerPolicy, actor: AuthorizationActor) => {
       if (actor.type !== "board") throw forbidden("Only an Owner can change PM worker settings");
       const policy = pmWorkerPolicySchema.parse(input.policy);
-      validateWorkerChoices(policy, await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined));
+      const fullCatalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
+      validateWorkerChoices(policy, fullCatalog);
       for (const worker of policy.workers) for (const choice of worker.selections) {
         if (choice.aiConnection) await aiConnectionService(db).select({ companyId, userId: actor.userId ?? null,
           agentId: worker.agentId, adapterType: worker.harness, model: choice.model, binding: choice.aiConnection });
       }
       return files.locked(companyId, agentId, actor, true, async (tx, agent, root) => {
         requirePm(agent);
+        validateWorkerChoices(policy, sameHostCatalog(fullCatalog, agent), "PM_WORKER_HOST_MISMATCH");
         const layout = workerPolicyLayout(agent);
         const previous = await readAgentFile(root, layout.workerDocumentPath);
         if (pmWorkerPolicyRevision(agent.runtimeConfig?.pmDelegation) !== input.baseRevision
@@ -108,7 +119,7 @@ export function pmWorkerPolicyService(db: Db) {
         // Recheck identity under the same transaction as the owner update.
         const selected = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, policy.workers.map(worker => worker.agentId))));
         if (policy.workers.some(worker => !selected.some(row => row.id === worker.agentId && row.adapterType === worker.harness && isPmWorkerAgent(row)
-          && (row.runtimeConfig?.requireTaskWorktree === true || row.runtimeConfig?.requireProjectWorkspace === true) && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}, row.adapterType).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
+          && agentHost(row) === agentHost(agent) && (row.runtimeConfig?.requireTaskWorktree === true || row.runtimeConfig?.requireProjectWorkspace === true) && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}, row.adapterType).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
         const document = updatePmWorkerDocument(previous?.toString("utf8") ?? "", policy, layout.version);
         const bytes = Buffer.from(document);
         if (bytes.length > 1024 * 1024) throw unprocessable(`${layout.workerDocumentPath} exceeds 1 MiB`);

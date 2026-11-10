@@ -3,17 +3,19 @@ import { agents, toolConnections, connectionGrants, toolConnectionInstalls, type
 import { aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding, type PmWorkerCatalogEntry } from "@paperclipai/shared";
 import { listAdapterModels } from "../adapters/registry.js";
 import { unprocessable } from "../errors.js";
-import { antigravityWorkerModelPrefix, workerModelChoices } from "./pm-worker-options.js";
+import { bridgeWorkerModelPrefix, bridgeWorkerProvider, workerModelChoices } from "./pm-worker-options.js";
 
 type Worker = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig"> & { adapterConfig?: Record<string, unknown> | null };
 /** Metadata only. Credential sharing is independently checked on save and every run. */
 export async function pmWorkerModels(db: Db, worker: Worker, requested?: AiConnectionBinding): Promise<PmWorkerCatalogEntry["models"]> {
   const harness = worker.adapterType as PmWorkerCatalogEntry["harness"];
   if (harness === "ccpocket_bridge") {
-    // Antigravity signs in with the host account inside the Bridge; Paperclip AI connections never apply.
-    if (requested) throw unprocessable("Antigravity workers do not use AI connections", { code: "PM_WORKER_CONNECTION_UNAVAILABLE" });
-    const prefix = antigravityWorkerModelPrefix(worker.adapterConfig ?? {});
-    return workerModelChoices(harness, (await listAdapterModels(harness)).filter(model => model.id.startsWith(prefix)));
+    // Bridge workers sign in with the host's own account inside that Bridge; Paperclip AI connections never apply.
+    if (requested) throw unprocessable("Bridge workers do not use AI connections", { code: "PM_WORKER_CONNECTION_UNAVAILABLE" });
+    const provider = bridgeWorkerProvider(worker);
+    const prefix = bridgeWorkerModelPrefix(worker);
+    if (!provider || !prefix) return [];
+    return workerModelChoices(harness, (await listAdapterModels(harness)).filter(model => model.id.startsWith(prefix)), provider);
   }
   const raw = requested ?? worker.runtimeConfig?.aiConnection;
   if (!raw) return workerModelChoices(harness, await listAdapterModels(harness));

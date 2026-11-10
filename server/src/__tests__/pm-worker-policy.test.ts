@@ -21,6 +21,8 @@ vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof
     { id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", efforts: ["low", "high"] },
     { id: "michael-server/claude/compass-opus5.5", label: "Claude via Bridge", efforts: ["high"] },
     { id: "other-host/antigravity/gemini-test", label: "Another host", efforts: [] },
+    { id: "shopee-e/codex/gpt-6-astra", label: "Astra on shopee-e", efforts: ["high"] },
+    { id: "shopee-e/claude/opus", label: "Claude on shopee-e", efforts: ["high"] },
   ] : [{ id: "gpt-6.1-sol", label: "Sol" }],
 }));
 
@@ -200,7 +202,7 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     expect((await pmWorkerPolicyService(db).read(companyId, pmId, actor)).documentPath).toBe(next.workerDocumentPath);
   });
 
-  it("offers a plain CC Pocket Antigravity shared worker with explicit Full access, never Bridge main agents or Claude/Codex cards", async () => {
+  it("offers plain CC Pocket Antigravity/Claude shared workers with explicit Full access, never Bridge main agents", async () => {
     const agyId = randomUUID(), mainId = randomUUID(), bridgeClaudeId = randomUUID();
     const bridge = { hostId: "michael-server", model: "michael-server/antigravity/gemini-test", permissionMode: "fullAccess" };
     await db.insert(agents).values([
@@ -210,9 +212,10 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     ]);
     const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
     expect(before.catalog.map(item => item.agentId)).not.toContain(mainId);
-    expect(before.catalog.map(item => item.agentId)).not.toContain(bridgeClaudeId);
+    expect(before.catalog.find(item => item.agentId === bridgeClaudeId)).toMatchObject({ provider: "claude", hostId: "michael-server",
+      permissions: ["default", "full-access"], models: [{ id: "michael-server/claude/compass-opus5.5", thinking: ["high"], speeds: ["standard"] }] });
     expect(before.catalog.find(item => item.agentId === agyId)).toEqual({ agentId: agyId, name: "Antigravity worker", harness: "ccpocket_bridge",
-      permissions: ["default", "full-access"], models: [{ id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", thinking: ["low", "high"], speeds: ["standard"] }] });
+      provider: "antigravity", hostId: "michael-server", permissions: ["default", "full-access"], models: [{ id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", thinking: ["low", "high"], speeds: ["standard"] }] });
     const [full, standard] = [randomUUID(), randomUUID()];
     const agy: PmWorkerPolicy = { version: 2, defaultSelectionId: full, workers: [{ agentId: agyId, harness: "ccpocket_bridge", selections: [
       { id: full, model: "michael-server/antigravity/gemini-test", thinking: "high", permission: "full-access", speed: "standard", purpose: "Antigravity coding" },
@@ -231,9 +234,50 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
       adapterConfig: { model: "michael-server/antigravity/gemini-test", effort: "high", permissionMode: "fullAccess", dangerouslyBypassApprovalsAndSandbox: true } } });
     await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId, assigneeAdapterOverrides: { workerSelectionId: standard } })).resolves.toMatchObject({
       assigneeAdapterOverrides: { adapterConfig: { effort: null, permissionMode: "default", dangerouslyBypassApprovalsAndSandbox: false } } });
-    // A worker that later becomes a Bridge main agent (or Claude/Codex card) is no longer a dispatch target.
+    // A worker that later becomes a Bridge main agent is no longer a dispatch target.
     await db.update(agents).set({ adapterConfig: { ...bridge, provider: "antigravity", role: "main", projectId } }).where(eq(agents.id, agyId));
     await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).rejects.toThrow("unavailable");
+  });
+
+  it("offers remote Bridge workers only on their own host and dispatches them only to that host's sources", async () => {
+    const remoteId = randomUUID(), remoteSourceId = randomUUID(), unhostedSourceId = randomUUID();
+    await db.insert(agents).values({ id: remoteId, companyId, name: "Shopee-E Codex", status: "active", adapterType: "ccpocket_bridge",
+      adapterConfig: { hostId: "shopee-e", provider: "codex", model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" }, runtimeConfig: { requireProjectWorkspace: true } });
+    await db.insert(projectWorkspaces).values([
+      { id: remoteSourceId, companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd: "/home/yoyo/Projects/Fixture", metadata: { hostId: "shopee-e" } },
+      { id: unhostedSourceId, companyId, projectId, name: "Unhosted remote source", sourceType: "remote_managed", cwd: "/home/yoyo/Projects/Unknown" }]);
+    const choice = randomUUID();
+    const remote: PmWorkerPolicy = { version: 2, defaultSelectionId: choice, workers: [{ agentId: remoteId, harness: "ccpocket_bridge",
+      selections: [{ id: choice, model: "shopee-e/codex/gpt-6-astra", thinking: "high", permission: "full-access", speed: "standard" }] }] };
+    const svc = pmWorkerPolicyService(db);
+    // A controller-host owner never sees or saves a worker that runs on another Bridge host.
+    const local = await svc.read(companyId, pmId, actor);
+    expect(local.catalog.map(item => item.agentId)).not.toContain(remoteId);
+    await expect(svc.save(companyId, pmId, { policy: remote, baseRevision: local.revision, baseHash: local.documentHash }, actor))
+      .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
+    const original = await readAgent();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { ...original.adapterConfig, hostId: "shopee-e", provider: "codex" } }).where(eq(agents.id, pmId));
+    try {
+      const onHost = await svc.read(companyId, pmId, actor);
+      expect(onHost.catalog.map(item => item.agentId)).toEqual([remoteId]);
+      expect(onHost.catalog[0]).toMatchObject({ provider: "codex", hostId: "shopee-e", models: [{ id: "shopee-e/codex/gpt-6-astra" }] });
+      await svc.save(companyId, pmId, { policy: remote, baseRevision: onHost.revision, baseHash: onHost.documentHash }, actor);
+      const shared = (projectWorkspaceId: string) => ({ kind: "configured_source", projectWorkspaceId, mode: "shared" }) as const;
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: shared(remoteSourceId), projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId,
+        assigneeAdapterOverrides: { workerSelectionId: choice, adapterConfig: { model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" } } });
+      for (const selection of [shared(sourceId), shared(unhostedSourceId)]) {
+        await expect(assertPmDispatch(db, await scope(), { workspaceSelection: selection, projectId }))
+          .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
+      }
+      // Without a configured source the dispatch is refused before any host is chosen.
+      await expect(assertPmDispatch(db, await scope(), { projectId })).rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_PROJECT_WORKSPACE_REQUIRED" }) });
+      // Moving the worker to another host invalidates the saved choice instead of dispatching across hosts.
+      await db.update(agents).set({ adapterConfig: { hostId: "shopee-d", provider: "codex", permissionMode: "fullAccess" } }).where(eq(agents.id, remoteId));
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: shared(remoteSourceId), projectId })).rejects.toThrow();
+    } finally {
+      await db.update(agents).set({ adapterType: original.adapterType, adapterConfig: original.adapterConfig }).where(eq(agents.id, pmId));
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, remoteId));
+    }
   });
 
 });
