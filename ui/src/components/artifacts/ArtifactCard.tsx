@@ -2,7 +2,7 @@ import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, MessageSquare, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { artifactFileLink } from "@/lib/artifact-file-link";
-import { usePdfLink } from "@/components/PdfPreviewProvider";
+import { useArtifactPreviewClick } from "./ArtifactPreviewProvider";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
 
@@ -200,13 +200,13 @@ function SecondaryAction({
 const CARD_CLASS = "group flex flex-col overflow-hidden rounded-lg border border-border bg-card cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
- * A file-backed artifact opens its stored file (a PDF in the in-app preview,
- * anything else in a new tab); the task stays one click away. Documents and
+ * A file-backed artifact opens its stored file in the preview window (a
+ * modifier click opens a new tab); the task stays one click away. Documents and
  * work products without a file keep opening their task.
  */
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
   const file = artifactFileLink(artifact);
-  const onPdfClick = usePdfLink();
+  const onFileClick = useArtifactPreviewClick();
   const body = (
     <>
       <ArtifactPreview artifact={artifact} />
@@ -259,7 +259,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
         data-testid="artifact-card"
         data-media-kind={artifact.mediaKind}
         className={CARD_CLASS}
-        onClick={(event) => { onPdfClick(event, { href: file.href, filename: file.filename, contentType: file.contentType }); }}
+        onClick={(event) => onFileClick(event, file)}
       >
         {body}
       </a>

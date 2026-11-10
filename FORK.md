@@ -395,6 +395,10 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   the shared in-app PdfPreviewProvider dialog, anything else in a new tab. The classic card
   keeps the task one click away as a secondary action. Documents and work products without a
   file still open their task. UI only (`ui/src/lib/artifact-file-link.ts`); no API change.
+  Follow-up (same day): a plain click shows the file in a small page-local preview window
+  (`ArtifactPreviewProvider`: image, video, audio, PDF through the shared validated
+  `PdfContent`; other types offer a download) with task, new-tab and download actions;
+  modifier clicks keep the native new-tab link. Navigation closes the window.
 - Failed bridge turn handoff (HOM-265, 2026-11-10): a `ccpocket_bridge` run the adapter
   reports as `failed` (for example a provider error after a failed context compaction)
   may leave its resident session working, and it has no stop record, so the next explicit
