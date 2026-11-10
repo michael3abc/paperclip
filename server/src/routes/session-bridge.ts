@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type ErrorRequestHandler, type Request } from "express";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -8,6 +8,7 @@ import { sessionBridgeChatBinding, sessionBridgeChatService } from "../services/
 import { mainAgentDispatchScope } from "../services/main-agent-workers.js";
 import { pmDispatchDiagnostics } from "../services/pm-dispatch-diagnostics.js";
 import { getAssignedMcpGateway } from "../services/native-runtime/assigned-mcp-tools.js";
+import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { accessService } from "../services/access.js";
 import {
@@ -115,6 +116,15 @@ export function sessionBridgeRoutes(db: Db) {
         approvedActionRequestId: input.approvedActionRequestId, signal: abort.signal }));
     }
   });
+
+  // Preserve the configured gateway's public failure contract, just as its
+  // ordinary HTTP route does. Unknown failures still use the global handler.
+  router.use(["/agents/me/session-bridge/tools-search", "/agents/me/session-bridge/tools-call"],
+    ((err, _req, res, next) => {
+      if (!(err instanceof ToolGatewayHttpError)) return next(err);
+      if (res.destroyed) return;
+      res.status(err.status).json({ error: err.message, reasonCode: err.reasonCode, ...err.details });
+    }) satisfies ErrorRequestHandler);
 
   router.post("/issues/:id/external-turns", async (req, res) => {
     const identity = sessionBridgeKeyIdentity(req);

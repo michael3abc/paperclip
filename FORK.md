@@ -498,3 +498,7 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
 - Session bridge catalog repair (2026-11-10): isolate session-only MCP definitions
   from the Runner legacy inventory, regenerate source anchors, and align connector
   decision-text and capability-count regressions with the existing contracts.
+- Session bridge connector errors (michael/session-bridge-errors, 2026-11-10):
+  preserve the assigned gateway's typed status, reason and public receipts at
+  the HTTP boundary; unknown failures remain redacted and calls are never retried.
+  Native SeaTalk acceptance exposed an expired upstream login and a masked 500.

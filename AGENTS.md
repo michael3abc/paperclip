@@ -579,6 +579,9 @@ must never fall back to a heartbeat on disconnect or replay historical comments.
 Keep native MCP scope, worker selection/workspace validation and the configured
 connector gateway separate. session_bridge keys may invoke assigned connectors
 only with allowAssignedTools; they cannot manage connections or fabricate runs.
+The connector HTTP boundary preserves ToolGatewayHttpError status, reasonCode and
+public details (including approval and dispatch receipts); unknown errors stay
+redacted. Never replace an upstream failure with success or automatically replay it.
 Retain uncertain provider sends without automatic replay. Update the canonical
 contract in doc/plans/2026-11-10-session-bridge-key-scope.md with protocol changes.
 

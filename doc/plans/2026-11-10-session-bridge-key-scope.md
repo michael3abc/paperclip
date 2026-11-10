@@ -150,6 +150,11 @@ appear in MCP schemas or tool responses. The endpoint requires an idempotency ke
 namespaced by company/agent/responsible user. Run-required providers keep rejecting
 non-run calls; no global relaxation. SeaTalk uses its existing assigned connection
 and configured gateway transport, not a new user credential or unrestricted proxy.
+Both connector routes preserve the gateway's typed HTTP status, reasonCode, message
+and public details, matching the existing gateway HTTP contract. Approval references
+and dispatch evidence must reach the caller; an expired upstream login must remain
+an actionable failure. Unknown internal errors retain the global redacted 500.
+Error handling never retries a connector call or changes its idempotency key.
 
 ## Verification
 
