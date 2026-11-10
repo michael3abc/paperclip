@@ -9,6 +9,7 @@ import {
   type CompanyArtifactGroup,
 } from "../api/artifacts";
 import { artifactFileLink } from "../lib/artifact-file-link";
+import { ArtifactPreviewProvider } from "../components/artifacts/ArtifactPreviewProvider";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -53,7 +54,16 @@ function parseKind(value: string | null): ArtifactKindFilter {
     : "all";
 }
 
+/** File artifacts open in a small preview window on this page. */
 export function Artifacts() {
+  return (
+    <ArtifactPreviewProvider>
+      <ArtifactsContent />
+    </ArtifactPreviewProvider>
+  );
+}
+
+function ArtifactsContent() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();

@@ -630,7 +630,7 @@ describe("Artifacts page — Artifacts V1 (Settings > Experimental)", () => {
     flushSync(() => root.unmount());
   });
 
-  it("opens a media file in a folder as the file itself, not its task's session", async () => {
+  it("opens a media file in a folder in the preview window, not its task's session", async () => {
     artifactsApiMock.list.mockResolvedValue({
       artifacts: [sampleArtifact({ id: "hero", source: "attachment", mediaKind: "image", contentType: "image/png", title: "hero.png",
         contentPath: "/api/attachments/hero/content", openPath: "/api/attachments/hero/content", href: "/PAP/issues/PAP-42#attachment-hero" })],
@@ -644,6 +644,13 @@ describe("Artifacts page — Artifacts V1 (Settings > Experimental)", () => {
     const tile = container.querySelector<HTMLAnchorElement>('[data-testid="artifact-v1-single-tile"]')!;
     expect(tile.getAttribute("href")).toBe("/api/attachments/hero/content");
     expect(tile.getAttribute("target")).toBe("_blank");
+    // A plain click shows the file in the page's preview window instead of a new tab.
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    flushSync(() => { tile.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(true);
+    await waitForAssertion(() => {
+      expect(document.querySelector('[data-testid="artifact-preview-image"]')?.getAttribute("src")).toBe("/api/attachments/hero/content");
+    });
     flushSync(() => root.unmount());
   });
 

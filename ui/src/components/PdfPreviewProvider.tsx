@@ -19,7 +19,7 @@ export function usePdfLink() {
   }, [open]);
 }
 
-function PdfContent({ source }: { source: PdfPreviewInput }) {
+export function PdfContent({ source }: { source: PdfPreviewInput }) {
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<{ url?: string; error?: string }>({});
   useEffect(() => {

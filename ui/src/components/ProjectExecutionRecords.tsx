@@ -2,6 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { projectsApi } from "../api/projects";
 import { artifactsApi } from "../api/artifacts";
 import { ArtifactCard } from "./artifacts/ArtifactCard";
+import { ArtifactPreviewProvider } from "./artifacts/ArtifactPreviewProvider";
 import { Link } from "../lib/router";
 import { formatDate } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -27,7 +28,12 @@ export function ProjectSessions({ projectId }: { projectId: string }) {
   </section>;
 }
 
-export function ProjectArtifacts({ companyId, projectId }: { companyId: string; projectId: string }) {
+/** File artifacts open in a small preview window on the project page. */
+export function ProjectArtifacts(props: { companyId: string; projectId: string }) {
+  return <ArtifactPreviewProvider><ProjectArtifactsContent {...props} /></ArtifactPreviewProvider>;
+}
+
+function ProjectArtifactsContent({ companyId, projectId }: { companyId: string; projectId: string }) {
   // Same projection as the project's folder on the Artifacts page: media files only, no task documents.
   const query = useInfiniteQuery({ queryKey: ["project-native-artifacts", companyId, projectId, "media-only"], initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => artifactsApi.list(companyId, { projectId, mediaOnly: true, limit: 30, cursor: pageParam }),

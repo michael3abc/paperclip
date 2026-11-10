@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
 import type { ArtifactFileLink } from "@/lib/artifact-file-link";
-import { usePdfLink } from "@/components/PdfPreviewProvider";
+import { useArtifactPreviewClick } from "../ArtifactPreviewProvider";
 import { ArtifactFront } from "./ArtifactFront";
 import { ArtifactStack } from "./ArtifactStack";
 import type { ArtifactSubject } from "./kinds";
@@ -47,12 +47,12 @@ const TILE =
   "artifact-tile flex h-(--artifact-tile-h) w-full flex-col items-center gap-5 rounded-(--artifact-tile-radius) px-5 text-left outline-none transition-colors hover:bg-(--artifact-tile-hover) focus-visible:bg-(--artifact-tile-hover) focus-visible:ring-2 focus-visible:ring-ring";
 
 /**
- * The cell: the stored file when it has one (a PDF opens in the in-app preview,
- * anything else in a new tab), else a link when it has somewhere to go, a
- * button otherwise. text-left keeps a sheet's title from centring.
+ * The cell: the stored file when it has one (shown in the preview window; a
+ * modifier click opens it in a new tab), else a link when it has somewhere to
+ * go, a button otherwise. text-left keeps a sheet's title from centring.
  */
 export function ArtifactTile({ label, to, file, onClick, children, caption, testId }: { label: string; to?: To; file?: ArtifactFileLink | null; onClick?: () => void; children: ReactNode; caption: ReactNode; testId?: string }) {
-  const onPdfClick = usePdfLink();
+  const onFileClick = useArtifactPreviewClick();
   const body = (
     <>
       <div className="flex h-(--artifact-frame-h) w-full shrink-0 items-end justify-center">{children}</div>
@@ -70,7 +70,7 @@ export function ArtifactTile({ label, to, file, onClick, children, caption, test
           aria-label={label}
           data-testid={testId}
           className={TILE}
-          onClick={(event) => { onPdfClick(event, { href: file.href, filename: file.filename, contentType: file.contentType }); }}
+          onClick={(event) => onFileClick(event, file)}
         >
           {body}
         </a>
