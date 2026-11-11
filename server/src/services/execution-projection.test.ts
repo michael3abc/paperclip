@@ -282,3 +282,9 @@ describe("execution truth projection", () => {
     ).toBe("recovery_needed");
   });
 });
+
+
+it.each(["queued", "running", "scheduled_retry"])("allows cancelling a %s run, including a workspace wait", status => {
+  expect(projectExecution(run({ status, runtimeMode: "legacy", scheduledRetryReason: "workspace_busy" }),
+    undefined, [], undefined, now)).toMatchObject({ canStop: true });
+});

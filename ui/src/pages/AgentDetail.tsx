@@ -1,3 +1,4 @@
+import { RunCancelButton } from "@/components/RunCancelButton";
 import { PmWorkerSettings } from "../components/PmWorkerSettings";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
@@ -3133,6 +3134,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge status={run.status} />
+              {(run.status === "scheduled_retry" || (run.status === "cancelled" && !!run.resultJson?.bridgeSessionId &&
+                (run.resultJson?.executionCancellation as { state?: string } | undefined)?.state === "requested")) && (
+                <RunCancelButton key={run.id} runId={run.id} issueId={run.issueId} companyId={run.companyId}
+                  agentId={run.agentId} finishCancellation={run.status === "cancelled"} />
+              )}
               <ProviderTraceStatusBadge
                 trace={providerTraceMetadata}
                 requested={runRequestedProviderTrace(run.contextSnapshot)}

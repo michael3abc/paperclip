@@ -3564,3 +3564,19 @@ with a real run uses HTTP 202. Pending is unresolved; waiting_dependency and blo
 name the gate. GET /api/issues/:id/continuations/:receiptId reads the original result
 without dispatch. A settled run exposes runStatus and current task status separately;
 run succeeded never implies task done. Same-key calls do not replay the mutation.
+
+
+### Cancelling a workspace wait or an unfinished Bridge cancellation
+
+The waiting-workspace banner, run detail and main-agent activity panel expose
+**Cancel run** for scheduled attempts. Cancellation targets that exact run through
+the board-only cancellation API; it preserves task history and outputs and does
+not implicitly retry the task or cancel a newer attempt. The GUI waits for stop
+confirmation and reports failure visibly without retrying the mutation.
+
+A cancelled legacy Bridge run whose stop is still requested exposes **Finish
+cancellation**. The same cancellation endpoint rechecks its original Bridge/native
+identity and stop receipt. Unknown or unavailable evidence returns a conflict;
+it never synthesizes proof, resends input or stops a successor. An acknowledged,
+unforced Bridge stop can release a shared checkout only when the controller lease,
+workspace operations, finalizer and environment leases have also settled.
