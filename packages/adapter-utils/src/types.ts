@@ -454,6 +454,14 @@ export interface ProviderQuotaResult {
   windows: QuotaWindow[];
 }
 
+/** Account-scoped subscription snapshots; credentials and remote transport remain adapter-owned. */
+export type SubscriptionQuotaResult = Omit<ProviderQuotaResult, "errorFamily"> & {
+  accountKey?: string;
+  accountLabel?: string;
+  capturedAt?: string;
+  errorFamily?: string | null;
+};
+
 // ---------------------------------------------------------------------------
 // Adapter config schema — declarative UI config for external adapters
 // ---------------------------------------------------------------------------
@@ -572,6 +580,11 @@ export interface ServerAdapterModule {
    * without knowing provider-specific credential paths or API shapes.
    */
   getQuotaWindows?: () => Promise<ProviderQuotaResult>;
+  /** Read only hosts selected by these company-owned agent configurations. No inference or billing changes. */
+  getSubscriptionQuotas?: (options: {
+    configs: Record<string, unknown>[];
+    fetchLocal: (providers: readonly string[]) => Promise<SubscriptionQuotaResult[]>;
+  }) => Promise<SubscriptionQuotaResult[]>;
   /**
    * Optional: detect the currently configured model from local config files.
    * Returns the detected model/provider and the config source, or null if

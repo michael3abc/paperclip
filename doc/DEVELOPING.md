@@ -1,5 +1,16 @@
 # Developing
 
+## Main-agent live work cards
+
+The Agent Chat live work panel shows harness, model and billing source on the current-run card
+and on native subagent cards when their adapter reports identity. Runtime identity belongs to the
+run's model_identity provider activity; each delegation carries its own harness, model,
+modelProvider, billingRoute and optional metadataError. A child can use a different model/source
+from its parent. Keep the raw model available as a title while shortening known GPT/Compass family
+selectors for display (codex · 6 Astra · compass). Missing child model/source is shown as unknown;
+older logs without identity are not relabelled from current agent settings. Native children remain
+delegation cards and do not become Paperclip issues. There is no schema change or new polling.
+
 ## Host subscription quota dashboard
 
 Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service
@@ -9,7 +20,12 @@ requires an instance administrator (or local implicit board), existing company
 access and a real company before reading credentials. Other members and agent
 keys cannot read the host's subscriptions. No database migration is required.
 
-The source is this server host's existing CLI login, not an AI Connection or an
+Account membership follows the selected company's non-terminated agents and their
+configured execution hosts/providers. Each host/provider has its own card; changing
+company changes the selection, never the host's login or any agent configuration.
+Adapters own host resolution and quota transport through getSubscriptionQuotas;
+the server passes only that company's configs and a local-reader callback.
+The source is each selected host's existing CLI login, not an AI Connection or an
 agent's selected billing route. Codex reads account RPCs without creating a turn;
 its window labels use reported durations. Claude uses the existing local CLI
 credential reader and subscription usage parser. Antigravity reads its existing
@@ -32,8 +48,21 @@ reset countdowns, host and last-check time. Missing windows, resets, remaining
 fractions and model groups stay unknown; a previous successful response after
 an HTTP refresh failure is explicitly stale. Quotas are account-wide and include
 usage outside Paperclip; they never change billing, budgets or agent permissions.
-This first integration reads the local host only. Remote-host logins and Compass
-credits are separate sources and are not merged or inferred.
+CC Pocket remote hosts use their registered Bridge's read-only get_usage request,
+coalesced/cached per host for 60 seconds including failures. Cached reads retain
+their original capture time. No other host is probed as a fallback. The current
+remote Bridge reports Codex only; selected Claude/Antigravity providers explicitly
+show unreported quota. The local host retains its detailed native readers.
+Compass credits remain a separate source and are not merged or inferred.
+
+Codex Business/Enterprise account RPCs can return individualLimit with null
+primary/secondary windows. Local readers and remote Bridge get_usage preserve
+that allocation as an Individual allocation row, displaying used/limit in quota
+units and the provider-reported remaining percentage. It is not a dollar balance
+or a fabricated 5h/7d window. Missing percentages/resets stay unknown; malformed
+allocation is a visible failure. The remote Bridge must include the additive
+individualLimit field for these accounts; older Bridges still report their
+explicit missing-quota error until upgraded.
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 

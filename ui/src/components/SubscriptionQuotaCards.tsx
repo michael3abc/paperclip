@@ -40,7 +40,7 @@ export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefres
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-semibold">Subscription quotas</h2>
-          <p className="text-xs text-muted-foreground">Host CLI accounts · Account-wide usage · Refreshes every minute while visible</p>
+          <p className="text-xs text-muted-foreground">This company’s execution hosts · Account-wide usage · Refreshes every minute while visible</p>
         </div>
         <Button variant="ghost" size="sm" disabled={refreshing} onClick={onRefresh}>
           <RefreshCw className="h-3.5 w-3.5" />
@@ -49,17 +49,17 @@ export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefres
       </div>
       {failed && <p role="alert" className="text-sm text-destructive">Quota refresh failed. Any values below are from the previous check.</p>}
       <div className="grid gap-4 md:grid-cols-3">
-        {PROVIDERS.map(({ id, title }) => {
-          const account = accounts.find((value) => value.provider === id);
+        {accounts.map((account) => {
+          const id = account.provider;
+          const title = PROVIDERS.find(value => value.id === id)?.title ?? id;
           return (
-            <Card key={id}>
+            <Card key={account.accountKey ?? id}>
               <CardHeader>
                 <CardTitle className="text-sm">{title}</CardTitle>
-                <CardDescription className="text-xs">{account?.accountLabel ?? "Host subscription"}</CardDescription>
+                <CardDescription className="text-xs">{account.accountLabel ?? "Host subscription"}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                {!account ? <p className="text-sm text-muted-foreground">{refreshing ? "Checking quota…" : "Quota unavailable"}</p>
-                  : !account.ok ? <p className="text-sm text-muted-foreground" role="status">{account.error ?? "Quota unavailable"}</p>
+                {!account.ok ? <p className="text-sm text-muted-foreground" role="status">{account.error ?? "Quota unavailable"}</p>
                   : account.windows.map((window, index) => (
                     <div key={window.label + ":" + index} className="space-y-1" title={window.detail ?? undefined}>
                       {window.usedPercent == null ? (
@@ -77,7 +77,7 @@ export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefres
                     </div>
                   ))}
                 {id === "antigravity" && <p className="text-xs text-muted-foreground">Only provider-reported model groups are shown. Other groups are unknown.</p>}
-                {account?.capturedAt && <p className="text-xs text-muted-foreground">Last checked {formatDateTime(account.capturedAt)}</p>}
+                {account.capturedAt && <p className="text-xs text-muted-foreground">Last checked {formatDateTime(account.capturedAt)}</p>}
               </CardContent>
             </Card>
           );

@@ -362,6 +362,12 @@ interface CodexRpcLimit {
   secondary?: CodexRpcWindow | null;
   credits?: CodexRpcCredits | null;
   planType?: string | null;
+  individualLimit?: {
+    limit?: string | number | null;
+    used?: string | number | null;
+    remainingPercent?: number | null;
+    resetsAt?: number | null;
+  } | null;
 }
 
 interface CodexRpcRateLimitsResult {
@@ -421,6 +427,31 @@ function parseCreditBalance(value: string | number | null | undefined): string |
   return null;
 }
 
+function buildIndividualAllocation(value: CodexRpcLimit["individualLimit"]): QuotaWindow | null {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Codex individual allocation");
+  const amount = (raw: string | number | null | undefined): number | null => {
+    if (raw == null) return null;
+    if ((typeof raw !== "number" && typeof raw !== "string") ||
+        (typeof raw === "string" && !/^\d+(?:\.\d+)?$/.test(raw)) ||
+        !Number.isFinite(Number(raw)) || Number(raw) < 0) throw new Error("Invalid Codex individual allocation");
+    return Number(raw);
+  };
+  const limit = amount(value.limit), used = amount(value.used);
+  const percent = value.remainingPercent ?? null;
+  if (percent !== null && (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100)) {
+    throw new Error("Invalid Codex individual allocation percentage");
+  }
+  if (value.resetsAt != null && (typeof value.resetsAt !== "number" || !Number.isFinite(value.resetsAt))) {
+    throw new Error("Invalid Codex individual allocation reset");
+  }
+  if (limit === null && used === null && percent === null && value.resetsAt == null) return null;
+  const format = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return { label: "Individual allocation", usedPercent: percent === null ? null : 100 - percent,
+    resetsAt: unixSecondsToIso(value.resetsAt), valueLabel: limit !== null && used !== null
+      ? `${format(used)} / ${format(limit)} units used` : null, detail: null };
+}
+
 export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: CodexRpcAccountResult | null): CodexRpcQuotaSnapshot {
   const windows: QuotaWindow[] = [];
   const limitOrder = ["codex"];
@@ -448,6 +479,10 @@ export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: Cod
     if (primary) windows.push(primary);
     const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, limit.secondary);
     if (secondary) windows.push(secondary);
+    if (limitId === "codex") {
+      const individual = buildIndividualAllocation(limit.individualLimit);
+      if (individual) windows.push(individual);
+    }
     if (limitId === "codex" && limit.credits && limit.credits.unlimited !== true) {
       windows.push({
         label: "Credits",
