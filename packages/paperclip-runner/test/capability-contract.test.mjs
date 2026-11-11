@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { resolve } from "node:path";
-import { decodeInventory } from "../scripts/lib/capability-inventory.mjs";
+import { buildSkillInventory, decodeInventory } from "../scripts/lib/capability-inventory.mjs";
 import { validateRows } from "../scripts/generate-capability-contract.mjs";
 
 const phaseDirectory = resolve(import.meta.dirname, "../generated/capability");
@@ -18,7 +18,7 @@ test("generated Capability inventory has full source coverage", async () => {
     readRows("eval-traceability.yaml"),
   ]);
 
-  assert.equal(capabilities.length, 167);
+  assert.equal(capabilities.length, 168);
   assert.equal(capabilities.filter(row => row.sourceAnchor.startsWith("skills/paperclip/references/issue-documents.md#")).length, 3);
   assert.equal(tools.length, 42);
   assert.equal(evals.length, 106);
@@ -58,6 +58,8 @@ test("both capability inventories cover every declared skill source", async () =
   const generated = await readRows("capabilities.yaml");
   const normative = decodeInventory(await readFile(resolve(import.meta.dirname, "../spec/capability/capabilities.yaml"), "utf8"));
   assert.deepEqual(normative.generatedFrom, contract.skillSources);
+  const live = await buildSkillInventory(resolve(import.meta.dirname, "../../.."));
+  assert.deepEqual(normative.rows, live.rows, "Normative inventory must match current skill headings and source locations");
   for (const source of contract.skillSources) {
     assert.ok(generated.some(row => row.sourceAnchor.startsWith(`${source}#`)), `Missing generated source ${source}`);
     assert.ok(normative.rows.some(row => row.sourceAnchor.startsWith(`${source}:`)), `Missing normative source ${source}`);

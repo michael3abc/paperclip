@@ -621,6 +621,10 @@ redacted. Never replace an upstream failure with success or automatically replay
 Retain uncertain provider sends without automatic replay. Update the canonical
 contract in doc/plans/2026-11-10-session-bridge-key-scope.md with protocol changes.
 
+Skill heading changes must synchronize both Runner capability inventories
+(`generated/capability` and `spec/capability`), their generated contracts/docs and
+baseline-count tests. Verify both check:capability-contract and check:capability-inventory.
+
 Session-bridge-only MCP definitions live in packages/mcp-server/src/session-bridge-tools.ts;
 keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate the
 Runner capability source anchors when legacy definitions move, and verify both
