@@ -311,6 +311,24 @@ describe("BreadcrumbBar", () => {
     expect(onToggle).toHaveBeenCalledOnce();
   });
 
+  it("opens the mobile conversation Tasks panel through its page control", async () => {
+    viewport.isMobile = true;
+    const onToggle = vi.fn();
+    function ConversationBreadcrumb() {
+      const { setBreadcrumbs, setBreadcrumbPanelControl } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{ label: "Agent chat" }]);
+        setBreadcrumbPanelControl({ open: false, onToggle });
+      }, [setBreadcrumbs, setBreadcrumbPanelControl]);
+      return <BreadcrumbBar />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><ConversationBreadcrumb /></BreadcrumbProvider>));
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Show properties"]');
+    expect(button).not.toBeNull();
+    act(() => button!.click());
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
   it("omits the retired sidebar control and keeps the properties control", async () => {
     await act(async () => {
       root.render(
