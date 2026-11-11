@@ -75,6 +75,7 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
               and r.result_json#>>'{executionCancellation,forced}' = 'false'
               and r.result_json#>>'{executionCancellation,acknowledgedAt}' is not null)
             or (r.process_pid is null and r.process_group_id is null and r.process_started_at is null and r.native_session_id is null and r.session_id_after is null
+              and r.result_json->>'nativeSessionId' is null and r.result_json->>'bridgeSessionId' is null
               and not (coalesce(r.runner_profile_json, '{}'::jsonb) ? 'nativeExecutionInput')
               and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
                 and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started')))))

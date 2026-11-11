@@ -137,6 +137,14 @@ it("releases a terminal pre-provider admission without replaying the old task", 
   expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.status).toBe("failed");
 });
 
+it("does not infer pre-provider safety from missing events when Bridge identity was recorded", async () => {
+  const [a,b] = await fixture(); await claimSharedCheckout(db,a);
+  await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+    resultJson: { nativeSessionId: "original-native-thread", bridgeSessionId: "original-card" },
+  }).where(eq(heartbeatRuns.id,a.runId));
+  await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ code: "workspace_busy" });
+});
+
 it.each([false,true])("requires a retained process-stop receipt before another writer starts (Git: %s)", async git => {
   const [a,b] = await fixture(git); await claimSharedCheckout(db,a);
   await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), processPid:12345 }).where(eq(heartbeatRuns.id,a.runId));
