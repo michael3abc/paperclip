@@ -1,3 +1,5 @@
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { creatorRecovery, routeWorkspaceToCreator } from "./workspace-creator.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -2589,6 +2591,8 @@ export function recoveryService(
     const isProviderQuotaWait = recoveryCause === "provider_quota";
     const now = new Date();
     const actions = database === db ? recoveryActionsSvc : issueRecoveryActionService(database);
+    const existingAction = await actions.getActiveForIssue(input.issue.companyId, input.issue.id);
+    if (creatorRecovery(existingAction?.evidence)) return existingAction!;
     const action = await actions.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
@@ -2678,6 +2682,16 @@ export function recoveryService(
       lastAttemptAt: now,
     });
 
+    if (!existingAction && recoveryCause === "workspace_validation_failed" &&
+        readWorkspaceValidationPayload(input.latestRun)?.schema === "paperclip.workspace-validation/v1") {
+      const row = await database.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)).then(rows => rows[0]);
+      if (row) {
+        await notifyDeliveryWork(database, DELIVERY_QUEUES.workspaceCreatorRecovery, row.id);
+        await database.update(issueRecoveryActions).set({ evidence: { ...row.evidence, workspaceCreatorCandidate: true } }).where(eq(issueRecoveryActions.id, row.id));
+        const routed = await routeWorkspaceToCreator(database as Db, row, { requestKey: action.id });
+        if (routed) return { ...action, ...routed };
+      }
+    }
     return action;
   }
 

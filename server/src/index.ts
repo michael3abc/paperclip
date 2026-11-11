@@ -1683,6 +1683,12 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const workspaceCreatorWork = heartbeat.registerWorkspaceCreatorRecovery(deliveryWork,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+      server.on("close", workspaceCreatorWork.stop);
+      await workspaceCreatorWork.ready;
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerIssueStateRecoveryWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerDeferredReceiptWork(deliveryWork,

@@ -102,14 +102,14 @@ it("does not require a Git executable for ordinary directories", async () => {
 
 it("retains an explicit Git source requirement", async () => {
   const [a] = await fixture(false);
-  await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).rejects.toMatchObject({ resultJson:{ reason:"shared_workspace_git_required" } });
+  await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).rejects.toMatchObject({ resultJson:{ workspaceValidation:{ reason:"shared_workspace_git_required" } } });
 });
 
 it("retains unsaved Git changes until the same task owns them", async () => {
   const [a,b] = await fixture(); await claimSharedCheckout(db,a);
   await writeFile(join(a.cwd,"draft.txt"),"uncommitted");
   await db.update(heartbeatRuns).set({ status:"succeeded", finishedAt:new Date() }).where(eq(heartbeatRuns.id,a.runId));
-  await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ resultJson:{ reason:"shared_checkout_unsaved_changes" } });
+  await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ resultJson:{ workspaceValidation:{ reason:"shared_checkout_unsaved_changes", dirtyFiles:{ paths:["draft.txt"], count:1, truncated:false }, previousIssueId:a.issueId } } });
   await expect(claimSharedCheckout(db,{ ...b, issueId:a.issueId })).resolves.toMatchObject({ path:a.cwd });
 });
 
@@ -162,5 +162,5 @@ it("keys a remote Bridge worker's claim on its host and registered path without 
 it.each(["relative/path", "/home/yoyo/../etc", "/home/yoyo/Projects/"])("rejects a non-canonical remote path %s", async remotePath => {
   const [a] = await fixture(false);
   await expect(claimSharedCheckout(db, { ...a, cwd: remotePath, remoteHostId: "shopee-e" }))
-    .rejects.toMatchObject({ resultJson: { reason: "remote_worker_path_invalid" } });
+    .rejects.toMatchObject({ resultJson: { workspaceValidation: { reason: "remote_worker_path_invalid" } } });
 });

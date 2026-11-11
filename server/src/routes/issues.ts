@@ -1,3 +1,7 @@
+import { reconcileWorkspaceHolder } from "../services/recovery/workspace-holder.js";
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { isDeepStrictEqual } from "node:util";
+import { captureHistoricalWorkspaceValidation, creatorRecovery, routeWorkspaceToCreator, validateWorkspaceRepair } from "../services/recovery/workspace-creator.js";
 import { sessionBridgeChatBinding } from "../services/session-bridge-chat.js";
 import type { ToolReviewActor } from "../services/tool-action-review.js";
 import { getDelegatedRequest } from "../services/delegated-requests.js";
@@ -131,6 +135,8 @@ import {
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
+  notifyWorkspaceCreatorSchema,
+  reconcileWorkspaceHolderSchema,
   retryWorkspaceExportSchema,
   recoverWorkspaceSchema,
   taskRetrySchema,
@@ -10000,6 +10006,48 @@ export function issueRoutes(
     res.status(202).json(receipt);
   });
 
+  router.post("/issues/:id/workspace/reconcile-holder", validate(reconcileWorkspaceHolderSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!existing || !(await assertIssueReadAllowed(req, res, existing))) return;
+    if (await assertLowTrustControlPlaneDenied(req, res, existing.companyId, existing)) return;
+    if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
+    res.json(await reconcileWorkspaceHolder(db, { ...req.body, companyId: existing.companyId,
+      issueId: existing.id, actor: req.actor }, heartbeat.reconcileWorkspaceHolderStop));
+  });
+
+  router.post("/issues/:id/recovery-actions/notify-creator", validate(notifyWorkspaceCreatorSchema), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!existing || !(await assertIssueReadAllowed(req, res, existing))) return;
+    if (!req.actor.isInstanceAdmin && req.actor.source !== "local_implicit") {
+      const [membership] = req.actor.userId ? await db.select().from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, existing.companyId), eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, req.actor.userId), eq(companyMemberships.status, "active"),
+        eq(companyMemberships.membershipRole, "owner"))) : [];
+      if (!membership) throw forbidden("Only the company Owner can forward a historical recovery");
+    }
+    const decision = await access.decide({ actor: req.actor, action: "issue:mutate", resource: {
+      type: "issue", companyId: existing.companyId, issueId: existing.id, status: existing.status,
+      assigneeAgentId: existing.assigneeAgentId, assigneeUserId: existing.assigneeUserId,
+    } });
+    if (!decision.allowed) throw forbidden(decision.explanation);
+    const result = await db.transaction(async tx => {
+      const [task] = await tx.select().from(issueRows).where(and(eq(issueRows.id, existing.id), eq(issueRows.companyId, existing.companyId))).for("update");
+      const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.id, req.body.actionId),
+        eq(issueRecoveryActions.companyId, existing.companyId), eq(issueRecoveryActions.sourceIssueId, existing.id))).for("update");
+      if (!task || !action || action.evidence.latestRunId !== req.body.failedRunId) throw conflict("The original recovery changed");
+      const prior = creatorRecovery(action.evidence);
+      if (prior?.requestKey === req.body.requestKey) return action;
+      if (task.status !== "blocked" || action.status !== "active" || action.updatedAt.toISOString() !== req.body.expectedActionUpdatedAt)
+        throw conflict("The task or recovery revision changed");
+      const migrated = await captureHistoricalWorkspaceValidation(tx as unknown as Db, action);
+      const routed = await routeWorkspaceToCreator(tx as unknown as Db, migrated, { requestKey: req.body.requestKey, explicit: true });
+      if (!routed) throw conflict("The original creator or safe pre-provider recovery evidence is unavailable");
+      return routed;
+    });
+    res.json({ recoveryAction: result });
+  });
+
   router.post(
     "/issues/:id/recovery-actions/resolve",
     validate(resolveIssueRecoveryActionSchema),
@@ -10028,7 +10076,7 @@ export function issueRoutes(
           existing,
           "issue:mutate",
         );
-        if (!boundaryDecision.allowed) {
+        if (!boundaryDecision.allowed && !req.body.workspaceRepair) {
           await denyIssueWrite(
             req,
             res,
@@ -10092,6 +10140,48 @@ export function issueRoutes(
           eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
           actionId ? eq(issueRecoveryActions.id, actionId) : inArray(issueRecoveryActions.status, ["active", "escalated"]),
         )).limit(1).for("update");
+        if (req.body.workspaceRepair) {
+          const repair = req.body.workspaceRepair;
+          if (!workspaceRepairAction || workspaceRepairAction.id !== actionId) throw conflict("The original recovery action changed");
+          const state = creatorRecovery(workspaceRepairAction.evidence);
+          if (!state || (req.actor.type === "agent" && req.actor.agentId !== state.creatorAgentId))
+            throw forbidden("Only the recorded main agent can repair this task");
+          if (state.repair) {
+            const original = { failedRunId: state.repair.failedRunId, expectedBindingRevision: state.repair.expectedBindingRevision, ...(state.repair.selection ? { selection: state.repair.selection } : {}) };
+            if (!isDeepStrictEqual(original, repair) || outcome !== "restored") throw conflict("Recovery action was consumed by different repair intent");
+            return { issue: lockedIssue, recoveryAction: workspaceRepairAction, replayed: true, chatRetry: null };
+          }
+          if (workspaceRepairAction.status !== "active") throw conflict("The recovery is no longer active");
+          const verified = await validateWorkspaceRepair(tx as unknown as Db, lockedIssue, workspaceRepairAction, req.actor, repair);
+          if (!resolutionNote?.trim()) throw unprocessable("Record the repair or escalation evidence");
+          if (outcome === "blocked") {
+            const [escalated] = await tx.update(issueRecoveryActions).set({ ownerType: "board", ownerAgentId: null,
+              status: "escalated", wakePolicy: null, nextAction: resolutionNote, resolutionNote,
+              evidence: { ...workspaceRepairAction.evidence, creatorRecovery: { ...verified,
+                delivery: { ...verified.delivery, status: "needs_owner", detail: resolutionNote } } }, updatedAt: new Date(),
+            }).where(eq(issueRecoveryActions.id, actionId!)).returning();
+            return { issue: lockedIssue, recoveryAction: escalated, chatRetry: null, workspaceRepairOnly: true };
+          }
+          if (repair.selection) await executionWorkspaceServiceDirect(tx as unknown as Db).selectTaskWorkspace({
+            companyId: lockedIssue.companyId, issueId: lockedIssue.id, actor: req.actor,
+            selection: repair.selection, expectedBindingRevision: repair.expectedBindingRevision, requestKey: actionId!, workspaceRecoveryActionId: actionId!,
+          });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, actionId!);
+          const admittedAt = new Date().toISOString();
+          await tx.update(issueRecoveryActions).set({ evidence: { ...workspaceRepairAction.evidence,
+            creatorRecovery: { ...verified, repair: { ...repair, admittedAt, wakeId: randomUUID(),
+              bindingRevision: repair.expectedBindingRevision + (repair.selection ? 1 : 0), status: "pending" } } }, updatedAt: new Date(),
+          }).where(eq(issueRecoveryActions.id, actionId!));
+          const updated = await svc.update(id, { status: "todo", actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null }, tx, postCommitActivityPublications);
+          if (!updated) throw notFound("Issue not found");
+          const settled = await recoveryActionsSvc.resolveActiveForIssue({ companyId: lockedIssue.companyId, sourceIssueId: id,
+            actionId, status: "resolved", outcome: "handed_back", resolutionNote }, tx);
+          if (!settled) throw conflict("Recovery was resolved concurrently");
+          return { issue: updated, recoveryAction: settled, chatRetry: null };
+        }
+        if (creatorRecovery(workspaceRepairAction?.evidence) && req.actor.type === "agent")
+          throw forbidden("Use the revision-bound workspaceRepair operation for this recovery");
         if (workspaceRepairAction && hasRequiredWorkspaceRecovery(workspaceRepairAction.evidence)) {
           assertBoard(req);
           await requireRecoveryActionAuthority(req, lockedIssue, issueRecoveryActionReadModel(workspaceRepairAction),
@@ -10632,7 +10722,7 @@ export function issueRoutes(
           );
         }
       } else if (
-        !executionReconciliation &&
+        !executionReconciliation && !req.body.workspaceRepair &&
         sourceIssueStatus === "todo" &&
         result.issue.assigneeAgentId &&
         (existing.status !== result.issue.status ||

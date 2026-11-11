@@ -4491,6 +4491,44 @@ on pull requests.
 
 ### Workspace feature checks (2026-10-09)
 
+Workspace bootstrap recovery uses `workspaceValidation` (`paperclip.workspace-validation/v1`).
+The recovery service verifies pre-provider execution, resource settlement, current worker, project lead,
+creator/origin-run and original Chat generation before assigning the existing action to the main agent.
+Evidence includes the configured source, physical path, previous holder, binding revision and at most
+20 relative dirty paths with total/truncation fields; file contents are never collected. Missing stop
+or cleanup evidence, human approvals and manual holds leave Owner recovery in place.
+
+`workspace-creator-delivery.ts` uses the existing delivery coordinator and durable wake receipts.
+It persists a system-authored `workspace_recovery` comment and delivery intent before I/O. Codex
+steers the exact active Chat turn; other Bridge harnesses use the original stop/handoff contract.
+Another task of that main agent is preempted through Chat priority and restored by its recorded
+receipt. Pauses, termination and maintenance drains remain authoritative. Unknown outcomes inspect
+the original receipt without resending or switching delivery paths. No watchdog or polling service
+is added. The recovery card distinguishes pending, acknowledged, uncertain and Owner-required states.
+
+`POST /api/issues/:id/recovery-actions/resolve` accepts `workspaceRepair` with `failedRunId`,
+`expectedBindingRevision` and optional `selection` (an existing same-project configured source).
+Bind `actionId`, `outcome: restored`, `sourceIssueStatus: todo` and `resolutionNote`. The original
+creator's current Chat run or board may resolve it. The transaction checks ownership, latest failure,
+holds, pending decisions and revision, stores selection intent, and records one worker admission.
+Normal admission applies the pending selection and rechecks execution controls. An identical API
+replay returns the receipt; a different intent or stale revision returns 409. A further failure
+requires Owner. `outcome: blocked` with `sourceIssueStatus: blocked` escalates without admission.
+
+Historical failures are not automatically forwarded. The Owner-only
+`POST /api/issues/:id/recovery-actions/notify-creator` requires `actionId`, `failedRunId`,
+`expectedActionUpdatedAt` (ISO action revision) and UUID `requestKey`. It may capture bounded
+diagnostics from an unchanged local configured source for the original top-level unsaved-checkout
+error, preserving the failed run. Reconcile the same request if its response is lost.
+
+`POST /api/issues/:id/workspace/reconcile-holder` accepts `waitingRunId`, `holderRunId` and
+`expectedBindingRevision`. The project's current main agent can reverify a terminal holder named
+by that task's `workspaceBusy` evidence. It never cancels active work, erases claims or modifies files.
+Only verified stop/resource settlement releases admission; `unverified` retains the blocker.
+Regression: `workspace-creator-recovery.test.ts` exercises the HTTP repair plus assembled heartbeat,
+durable notices, lost receipts, authorization, preemption and retained dirty files. Shared-checkout,
+Bridge steering/reverification and execution-continuation suites cover the reused boundaries.
+
 Task files, personal agent state (`AGENT_HOME`), and provider home are distinct. New filesystem tasks without an explicit source use a stable company/task directory. Debug workspace placement through the task workspace API rather than inferring it from organizational project or agent identity.
 
 Focused coverage lives in `task-workspace-binding.test.ts`, `task-workspace-repositories*.test.ts`, `task-workspace-tools.test.ts`, channel integration tests, and adapter-utils checkpoint/native persistence tests. Full handoff still requires the repository typecheck, test, and build commands. Remote transport fixtures establish protocol behavior; they do not qualify production provider throughput.

@@ -621,8 +621,21 @@ export const reconstructWorkspaceSchema = z.object({
   acknowledgeLostWork: z.literal(true),
 }).strict();
 
+export const reconcileWorkspaceHolderSchema = z.object({
+  waitingRunId: z.string().guid(), holderRunId: z.string().guid(), expectedBindingRevision: z.number().int().nonnegative(),
+}).strict();
+
+export const notifyWorkspaceCreatorSchema = z.object({
+  actionId: z.string().guid(), failedRunId: z.string().guid(),
+  expectedActionUpdatedAt: z.string().datetime(), requestKey: z.string().guid(),
+}).strict();
+
 export const resolveIssueRecoveryActionSchema = z
   .object({
+    workspaceRepair: z.object({
+      failedRunId: z.string().guid(), expectedBindingRevision: z.number().int().nonnegative(),
+      selection: taskWorkspaceSelectionSchema.optional(),
+    }).strict().optional(),
     workspaceBaseRef: z.object({
       requestedRef: z.string().trim().min(1).max(1024),
       branch: z.string().trim().refine(isValidExistingBranchName, { message: "Choose a valid Git branch name" }),
@@ -644,6 +657,10 @@ export const resolveIssueRecoveryActionSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.workspaceRepair && (!value.actionId || value.workspaceBaseRef || value.executionReconciliation ||
+      !((value.outcome === "restored" && value.sourceIssueStatus === "todo") || (value.outcome === "blocked" && value.sourceIssueStatus === "blocked")))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceRepair"], message: "Workspace repair must bind one original recovery action" });
+    }
     if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
     }

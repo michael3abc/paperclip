@@ -6,6 +6,7 @@ import { queuedCommentIdsFromWakePayload, queuedCommentQueueRevision, withQueued
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { queuedInteractionId } from "./queued-interaction-response.js";
+import { verifyWorkspaceRecoveryWake, WORKSPACE_CREATOR_REASON } from "./recovery/workspace-creator.js";
 
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson">;
@@ -57,8 +58,10 @@ export function bridgeChatSteeringService(db: Db, hook = () => getServerAdapter(
       } }, ...(status === "acknowledged" ? { contextSnapshot: { ...object(run.contextSnapshot),
         wakeCommentIds: [...new Set([...(Array.isArray(run.contextSnapshot?.wakeCommentIds) ? run.contextSnapshot.wakeCommentIds : []), attempt.commentId])],
       } } : {}), updatedAt: now }).where(eq(heartbeatRuns.id, run.id));
-      if (status === "acknowledged") await logActivity(tx as unknown as Db, { companyId, actorType: "user",
-        actorId: issue.conversationUserId!, action: "issue.queued_comment_steered", entityType: "issue", entityId: issueId,
+      if (status === "acknowledged") await logActivity(tx as unknown as Db, { companyId,
+        actorType: wake.reason === WORKSPACE_CREATOR_REASON ? "system" : "user",
+        actorId: wake.reason === WORKSPACE_CREATOR_REASON ? wake.requestedByActorId! : issue.conversationUserId!,
+        action: "issue.queued_comment_steered", entityType: "issue", entityId: issueId,
         details: { commentId: attempt.commentId, targetRunId: run.id, turnId: attempt.turnId, protocol: "ccpocket_codex" } }, publications);
     });
     publications.forEach(publishActivity);
@@ -76,10 +79,16 @@ export function bridgeChatSteeringService(db: Db, hook = () => getServerAdapter(
   }
 
   async function deliver(input: { companyId: string; issueId: string; actorId: string; commentId: string;
-    queueId: string; revision: string; targetRunId: string }) {
+    queueId: string; revision: string; targetRunId: string; recoveryActionId?: string }) {
     const prepared = await db.transaction(async tx => {
       const [issue] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
-      if (!issue?.conversationAgentId || issue.conversationUserId !== input.actorId) throw forbidden("Only the Chat owner can send supplementary input");
+      if (!issue?.conversationAgentId) throw forbidden("The original Chat is unavailable");
+      const system = input.recoveryActionId ? await verifyWorkspaceRecoveryWake(tx as unknown as Db, {
+        companyId: input.companyId, issueId: issue.id, agentId: issue.conversationAgentId,
+        actorType: "system", actorId: input.actorId, reason: WORKSPACE_CREATOR_REASON,
+        request: { id: input.queueId, actionId: input.recoveryActionId, phase: "notice", requestedAt: new Date() },
+      }) : null;
+      if (!system && issue.conversationUserId !== input.actorId) throw forbidden("Only the Chat owner can send supplementary input");
       const [wake] = await tx.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, input.queueId),
         eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, issue.conversationAgentId))).for("update");
       const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.targetRunId),
@@ -99,7 +108,9 @@ export function bridgeChatSteeringService(db: Db, hook = () => getServerAdapter(
       const ordered = ids.flatMap(id => comments.filter(c => c.id === id && !c.deletedAt));
       if (queuedCommentQueueRevision({ queueId: wake.id, comments: ordered }) !== input.revision) throw conflict("The queued message changed");
       const comment = ordered[0];
-      if (!comment || comment.id !== input.commentId || comment.authorUserId !== input.actorId || comment.authorAgentId)
+      if (!comment || comment.id !== input.commentId || (system
+        ? comment.authorType !== "system" || comment.origin !== "workspace_recovery" || system.state.commentId !== comment.id
+        : comment.authorUserId !== input.actorId || comment.authorAgentId))
         throw conflict("Only the first pending owner message can be steered");
       const [attachment] = await tx.select({ id: issueAttachments.id }).from(issueAttachments).where(and(
         eq(issueAttachments.companyId, input.companyId), eq(issueAttachments.issueId, issue.id),

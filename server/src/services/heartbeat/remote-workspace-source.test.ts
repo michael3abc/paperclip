@@ -84,7 +84,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Required source" });
     await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
       projectId: f.projectId, projectWorkspaceId: null })).rejects.toMatchObject({
-      resultJson: { reason: "remote_workspace_source_unavailable" },
+      resultJson: { workspaceValidation: { reason: "remote_workspace_source_unavailable" } },
     });
   });
 
@@ -181,7 +181,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Configured source" });
     await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
       projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
-      resultJson: { reason: "remote_workspace_source_unavailable", projectId: f.projectId },
+      resultJson: { workspaceValidation: { reason: "remote_workspace_source_unavailable" }, projectId: f.projectId },
     });
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
   });
@@ -192,7 +192,7 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     try {
       await expect(resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
         projectId: null, projectWorkspaceId: null, taskDirectory: true })).rejects.toMatchObject({
-        resultJson: { reason: "remote_referenced_workspace_disabled" },
+        resultJson: { workspaceValidation: { reason: "remote_referenced_workspace_disabled" } },
       });
       expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId))).toEqual([]);
     } finally {
@@ -312,14 +312,14 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
       expect(result.authority === "remote" && result.source.repositories).toHaveLength(1);
     } else if (scenario === "read-only") {
       await expect(resolve()).rejects.toMatchObject({
-        resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
+        resultJson: { workspaceValidation: { reason: "remote_workspace_readonly_sources_unsupported" } },
       });
     } else if (scenario === "low-trust-boundary") {
       await expect(resolve()).rejects.toMatchObject({ status: 403, message: "Project is outside this low-trust boundary." });
     } else await expect(resolve()).rejects.toMatchObject({
       code: "workspace_validation_failed",
       message: "A saved project folder is no longer accessible or its trust policy no longer permits this task.",
-      resultJson: { reason: "remote_workspace_source_access_denied", projectId: f.projectId },
+      resultJson: { workspaceValidation: { reason: "remote_workspace_source_access_denied" }, projectId: f.projectId },
     });
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)))[0]).toEqual(workspace);
   });

@@ -5,6 +5,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Workspace creator recovery (2026-11-11): structured pre-provider failure evidence, original-Chat
+  system delivery with durable receipts, revision-bound single original-worker repair admission,
+  explicit Owner historical forwarding and restricted terminal-holder reconciliation. No new tables,
+  watchdog, force-unlock or provider replay. See `doc/DEVELOPING.md`, Workspace feature checks.
+
 The first-parent inventory below includes retained consolidation history; it is not a claim that every upstream change was authored locally.
 
 - `088f43e2ae` Port managed AI, native runner, SSH execution and chat fixes to source

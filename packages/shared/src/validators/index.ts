@@ -463,6 +463,8 @@ export {
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
+  notifyWorkspaceCreatorSchema,
+  reconcileWorkspaceHolderSchema,
   isValidExistingBranchName,
   retryWorkspaceExportSchema,
   recoverWorkspaceSchema,

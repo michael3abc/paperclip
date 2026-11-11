@@ -3,8 +3,9 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { hostname } from "node:os";
+import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { WorkspaceBusyDeferral } from "./retries.js";
 import { WorkspaceValidationFailure } from "./workspaces.js";
 import { workspaceProcessConsumers } from "../workspace-process-consumers.js";
@@ -12,12 +13,25 @@ import { workspaceProcessConsumers } from "../workspace-process-consumers.js";
 const execFile = promisify(execFileCallback);
 export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" };
 
+/** Porcelain -z never quotes names. A rename has a second NUL-delimited name.
+ * Paths are diagnostic data only; no file contents or shell commands are read. */
+export function sharedCheckoutDirtyPaths(porcelain: string) {
+  const records = porcelain.split("\0"), paths: string[] = [];
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (!record) continue;
+    paths.push(record.slice(3));
+    if (/^[RC]|^.[RC]/.test(record)) i++;
+  }
+  return { paths: paths.slice(0, 20), count: paths.length, truncated: paths.length > 20 };
+}
+
 async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | "directory" }> {
   const real = await fs.realpath(cwd);
   if (!(await fs.stat(real)).isDirectory()) throw new WorkspaceValidationFailure(
-    "Select an existing project development directory.", { reason: "shared_workspace_not_directory" });
+    "Select an existing project development directory.", { workspaceValidation: { reason: "shared_workspace_not_directory" } });
   if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_COMMON_DIR) throw new WorkspaceValidationFailure(
-    "Clear inherited Git directory overrides before claiming a project workspace.", { reason: "shared_workspace_git_override" });
+    "Clear inherited Git directory overrides before claiming a project workspace.", { workspaceValidation: { reason: "shared_workspace_git_override" } });
   // Ordinary document folders need no Git executable. A local .git entry or
   // ancestor repository metadata keeps Git validation authoritative. Ancestor
   // ignore-only directories (for example ~/.git/info/exclude) are not repos.
@@ -53,6 +67,32 @@ export async function sharedCheckoutPath(cwd: string): Promise<string> {
  * silence or a controller timeout alone never frees an admitted provider's files.
  * No idle scanner: the next queued admission inspects its exact checkout only.
  */
+const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
+          and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
+            or (r.runtime_mode = 'legacy' and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
+              and r.status in ('cancelled', 'timed_out')
+              and r.result_json#>>'{executionCancellation,state}' = 'acknowledged'
+              and r.result_json#>>'{executionCancellation,forced}' = 'false'
+              and r.result_json#>>'{executionCancellation,acknowledgedAt}' is not null)
+            or (r.process_pid is null and r.process_group_id is null and r.process_started_at is null and r.native_session_id is null and r.session_id_after is null
+              and not (coalesce(r.runner_profile_json, '{}'::jsonb) ? 'nativeExecutionInput')
+              and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
+                and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started')))))
+          and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
+            and (f.lease_owner is not null or f.phase <> 'committed'))
+          and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
+          and not exists (select 1 from workspace_operations o where o.heartbeat_run_id = r.id
+            and o.status in ('running', 'queued', 'pending'))
+          and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
+            and (l.status = 'pending_cleanup' or l.cleanup_status = 'failed' or l.metadata ? 'nativeWorkspaceExportResume'
+              or (l.released_at is null and not coalesce(l.status = 'retained' and l.lease_policy = 'reuse_by_environment' and l.cleanup_status = 'success', false))))`;
+
+export async function sharedCheckoutHolderSettled(db: Db, companyId: string, runId: string) {
+  const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${runId}::uuid
+    and r.company_id = ${companyId}::uuid and (${settledSharedCheckoutSql})`);
+  return rows.length === 1;
+}
+
 export async function claimSharedCheckout(db: Db, input: {
   companyId: string; agentId: string; runId: string; issueId: string;
   projectWorkspaceId: string; cwd: string; deferralAttempt: number;
@@ -65,11 +105,11 @@ export async function claimSharedCheckout(db: Db, input: {
   const remote = input.remoteHostId ?? null;
   const source = remote ? null : await sharedSource(input.cwd);
   if (remote && (!input.cwd.startsWith("/") || path.posix.normalize(input.cwd) !== input.cwd || (input.cwd.length > 1 && input.cwd.endsWith("/")))) {
-    throw new WorkspaceValidationFailure("The remote project source path is not a canonical absolute path.", { reason: "remote_worker_path_invalid" });
+    throw new WorkspaceValidationFailure("The remote project source path is not a canonical absolute path.", { workspaceValidation: { reason: "remote_worker_path_invalid" } });
   }
   if (input.requireGit && source?.kind !== "git") throw new WorkspaceValidationFailure(
     "This source declares a Git repository or revision but its directory is not a Git checkout. Repair that source or select an ordinary document directory without Git settings.",
-    { reason: "shared_workspace_git_required" });
+    { workspaceValidation: { reason: "shared_workspace_git_required" } });
   const claim: SharedCheckoutClaim = { version: 1, ...(source ? { host: hostname(), ...source } : { host: `ccpocket:${remote}`, path: input.cwd }),
     issueId: input.issueId, acquiredAt: new Date().toISOString() };
   await db.transaction(async tx => {
@@ -86,7 +126,7 @@ export async function claimSharedCheckout(db: Db, input: {
         or starts_with(${claim.path}, rtrim(cwd, '/') || '/')) limit 1`);
     if (services.length) throw new WorkspaceValidationFailure(
       "This checkout serves a running service. Configure a separate fixed development checkout before dispatch.",
-      { reason: "project_checkout_serves_running_service" });
+      { workspaceValidation: { reason: "project_checkout_serves_running_service" } });
     const holders = await tx.execute<{ id: string; company_id: string; agent_id: string; issue_id: string }>(sql`
       select r.id, r.company_id, r.agent_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id
       from heartbeat_runs r
@@ -95,39 +135,39 @@ export async function claimSharedCheckout(db: Db, input: {
           or starts_with(r.context_snapshot->'sharedCheckoutClaim'->>'path', rtrim(${claim.path}, '/') || '/')
           or starts_with(${claim.path}, rtrim(r.context_snapshot->'sharedCheckoutClaim'->>'path', '/') || '/'))
         and not (
-          r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
-          and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
-            or (r.process_pid is null and r.process_group_id is null and r.process_started_at is null and r.native_session_id is null and r.session_id_after is null
-              and not (coalesce(r.runner_profile_json, '{}'::jsonb) ? 'nativeExecutionInput')
-              and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-                and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started')))))
-          and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
-            and (f.lease_owner is not null or f.phase <> 'committed'))
-          and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
-            and (l.status = 'pending_cleanup' or l.cleanup_status = 'failed' or l.metadata ? 'nativeWorkspaceExportResume'
-              or (l.released_at is null and not coalesce(l.status = 'retained' and l.lease_policy = 'reuse_by_environment' and l.cleanup_status = 'success', false))))
+          ${settledSharedCheckoutSql}
         ) order by r.created_at, r.id limit 1`);
     const holder = holders[0];
     if (holder) {
       if (holder.company_id !== input.companyId) throw new WorkspaceValidationFailure(
-        "This checkout has another active owner; select a dedicated development source.", { reason: "shared_checkout_owned_elsewhere" });
+        "This checkout has another active owner; select a dedicated development source.", { workspaceValidation: { reason: "shared_checkout_owned_elsewhere" } });
       throw new WorkspaceBusyDeferral({ holder: { runId: holder.id, agentId: holder.agent_id,
         issueId: holder.issue_id, issueIdentifier: null }, projectWorkspaceId: input.projectWorkspaceId,
         deferralAttempt: input.deferralAttempt, wasIssueAssignee: true });
     }
     if (!remote && (await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
       "Another local process still uses this checkout. Release that writer or service; production needs a separate fixed development checkout.",
-      { reason: "shared_checkout_process_active" });
-    const dirty = source?.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "--untracked-files=normal"],
+      { workspaceValidation: { reason: "shared_checkout_process_active" } });
+    const dirty = source?.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       { timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout : "";
-    const prior = await tx.execute<{ issue_id: string }>(sql`select r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id from heartbeat_runs r
+    const prior = await tx.execute<{ issue_id: string; run_id: string }>(sql`select r.id as run_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id from heartbeat_runs r
       where r.company_id = ${input.companyId}
         and r.context_snapshot->'sharedCheckoutClaim'->>'host' = ${claim.host}
         and r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${claim.path}
       order by r.context_snapshot->'sharedCheckoutClaim'->>'acquiredAt' desc, r.created_at desc limit 1`);
-    if (dirty && prior[0]?.issue_id !== input.issueId) throw new WorkspaceValidationFailure(
+    if (dirty && prior[0]?.issue_id !== input.issueId) {
+      const [task] = await tx.select({ revision: issues.workspaceBindingRevision }).from(issues).where(and(
+        eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+      throw new WorkspaceValidationFailure(
       "This checkout contains unsaved work from another owner. Preserve and settle those changes before a new writing task takes ownership.",
-      { reason: "shared_checkout_unsaved_changes" });
+      { workspaceValidation: { reason: "shared_checkout_unsaved_changes", projectWorkspaceId: input.projectWorkspaceId,
+        cwd: claim.path, host: claim.host, previousIssueId: prior[0]?.issue_id ?? null,
+        previousRunId: prior[0]?.run_id ?? null, bindingRevision: task?.revision ?? null,
+        dirtyFiles: sharedCheckoutDirtyPaths(dirty),
+        fingerprint: createHash("sha256").update(JSON.stringify([claim.host, claim.path,
+          prior[0]?.issue_id ?? null, dirty])).digest("hex"),
+      } });
+    }
     await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
       || jsonb_build_object('sharedCheckoutClaim', ${JSON.stringify(claim)}::jsonb)`, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, input.runId));

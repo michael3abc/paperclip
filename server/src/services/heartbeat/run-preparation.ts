@@ -783,6 +783,8 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
 
 
 export interface WakeupOptions {
+  /** Server-owned workspace recovery intent, verified again under the issue lock. */
+  workspaceRecoveryRequest?: import("../recovery/workspace-creator.js").WorkspaceRecoveryWake;
   /** Internal durable case assignment receipt. Never accepted from public wake payloads. */
   durableCaseHandoffRequest?: { handoffId: string; wakeupRequestId: string; issueId: string; expectedIssueStatusVersion: number };
   /** Set only by authenticated board wake routes; never copied from caller payloads. */

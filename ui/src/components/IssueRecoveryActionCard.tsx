@@ -1010,6 +1010,12 @@ export function IssueRecoveryActionCard({
   const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [action, liveness]);
 
   const headline = useMemo(() => {
+    const creator = action.evidence.creatorRecovery as { delivery?: { status?: string } } | undefined;
+    if (creator && action.status !== "resolved" && action.status !== "cancelled") {
+      const status = creator.delivery?.status;
+      return status === "acknowledged" ? "主 agent 處理中" : status === "uncertain" ? "送達未確認"
+        : status === "needs_owner" || action.status === "escalated" ? "需要你處理" : "等待送達";
+    }
     if (cardState === "resolved" && action.outcome) {
       return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
     }
@@ -1022,7 +1028,7 @@ export function IssueRecoveryActionCard({
     }
     if (lineage) return lineageHeadline(lineage);
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, action.ownerType, cardState, lineage]);
+  }, [action.kind, action.outcome, action.ownerType, action.evidence, action.status, cardState, lineage]);
 
   // A lane with no path left must not keep advertising a retry that will never run — whether
   // the budget ran out or the scheduled attempt simply never fired.

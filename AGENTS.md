@@ -563,6 +563,13 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Workspace bootstrap failures may return the original recovery action to the verified project main
+agent's original Chat. Use system provenance, pre-provider/settlement evidence and durable receipts;
+unknown sends only reconcile the original receipt. Repair uses revision-bound `workspaceRepair`
+and one original-worker admission, preserving assignment/model/review/holds. Historical forwarding
+is Owner-only and explicit. Terminal-holder reconciliation never cancels live work or clears files
+based on idle status. Keep `doc/DEVELOPING.md`, validators and OpenAPI aligned.
+
 Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
 through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the
 queued-comment reservation before provider I/O, preserve original run/result

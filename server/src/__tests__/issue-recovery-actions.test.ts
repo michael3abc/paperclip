@@ -100,6 +100,8 @@ describe("issueRecoveryActionService", () => {
     const fakeDb = {
       async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> { return fn(fakeDb); },
       select: vi.fn(() => query),
+      selectDistinct: () => ({ from: () => ({ where: () => sql`select null::uuid where false` }) }),
+      execute: vi.fn(async () => []),
       insert: vi.fn(() => ({ values: () => ({ returning: async () => { throw error; } }) })),
     };
     await expect(issueRecoveryActionService(fakeDb as never).upsertSourceScoped({ companyId: "company", sourceIssueId: "issue",
@@ -131,6 +133,8 @@ describe("issueRecoveryActionService", () => {
     const fakeDb = {
       async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> { return fn(fakeDb); },
       select: vi.fn(() => makeSelectQuery(selectResults.shift() ?? [])),
+      selectDistinct: () => ({ from: () => ({ where: () => sql`select null::uuid where false` }) }),
+      execute: vi.fn(async () => []),
       update: vi.fn(() => ({
         set: vi.fn(() => ({
           where: vi.fn(() => ({
