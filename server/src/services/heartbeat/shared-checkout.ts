@@ -44,7 +44,7 @@ export function sharedCheckoutDirtyPaths(porcelain: string) {
   return { paths: paths.slice(0, 20), count: paths.length, truncated: paths.length > 20 };
 }
 
-async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | "directory" }> {
+async function sharedSource(cwd: string, options: { inspectOwnership?: boolean } = {}): Promise<{ path: string; kind: "git" | "directory" }> {
   const real = await fs.realpath(cwd);
   if (!(await fs.stat(real)).isDirectory()) throw new WorkspaceValidationFailure(
     "Select an existing project development directory.", { workspaceValidation: { reason: "shared_workspace_not_directory" } });
@@ -77,6 +77,11 @@ async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | 
     directory = parent;
   }
   if (!git) return { path: real, kind: "directory" };
+  // An admitted owner retains its physical scope even if its Git metadata was
+  // damaged later. Inspecting that scope must not validate it as a new source
+  // or let one broken historical checkout abort admissions elsewhere. New
+  // provider admissions still require the Git check below.
+  if (options.inspectOwnership) return { path: directory, kind: "git" };
   const { stdout } = await execFile("git", ["-C", real, "rev-parse", "--show-toplevel"],
     { timeout: 10_000, maxBuffer: 16 * 1024 });
   return { path: await fs.realpath(stdout.trim()), kind: "git" };
@@ -105,7 +110,19 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
               and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
                 and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started')))))
           and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
-            and (f.lease_owner is not null or f.phase <> 'committed'))
+            and (f.lease_owner is not null or (f.phase <> 'committed' and not (
+              f.phase = 'terminal_failure' and f.next_attempt_at is null
+              and f.control_deadline_at is null and f.recovery_request_id is null
+              and coalesce(f.recovery_state, 'blocked') = 'blocked'
+              and r.result_json->>'workspaceRestoreFailure' is null
+              and coalesce(r.result_json->'workspaceRestoreRecovery', 'null'::jsonb) = 'null'::jsonb
+              and exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
+                and c.process_stopped_at is not null)
+              and not exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
+                and (c.process_stopped_at is null or c.state not in ('saved', 'unchanged', 'unavailable')
+                  or c.receipt->>'cleanupPending' is distinct from 'false'
+                  or c.receipt ? 'retainedByRunId'))
+            ))))
           and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
           and not exists (select 1 from workspace_operations o where o.heartbeat_run_id = r.id
             and o.status in ('running', 'queued', 'pending'))
@@ -200,7 +217,7 @@ export async function claimSharedCheckout(db: Db, input: {
     let priorHolder: typeof holder | undefined;
     for (const previous of priorAdmissions) {
       if (previous.host !== claim.host) continue;
-      const previousPath = remote ? previous.cwd : await sharedCheckoutPath(previous.cwd).catch(error => {
+      const previousPath = remote ? previous.cwd : await sharedSource(previous.cwd, { inspectOwnership: true }).then(source => source.path).catch(error => {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         return plannedDirectory(previous.cwd);
       });

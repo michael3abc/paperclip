@@ -3603,6 +3603,15 @@ Invalid paths, mismatched bindings and unsupported isolation fail before
 provider launch, without a source-directory fallback. Existing admitted work
 keeps its contract until its next normal admission; terminal status alone is
 not stop or cleanup proof. Cross-scope holder details remain private.
+An exhausted terminal finalizer does not keep physical ownership after independently
+recorded process stop and complete instruction-copy cleanup. Its failure outcome
+and history remain unchanged. Pending retries, finalizer ownership/recovery,
+workspace export/restore pins, retained copies, operations and leases still fence
+admission. Missing stop or cleanup evidence never releases ownership.
+Historical owners are inspected by their canonical physical directory and Git
+metadata root, without rerunning Git validation on a damaged old checkout. They
+still block overlapping writers; unrelated directories remain admissible. This
+inspection neither repairs metadata nor qualifies a broken source for a new run.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
 Selection is persistent and applies at the next normal admission; it does not

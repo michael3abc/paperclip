@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { beforeAll, afterAll, it, expect, vi } from "vitest";
 import { companies, agents, projects, projectWorkspaces, issues, heartbeatRuns, agentInstructionWorkingCopies,
-  createDb, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
+  nativeRunFinalizations, createDb, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { claimSharedCheckout, sharedCheckoutPath } from "./shared-checkout.js";
 
 const execFile = promisify(execFileCallback);
@@ -90,6 +90,23 @@ it("does not reinterpret broken Git metadata as an ordinary directory", async ()
   const [a] = await fixture(false); await mkdir(join(a.cwd,".git"));
   await expect(claimSharedCheckout(db,a)).rejects.toThrow();
   expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.contextSnapshot?.sharedCheckoutClaim).toBeUndefined();
+});
+
+it.each([false, true])("retains a damaged historical checkout's scope without breaking independent admissions (alias: %s)", async alias => {
+  const [a] = await fixture(false), [b] = await fixture(false), [independent] = await fixture(false);
+  await mkdir(join(a.cwd, ".git"));
+  const oldCwd = alias ? a.cwd + "-alias" : a.cwd;
+  if (alias) await symlink(a.cwd, oldCwd);
+  await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), processPid: 12345,
+    contextSnapshot: { paperclipWorkspace: { cwd: oldCwd, workspaceId: a.projectWorkspaceId } },
+  }).where(eq(heartbeatRuns.id, a.runId));
+  b.cwd = join(a.cwd, "independent-repository"); await mkdir(b.cwd);
+  await execFile("git", ["init", "--initial-branch=main", b.cwd]);
+  await expect(claimSharedCheckout(db, b)).rejects.toMatchObject({ code: "workspace_busy", discloseHolder: false });
+  await expect(claimSharedCheckout(db, independent)).resolves.toMatchObject({ path: independent.cwd });
+  await expect(access(join(a.cwd, ".git"))).resolves.toBeUndefined();
+  expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, a.runId)))[0]?.contextSnapshot)
+    .toEqual({ paperclipWorkspace: { cwd: oldCwd, workspaceId: a.projectWorkspaceId } });
 });
 
 it("ignores ancestor ignore-only .git directories without requiring Git", async () => {
@@ -199,6 +216,38 @@ it.each([false,true])("requires a retained process-stop receipt before another w
     location:"local", state:"captured", receipt:{}, processStoppedAt:new Date() });
   await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
 });
+
+it.each(["settled", "unknown_stop", "pending_files", "cleanup_pending", "retained_copy",
+  "finalizer_owner", "retry_pending", "resuming_session", "restore_failure", "restore_recovery"])(
+  "admits a terminal failed finalizer only after independent stop and file settlement: %s", async state => {
+    const [a, b] = await fixture(false); await claimSharedCheckout(db, a);
+    await writeFile(join(a.cwd, "original.txt"), "preserved result");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runtimeMode: "native",
+      nativeIssueId: a.issueId, processPid: 12345,
+      ...(state === "restore_failure" ? { resultJson: { workspaceRestoreFailure: "restore_failed" } } : {}),
+      ...(state === "restore_recovery" ? { resultJson: { workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1" } } } : {}),
+    }).where(eq(heartbeatRuns.id, a.runId));
+    await db.insert(nativeRunFinalizations).values({ runId: a.runId, companyId: a.companyId, issueId: a.issueId,
+      phase: "terminal_failure", failureCode: "native_session_interrupted",
+      recoveryState: state === "resuming_session" ? "resuming_session" : "blocked",
+      leaseOwner: state === "finalizer_owner" ? "original-finalizer" : null,
+      nextAttemptAt: state === "retry_pending" ? new Date() : null,
+    });
+    await db.insert(agentInstructionWorkingCopies).values({ runId: a.runId, companyId: a.companyId, agentId: a.agentId,
+      responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64),
+      localRoot: a.cwd, executionRoot: a.cwd, location: "local",
+      state: state === "pending_files" ? "pending_collection" : "unchanged",
+      processStoppedAt: state === "unknown_stop" ? null : new Date(),
+      receipt: { cleanupPending: state === "cleanup_pending",
+        ...(state === "retained_copy" ? { retainedByRunId: b.runId } : {}) },
+    });
+    if (state === "settled") await expect(claimSharedCheckout(db, b)).resolves.toMatchObject({ path: a.cwd });
+    else await expect(claimSharedCheckout(db, b)).rejects.toMatchObject({ code: "workspace_busy" });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, a.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "native_session_interrupted" });
+    expect(await readFile(join(a.cwd, "original.txt"), "utf8")).toBe("preserved result");
+  },
+);
 
 it("keys a remote Bridge worker's claim on its host and registered path without touching the controller filesystem", async () => {
   const [a,b] = await fixture(false);

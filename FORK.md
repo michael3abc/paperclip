@@ -5,6 +5,12 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Historical physical ownership settlement (2026-11-11): exhausted finalizers
+  retain their failures while independently stopped and cleaned workspaces may
+  pass ownership. Unsettled retries/files/leases stay fenced. Inspect historical
+  metadata roots without validating or repairing damaged Git sources; keep
+  overlapping ownership and ordinary source-validation failures intact.
+
 - Fixed main-agent review workspaces (2026-11-11): formal reviewers select their
   registered fixed home for the run while retaining the worker's explicit source
   and task workspace. Actual-path claims remain enforced on the reviewer home;

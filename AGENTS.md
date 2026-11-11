@@ -655,6 +655,11 @@ lease and cleanup evidence; reject unrealized isolation before launch. Preserve
 project defaults and existing runs until their next normal admission. UI/MCP
 selection uses expectedBindingRevision/requestKey and never starts a run. See
 doc/execution-semantics.md (Physical workspace admission).
+An exhausted terminal finalizer releases physical ownership only with independent
+stop and fully settled file cleanup, without rewriting its failed outcome. Keep
+retry/recovery/export, retained-copy, operation and lease fences. Historical-owner
+inspection retains canonical directory/metadata-root scope even for damaged Git;
+new source admission still validates Git and fails explicitly.
 Role-capacity tests use independently registered directories; workerSlots never
 permits simultaneous writers in one checkout. Adapter doubles returning session
 identity must model completed stop receipts before testing same-worktree reuse,
