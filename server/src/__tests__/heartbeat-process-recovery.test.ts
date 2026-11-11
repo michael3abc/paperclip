@@ -8440,13 +8440,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       executionCancellation: { state: "acknowledged" },
       conversationContinuation: "continue_conversation_v1",
     } }).where(eq(heartbeatRuns.id, runId));
-    const failedPromotion = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("temporary queue promotion outage"));
+    const originalTransaction = db.transaction.bind(db);
+    const failedPromotion = vi.fn(() => { throw new Error("temporary queue promotion outage"); });
+    // Fail the actual handoff after its successor insert, not whichever
+    // unrelated settlement transaction happens to precede promotion. Retain
+    // real PostgreSQL rollback and locking through every attempted handoff.
+    const transaction = vi.spyOn(db, "transaction").mockImplementation((operation, config) =>
+      originalTransaction(async tx => {
+        const originalUpdate = tx.update.bind(tx);
+        const update = vi.spyOn(tx, "update").mockImplementation(((table: typeof agentWakeupRequests) => {
+          const builder = originalUpdate(table);
+          const originalSet = builder.set.bind(builder);
+          builder.set = ((values: Record<string, unknown>) => {
+            if (table === agentWakeupRequests && typeof values.runId === "string") return failedPromotion();
+            return originalSet(values);
+          }) as typeof builder.set;
+          return builder;
+        }) as typeof tx.update);
+        try { return await operation(tx); } finally { update.mockRestore(); }
+      }, config));
     try {
       await heartbeatService(db).resumeQueuedRuns();
       expect(failedPromotion).toHaveBeenCalled();
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id)))[0]!.status).toBe("deferred_issue_execution");
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(await selectRecoveryRunsByAgent(agentId)).toHaveLength(1);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
     } finally {
-      failedPromotion.mockRestore();
+      transaction.mockRestore();
     }
     const restarted = heartbeatService(db);
     await restarted.resumeQueuedRuns();
@@ -8456,6 +8477,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await restarted.getRun(updated!.runId!))!.contextSnapshot?.wakeCommentIds).toEqual([comment!.id]);
     await restarted.resumeQueuedRuns();
     expect(await selectRecoveryRunsByAgent(agentId)).toHaveLength(2);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
   it.each(["pending", "discarded", "wrong queue"] as const)(
