@@ -300,6 +300,9 @@ describe("workspace creator recovery", () => {
       await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.taskId });
       const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.taskId), eq(issueRecoveryActions.status, "active")));
       expect(action).toBeDefined();
+      expect(action.evidence.workspaceCreatorCandidate).toBe(true);
+      expect(creatorRecovery(action.evidence)).toBeNull();
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.conversationId))).toHaveLength(0);
       const delivery = workspaceCreatorDelivery(db, { wakeup: heartbeat.wakeup, cancelRun: heartbeat.cancelRun, schedulingSuppressed: async () => false });
       execute.mockImplementation(async input => {
         if (input.agent.id === f.mainId) {

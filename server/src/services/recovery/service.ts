@@ -1,5 +1,4 @@
-import { notifyDeliveryWork, DELIVERY_QUEUES } from "../delivery-work-notifications.js";
-import { creatorRecovery, routeWorkspaceToCreator } from "./workspace-creator.js";
+import { creatorRecovery } from "./workspace-creator.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -2627,7 +2626,11 @@ export function recoveryService(
       },
       evidenceOnCreate: isProviderQuotaWait
         ? {}
-        : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
+        : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
+            ...(recoveryCause === "workspace_validation_failed" &&
+              readWorkspaceValidationPayload(input.latestRun)?.schema === "paperclip.workspace-validation/v1"
+              ? { workspaceCreatorCandidate: true } : {}),
+          },
       nextAction:
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."
@@ -2682,16 +2685,6 @@ export function recoveryService(
       lastAttemptAt: now,
     });
 
-    if (!existingAction && recoveryCause === "workspace_validation_failed" &&
-        readWorkspaceValidationPayload(input.latestRun)?.schema === "paperclip.workspace-validation/v1") {
-      const row = await database.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)).then(rows => rows[0]);
-      if (row) {
-        await notifyDeliveryWork(database, DELIVERY_QUEUES.workspaceCreatorRecovery, row.id);
-        await database.update(issueRecoveryActions).set({ evidence: { ...row.evidence, workspaceCreatorCandidate: true } }).where(eq(issueRecoveryActions.id, row.id));
-        const routed = await routeWorkspaceToCreator(database as Db, row, { requestKey: action.id });
-        if (routed) return { ...action, ...routed };
-      }
-    }
     return action;
   }
 
