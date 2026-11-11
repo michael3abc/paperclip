@@ -7088,6 +7088,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     await resumeAssigneeAgent.mutateAsync();
   }, [resumeAssigneeAgent.mutateAsync]);
   const activeRecoveryActionId = issue?.activeRecoveryAction?.id;
+  const hasWorkspaceCreatorRecovery = issue?.activeRecoveryAction?.cause === "workspace_validation_failed"
+    && Boolean(issue.activeRecoveryAction.evidence.creatorRecovery);
   const handleResolveRecoveryAction = useCallback(
     (
       outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome,
@@ -8200,7 +8202,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               showStatus={!issue.interruption && !issue.executionBlocker?.workspaceRecovery}
               action={issue.activeRecoveryAction ?? null} />
           )}
-          {resolvedDetailTab === "chat" && (
+          {resolvedDetailTab === "chat" && !hasWorkspaceCreatorRecovery && (
             <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
               issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
@@ -8577,7 +8579,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockerAttention={issue.blockerAttention ?? null}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={issue.interruption?.responsibility === "system" || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
+                  recoveryAction={(issue.interruption?.responsibility === "system" && !hasWorkspaceCreatorRecovery) || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
                   onResolveRecoveryAction={handleResolveRecoveryAction}
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
