@@ -3601,6 +3601,16 @@ flow. Their verified original-session proof is recorded separately as
 resultJson.executionStopVerification, never as an invented cancellation request.
 The failed outcome and original error remain unchanged.
 
+A parked workspace wait may already have a preparation timestamp/controller,
+but has not acquired the checkout or started its provider. On cancellation,
+verify the original workspaceWait event, holder fingerprint and admission
+receipt together with absence of provider identity/events, finalizer, lease,
+instruction copies, workspace operations and checkout claim. This proof permits
+settlement and exempts that exact historical recovery incident; it never releases
+the actual holder. Conflicting execution evidence invalidates the exemption.
+Deferred interrupt input has no independent backoff timer: the original run's
+persisted stop checks own the deadline and notify input delivery after settlement.
+
 Controller/finalizer ownership, uncollected files, workspace recovery/operations and
 unreleased leases continue to block writers. No claim is forcibly deleted.
 

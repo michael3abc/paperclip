@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { and, eq } from "drizzle-orm";
-import { agentInstructionWorkingCopies, agents, companies, environmentLeases, heartbeatRuns, heartbeatRunEvents, issues, nativeRunFinalizations,
+import { agentInstructionWorkingCopies, agents, companies, environmentLeases, heartbeatRuns, heartbeatRunEvents, issues, issueRecoveryActions, nativeRunFinalizations,
   createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -10,6 +10,9 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { sharedCheckoutHolderSettled } from "./shared-checkout.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
+import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
+import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("durable run stop settlement", () => {
@@ -93,6 +96,52 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     await service.reconcile(f.run.id, f.company.id);
     expect(hook).toHaveBeenCalledTimes(1);
+  });
+
+  async function parkedCancellation() {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ startedAt: new Date(), controllerBootId: randomUUID(), executionStage: "preparing",
+      scheduledRetryReason: "workspace_busy", errorCode: "cancelled", contextSnapshot: { issueId: f.issue.id },
+      resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        workspaceBusy: { holderKey: "a".repeat(64) }, executionCancellation: { state: "requested" } },
+    }).where(eq(heartbeatRuns.id, f.run.id));
+    await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+      eventType: "lifecycle", stream: "system", payload: { workspaceWait: true } });
+    await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.issue.id,
+      kind: "execution_reconciliation", cause: "legacy_execution_requires_reconciliation", fingerprint: f.run.id,
+      nextAction: "Verify the original run", evidence: { runId: f.run.id } });
+    return f;
+  }
+
+  it("settles a parked run cancelled before workspace admission without stopping its holder or replaying input", async () => {
+    const f = await parkedCancellation();
+    const hook = vi.fn();
+    const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
+    expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(true);
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, await read(f.run.id))).toBe(false);
+    expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).toBeNull();
+    await service.reconcile(f.run.id, f.company.id);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect((await read(f.run.id)).resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", proof: "verified_pre_dispatch_wait" });
+    expect(hook).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
+    // A newer launch invalidates both settlement and the recovery exemption.
+    await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+      eventType: "turn.started", stream: "system", payload: {} });
+    await service.reconcile(f.run.id, f.company.id);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", stopVerified: false });
+    expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).not.toBeNull();
+  });
+
+  it.each(["missing_trace", "provider_identity", "checkout_claim", "instruction_copy"])("retains a cancelled workspace wait with contradictory %s evidence", async conflict => {
+    const f = await parkedCancellation();
+    if (conflict === "missing_trace") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+    if (conflict === "provider_identity") await db.update(heartbeatRuns).set({ resultJson: { ...(await read(f.run.id)).resultJson, bridgeSessionId: "live" } }).where(eq(heartbeatRuns.id, f.run.id));
+    if (conflict === "checkout_claim") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issue.id, sharedCheckoutClaim: { path: "/owned" } } }).where(eq(heartbeatRuns.id, f.run.id));
+    if (conflict === "instruction_copy") await db.insert(agentInstructionWorkingCopies).values({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
+      responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test", location: "local", state: "unavailable" });
+    expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(false);
+    expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).not.toBeNull();
   });
 
   it("persists four checks with completion-relative deadlines across restart, then stays quiet until explicit recheck", async () => {

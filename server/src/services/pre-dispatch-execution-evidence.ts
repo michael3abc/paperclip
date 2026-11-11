@@ -14,9 +14,18 @@ export function executionStartedEventPredicate() {
 export function noRetainedExecutionPredicate() {
   return and(
     isNull(heartbeatRuns.startedAt), isNull(heartbeatRuns.runtimeModeResolvedAt),
+    isNull(heartbeatRuns.controllerBootId), isNull(heartbeatRuns.executionStage),
+    noRetainedProviderExecutionPredicate(),
+  );
+}
+
+/** Preparation can claim a controller before workspace admission, but cannot
+ * acquire provider identity, resources or execution events. */
+export function noRetainedProviderExecutionPredicate() {
+  return and(
     isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
     isNull(heartbeatRuns.nativeIssueId), isNull(heartbeatRuns.nativeSessionId), isNull(heartbeatRuns.sessionIdAfter),
-    isNull(heartbeatRuns.controllerBootId), isNull(heartbeatRuns.controllerLeaseExpiresAt), isNull(heartbeatRuns.executionStage),
+    isNull(heartbeatRuns.controllerLeaseExpiresAt),
     sql`coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
     sql`coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
     sql`not (coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) ?| array[

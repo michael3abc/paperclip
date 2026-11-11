@@ -6,16 +6,9 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 
-type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean; attempts?: number };
-/**
- * Re-check cadence for an interrupt whose cancelled bridge run still awaits stop re-verification.
- * That gate opens on external Bridge evidence, which commits no notification until something re-checks it.
- */
-export const DEFERRED_INTERRUPT_RECHECK_MS = 30_000;
-export const DEFERRED_INTERRUPT_RECHECK_MAX_MS = 600_000;
-export function deferredInterruptRecheckDelay(attempts: number) {
-  return Math.min(DEFERRED_INTERRUPT_RECHECK_MAX_MS, DEFERRED_INTERRUPT_RECHECK_MS * 2 ** Math.min(attempts, 10));
-}
+type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
+// The original run's durable settlement coordinator owns external stop checks.
+// Deferred input waits for its notification; it must not create a second timer.
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
   onError(error: unknown): void;
@@ -107,9 +100,6 @@ export function registerDeferredReceiptWork(
       },
       check: async entry => {
         if (!enabled) return null;
-        // Only a receipt whose owner-only interrupt cancelled a legacy run can
-        // be held by an unverified bridge stop; ordinary backlog rows skip the re-check read.
-        let heldInterrupt = false;
         if (kind !== "task_chat") {
           const [current] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload,
             updatedAt: agentWakeupRequests.updatedAt, claimedAt: agentWakeupRequests.claimedAt, error: agentWakeupRequests.error,
@@ -120,7 +110,6 @@ export function registerDeferredReceiptWork(
           }).from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, entry.companyId),
             eq(agentWakeupRequests.id, entry.id)));
           if (!current) return null;
-          heldInterrupt = kind === "deferred" && current.status === "deferred_issue_execution" && !!current.interruptedLegacy;
           const due = kind === "native" && current.status === "claimed" && current.claimedAt
             ? current.claimedAt.getTime() + 60_000
             : kind === "native" && current.status === "queued" && current.error ? current.updatedAt.getTime() + 30_000
@@ -143,26 +132,6 @@ export function registerDeferredReceiptWork(
           catch (error) { failed(error); }
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
-        if (heldInterrupt) {
-          // A cancelled bridge run whose unforced stop is still `requested`
-          // holds this exact receipt until the Bridge re-verifies the stop.
-          // That evidence is external and only a later sweep asks for it, so
-          // re-check on a bounded backoff instead of waiting for an unrelated
-          // write. Every other closed gate stays notification-driven and quiet.
-          const [pending] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
-            .where(and(eq(agentWakeupRequests.companyId, entry.companyId), eq(agentWakeupRequests.id, entry.id),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-              sql`exists (select 1 from heartbeat_runs r
-                where r.company_id = ${agentWakeupRequests.companyId} and r.agent_id = ${agentWakeupRequests.agentId}
-                  and r.runtime_mode = 'legacy' and r.status = 'cancelled'
-                  and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text
-                  and r.result_json->'executionCancellation'->>'state' = 'requested'
-                  and coalesce(r.result_json->'executionCancellation'->>'forced', 'false') <> 'true')`));
-          if (pending) {
-            const attempts = entry.attempts ?? 0;
-            return { ...entry, dueAt: Date.now() + deferredInterruptRecheckDelay(attempts), immediate: false, attempts: attempts + 1 };
-          }
-        }
         return next === null ? null : { ...entry, dueAt: next, immediate: false };
       },
     }, canRun);

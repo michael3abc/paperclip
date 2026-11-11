@@ -1,12 +1,12 @@
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { canonicalExecutionUuid } from "./execution-identity.js";
-import { noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
+import { noRetainedExecutionPredicate, noRetainedProviderExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
 /** Admission denied by an existing hold is not a provider attempt. Require the
  * dispatcher's receipt and absence of execution authority, resources and events. */
-function preDispatchExecutionWaitPredicate() {
+function staleDispatchExecutionWaitPredicate() {
   return sql`coalesce(
     ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
     AND ${heartbeatRuns.finishedAt} IS NOT NULL
@@ -21,8 +21,38 @@ function preDispatchExecutionWaitPredicate() {
     AND ${noRetainedExecutionPredicate()}, false)`;
 }
 
+/** A parked workspace wait has entered preparation, but the admission gate has
+ * not granted access. An operator cancellation must retain that original proof.
+ * Neither the error code nor an absent PID alone establishes this fact. */
+function cancelledWorkspaceWaitPredicate() {
+  return sql`coalesce(
+    ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
+    AND ${heartbeatRuns.finishedAt} IS NOT NULL
+    AND ${heartbeatRuns.scheduledRetryReason} = 'workspace_busy'
+    AND ${heartbeatRuns.runtimeModeResolvedAt} IS NULL
+    AND (${heartbeatRuns.executionStage} IS NULL OR ${heartbeatRuns.executionStage} IN ('preparing', 'settled'))
+    AND ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'workspace_wait'
+    AND ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb
+    AND ${heartbeatRuns.resultJson}#>>'{workspaceBusy,holderKey}' ~ '^[a-f0-9]{64}$'
+    AND coalesce(${heartbeatRuns.resultJson}#>>'{executionCancellation,forced}', 'false') <> 'true'
+    AND ${heartbeatRuns.resultJson}->>'bridgeSessionId' IS NULL
+    AND ${heartbeatRuns.resultJson}->>'nativeSessionId' IS NULL
+    AND ${heartbeatRuns.contextSnapshot}->>'sharedCheckoutClaim' IS NULL
+    AND ${noRetainedProviderExecutionPredicate()}
+    AND EXISTS (SELECT 1 FROM heartbeat_run_events e WHERE e.run_id = ${heartbeatRuns.id}
+      AND e.company_id = ${heartbeatRuns.companyId} AND e.source_event_id IS NULL
+      AND e.event_type = 'lifecycle' AND e.stream = 'system' AND e.payload->'workspaceWait' = 'true'::jsonb)
+    AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c WHERE c.run_id = ${heartbeatRuns.id})
+    AND NOT EXISTS (SELECT 1 FROM workspace_operations o WHERE o.heartbeat_run_id = ${heartbeatRuns.id}), false)`;
+}
+
+function preDispatchExecutionWaitPredicate() {
+  return sql`(${staleDispatchExecutionWaitPredicate()} OR ${cancelledWorkspaceWaitPredicate()})`;
+}
+
 export async function isPreDispatchExecutionWaitVerified(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
-  if (run.errorCode !== "execution_reconciliation_required" || run.runtimeMode !== "legacy") return false;
+  if (run.runtimeMode !== "legacy" ||
+      run.errorCode !== "execution_reconciliation_required" && run.scheduledRetryReason !== "workspace_busy") return false;
   const [verified] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), preDispatchExecutionWaitPredicate(),
   )).limit(1);

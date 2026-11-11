@@ -16,6 +16,7 @@ import { createBridgeStopReverification, hasVerifiedBridgeTerminalStop } from ".
 import { historicalAdapterType } from "../conversation-continuation.js";
 import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop } from "./stop-settlement-evidence.js";
 import { registerWorkspaceWaitSettlement } from "./workspace-wait-settlement.js";
+import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const SCHEMA = "paperclip.run-stop-settlement.v1";
@@ -89,6 +90,7 @@ export function createRunStopSettlement(db: Db, deps: {
     });
     if (!claimed) return read(runId, companyId);
     let state: "stopping" | "cleaning" | "settled" = "stopping", reason = "inspection_interrupted";
+    let neverStarted = false;
     try {
       if (claimed.inspect && !options.signal?.aborted) {
         let run = (await read(runId, companyId))!;
@@ -97,13 +99,16 @@ export function createRunStopSettlement(db: Db, deps: {
         } else {
           const cancellation = parseObject(run.resultJson?.executionCancellation);
           let stopProof: string | null = null;
-          if (run.runtimeMode === "native") stopProof = await verifyNativeStop(db, run);
+          if (await isPreDispatchExecutionWaitVerified(db, run)) {
+            neverStarted = true; stopProof = "verified_pre_dispatch_wait";
+          } else if (run.runtimeMode === "native") stopProof = await verifyNativeStop(db, run);
           else if (cancellation.forced === true) reason = "forced_stop_unverified";
           else if (hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_terminal_stop_receipt";
           else if (cancellation.state === "acknowledged") {
+            if (cancellation.proof === "verified_pre_dispatch_wait") reason = "pre_dispatch_evidence_invalidated";
             // Stop acknowledgement and resource cleanup are separate facts.
             // Requiring a released checkout here would deadlock cleanup itself.
-            if (cancellation.forced === false && typeof cancellation.acknowledgedAt === "string" &&
+            if (cancellation.proof !== "verified_pre_dispatch_wait" && cancellation.forced === false && typeof cancellation.acknowledgedAt === "string" &&
                 Number.isFinite(Date.parse(cancellation.acknowledgedAt)) &&
                 await historicalAdapterType(db, run) === "ccpocket_bridge") stopProof = "recorded_stop_acknowledgement";
           } else {
@@ -141,6 +146,7 @@ export function createRunStopSettlement(db: Db, deps: {
         state = "stopping"; reason = "execution_changed";
       }
       if (state !== "stopping" && (deps.isRunActive(runId) ||
+          neverStarted && !await isPreDispatchExecutionWaitVerified(tx, current) ||
           current.runtimeMode === "native" && !await verifyNativeStop(tx, current))) {
         state = "stopping"; reason = "execution_changed";
       }
@@ -149,10 +155,10 @@ export function createRunStopSettlement(db: Db, deps: {
         if (blocker) { state = "cleaning"; reason = blocker; }
       }
       const cancellation = parseObject(current.resultJson?.executionCancellation);
-      const nativeAck = current.runtimeMode === "native" && state !== "stopping" &&
+      const nativeAck = (current.runtimeMode === "native" || neverStarted) && state !== "stopping" &&
         cancellation.state === "requested" && cancellation.forced !== true
         ? { executionCancellation: { ...cancellation, state: "acknowledged", forced: false,
-            acknowledgedAt: new Date(now()).toISOString(), proof: "native_termination_reverified" } } : {};
+            acknowledgedAt: new Date(now()).toISOString(), proof: neverStarted ? "verified_pre_dispatch_wait" : "native_termination_reverified" } } : {};
       const attempts = claimed.receipt.attempts;
       const nextCheckAt = state === "settled" || attempts >= 4 ? null : new Date(now() + STOP_CHECK_DELAYS[Math.max(0, attempts - 1)]!).toISOString();
       const [generation] = await tx.execute(sql`select coalesce(max(seq), 0) as seq from heartbeat_run_events

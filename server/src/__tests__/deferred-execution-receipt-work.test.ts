@@ -20,7 +20,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyNativeStatusWakeWork, notifyTaskRetrySettlement } from "../services/deferred-execution-notifications.js";
-import { DEFERRED_INTERRUPT_RECHECK_MAX_MS, deferredInterruptRecheckDelay, registerDeferredReceiptWork } from "../services/heartbeat/deferred-receipt-work.js";
+import { registerDeferredReceiptWork } from "../services/heartbeat/deferred-receipt-work.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { issueService } from "../services/issues.js";
@@ -668,8 +668,7 @@ describe("deferred receipt durable dispatch", () => {
     await waitForReal(() => expect(resume).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ companyId: f.companyId, requestId: wake.id })));
     await quiet();
   });
-  it("re-checks an interrupt held by an unverified bridge stop on a capped backoff until the stop settles", async () => {
-    expect([0, 1, 2, 5, 40].map(deferredInterruptRecheckDelay)).toEqual([30_000, 60_000, 120_000, 600_000, DEFERRED_INTERRUPT_RECHECK_MAX_MS]);
+  it("leaves unverified interrupt checks to durable stop settlement and wakes only on evidence", async () => {
     const f = await fixture();
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
       source: "on_demand", status: "deferred_issue_execution", updatedAt: new Date(Date.now() - 31_000),
@@ -682,23 +681,15 @@ describe("deferred receipt durable dispatch", () => {
     await registerDeferredReceiptWork(db, coordinator, { resume, settleTaskChat: vi.fn(), createNativeBatch: () => vi.fn(),
       schedulingSuppressed: async () => false }, () => !drain).ready;
     await waitForReal(() => expect(resume).toHaveBeenCalledTimes(1));
-    for (const [calls, delay] of [[2, 30_000], [3, 60_000]] as const) {
-      await waitForReal(() => expect(idleWorkSnapshot().active).toBe(0));
-      const next = coordinator.nextWakeAt()!;
-      expect(next - Date.now()).toBeGreaterThan(delay - 1000);
-      expect(next - Date.now()).toBeLessThanOrEqual(delay);
-      await vi.advanceTimersByTimeAsync(next - Date.now());
-      await waitForReal(() => expect(resume).toHaveBeenCalledTimes(calls));
-    }
-    // The Bridge evidence arrives outside any receipt notification; the next
-    // scheduled re-check observes it and the receipt goes quiet.
+    await quiet();
+    expect(resume).toHaveBeenCalledTimes(1);
+    // Stop settlement owns the persisted four-check budget, then notifies this queue.
     await db.update(heartbeatRuns).set({ resultJson: { queuedCommentInterruptQueueId: wake.id,
       executionCancellation: { ...cancellation, state: "acknowledged" } } }).where(eq(heartbeatRuns.id, f.source.id));
-    await waitForReal(() => expect(idleWorkSnapshot().active).toBe(0));
-    await vi.advanceTimersByTimeAsync(coordinator.nextWakeAt()! - Date.now());
-    await waitForReal(() => expect(resume).toHaveBeenCalledTimes(4));
+    await db.transaction(tx => notifyDeferredExecutionWork(tx, { companyId: f.companyId, requestId: wake.id }));
+    await waitForReal(() => expect(resume).toHaveBeenCalledTimes(2));
     await quiet();
-    expect(resume).toHaveBeenCalledTimes(4);
+    expect(resume).toHaveBeenCalledTimes(2);
   });
   it("parks an accepted conversation Retry while chat is disabled and resumes it on enablement", async () => {
     const settings = instanceSettingsService(db), original = await settings.getExperimental();

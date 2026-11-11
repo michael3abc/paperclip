@@ -603,3 +603,9 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
 Follow-up: failed/interrupted Bridge directory holders without Stop receipts join
 the same bounded settlement flow. Preserve their errors and store verified stop
 evidence separately; no cancellation or task replay is manufactured.
+
+Cancelled parked workspace waits retain their original pre-dispatch trace and
+are settled only after provider/resource absence is verified. Historical false
+incidents remain in the audit trail without blocking new authorized input.
+Interrupt delivery uses settlement notifications, with no independent polling
+that could outlive the durable four-check budget.
