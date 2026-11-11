@@ -1661,6 +1661,13 @@ Branch listing uses the caller's authorized connection, not the stored setup ide
 
 ### Task workspace records (2026-10-09)
 
+Workspace creator recovery adds no table or SQL migration. Existing recovery-action `evidence`
+stores the source failure, creator/Chat identity, system comment, delivery intent, continuation
+authorizations and single repair receipt. `agent_wakeup_requests` retains each notice, restoration
+and repair admission identity; `issue_comments.origin = workspace_recovery` is system provenance.
+Receipt and source-issue locks serialize decisions before I/O. Delivery uncertainty never creates
+another request. API replays do not reset the repair allowance.
+
 Migration [0336_big_crystal.sql](../packages/db/src/migrations/0336_big_crystal.sql) makes `execution_workspaces.project_id` nullable and changes its project reference to `ON DELETE RESTRICT`: source-project policy cannot disappear while a workspace still depends on it. `issues.execution_workspace_id` remains the sole active task binding. Versioned selection/pending-selection JSON and a binding revision record intent and protect transitions; they are not additional active bindings. Accepting a new pending choice advances the revision without changing the active folder. Its receipt retains the original request revision, so current-choice retries are idempotent and superseded retries fail the revision check.
 
 `execution_workspace_repositories` is company-scoped inventory beneath an execution workspace. It records repository identity, contained relative path, requested ref, pinned commit, preparation state and idempotency receipts. Credentials are resolved at use and are never stored in this inventory. Connection/destination `execution_defaults` JSON contains optional typed project/workspace choices, never arbitrary host paths or commands.

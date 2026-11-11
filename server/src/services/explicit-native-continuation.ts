@@ -1,3 +1,4 @@
+import { creatorRecovery, verifyWorkspaceRecoveryWake, type WorkspaceRecoveryWake } from "./recovery/workspace-creator.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
@@ -207,15 +208,20 @@ export async function admitExplicitNativeContinuation(input: {
   /** Internal delivery of an unconsumed, user-authored saved queue entry. */
   queuedCommentRequestId?: string;
   durableChatRequest?: DurableChatWakeupRequest;
+  workspaceRecoveryRequest?: WorkspaceRecoveryWake;
   dryRun?: boolean;
   onBlocked?: (reason: string, message: string) => void;
 }): Promise<{ previousRunId: string; commentId: string | null; failedRunId?: string; taskRetryRequestId?: string; queuedCommentInterruptId?: string; readiness?: ContinuationReadiness; bridgeSessionHandoff?: BridgeSessionHandoff } | null> {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
   const blocked = (reason: string, message: string) => { input.onBlocked?.(reason, message); return null; };
-  if (input.actorType !== "user" || !actorId) return null;
+  const recovery = input.workspaceRecoveryRequest ? await verifyWorkspaceRecoveryWake(db, {
+    companyId, issueId, agentId, actorType: input.actorType ?? undefined, actorId, reason: input.reason,
+    request: input.workspaceRecoveryRequest,
+  }) : null;
+  if ((!recovery && input.actorType !== "user") || !actorId) return null;
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
-  if (!retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
+  if (!recovery && !retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
       !isUserCommentContinuationReason(input.reason))) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -275,13 +281,13 @@ export async function admitExplicitNativeContinuation(input: {
     if (undelivered.at(-1) !== commentId) return null;
     partiallyDeliveredQueue = undelivered.length !== ids.length;
   }
-  const [comment] = retry || taskRetry || response ? [] : await db.select().from(issueComments).where(and(
+  const [comment] = retry || taskRetry || response || recovery ? [] : await db.select().from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
     eq(issueComments.id, commentId!), eq(issueComments.authorType, "user"),
     queuedInterrupt ? undefined : eq(issueComments.authorUserId, actorId), isNull(issueComments.createdByRunId),
     isNull(issueComments.deletedAt),
   ));
-  if (!retry && !taskRetry && !response && !comment?.body.trim()) return null;
+  if (!recovery && !retry && !taskRetry && !response && !comment?.body.trim()) return null;
   const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
   if (!agent || (!acceptsExplicitUserTurn(agent.adapterType) && agent.adapterType !== "paperclip_runner")) return null;
   const agentIsNative = agent.adapterType === "paperclip_runner";
@@ -317,6 +323,13 @@ export async function admitExplicitNativeContinuation(input: {
     )),
   )).for("update");
   const sourceChecks = actions.map(action => ({ cause: action.cause, evidence: action.evidence }));
+  if (recovery) {
+    if (sourceChecks.some(source => (source.evidence.runId ?? source.evidence.sourceRunId) !== recovery.sourceRunId))
+      return blocked("unrelated_recovery", "Another recovery requires the Owner.");
+    if (recovery.sourceRunId && !sourceChecks.length) sourceChecks.push({
+      cause: "legacy_execution_requires_reconciliation", evidence: { runId: recovery.sourceRunId },
+    });
+  }
   if (nativeQueuedSend) {
     const [latest] = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
@@ -369,7 +382,7 @@ export async function admitExplicitNativeContinuation(input: {
     if (!run || run.agentId !== agentId || !terminal.includes(run.status) ||
         (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== issueId ||
         !run.finishedAt) return blocked("source_unavailable", "The previous execution has not finished or its owner changed. Your message is saved.");
-    if (!queuedInterrupt && !queuedRequest && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
+    if (!recovery && !queuedInterrupt && !queuedRequest && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
     if (adapterExecutionControls.has(run.id)) return blocked("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -380,7 +393,11 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
-    const failedPreparation = await isFailedNativePreparation(db, run, coordinator);
+    const failedPreparation = recovery && input.workspaceRecoveryRequest?.phase === "repair" && run.id === recovery.state.failedRunId
+      ? true : await isFailedNativePreparation(db, run, coordinator);
+    if (recovery && input.workspaceRecoveryRequest?.phase !== "repair" && (
+      run.resultJson?.workspaceRecoveryActionId !== recovery.action.id || run.resultJson?.interruptedByActorType !== "system"
+    )) return blocked("unrelated_stop", "The system notice cannot override an unrelated Stop.");
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
@@ -584,12 +601,20 @@ export async function admitExplicitNativeContinuation(input: {
       payload: stopped.evidence,
     });
   }
-  const authorization = { ...continuation, actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
+  const authorization = { ...continuation, actorId, commentId, ...(recovery ? { authority: "workspace_recovery", recoveryActionId: recovery.action.id } : {}), ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
     ...(comment ? { commentUpdatedAt: comment.updatedAt.toISOString(),
       commentBodyHash: createHash("sha256").update(comment.body).digest("hex") } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
     ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };
+  if (recovery && input.workspaceRecoveryRequest) {
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, recovery.action.id)).for("update");
+    const state = creatorRecovery(action.evidence)!;
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, creatorRecovery: { ...state,
+      continuations: { ...state.continuations, [input.successorRunId]: { ...authorization,
+        wakeId: input.workspaceRecoveryRequest.id, phase: input.workspaceRecoveryRequest.phase } },
+    } } }).where(eq(issueRecoveryActions.id, action.id));
+  }
   if (input.queuedCommentInterruptId) await db.update(agentWakeupRequests).set({
     payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{queuedCommentInterrupt,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
   }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.queuedCommentInterruptId),
@@ -616,8 +641,8 @@ export async function admitExplicitNativeContinuation(input: {
   for (const action of actions) {
     await tx.update(issueRecoveryActions).set({
       status: "resolved", outcome: "cancelled", resolvedAt: new Date(), updatedAt: new Date(),
-      nextAction: "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
-      resolutionNote: "The user continued after the prior execution stopped. No action outcomes were inferred.",
+      nextAction: recovery ? "The verified workspace recovery continues in its original session." : "The user started a fresh conversation turn. Prior action outcomes remain recorded.",
+      resolutionNote: recovery ? "Server recovery receipt admitted; original stop evidence retained." : "The user continued after the prior execution stopped. No action outcomes were inferred.",
       wakePolicy: null, monitorPolicy: null,
       evidence: { ...action.evidence, explicitUserContinuation: authorization,
         ...(freshSources.has(String(action.evidence.runId)) && readSystemRecovery(action.evidence) ? {
@@ -631,7 +656,7 @@ export async function admitExplicitNativeContinuation(input: {
     }).where(eq(issueRecoveryActions.id, action.id));
   }
   });
-  await persistActivity(db, { companyId, actorType: "user", actorId,
+  await persistActivity(db, { companyId, actorType: recovery ? "system" : "user", actorId,
     action: "issue.execution_recovery_settled", entityType: "issue", entityId: issueId,
     details: { continuation: retry ? "explicit_user_retry" : "explicit_user_message", ...authorization,
       recoveryActionIds: actions.map(action => action.id), previousRunIds: sources.map(run => run.id) },

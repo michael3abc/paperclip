@@ -642,7 +642,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_runtime_services_unsupported" },
+      code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "remote_workspace_runtime_services_unsupported" } },
     });
     expect(acquire).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
@@ -816,7 +816,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
       const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
       await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-        code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_source_invalid" },
+        code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "remote_workspace_source_invalid" } },
       });
       expect(resolve).not.toHaveBeenCalled(); expect(acquire).not.toHaveBeenCalled();
       expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
@@ -889,7 +889,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_migration_in_progress" },
+      code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "remote_workspace_migration_in_progress" } },
     });
     expect(resolve).not.toHaveBeenCalled();
     expect(acquire).not.toHaveBeenCalled();
@@ -1666,7 +1666,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(access(guestOnly)).rejects.toMatchObject({ code: "ENOENT" });
     input.environment.selectedEnvironmentForConfig = input.environment.localEnvironment;
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      resultJson: { reason: "plugin_workspace_owner_mismatch" },
+      resultJson: { workspaceValidation: { reason: "plugin_workspace_owner_mismatch" } },
     });
     expect(realize).toHaveBeenCalledTimes(2);
     input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment, driver: "plugin" };
@@ -1674,7 +1674,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       .where(eq(executionWorkspaces.id, firstId)).returning();
     await reuse(input, toExecutionWorkspace(localWorkspace));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      resultJson: { reason: "plugin_workspace_owner_mismatch" },
+      resultJson: { workspaceValidation: { reason: "plugin_workspace_owner_mismatch" } },
     });
     expect(realize).toHaveBeenCalledTimes(2);
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
@@ -1690,7 +1690,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      resultJson: { reason: mode === "services" ? "plugin_workspace_services_unsupported" : "fresh_workspace_storage_unsupported" },
+      resultJson: { workspaceValidation: { reason: mode === "services" ? "plugin_workspace_services_unsupported" : "fresh_workspace_storage_unsupported" } },
     });
     expect(resolve).not.toHaveBeenCalled();
     expect(acquire).not.toHaveBeenCalled();
@@ -1715,7 +1715,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment, driver: "plugin" };
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      code: "workspace_validation_failed", resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+      code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "plugin_workspace_strategy_unsupported" } },
     });
     expect(acquire).not.toHaveBeenCalled();
   });
@@ -2074,7 +2074,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
       const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
       await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-        code: "workspace_validation_failed", resultJson: { reason: "fixed_workspace_policy_conflict" },
+        code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "fixed_workspace_policy_conflict" } },
       });
       expect(acquire).not.toHaveBeenCalled();
       expect(resolve).not.toHaveBeenCalled();

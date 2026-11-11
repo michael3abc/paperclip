@@ -18,6 +18,7 @@ import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
+import { workspaceRecoveryContinuation } from "./recovery/workspace-creator.js";
 
 export class StaleExecutionContinuationError extends Error {
   constructor(readonly code: "continuation_task_ownership_changed") {
@@ -484,7 +485,10 @@ export async function buildExecutionContinuation(input: {
                     queuedCommentIdsFromWakePayload(queue.payload).includes(comment.id))
                 : comment.authorUserId === value.actorId) &&
               !comment.createdByRunId && !comment.deletedAt));
-    if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
+    const workspaceAuthorization = await workspaceRecoveryContinuation(db, input);
+    const verifiedWorkspace = workspaceAuthorization?.previousRunId === explicitUserSource &&
+      workspaceAuthorization?.commentId === explicitContinuation.commentId;
+    if (!predecessor || (!authorization && !verifiedWorkspace) || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }
   const interruptedRunId = explicitUserSource ?? (staleInterruptedSource ? undefined : interruptedSource) ?? (lastTerminal && lastTerminal.status !== "succeeded" &&

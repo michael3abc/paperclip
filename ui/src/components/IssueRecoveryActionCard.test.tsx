@@ -345,6 +345,18 @@ describe("IssueRecoveryActionCard", () => {
     expect(code?.className).toContain("font-mono");
   });
 
+  it.each([
+    ["pending", "等待送達"], ["queued", "等待送達"],
+    ["acknowledged", "主 agent 處理中"], ["uncertain", "送達未確認"], ["needs_owner", "需要你處理"],
+  ])("shows creator delivery %s without claiming the workspace was repaired", (status, label) => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      cause: "workspace_validation_failed", evidence: { creatorRecovery: { delivery: { status } } },
+    })} />);
+    expect(node.textContent).toContain(label);
+    expect(node.textContent).not.toContain("RECOVERY RESOLVED");
+    expect(node.textContent).not.toContain("Recovery resolved as restored");
+  });
+
   it("renders the resolved state and outcome when resolved", () => {
     const node = render(
       <IssueRecoveryActionCard action={buildAction({ status: "resolved", outcome: "restored", resolvedAt: "2026-05-09T19:35:00.000Z" })} />,

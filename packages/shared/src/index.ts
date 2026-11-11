@@ -2022,6 +2022,8 @@ export {
   issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
+  notifyWorkspaceCreatorSchema,
+  reconcileWorkspaceHolderSchema,
   isValidExistingBranchName,
   retryWorkspaceExportSchema,
   recoverWorkspaceSchema,

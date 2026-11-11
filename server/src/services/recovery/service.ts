@@ -1,3 +1,4 @@
+import { creatorRecovery } from "./workspace-creator.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -2589,6 +2590,8 @@ export function recoveryService(
     const isProviderQuotaWait = recoveryCause === "provider_quota";
     const now = new Date();
     const actions = database === db ? recoveryActionsSvc : issueRecoveryActionService(database);
+    const existingAction = await actions.getActiveForIssue(input.issue.companyId, input.issue.id);
+    if (creatorRecovery(existingAction?.evidence)) return existingAction!;
     const action = await actions.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
@@ -2623,7 +2626,11 @@ export function recoveryService(
       },
       evidenceOnCreate: isProviderQuotaWait
         ? {}
-        : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY },
+        : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
+            ...(recoveryCause === "workspace_validation_failed" &&
+              readWorkspaceValidationPayload(input.latestRun)?.schema === "paperclip.workspace-validation/v1"
+              ? { workspaceCreatorCandidate: true } : {}),
+          },
       nextAction:
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
           ? "Board operator: inspect the run evidence, then explicitly choose a valid issue disposition, retry the original owner, reassign, or intentionally resolve the task."

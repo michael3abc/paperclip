@@ -1,3 +1,5 @@
+import { issueRecoveryActions } from "@paperclipai/db";
+import { validateWorkspaceRepair } from "./recovery/workspace-creator.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import { readRemoteWorkspaceAuthority, readWorkspaceProviderBinding } from "@paperclipai/shared";
@@ -1583,7 +1585,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function selectTaskWorkspace(input: { companyId: string; issueId: string; actor: AuthorizationActor;
-    selection: TaskWorkspaceSelection; expectedBindingRevision: number; requestKey: string; source?: "recovery" }) {
+    selection: TaskWorkspaceSelection; expectedBindingRevision: number; requestKey: string; source?: "recovery"; workspaceRecoveryActionId?: string }) {
     if (input.source === "recovery" && input.actor.type !== "board") throw forbidden("Workspace recovery requires a board actor");
     return db.transaction(async tx => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
@@ -1593,7 +1595,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         type: "issue", companyId: task.companyId, issueId: task.id,
         status: task.status, assigneeAgentId: task.assigneeAgentId, assigneeUserId: task.assigneeUserId,
       } });
-      if (!decision.allowed) throw forbidden("Task workspace modification is not allowed");
+      if (input.workspaceRecoveryActionId) {
+        const [action] = await tx.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.id, input.workspaceRecoveryActionId), eq(issueRecoveryActions.companyId, input.companyId),
+          eq(issueRecoveryActions.sourceIssueId, task.id), eq(issueRecoveryActions.status, "active"))).for("update");
+        if (!action) throw conflict("The workspace recovery changed");
+        await validateWorkspaceRepair(tx as unknown as Db, task, action, input.actor, {
+          failedRunId: String(action.evidence.latestRunId), expectedBindingRevision: input.expectedBindingRevision,
+          selection: input.selection,
+        });
+      } else if (!decision.allowed) throw forbidden("Task workspace modification is not allowed");
       if (task.workspaceSelection?.request?.key === input.requestKey) {
         if (task.workspaceSelection.request.expectedBindingRevision !== input.expectedBindingRevision ||
             JSON.stringify(taskWorkspaceSelectionSchema.parse(task.workspaceSelection.selection)) !== JSON.stringify(taskWorkspaceSelectionSchema.parse(input.selection))) {

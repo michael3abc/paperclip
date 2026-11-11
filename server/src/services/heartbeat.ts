@@ -1,3 +1,4 @@
+import { registerWorkspaceCreatorRecovery } from "./recovery/workspace-creator-delivery.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
@@ -4349,6 +4350,12 @@ export function heartbeatService(
         resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
         settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
+    reconcileWorkspaceHolderStop: (runId: string, companyId: string) => bridgeStopReverification.reconcile(runId, companyId),
+    registerWorkspaceCreatorRecovery: (coordinator: Parameters<typeof registerWorkspaceCreatorRecovery>[1], canRun: () => boolean) =>
+      registerWorkspaceCreatorRecovery(db, coordinator, {
+        wakeup: trackWakeup, cancelRun: cancelRunInternal,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>

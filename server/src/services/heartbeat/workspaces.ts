@@ -132,7 +132,11 @@ export class WorkspaceValidationFailure extends Error {
   constructor(message: string, resultJson: Record<string, unknown>) {
     super(message);
     this.name = "WorkspaceValidationFailure";
-    this.resultJson = resultJson;
+    const validation = parseObject(resultJson.workspaceValidation);
+    const { reason, ...details } = resultJson;
+    this.resultJson = { ...details, workspaceValidation: { ...validation,
+      ...(validation.reason === undefined && typeof reason === "string" ? { reason } : {}),
+      schema: "paperclip.workspace-validation/v1" } };
   }
 }
 

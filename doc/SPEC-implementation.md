@@ -1817,6 +1817,14 @@ Behavior:
 
 ## 11.5 Recovery Work Classes
 
+Proven pre-provider workspace failures can assign their existing recovery action to the original
+same-project main agent. A system notice targets the original creator Chat through durable
+delivery, preserving the worker, model and review policy. A revision-bound workspace repair
+authorizes at most one original-worker admission; a repeated failure, human gate or missing
+evidence returns responsibility to Owner. Historical failures require explicit Owner forwarding.
+Terminal workspace-holder reconciliation verifies real stop and resource settlement; idle or
+terminal status alone grants no cancellation or force-unlock authority.
+
 Status-only recovery coordination must include guard context that prevents deliverable work and document or plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`). Recovery work classes do not select or change the agent model.
 
 Failed source-work retries, process-loss retries, transient or scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child, requeue, or resume contexts use the agent's configured model. If status-only recovery repairs liveness while actual work remains, the next live continuation path must be a separate worker run.

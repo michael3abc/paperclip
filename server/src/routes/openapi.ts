@@ -260,6 +260,8 @@ import {
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
+  notifyWorkspaceCreatorSchema,
+  reconcileWorkspaceHolderSchema,
   recoverWorkspaceSchema,
   taskRetrySchema,
   retryWorkspaceExportSchema,
@@ -11261,6 +11263,17 @@ registerCurrentRoute({
   summary: "Continue from saved task attachments after confirmed destruction of the original workspace",
   body: reconstructWorkspaceSchema,
   responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post", path: "/api/issues/{id}/recovery-actions/notify-creator", tags: ["issues"],
+  summary: "Owner forwards one original workspace startup failure to its creator", body: notifyWorkspaceCreatorSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+registerCurrentRoute({
+  method: "post", path: "/api/issues/{id}/workspace/reconcile-holder", tags: ["issues"],
+  summary: "Reconcile a terminal same-project workspace holder from original stop evidence", body: reconcileWorkspaceHolderSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registerCurrentRoute({

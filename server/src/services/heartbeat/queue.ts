@@ -1,3 +1,4 @@
+import { verifyWorkspaceRecoveryWake, WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON, WORKSPACE_RESUME_REASON } from "../recovery/workspace-creator.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { assertIssueContinuationWake } from "../issue-continuations.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
@@ -2150,6 +2151,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Paperclip assigns a project PM run's role at claim; never adopt a caller's.
     delete contextSnapshot.paperclipPmWorkspace;
     const reason = opts.reason ?? null;
+    if ([WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON, WORKSPACE_RESUME_REASON].includes(reason ?? "") && !opts.workspaceRecoveryRequest)
+      throw conflict("Workspace recovery requires its original server receipt");
     let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an
     // existing receipt. Never accept this internal marker from a wake caller.
@@ -2350,7 +2353,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         opts.idempotencyKey !== museRequest.idempotencyKey)) {
       throw conflict("Muse work request does not match its admission authority.");
     }
-    const receiptRequest = durableRequest ?? dotRequest ?? museRequest ?? caseReceipt;
+    const workspaceRequest = opts.workspaceRecoveryRequest;
+    const verifyWorkspaceRequest = (reader: Db) => workspaceRequest && issueId
+      ? verifyWorkspaceRecoveryWake(reader, { companyId: agent.companyId, issueId, agentId,
+        actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, reason, request: workspaceRequest }) : null;
+    if (workspaceRequest) {
+      if (!issueId || durableRequest || dotRequest || museRequest || caseReceipt) throw conflict("Invalid recovery wake scope");
+      await verifyWorkspaceRequest(db);
+      opts = { ...opts, allowRunCoalescing: false, idempotencyKey: "workspace-recovery:" + workspaceRequest.id };
+    }
+    const receiptRequest = durableRequest ?? dotRequest ?? museRequest ?? caseReceipt ?? workspaceRequest;
     const durableReceiptFields = receiptRequest
       ? { id: receiptRequest.id, requestedAt: receiptRequest.requestedAt }
       : {};
@@ -2841,6 +2853,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+          if (workspaceRequest) await verifyWorkspaceRequest(tx as unknown as Db);
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
@@ -3418,6 +3431,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
             taskRetryRequestId: opts.taskRetryRequestId,
+            workspaceRecoveryRequest: opts.workspaceRecoveryRequest,
             ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
             dryRun: true,
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
@@ -4265,6 +4279,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             queuedCommentInterruptId: opts.queuedCommentInterruptId,
             queuedCommentRequestId: opts.queuedCommentRequestId,
             taskRetryRequestId: opts.taskRetryRequestId,
+            workspaceRecoveryRequest: opts.workspaceRecoveryRequest,
             ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
           });
