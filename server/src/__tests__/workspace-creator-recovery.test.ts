@@ -266,6 +266,11 @@ describe("workspace creator recovery", () => {
     await expect(reconcileWorkspaceHolder(db, { ...input, expectedBindingRevision: 1 }, reverify)).rejects.toThrow(/revision/);
     expect(await reconcileWorkspaceHolder(db, input, reverify)).toMatchObject({ state: "settled" });
     expect(reverify).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.originRunId));
+    const mainInput = { ...input, actor: { type: "agent", agentId: f.mainId, runId: f.originRunId } };
+    expect(await reconcileWorkspaceHolder(db, mainInput, reverify)).toMatchObject({ state: "settled" });
+    await db.update(agents).set({ pauseReason: "manual" }).where(eq(agents.id, f.mainId));
+    await expect(reconcileWorkspaceHolder(db, mainInput, reverify)).rejects.toThrow(/current project main agent/);
     await db.update(issues).set({ projectId: null }).where(eq(issues.id, holderTask));
     await expect(reconcileWorkspaceHolder(db, input, reverify)).rejects.toThrow(/outside/);
   });

@@ -7,6 +7,7 @@ import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { sharedCheckoutHolderSettled } from "../heartbeat/shared-checkout.js";
 import { record } from "./workspace-creator.js";
 import { logActivity } from "../activity-log.js";
+import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 
 /** Re-check one terminal holder. This capability never cancels a live run or removes a claim. */
 export async function reconcileWorkspaceHolder(db: Db, input: {
@@ -23,7 +24,8 @@ export async function reconcileWorkspaceHolder(db: Db, input: {
       const [caller] = input.actor.runId ? await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.actor.runId),
         eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.actor.agentId!), eq(heartbeatRuns.status, "running"))) : [];
       if (!agent || !caller || mainAgentProjectId(agent) !== task.projectId || project?.leadAgentId !== agent.id ||
-          agent.lifecycleHolds.length || agent.lifecycleState !== "ready" || ["paused", "terminated"].includes(agent.status))
+          agent.pauseReason || agent.lifecycleHolds.length || agent.lifecycleState !== "ready" ||
+          !(await evaluateAgentInvokabilityFromDb(db, agent)).invokable)
         throw forbidden("Only the current project main agent may reconcile its workspace holder");
     } else if (input.actor.type !== "board") throw forbidden("Workspace holder reconciliation is unavailable");
     if (project?.pausedAt || await issueTreeControlService(db).getActivePauseHoldGate(input.companyId, task.id))
