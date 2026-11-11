@@ -569,6 +569,8 @@ unknown sends only reconcile the original receipt. Repair uses revision-bound `w
 and one original-worker admission, preserving assignment/model/review/holds. Historical forwarding
 is Owner-only and explicit. Terminal-holder reconciliation never cancels live work or clears files
 based on idle status. Keep `doc/DEVELOPING.md`, validators and OpenAPI aligned.
+The task detail page must retain the creator recovery card for system-attributed startup failures
+and suppress its duplicate generic Retry banner; verify the assembled page, not only the card.
 
 Live work cards render runtime identity only from the run's model_identity activity or the child's
 own delegation payload. Preserve harness, raw model/provider, billing route and unavailable metadata;

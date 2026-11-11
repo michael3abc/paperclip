@@ -9,6 +9,8 @@ The local release line is `michael/main`; previous releases and consolidation me
   system delivery with durable receipts, revision-bound single original-worker repair admission,
   explicit Owner historical forwarding and restricted terminal-holder reconciliation. No new tables,
   watchdog, force-unlock or provider replay. See `doc/DEVELOPING.md`, Workspace feature checks.
+  Candidate acceptance also covers task-page visibility under system-attributed failure; the
+  creator receipt keeps its recovery card and suppresses the duplicate generic Retry banner.
 
 The michael/codex-subagent-card-model feature adds run-owned and child-owned harness/model/source
 labels to Agent Chat live work cards. It consumes normalized adapter activities, preserves unknown

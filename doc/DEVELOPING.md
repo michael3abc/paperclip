@@ -4516,6 +4516,8 @@ Another task of that main agent is preempted through Chat priority and restored 
 receipt. Pauses, termination and maintenance drains remain authoritative. Unknown outcomes inspect
 the original receipt without resending or switching delivery paths. No watchdog or polling service
 is added. The recovery card distinguishes pending, acknowledged, uncertain and Owner-required states.
+The task detail page keeps this card visible for system-attributed failures and suppresses the
+duplicate generic Retry banner. Sealed candidate HTTP/UI acceptance covers this page-level wiring.
 
 `POST /api/issues/:id/recovery-actions/resolve` accepts `workspaceRepair` with `failedRunId`,
 `expectedBindingRevision` and optional `selection` (an existing same-project configured source).
