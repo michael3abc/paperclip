@@ -5,6 +5,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+The michael/codex-subagent-card-model feature adds run-owned and child-owned harness/model/source
+labels to Agent Chat live work cards. It consumes normalized adapter activities, preserves unknown
+metadata and does not create tasks, change agent configuration or add a database migration.
+Deployment remains serialized by the existing Paperclip release writer on michael/main.
+
 The first-parent inventory below includes retained consolidation history; it is not a claim that every upstream change was authored locally.
 
 - `088f43e2ae` Port managed AI, native runner, SSH execution and chat fixes to source

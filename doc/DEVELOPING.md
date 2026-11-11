@@ -1,5 +1,16 @@
 # Developing
 
+## Main-agent live work cards
+
+The Agent Chat live work panel shows harness, model and billing source on the current-run card
+and on native subagent cards when their adapter reports identity. Runtime identity belongs to the
+run's model_identity provider activity; each delegation carries its own harness, model,
+modelProvider, billingRoute and optional metadataError. A child can use a different model/source
+from its parent. Keep the raw model available as a title while shortening known GPT/Compass family
+selectors for display (codex · 6 Astra · compass). Missing child model/source is shown as unknown;
+older logs without identity are not relabelled from current agent settings. Native children remain
+delegation cards and do not become Paperclip issues. There is no schema change or new polling.
+
 ## Host subscription quota dashboard
 
 Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service

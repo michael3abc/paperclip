@@ -570,6 +570,11 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Live work cards render runtime identity only from the run's model_identity activity or the child's
+own delegation payload. Preserve harness, raw model/provider, billing route and unavailable metadata;
+never use the current agent config or parent model to label a historical run or native child.
+See doc/DEVELOPING.md (Main-agent live work cards).
+
 Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
 through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the
 queued-comment reservation before provider I/O, preserve original run/result
