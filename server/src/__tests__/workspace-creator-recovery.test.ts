@@ -317,7 +317,7 @@ describe("workspace creator recovery", () => {
           expect(input.context.wakeCommentId).toBe(state.commentId);
           const app = express(); app.use(express.json()); app.use((req,_res,next) => {
             req.actor = { type: "agent", source: "agent_jwt", companyId: f.companyId, agentId: f.mainId, runId: input.runId }; next();
-          }); app.use("/api", issueRoutes(db, heartbeat)); app.use(errorHandler);
+          }); app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
           const response = await request(app).post("/api/issues/" + f.taskId + "/recovery-actions/resolve").send({ actionId: action.id,
             outcome: "restored", sourceIssueStatus: "todo", resolutionNote: "Select another authorized source; preserve existing draft.",
             workspaceRepair: { failedRunId: failed!.id, expectedBindingRevision: 0,
