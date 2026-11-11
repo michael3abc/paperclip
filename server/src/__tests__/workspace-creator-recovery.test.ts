@@ -11,7 +11,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, afterEach, describe, it, expect, vi } from "vitest";
 import { agents, companies, companyMemberships, projects, projectWorkspaces, issues, heartbeatRuns, issueRecoveryActions,
-  issueComments, issueThreadInteractions, agentWakeupRequests, authUsers, environmentLeases, heartbeatRunEvents, createDb } from "@paperclipai/db";
+  issueComments, issueThreadInteractions, agentWakeupRequests, authUsers, environmentLeases, heartbeatRunEvents, activityLog, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { routeWorkspaceToCreator, inspectWorkspaceCreator, creatorRecovery, verifyWorkspaceRecoveryWake } from "../services/recovery/workspace-creator.js";
 import { workspaceCreatorDelivery } from "../services/recovery/workspace-creator-delivery.js";
@@ -406,6 +406,26 @@ describe("workspace creator recovery", () => {
     // Once the other owner settles by its own evidence the wait is clear; repeated calls add no events.
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), processPid: null }).where(eq(heartbeatRuns.id, foreignHolder));
     observeRemoteHostBoot.mockImplementation(boot(3600));
+    // Owner-only means the real company Owner: a readable non-owner board user gets no
+    // remote observation, event or activity, through the service or the route.
+    const reconciled = () => db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+      eq(activityLog.action, "issue.workspace_holder_reconciled")));
+    const activityBefore = (await reconciled()).length;
+    const stranger = boot(3600);
+    await expect(reconcileWorkspaceHolder(db, { ...input, actor: { type: "board", userId: randomUUID(), source: "session" } }, reverify,
+      { observe: stranger, processExists: absent })).rejects.toThrow(/Owner-only/);
+    expect(stranger).not.toHaveBeenCalled();
+    for (const role of ["member", "viewer"]) {
+      await db.update(companyMemberships).set({ membershipRole: role }).where(eq(companyMemberships.companyId, f.companyId));
+      const denied = await request(f.app).post(`/api/issues/${f.taskId}/workspace/reconcile-holder`)
+        .send({ waitingRunId: f.failedRunId, expectedBindingRevision: 0 });
+      expect(denied.status).toBe(403);
+      expect(denied.body.error).toMatch(/Owner-only/);
+    }
+    expect(observeRemoteHostBoot).not.toHaveBeenCalled();
+    expect(await events()).toHaveLength(2);
+    expect(await reconciled()).toHaveLength(activityBefore);
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(eq(companyMemberships.companyId, f.companyId));
     const res = await request(f.app).post(`/api/issues/${f.taskId}/workspace/reconcile-holder`)
       .send({ waitingRunId: f.failedRunId, expectedBindingRevision: 0 });
     expect(res.status).toBe(200);

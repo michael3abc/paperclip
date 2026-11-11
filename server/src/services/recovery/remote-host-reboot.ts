@@ -1,6 +1,6 @@
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { companyMemberships, environmentLeases, heartbeatRuns, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import type { AdapterRemoteHostBootObservation } from "@paperclipai/adapter-utils";
 import { conflict, forbidden } from "../../errors.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
@@ -31,6 +31,11 @@ export type RemoteHolderReason =
   | "unsupported_environment" | "endpoint_mismatch" | "unsupported_execution" | "boot_not_after_finish"
   | "other_settlement_pending";
 
+export interface RemoteHolderActor {
+  type: string; agentId?: string | null; runId?: string | null; userId?: string | null;
+  isInstanceAdmin?: boolean | null; source?: string | null;
+}
+
 function defaultProcessExists(id: number, group: boolean) {
   try { process.kill(group ? -id : id, 0); return true; } catch (error) {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
@@ -54,9 +59,18 @@ function validObservation(value: AdapterRemoteHostBootObservation | null | undef
  */
 export async function reconcileRemoteHostRebootHolders(db: Db, input: {
   companyId: string; issueId: string; waitingRunId: string; expectedBindingRevision: number;
-  actor: { type: string; agentId?: string | null; runId?: string | null; userId?: string | null };
+  actor: RemoteHolderActor;
 }, deps: RemoteHostRebootDeps) {
+  // The real company Owner (or instance admin / local implicit operator) only; checked
+  // before any remote observation or mutation. Ordinary members and viewers are refused.
   if (input.actor.type !== "board") throw forbidden("Holderless workspace reconciliation is Owner-only");
+  if (!input.actor.isInstanceAdmin && input.actor.source !== "local_implicit") {
+    const [membership] = input.actor.userId ? await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, input.companyId), eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, input.actor.userId), eq(companyMemberships.status, "active"),
+      eq(companyMemberships.membershipRole, "owner"))) : [];
+    if (!membership) throw forbidden("Holderless workspace reconciliation is Owner-only");
+  }
   const controls = issueTreeControlService(db);
   async function scope() {
     const [task] = await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));

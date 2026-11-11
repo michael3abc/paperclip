@@ -8,14 +8,14 @@ import { sharedCheckoutHolderSettled } from "../heartbeat/shared-checkout.js";
 import { record } from "./workspace-creator.js";
 import { logActivity } from "../activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
-import { reconcileRemoteHostRebootHolders, type RemoteHostRebootDeps } from "./remote-host-reboot.js";
+import { reconcileRemoteHostRebootHolders, type RemoteHolderActor, type RemoteHostRebootDeps } from "./remote-host-reboot.js";
 
 /** Re-check one terminal holder. This capability never cancels a live run or removes a claim.
  * Without holderRunId (a holderless wait) the Owner may settle remote owners only by a
  * server-observed host boot boundary; see remote-host-reboot.ts. */
 export async function reconcileWorkspaceHolder(db: Db, input: {
   companyId: string; issueId: string; waitingRunId: string; holderRunId?: string | null; expectedBindingRevision: number;
-  actor: { type: string; agentId?: string | null; runId?: string | null; userId?: string | null };
+  actor: RemoteHolderActor;
 }, reverify: (runId: string, companyId: string) => Promise<unknown>, remote: RemoteHostRebootDeps = {}) {
   if (!input.holderRunId) return reconcileRemoteHostRebootHolders(db, input, remote);
   const holderRunId = input.holderRunId;
