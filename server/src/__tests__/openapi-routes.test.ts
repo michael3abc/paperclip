@@ -99,6 +99,7 @@ const apiPrefixes: Record<string, string> = {
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
   "web-push.ts": "/api",
+  "session-bridge.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -145,6 +146,15 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   "GET /mcp/runner/oauth/authorize",
   "POST /mcp/runner/oauth/token",
   "POST /mcp/runner/oauth/revoke",
+  // Native session-bridge protocol: every route requires a session_bridge-scoped
+  // key and refuses board sessions and ordinary agent keys. The versioned
+  // contract lives in doc/plans/2026-11-10-session-bridge-key-scope.md.
+  "POST /api/agents/me/session-bridge/receipt",
+  "GET /api/agents/me/session-bridge/workers",
+  "POST /api/agents/me/session-bridge/tools-search",
+  "POST /api/agents/me/session-bridge/tools-call",
+  "GET /api/agents/me/session-bridge/events",
+  "POST /api/issues/{id}/external-turns",
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
@@ -238,6 +248,7 @@ function loadActualRoutes() {
     for (const match of source.matchAll(ROUTE_LITERAL_PATTERN)) {
       const method = match[1].toUpperCase();
       const routePath = match[2];
+      if (file === "session-bridge.ts" && routePath.includes("${operation}")) continue;
       const operation = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
       if (explicitOpenApiOperationCoverageExclusions.has(operation)) {
         excludedRoutes.add(operation);
@@ -278,6 +289,15 @@ function loadActualRoutes() {
       const methods = new RegExp(`router\\.(get|post|put|delete)\\(\\s*${name}(?:\\s*\\+\\s*"([^"]+)")?\\s*,`, "g");
       for (const match of source.matchAll(methods)) {
         routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
+      }
+    }
+    if (file === "session-bridge.ts") {
+      // One handler is registered per listed operation through a template path.
+      const loop = /for \(const operation of \[([^\]]+)\] as const\) router\.(post|get)\(`([^`$]+)\$\{operation\}`/.exec(source);
+      for (const literal of loop?.[1].matchAll(/"([^"]+)"/g) ?? []) {
+        const operation = `${loop![2].toUpperCase()} ${normalizeExpressPath(prefix + loop![3] + literal[1])}`;
+        if (explicitOpenApiOperationCoverageExclusions.has(operation)) excludedRoutes.add(operation);
+        else routes.add(operation);
       }
     }
     if (file === "muse.ts" && /for\s*\(const route of MUSE_PUBLIC_ROUTES\)/.test(source)) {
