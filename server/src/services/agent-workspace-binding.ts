@@ -35,6 +35,18 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** A current formal reviewer keeps its configured home; it does not own the worker's task binding. */
+export function isFixedMainReview(
+  agent: { id: string; adapterType: string; adapterConfig: unknown; runtimeConfig: unknown },
+  issue: { projectId?: string | null; assigneeAgentId?: string | null; status?: string; executionState?: unknown } | null,
+): boolean {
+  const config = record(agent.adapterConfig);
+  return issue !== null && agent.adapterType === "ccpocket_bridge" && config.role === "main"
+    && record(record(agent.runtimeConfig).workspaceBinding).mode === "fixed"
+    && typeof config.projectId === "string" && config.projectId === issue?.projectId
+    && issue.assigneeAgentId === agent.id && isPendingExecutionReviewForAgent(issue, agent.id);
+}
+
 export function fixedWorkspaceMatchesRun(input: {
   binding: FixedWorkspaceBinding; environment: { driver: string; config: Record<string, unknown> } | null;
   run: { contextSnapshot: unknown; runnerProfileJson: unknown };

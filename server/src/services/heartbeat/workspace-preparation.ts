@@ -89,7 +89,7 @@ import type {
   resolveExecutionWorkspaceReuseRequestForIssue,
 } from "./workspaces.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
-import { readPaperclipPmWorkspaceContext, readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask } from "../agent-workspace-binding.js";
+import { readPaperclipPmWorkspaceContext, readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask, isFixedMainReview } from "../agent-workspace-binding.js";
 import type {
   ParsedExecutionWorkspaceMode,
   ExecutionWorkspaceEnvironmentResolution,
@@ -108,6 +108,8 @@ export interface HeartbeatWorkspacePreparationInput {
       projectWorkspaceId: string | null;
       executionWorkspaceId: string | null;
       executionWorkspacePreference: string | null;
+      assigneeAgentId?: string | null;
+      executionState?: unknown;
     }) | null;
     issueId: string | null;
     wasIssueAssignee: boolean;
@@ -187,6 +189,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const remoteWorkerHost = remoteBridgeWorkerHost(agent);
   const pmCoordination = fixedBinding !== null && (agent.runtimeConfig?.workspaceBinding as { mode?: string } | undefined)?.mode === "project_pm"
     && readPaperclipPmWorkspaceContext(input.task.context.paperclipPmWorkspace)?.role === "pm";
+  const reviewHome = isFixedMainReview(agent, input.task.issueRef);
+  const preserveTaskWorkspace = pmCoordination || reviewHome;
   const {
     issueRef,
     issueId,
@@ -706,7 +710,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     await controllerLease.assertOwned();
     await claimSharedCheckout(db, {
       companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issueId!,
-      projectWorkspaceId: issueRef?.projectWorkspaceId ?? null, cwd,
+      projectWorkspaceId: reviewHome ? executionWorkspaceBase.workspaceId : issueRef?.projectWorkspaceId ?? null, cwd,
       remoteHostId: claimHost, preparingWorktree, wasIssueAssignee: input.task.wasIssueAssignee,
       requireGit: !recordedRecovery && !preparingWorktree && !claimHost && Boolean(executionWorkspaceBase.repoUrl || executionWorkspaceBase.repoRef),
       checkSourceHandoff: agent.runtimeConfig?.requireProjectWorkspace === true
@@ -1013,7 +1017,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const bindIssueToPersistedExecutionWorkspace = async (
     workspace: ExecutionWorkspace | null,
   ) => {
-    if (controllerOnly || pmCoordination || !issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+    if (controllerOnly || preserveTaskWorkspace || !issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
       return;
     }
     const nextIssueWorkspaceMode =
@@ -1301,7 +1305,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   if (
     // A PM home is coordination storage, not a replacement for the borrowed
     // worker workspace. Retiring that workspace races the worker's admission.
-    !pmCoordination &&
+    !preserveTaskWorkspace &&
     reusableExistingExecutionWorkspace &&
     persistedExecutionWorkspace &&
     reusableExistingExecutionWorkspace.id !==
@@ -1330,14 +1334,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const projectRepositoryPaths: string[] = [];
   if (remoteAuthority) projectRepositoryPaths.push(...(remoteSourceState.value?.source.repositories ?? [])
     .filter(repository => !repository.readOnly).map(repository => repository.relativePath));
-  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && !controllerOnly && !pmCoordination && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
+  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && !controllerOnly && !preserveTaskWorkspace && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const taskRepositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
         issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
         agentId: agent.id, runId: run.id, responsibleUserId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
-  if (!pmCoordination && !pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && executionWorkspace.projectId
+  if (!preserveTaskWorkspace && !pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && executionWorkspace.projectId
     && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
     && !resolvedWorkspace.baseCwdFallback && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(
@@ -1615,7 +1619,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       if (wake) wake.executionContinuation = continuation;
     }
   }
-  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && !controllerOnly && !pmCoordination && issueId && (persistedNativeExecutionInput || nativeRecoveryExecutionWorkspaceId)
+  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && !controllerOnly && !preserveTaskWorkspace && issueId && (persistedNativeExecutionInput || nativeRecoveryExecutionWorkspaceId)
       && !(executionTarget?.kind === "remote" && (executionTarget.transport === "ssh"
         || (executionTarget.transport === "sandbox" && executionTarget.runnerTask)))) {
     const workspaceId = persistedNativeExecutionInput?.binding.executionWorkspaceId ?? nativeRecoveryExecutionWorkspaceId!;

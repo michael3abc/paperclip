@@ -14,7 +14,7 @@ import { sql } from "drizzle-orm";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { remoteBridgeWorkerHost, selectRemoteWorkerSource } from "./remote-bridge-worker.js";
 import { resolveInPlaceAnchor } from "@paperclipai/adapter-utils/ssh-in-place";
-import { assertFixedProjectWorkspace, assertRemoteFixedBinding, readWorkspaceBinding, validateFixedLocalDirectory, workspaceBindingConflict } from "../agent-workspace-binding.js";
+import { assertFixedProjectWorkspace, assertRemoteFixedBinding, isFixedMainReview, readWorkspaceBinding, validateFixedLocalDirectory, workspaceBindingConflict } from "../agent-workspace-binding.js";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
 import {
@@ -3480,6 +3480,9 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
             workspaceSelection: issues.workspaceSelection,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
           })
           .from(issues)
           .where(
@@ -3488,11 +3491,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
     const issueProjectId = issueProjectRef?.projectId ?? null;
-    const workspaceSelection = issueProjectRef?.workspaceSelection?.selection;
+    const fixedMainReview = isFixedMainReview(agent, issueProjectRef);
+    const workspaceSelection = fixedMainReview ? null : issueProjectRef?.workspaceSelection?.selection;
     const configuredSourceId = workspaceSelection?.kind === "configured_source"
       ? workspaceSelection.projectWorkspaceId : null;
     const preferredProjectWorkspaceId =
-      configuredSourceId ?? issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
+      fixedMainReview ? null : configuredSourceId ?? issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
     const [selectedSource] = preferredProjectWorkspaceId ? await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
       .where(and(eq(projectWorkspaces.id, preferredProjectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId))) : [];
     const resolvedProjectId = selectedSource?.projectId ?? issueProjectId ?? contextProjectId;
@@ -3529,13 +3533,17 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
     if (fixedBinding) {
-      const selected = preferredProjectWorkspaceId
+      const selected = fixedMainReview
+        ? projectWorkspaceRows.find(row => row.cwd === fixedBinding.cwd
+          && (!fixedBinding.hostId || (row.sourceType === "remote_managed" && row.metadata?.hostId === fixedBinding.hostId)))
+        : preferredProjectWorkspaceId
         ? projectWorkspaceRows.find(row => row.id === preferredProjectWorkspaceId)
         : projectWorkspaceRows.find(row => row.isPrimary) ?? (projectWorkspaceRows.length === 1 ? projectWorkspaceRows[0] : null);
       // A project PM's cwd comes from its claim-time role: the agent home is not a
       // project workspace, and the worker root was checked against the project's
       // primary workspace when the binding was saved and when the run was claimed.
       if (!fixedBinding.projectPm) {
+        if (fixedMainReview && !selected) workspaceBindingConflict("project_conflict", "The reviewer's fixed directory must be a registered source of this project on its configured host.");
         assertFixedProjectWorkspace(fixedBinding, selected ?? null, projectWorkspaceRows.length > 0 || Boolean(preferredProjectWorkspaceId));
       }
       if (opts?.executionEnvironmentDriver === "local") {

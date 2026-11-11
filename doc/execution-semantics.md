@@ -3612,6 +3612,15 @@ reason. Main-agent MCP exposes inspection/selection with the same authorization;
 new worker dispatch must persist workspaceSelection. Never invent a free cwd
 input or infer a path from task text during bulk reconciliation.
 
+A currently assigned formal review by a fixed project main agent uses that
+agent's registered project source on its configured host. This is a run-scoped
+review home, not a change to the worker's task selection. Preserve the worker
+workspace row, binding revision and repository contents, and claim the actual
+reviewer cwd through ordinary physical admission. Require the persisted pending
+review participant and matching project/assignee; wake payloads, stale reviews
+and unrelated fixed agents cannot bypass source-conflict checks. A missing
+registered reviewer home fails explicitly.
+
 An exact local .git/info/exclude-only layout is ignore metadata, including when
 it lives at the selected workspace root (for example a resident home directory).
 Recognize it by directory entries without reading the ignore contents or running

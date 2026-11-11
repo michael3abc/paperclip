@@ -252,6 +252,11 @@ management configuration stays hidden. Captured responses and registered attachm
 are readable for the same project, including another task/worker's output; unbound
 assets and foreign project captures remain denied. PM
 review homes are run-scoped and must never replace a worker task workspace binding.
+Fixed project main agents also retain their registered home during a currently
+assigned formal review. Resolve that home on the configured host, claim its actual
+path, and preserve the worker's selection, workspace row and binding revision.
+Non-review execution and stale/foreign review participants keep the fixed-source
+conflict guard; never infer reviewer authority from wake context alone.
 Workspace-only issue PATCHes preserve status, assignment and pending review state;
 maintenance cannot normalize a blocked task into review or wake its reviewer.
 Owner-issued `project-pm-decision-authority` is separate from company delegation.

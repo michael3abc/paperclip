@@ -13,7 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { heartbeatService } from "../heartbeat.js";
-import { registerServerAdapter, getServerAdapter, type AdapterExecutionContext } from "../../adapters/index.js";
+import { registerServerAdapter, unregisterServerAdapter, findServerAdapter, getServerAdapter, type AdapterExecutionContext } from "../../adapters/index.js";
 import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig, toExecutionWorkspace } from "../execution-workspaces.js";
@@ -218,6 +218,81 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(after.executionWorkspacePreference).toBe(before.executionWorkspacePreference);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
   });
+  it.each(["local", "remote", "heartbeat", "not_review", "wrong_participant", "missing_source"])("preserves the task workspace for a fixed main reviewer (%s)", async scenario => {
+    const { input, source, issue } = await fixture();
+    const remote = scenario === "remote";
+    const reviewerCwd = remote ? `/remote/reviewer/${issue.id}` : source;
+    const workerCwd = remote ? `/remote/worker/${issue.id}` : join(home, `selected-${issue.id}`);
+    if (!remote) await mkdir(workerCwd);
+    await db.update(projectWorkspaces).set({ cwd: scenario === "missing_source" ? workerCwd : reviewerCwd,
+      ...(remote ? { sourceType: "remote_managed", metadata: { hostId: "review-host" } } : {})
+    }).where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
+    const [workerSource] = await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId!,
+      name: "Selected worker source", cwd: workerCwd, isPrimary: false,
+      ...(remote ? { sourceType: "remote_managed", metadata: { hostId: "review-host" } } : {}) }).returning();
+    const [workerWorkspace] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId,
+      projectWorkspaceId: workerSource.id, sourceIssueId: issue.id, name: "Worker task", cwd: workerCwd,
+      mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs" }).returning();
+    await db.update(issues).set({ status: scenario === "not_review" ? "in_progress" : "in_review",
+      projectWorkspaceId: workerSource.id, executionWorkspaceId: workerWorkspace.id, workspaceBindingRevision: 2,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", mode: "shared", projectWorkspaceId: workerSource.id },
+        request: { key: randomUUID(), expectedBindingRevision: 0 } },
+      executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: scenario === "wrong_participant" ? randomUUID() : input.agent.id, userId: null },
+        returnAssignee: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+    }).where(eq(issues.id, issue.id));
+    input.agent.adapterType = "ccpocket_bridge";
+    input.agent.adapterConfig = { role: "main", projectId: issue.projectId, cwd: reviewerCwd, ...(remote ? { hostId: "review-host" } : {}) };
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: reviewerCwd, ...(remote ? { hostId: "review-host" } : {}) } };
+    await db.update(agents).set({ adapterType: input.agent.adapterType, adapterConfig: input.agent.adapterConfig, runtimeConfig: input.agent.runtimeConfig }).where(eq(agents.id, input.agent.id));
+    const before = await readIssue(issue.id); input.task.issueRef = before;
+    await reuse(input, toExecutionWorkspace(workerWorkspace));
+    const bind = vi.spyOn(input.services.executionWorkspacesSvc, "bindTaskWorkspace");
+    const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
+    if (scenario === "heartbeat") {
+      const userId = `review-owner-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Review owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: issue.companyId, principalId: userId, principalType: "user", membershipRole: "owner", status: "active" });
+      await db.update(companies).set({ defaultResponsibleUserId: userId }).where(eq(companies.id, issue.companyId));
+      await db.update(issues).set({ responsibleUserId: userId }).where(eq(issues.id, issue.id));
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.run.id));
+      await db.update(agents).set({ status: "idle", runtimeConfig: { ...input.agent.runtimeConfig, heartbeat: { enabled: false, wakeOnDemand: true } } }).where(eq(agents.id, input.agent.id));
+      const original = findServerAdapter("ccpocket_bridge");
+      const execute = vi.fn(async (execution: AdapterExecutionContext) => {
+        expect(execution.context.paperclipWorkspace).toMatchObject({ cwd: reviewerCwd });
+        expect(execution.context.sharedCheckoutClaim).toMatchObject({ path: reviewerCwd, issueId: issue.id });
+        expect((await readIssue(issue.id)).executionWorkspaceId).toBe(workerWorkspace.id);
+        return { exitCode: 0, signal: null, timedOut: false, summary: "Reviewer inspected the preserved task workspace" };
+      });
+      registerServerAdapter({ ...getServerAdapter("process"), type: "ccpocket_bridge", supportsLocalAgentJwt: false, execute });
+      const heartbeat = heartbeatService(db);
+      try {
+        const next = await heartbeat.wakeup(input.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+          requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
+        await heartbeat.drainActiveRunExecutions();
+        expect(next).not.toBeNull();
+        expect(await readRun(next!.id)).toMatchObject({ status: "succeeded", errorCode: null });
+        expect(execute).toHaveBeenCalledOnce();
+        expect(await readIssue(issue.id)).toMatchObject({ executionWorkspaceId: before.executionWorkspaceId,
+          projectWorkspaceId: before.projectWorkspaceId, workspaceBindingRevision: before.workspaceBindingRevision, workspaceSelection: before.workspaceSelection });
+        expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
+      } finally { await heartbeat.drainActiveRunExecutions(); if (original) registerServerAdapter(original); else unregisterServerAdapter("ccpocket_bridge"); }
+      return;
+    }
+    if (["not_review", "wrong_participant", "missing_source"].includes(scenario)) {
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ resultJson: { workspaceValidation: { reason: "fixed_workspace_project_conflict" } } });
+      expect(acquire).not.toHaveBeenCalled();
+    } else {
+      const result = await prepareHeartbeatWorkspace(db, input);
+      expect(result.executionWorkspace.cwd).toBe(reviewerCwd);
+      expect(result.persistedExecutionWorkspace?.cwd).toBe(reviewerCwd);
+      expect(input.task.context.sharedCheckoutClaim).toMatchObject({ path: reviewerCwd });
+      expect(bind).not.toHaveBeenCalled();
+    }
+    expect(await readIssue(issue.id)).toEqual(before);
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
+  });
+
   it("uses the configured development checkout for a project-exclusive worker", async () => {
     const { input, source } = await fixture(); input.agent.runtimeConfig = { requireProjectWorkspace: true };
     const result = await prepareHeartbeatWorkspace(db, input);

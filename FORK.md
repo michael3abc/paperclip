@@ -5,6 +5,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Fixed main-agent review workspaces (2026-11-11): formal reviewers select their
+  registered fixed home for the run while retaining the worker's explicit source
+  and task workspace. Actual-path claims remain enforced on the reviewer home;
+  unrelated/stale actors keep existing source-conflict failures.
+
 - Mobile conversation task-panel access (2026-11-11): show the page-owned
   panel control in mobile headers and route it to the mobile sheet, keeping the
   lower Tasks list reachable for runtime identity inspection.
