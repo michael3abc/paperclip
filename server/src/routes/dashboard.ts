@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { dashboardService } from "../services/dashboard.js";
 import { companyService } from "../services/companies.js";
-import { fetchCompanySubscriptionQuotas } from "../services/company-subscription-quotas.js";
+import { fetchHostSubscriptionQuotas } from "../services/host-subscription-quotas.js";
 import {
   DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT,
   MAX_WINDOW_WEEKS,
@@ -35,7 +35,7 @@ export function dashboardRoutes(db: Db) {
       return;
     }
     res.set("Cache-Control", "no-store");
-    res.json(await fetchCompanySubscriptionQuotas(db, companyId));
+    res.json(await fetchHostSubscriptionQuotas());
   });
 
   router.get("/companies/:companyId/dashboard", async (req, res) => {

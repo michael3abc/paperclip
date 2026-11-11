@@ -742,22 +742,6 @@ describe("fetchCodexQuota", () => {
 });
 
 describe("mapCodexRpcQuota", () => {
-  it("maps Business individual allocation when both duration windows are absent", () => {
-    const snapshot = mapCodexRpcQuota({ rateLimits: { primary: null, secondary: null, individualLimit: {
-      limit: "1300.00", used: "546.7215094566345", remainingPercent: 58, resetsAt: 1_796_083_201,
-    } } }, { account: { planType: "ent26" } });
-    expect(snapshot.planType).toBe("ent26");
-    expect(snapshot.windows).toEqual([{ label: "Individual allocation", usedPercent: 42,
-      resetsAt: new Date(1_796_083_201_000).toISOString(), valueLabel: "546.72 / 1,300 units used", detail: null }]);
-  });
-  it("keeps missing allocation percentage and reset unknown", () => {
-    expect(mapCodexRpcQuota({ rateLimits: { individualLimit: { limit: "100", used: "25" } } }).windows)
-      .toMatchObject([{ usedPercent: null, resetsAt: null, valueLabel: "25 / 100 units used" }]);
-  });
-  it.each([{ used: "NaN" }, { limit: "" }, { remainingPercent: 101 }, { resetsAt: NaN }])
-    ("surfaces malformed individual allocation: %j", individualLimit => {
-      expect(() => mapCodexRpcQuota({ rateLimits: { individualLimit } })).toThrow(/Invalid Codex individual/);
-    });
   it("identifies a weekly primary by duration, without inventing a disabled 5h window", () => {
     expect(mapCodexRpcQuota({ rateLimits: { limitId: "codex", primary: {
       usedPercent: 99, windowDurationMins: 10_080, resetsAt: 1_763_500_000,

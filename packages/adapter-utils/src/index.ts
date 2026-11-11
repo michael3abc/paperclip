@@ -39,7 +39,6 @@ export type {
   AdapterStopReverificationResult,
   QuotaWindow,
   ProviderQuotaResult,
-  SubscriptionQuotaResult,
   TranscriptEntry,
   PaperclipQuestion,
   PaperclipQuestionOption,

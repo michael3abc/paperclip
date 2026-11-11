@@ -14,11 +14,11 @@ const render = (accounts: ProviderQuotaResult[], failed = false) => renderToStat
 );
 
 describe("subscription quota cards", () => {
-  it("shows only selected company accounts and the real remaining quota without claiming unknown data is full", () => {
+  it("shows all three providers and the real remaining quota without claiming unknown data is full", () => {
     const html = render([account]);
     expect(html).toContain("Codex");
-    expect(html).not.toContain("Claude");
-    expect(html).not.toContain("Antigravity");
+    expect(html).toContain("Claude");
+    expect(html).toContain("Antigravity");
     expect(html).toContain("1% remaining");
     expect(html).toContain("Remaining quota not reported");
     expect(html).toContain("Reset time not reported");
@@ -30,15 +30,6 @@ describe("subscription quota cards", () => {
     expect(bar.getAttribute("aria-valuenow")).toBe("1");
     expect(bar.getAttribute("aria-label")).toBe("Weekly limit: 1% remaining");
     expect(bar.className).toContain("bg-(--status-task-blocked)");
-  });
-  it("renders every host account even when two hosts use the same provider", () => {
-    const html = render([
-      { ...account, accountKey: "host:a:openai", accountLabel: "Shopee-E" },
-      { ...account, accountKey: "host:b:openai", accountLabel: "Shopee-D" },
-    ]);
-    expect(html).toContain("Shopee-E");
-    expect(html).toContain("Shopee-D");
-    expect((html.match(/Weekly limit/g) ?? []).length).toBe(4);
   });
   it.each([
     { usedPercent: 0, remaining: 100, color: "done" },

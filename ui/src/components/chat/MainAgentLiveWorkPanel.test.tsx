@@ -109,24 +109,6 @@ describe("MainAgentLiveWorkPanel", () => {
     expect(cards[1].textContent).toContain("No regressions");
   });
 
-  it("shows observed main and child runtimes independently and leaves missing models explicit", async () => {
-    fixture.runs = [run({ id: "run-active", status: "running" })];
-    fixture.transcript = new Map([["run-active", [
-      { kind: "provider_activity", ts: "1", family: "model_identity", eventType: "model.identity", status: "completed", title: "Runtime", summary: "",
-        payload: { harness: "codex", model: "compass-6-astra", billingRoute: "compass" } },
-      { kind: "provider_activity", ts: "2", family: "delegation", eventType: "delegation.started", status: "running", title: "Audit", summary: "",
-        payload: { delegationId: "child", description: "Audit", harness: "codex", model: "gpt-6-luna", billingRoute: "openai_subscription" } },
-      { kind: "provider_activity", ts: "3", family: "delegation", eventType: "delegation.started", status: "running", title: "Unknown", summary: "",
-        payload: { delegationId: "unknown-child", description: "Unknown", harness: "codex", metadataError: "Child runtime metadata unavailable" } },
-    ]]]);
-    await render();
-    expect(container.querySelector('[data-testid="main-agent-runtime"]')?.textContent).toBe("codex · 6 Astra · compass");
-    const children = container.querySelectorAll('[data-testid="subagent-runtime"]');
-    expect(children[0].textContent).toBe("codex · 6 Luna · subscription");
-    expect(children[1].textContent).toBe("codex · model unknown · source unknown");
-    expect(children[1].getAttribute("title")).toBe("Child runtime metadata unavailable");
-  });
-
   it("summarizes the last run when nothing is active", async () => {
     fixture.runs = [run({})];
     fixture.transcript = new Map([["run-old", [{ kind: "assistant", ts: "1", text: "Endpoint added and tested." }]]]);

@@ -8,7 +8,7 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
 import { StatusBadge } from "@/components/StatusBadge";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
-import { deriveMainAgentWork, runtimeIdentityLabel, type MainAgentSubagent, type MainAgentWorkStatus } from "@/lib/main-agent-work";
+import { deriveMainAgentWork, type MainAgentSubagent, type MainAgentWorkStatus } from "@/lib/main-agent-work";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
@@ -57,7 +57,7 @@ function SubagentStatusIcon({ status }: { status: MainAgentWorkStatus }) {
 
 function SubagentCard({ subagent }: { subagent: MainAgentSubagent }) {
   const meta = [
-    subagent.runtime ? null : subagent.subagentType,
+    subagent.subagentType,
     subagent.toolUses ? `${subagent.toolUses} tools` : null,
     subagent.totalTokens ? `${formatTokens(subagent.totalTokens)} tokens` : null,
   ].filter(Boolean).join(" · ");
@@ -68,9 +68,6 @@ function SubagentCard({ subagent }: { subagent: MainAgentSubagent }) {
         <span className="min-w-0 flex-1 line-clamp-2 text-sm font-medium">{subagent.title}</span>
       </div>
       {meta && <div className="mt-1 pl-5.5 text-xs text-muted-foreground">{meta}</div>}
-      {subagent.runtime && <div data-testid="subagent-runtime" className="mt-1 break-words pl-5.5 text-xs text-muted-foreground"
-        title={subagent.runtime.metadataError ?? subagent.runtime.model ?? undefined}>{runtimeIdentityLabel(subagent.runtime)}</div>}
-      {subagent.runtime?.metadataError && <p role="status" className="mt-1 pl-5.5 text-xs text-muted-foreground">{subagent.runtime.metadataError}</p>}
       {subagent.status === "running" && subagent.activity && (
         <p data-testid="main-agent-subagent-activity" className="mt-1 line-clamp-2 pl-5.5 text-xs text-foreground/80">{subagent.activity}</p>
       )}
@@ -163,8 +160,6 @@ export function MainAgentLiveWorkPanel({ companyId, agentId }: { companyId: stri
           </Link>
         )}
         {doing && <p className={cn("mt-1 text-sm", active ? "text-foreground" : "line-clamp-4 text-muted-foreground")}>{doing}</p>}
-        {work.runtime && <p data-testid="main-agent-runtime" className="mt-1 break-words text-xs text-muted-foreground"
-          title={work.runtime.model ?? undefined}>{runtimeIdentityLabel(work.runtime)}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {work.steps.length > 0 && <span>{doneSteps}/{work.steps.length} steps</span>}
           {lastTool && <span className="inline-flex items-center gap-1"><Wrench className="h-3 w-3" /><span className="font-mono">{lastTool}</span></span>}

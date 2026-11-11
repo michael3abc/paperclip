@@ -14,28 +14,6 @@ import type { TranscriptEntry } from "../adapters";
 
 export type MainAgentWorkStatus = "running" | "completed" | "failed" | "interrupted";
 
-export interface MainAgentRuntime {
-  harness: string | null;
-  model: string | null;
-  billingRoute: string | null;
-  modelProvider: string | null;
-  metadataError: string | null;
-}
-
-function runtimeIdentity(payload: Record<string, unknown>): MainAgentRuntime | null {
-  if (!text(payload.harness) && !text(payload.model)) return null;
-  return { harness: text(payload.harness), model: text(payload.model), billingRoute: text(payload.billingRoute),
-    modelProvider: text(payload.modelProvider), metadataError: text(payload.metadataError) };
-}
-
-export function runtimeIdentityLabel(runtime: MainAgentRuntime): string {
-  const model = runtime.model?.replace(/^(?:gpt|compass)-(\d+(?:\.\d+)?)-(astra|sol|terra|luna)$/i,
-    (_, version: string, family: string) => `${version} ${family[0].toUpperCase()}${family.slice(1)}`);
-  const route = runtime.billingRoute === "openai_subscription" || runtime.billingRoute === "anthropic_subscription"
-    ? "subscription" : runtime.billingRoute ?? runtime.modelProvider ?? "source unknown";
-  return [runtime.harness, model ?? "model unknown", route].filter(Boolean).join(" · ");
-}
-
 export interface MainAgentPlanStep {
   id: string;
   body: string;
@@ -46,7 +24,6 @@ export interface MainAgentSubagent {
   id: string;
   title: string;
   subagentType: string | null;
-  runtime: MainAgentRuntime | null;
   status: MainAgentWorkStatus;
   lastToolName: string | null;
   /** Latest progress text of a running subagent (Claude task_progress). */
@@ -72,7 +49,6 @@ export interface MainAgentWork {
   lastAssistantText: string | null;
   subagents: MainAgentSubagent[];
   context: MainAgentContextUsage | null;
-  runtime: MainAgentRuntime | null;
 }
 
 const STEP_STATUSES = new Set(["pending", "in_progress", "completed"]);
@@ -186,7 +162,6 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
   // A subagent's name is its Agent call's description (the `started` event); later progress text never renames it.
   const namedAtStart = new Set<string>();
   let context: MainAgentContextUsage | null = null;
-  let runtime: MainAgentRuntime | null = null;
 
   for (const [index, entry] of entries.entries()) {
     if (entry.kind === "tool_call") {
@@ -202,8 +177,6 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
       const used = count(entry.payload.currentTokens);
       const window = count(entry.payload.modelContextWindow);
       if (used !== null && window !== null) context = { used, window, percent: Math.min(100, Math.round((used / window) * 100)) };
-    } else if (entry.kind === "provider_activity" && entry.family === "model_identity") {
-      runtime = runtimeIdentity(entry.payload);
     } else if (entry.kind === "provider_activity" && entry.family === "delegation") {
       const payload = entry.payload;
       const id = text(payload.delegationId);
@@ -219,7 +192,6 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
         id,
         title,
         subagentType: text(payload.subagentType),
-        runtime: runtimeIdentity(payload) ?? prior?.runtime ?? null,
         status: workStatus(entry.status),
         lastToolName: text(payload.lastToolName),
         activity: entry.status === "running" ? text(payload.activity) : null,
@@ -241,6 +213,5 @@ export function deriveMainAgentWork(entries: readonly TranscriptEntry[]): MainAg
     lastAssistantText,
     subagents: [...subagents.values()],
     context,
-    runtime,
   };
 }

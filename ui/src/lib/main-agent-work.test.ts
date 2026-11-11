@@ -43,7 +43,7 @@ describe("deriveMainAgentWork", () => {
 
   it("is empty for transcripts without plan or delegation activity", () => {
     expect(deriveMainAgentWork([{ kind: "stdout", ts: "1", text: "hello" }])).toEqual({
-      steps: [], currentStep: null, lastToolName: null, lastAssistantText: null, subagents: [], context: null, runtime: null,
+      steps: [], currentStep: null, lastToolName: null, lastAssistantText: null, subagents: [], context: null,
     });
   });
 

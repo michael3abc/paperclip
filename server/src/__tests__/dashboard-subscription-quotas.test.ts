@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ company: vi.fn(), quotas: vi.fn() }));
 vi.mock("../services/companies.js", () => ({ companyService: () => ({ getById: mocks.company }) }));
 vi.mock("../services/dashboard.js", () => ({ dashboardService: () => ({}) }));
 vi.mock("../services/recovery-observability.js", () => ({ recoveryObservabilityService: () => ({}), DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT: 10, MAX_WINDOW_WEEKS: 52 }));
-vi.mock("../services/company-subscription-quotas.js", () => ({ fetchCompanySubscriptionQuotas: mocks.quotas }));
+vi.mock("../services/host-subscription-quotas.js", () => ({ fetchHostSubscriptionQuotas: mocks.quotas }));
 import { dashboardRoutes } from "../routes/dashboard.js";
 
 function app(actor: Record<string, unknown>) {
@@ -40,7 +40,6 @@ describe("dashboard host subscription quota authorization", () => {
     expect(res.status).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
     expect(res.body[0].provider).toBe("openai");
-    expect(mocks.quotas).toHaveBeenCalledWith(expect.anything(), "00000000-0000-4000-8000-000000000001");
   });
   it("does not grant an instance administrator access to an unrelated company", async () => {
     const res = await request(app({ type: "board", isInstanceAdmin: true, companyIds: ["another-company"] })).get(url);
