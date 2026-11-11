@@ -2,6 +2,8 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
+  runStopSettlement: "run-stop-settlement",
+  workspaceWaitSettlement: "workspace-wait-settlement",
   workspaceCreatorRecovery: "workspace-creator-recovery",
   delegatedDecisions: "delegated-decisions",
   webPush: "web-push",

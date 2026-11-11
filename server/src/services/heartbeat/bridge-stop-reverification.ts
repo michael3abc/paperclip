@@ -9,6 +9,7 @@ import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status
 import { publishLiveEvent as publishLiveEventDefault } from "../live-events.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
 
 export const BRIDGE_STOP_REVERIFICATION_PROOF = "bridge_session_reverified";
 export const BRIDGE_STOP_REVERIFICATION_SCHEMA = "ccpocket.bridge-stop-reverification.v1";
@@ -27,6 +28,8 @@ export interface BridgeStopReverificationDependencies {
   now?: () => number;
   intervalMs?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
+  onUnverified?: (reason: string) => void;
 }
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -39,6 +42,7 @@ type BridgeStopProof = {
   resultSeq?: number;
   checkedAt: string;
   background: { known: true; active: [] };
+  observation?: { kind: "later_input" | "restored_card"; bridgeSessionId: string; runId: string; acceptedSeq: number; resultSeq?: number };
 };
 
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -57,7 +61,19 @@ export function validBridgeStopProof(
       (proof.resultSeq !== undefined && !Number.isSafeInteger(proof.resultSeq)) ||
       background.known !== true || !Array.isArray(background.active) || background.active.length !== 0 ||
       Object.keys(background).some(key => key !== "known" && key !== "active")) return null;
+  const observation = parseObject(proof.observation);
+  if (proof.observation !== undefined && (
+      !["later_input", "restored_card"].includes(String(observation.kind)) ||
+      !nonEmpty(observation.bridgeSessionId) || !nonEmpty(observation.runId) ||
+      !Number.isSafeInteger(observation.acceptedSeq) || Number(observation.acceptedSeq) < 0 ||
+      (observation.kind === "later_input" && (!Number.isSafeInteger(observation.resultSeq) || Number(observation.resultSeq) < 0)) ||
+      (observation.kind === "restored_card" && observation.runId !== expected.runId))) return null;
   return {
+    ...(proof.observation !== undefined ? { observation: {
+      kind: observation.kind as "later_input" | "restored_card", bridgeSessionId: observation.bridgeSessionId as string,
+      runId: observation.runId as string, acceptedSeq: observation.acceptedSeq as number,
+      ...(Number.isSafeInteger(observation.resultSeq) ? { resultSeq: observation.resultSeq as number } : {}),
+    } } : {}),
     schema: BRIDGE_STOP_REVERIFICATION_SCHEMA,
     bridgeSessionId: expected.bridgeSessionId,
     nativeSessionId: expected.nativeSessionId,
@@ -83,6 +99,7 @@ async function acknowledgeBridgeStop(
   // Opening this gate must wake the deferred interrupt receipts in the same
   // commit; a stop acknowledged without a signal used to strand them.
   const acknowledged = await db.transaction(async tx => {
+    await notifyRunStopSettlement(tx, { companyId: run.companyId, runId: run.id });
     await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
     if (typeof run.resultJson?.workspaceRecoveryActionId === "string")
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, run.resultJson.workspaceRecoveryActionId);
@@ -180,7 +197,7 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
   const inFlight = new Map<string, Promise<BridgeStopReconciliation>>();
 
   function candidate(run: Run | undefined, companyId: string): run is Run {
-    if (!run || run.companyId !== companyId || run.status !== "cancelled" || run.runtimeMode !== "legacy") return false;
+    if (!run || run.companyId !== companyId || !["cancelled", "timed_out"].includes(run.status) || run.runtimeMode !== "legacy") return false;
     const cancellation = parseObject(run.resultJson?.executionCancellation);
     return cancellation.state === "requested" && cancellation.forced !== true &&
       nonEmpty(run.resultJson?.bridgeSessionId) && nonEmpty(run.resultJson?.nativeSessionId);
@@ -202,16 +219,24 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
     input: Parameters<NonNullable<ServerAdapterModule["reverifyCancelledRunStop"]>>[0],
   ): Promise<AdapterStopReverificationResult> {
     let timer: NodeJS.Timeout | undefined;
+    const controller = new AbortController();
+    let abortResult: (value: AdapterStopReverificationResult) => void;
+    const aborted = new Promise<AdapterStopReverificationResult>(resolve => { abortResult = resolve; });
+    const abort = () => { controller.abort(deps.signal?.reason); abortResult({ verified: false, reason: "reverification_aborted" }); };
+    deps.signal?.addEventListener("abort", abort, { once: true });
+    if (deps.signal?.aborted) abort();
     try {
+      if (deps.signal?.aborted) return { verified: false, reason: "reverification_aborted" };
       return await Promise.race([
-        hook(input),
+        aborted,
+        hook({ ...input, signal: controller.signal }),
         new Promise<AdapterStopReverificationResult>(resolve => {
-          timer = setTimeout(() => resolve({ verified: false, reason: "reverification_timeout" }), timeoutMs);
+          timer = setTimeout(() => { controller.abort(); resolve({ verified: false, reason: "reverification_timeout" }); }, timeoutMs);
         }),
       ]);
     } catch {
       return { verified: false, reason: "reverification_failed" };
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); deps.signal?.removeEventListener("abort", abort); }
   }
 
   async function attempt(runId: string, companyId: string): Promise<BridgeStopReconciliation> {
@@ -220,7 +245,7 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
     if (!candidate(run, companyId) || deps.isRunActive(run.id)) return "skipped";
     if (await historicalAdapterType(db, run) !== BRIDGE_SESSION_ADAPTER) return "skipped";
     const hook = deps.getAdapter(BRIDGE_SESSION_ADAPTER)?.reverifyCancelledRunStop;
-    if (typeof hook !== "function") return "skipped";
+    if (typeof hook !== "function") { deps.onUnverified?.("adapter_reverification_unavailable"); return "skipped"; }
     const startedAt = now();
     if (startedAt - (lastAttemptAt.get(run.id) ?? -Infinity) < intervalMs) return "skipped";
     lastAttemptAt.set(run.id, startedAt);
@@ -231,11 +256,12 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
       sessionParams: await sessionParams(run, bridgeSessionId, nativeSessionId) });
     const proof = validBridgeStopProof(result, { runId: run.id, bridgeSessionId, nativeSessionId });
     if (!proof) {
+      deps.onUnverified?.(result.verified ? "invalid_proof" : result.reason);
       logger.info({ runId: run.id, companyId, reason: result.verified ? "invalid_proof" : result.reason },
         "bridge stop re-verification did not confirm the stop; the hold is retained");
       return "unverified";
     }
-    if (deps.isRunActive(run.id)) return "skipped";
+    if (deps.signal?.aborted || deps.isRunActive(run.id)) return "skipped";
 
     const stopped = await acknowledgeBridgeStop(db, run, proof, {
       proofKind: BRIDGE_STOP_REVERIFICATION_PROOF, at: new Date(now()), publishLiveEvent,

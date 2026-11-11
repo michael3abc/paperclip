@@ -214,6 +214,9 @@ it.each([false,true])("requires a retained process-stop receipt before another w
   await db.insert(agentInstructionWorkingCopies).values({ runId:a.runId, companyId:a.companyId, agentId:a.agentId,
     responsibleUserId:"test-owner", entryFile:"AGENTS.md", baseHash:"a".repeat(64), localRoot:a.cwd, executionRoot:a.cwd,
     location:"local", state:"captured", receipt:{}, processStoppedAt:new Date() });
+  await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ code: "workspace_busy" });
+  await db.update(agentInstructionWorkingCopies).set({ state: "unchanged", receipt: { cleanupPending: false } })
+    .where(eq(agentInstructionWorkingCopies.runId, a.runId));
   await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
 });
 

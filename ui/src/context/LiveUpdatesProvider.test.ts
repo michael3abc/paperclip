@@ -1843,6 +1843,18 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
 });
 
 describe("applyRunLifecycleToCompanyLiveRuns", () => {
+  it("updates automatic stop settlement on the selected terminal run without re-adding live work", () => {
+    const { client, read, readDetail } = makeClient([{ id: "run-1", status: "cancelled" }]);
+    for (const state of ["cleaning", "needs_attention", "settled"]) {
+      const stopSettlement = { state, reason: "instruction_cleanup_pending", attempts: 4,
+        checkedAt: "2026-11-11T10:00:00Z", nextCheckAt: null };
+      __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(client as never, "company-1",
+        { runId: "run-1", status: "cancelled", stopSettlement });
+      expect(readDetail()).toMatchObject({ status: "cancelled", stopSettlement });
+      expect(read()).toEqual([]);
+    }
+  });
+
   function makeClient(initial: Array<{ id: string; status: string }>) {
     const initialDetail = initial.find((run) => run.id === "run-1");
     const cache = new Map<string, unknown>([

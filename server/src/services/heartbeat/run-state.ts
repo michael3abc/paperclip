@@ -1,3 +1,4 @@
+import type { RunStopSettlement } from "@paperclipai/shared";
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { readRuntimeAccountingTotals } from "../runtime-accounting-totals.js";
 import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
@@ -63,7 +64,15 @@ export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
+const stopSettlementColumn = sql<RunStopSettlement | null>`case when ${heartbeatRuns.resultJson}#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
+  then jsonb_build_object('state', ${heartbeatRuns.resultJson}#>'{stopSettlement,state}',
+    'reason', left(${heartbeatRuns.resultJson}#>>'{stopSettlement,reason}', 160),
+    'attempts', ${heartbeatRuns.resultJson}#>'{stopSettlement,attempts}',
+    'checkedAt', ${heartbeatRuns.resultJson}#>'{stopSettlement,checkedAt}',
+    'nextCheckAt', ${heartbeatRuns.resultJson}#>'{stopSettlement,nextCheckAt}') else null end`;
+
 const heartbeatRunListColumns = {
+  stopSettlement: stopSettlementColumn,
   id: heartbeatRuns.id,
   responsibleUserId: heartbeatRuns.responsibleUserId,
   companyId: heartbeatRuns.companyId,
@@ -335,12 +344,14 @@ const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
 
 const heartbeatRunSafeColumns = {
   ...getTableColumns(heartbeatRuns),
+  stopSettlement: stopSettlementColumn,
   processGroupId: heartbeatRunProcessGroupIdColumn,
   resultJson: heartbeatRunSafeResultJsonColumn,
 } as const;
 
 const heartbeatRunSqlAsciiSafeColumns = {
   ...getTableColumns(heartbeatRuns),
+  stopSettlement: stopSettlementColumn,
   processGroupId: heartbeatRunProcessGroupIdColumn,
   error: sql<string | null>`NULL`.as("error"),
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),

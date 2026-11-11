@@ -1,10 +1,11 @@
+import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
 import { registerWorkspaceCreatorRecovery } from "./recovery/workspace-creator-delivery.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
-import { createBridgeStopReverification } from "./heartbeat/bridge-stop-reverification.js";
+import { createRunStopSettlement } from "./heartbeat/stop-settlement.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
 import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
 import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
@@ -972,14 +973,14 @@ export function heartbeatService(
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
-  const bridgeStopReverification = createBridgeStopReverification(db, {
+  const stopSettlement = createRunStopSettlement(db, {
     getAdapter: findActiveServerAdapter,
     isRunActive: id => liveRunExecutions.has(id) || adapterExecutionControls.has(id),
   });
   // Recovery sweeps re-enter the deferred-receipt admission after an
   // acknowledgement; the queue's own sweep re-checks admission directly.
   async function reconcileBridgeStopAndResume(runId: string, companyId: string) {
-    if (await bridgeStopReverification.reconcile(runId, companyId) !== "acknowledged") return;
+    if (parseObject((await stopSettlement.reconcile(runId, companyId))?.resultJson?.stopSettlement).state !== "settled") return;
     await heartbeatQueue.resumeDeferredExecutionReceipts({ companyId }).catch(error => {
       logger.warn({ err: error, runId }, "could not reconsider messages after bridge stop re-verification");
     });
@@ -1287,7 +1288,10 @@ export function heartbeatService(
   });
 
   const heartbeatQueue = createHeartbeatQueue(db, {
-    reconcileBridgeStop: (runId, companyId) => bridgeStopReverification.reconcile(runId, companyId),
+    reconcileBridgeStop: async (runId, companyId) => {
+      const run = await stopSettlement.reconcile(runId, companyId);
+      return parseObject(run?.resultJson?.executionCancellation).state === "acknowledged" ? "acknowledged" : "unverified";
+    },
     canStartNewExternalBotWork: async agent => {
       if (agent.adapterType !== "paperclip_runner" || agent.adapterConfig.provider !== "grok_bot") return true;
       const aiConnection = aiRuntimeConnectionBindingSchema.safeParse(agent.runtimeConfig?.aiConnection);
@@ -4014,7 +4018,7 @@ export function heartbeatService(
           controllerLeaseExpiresAt: null,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
-          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted", "scheduled_retry"])));
 
         latestRun = await getRun(run.id).catch(() => null);
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status) && !isNativeRunnerOwnershipHeld(latestRun)) {
@@ -4034,6 +4038,7 @@ export function heartbeatService(
           adapterExecutionControls.delete(run.id);
         }
       }
+      if (latestRun) await db.transaction(tx => notifyRunStopSettlement(tx, { companyId: run.companyId, runId: run.id }));
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
       // Scratch preparation is optional. Its removal cannot be the only proof
       // that a local legacy adapter's closed-stdio descendants stopped.
@@ -4354,7 +4359,12 @@ export function heartbeatService(
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
-    reconcileWorkspaceHolderStop: (runId: string, companyId: string) => bridgeStopReverification.reconcile(runId, companyId),
+    reconcileWorkspaceHolderStop: async (runId: string, companyId: string) => {
+      const run = await stopSettlement.reconcile(runId, companyId, { manual: true });
+      return parseObject(run?.resultJson?.stopSettlement).state === "settled" ? "acknowledged" : "unverified";
+    },
+    registerRunStopSettlementWork: (coordinator: Parameters<typeof stopSettlement.register>[0], canRun: () => boolean) =>
+      stopSettlement.register(coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerWorkspaceCreatorRecovery: (coordinator: Parameters<typeof registerWorkspaceCreatorRecovery>[1], canRun: () => boolean) =>
       registerWorkspaceCreatorRecovery(db, coordinator, {
         wakeup: trackWakeup, cancelRun: cancelRunInternal,
@@ -4423,14 +4433,9 @@ export function heartbeatService(
 
     cancelRun: async (runId: string, reason?: string, options?: CancelRunOptions) => {
       const run = await getRun(runId);
-      // Inspect the original stop receipt without stopping a successor or replaying input.
-      if (run?.status === "cancelled" && run.runtimeMode === "legacy" &&
-          parseObject(run.resultJson?.executionCancellation).state === "requested") {
-        const outcome = await bridgeStopReverification.reconcile(run.id, run.companyId);
-        if (outcome !== "acknowledged") throw conflict(
-          "Cancellation remains unverified. The original run still holds its workspace; no new run was started.",
-          { runId: run.id, outcome });
-        return getRun(run.id);
+      // A terminal run only rechecks its original obligations. Never Stop a successor.
+      if (run && isHeartbeatRunTerminalStatus(run.status) && !options?.cancellationRequestId) {
+        return await stopSettlement.reconcile(run.id, run.companyId, { manual: true }) ?? run;
       }
       return cancelRunInternal(runId, reason, options);
     },

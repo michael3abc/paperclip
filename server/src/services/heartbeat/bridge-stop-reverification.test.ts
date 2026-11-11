@@ -53,7 +53,7 @@ describe.skipIf(!support.supported)("bridge stop re-verification", () => {
     const h = harness(async input => proofFor(input.runId));
     expect(bridgeSessionStopAcknowledged(f.run)).toBe(false);
     expect(await h.service.reconcile(f.run.id, f.company.id)).toBe("acknowledged");
-    expect(h.reverify).toHaveBeenCalledExactlyOnceWith({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
+    expect(h.reverify).toHaveBeenCalledExactlyOnceWith({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id, signal: expect.any(AbortSignal),
       sessionParams: { key: KEY, bridgeSessionId: BRIDGE, nativeSessionId: NATIVE } });
     const after = await read(f.run.id);
     expect(after.resultJson?.executionCancellation).toEqual({ ...f.executionCancellation, state: "acknowledged", forced: false,

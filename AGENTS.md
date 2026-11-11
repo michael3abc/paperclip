@@ -331,6 +331,13 @@ If you change schema/API behavior, update all impacted layers:
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
 - Stop requires execution evidence, not a terminal status alone; pre-dispatch rejection proof requires the complete server-owned trace and no execution identity, lease, or finalizer.
+- Stop settlement uses the original run and server-owned JSON receipt. Persist claims
+  before read-only verification; use four completion-relative checks (0/30/120/300s),
+  preserving budget across restart. Terminal Recheck never sends Stop or input.
+  Provider stop and file/finalizer/lease cleanup are independent; stale launch
+  evidence cannot release a writer. Workspace waits park the same run until a
+  holder event, then recheck existing admission authority. Preserve historical
+  failures and holds. See `doc/execution-semantics.md`.
 - External Runner reads classified by the server must settle definite failures as tool errors. Unknown mutation outcomes stay unresolved and must never be replayed as a new operation.
 - Completion admission waits for outstanding tools and excludes new tools while pending. Forced cleanup must preserve unresolved receipts and distinguish local Runner shutdown from external-provider termination.
 - External-provider assignments, settled tool results, and input responses are authoritative PRP execution data. Preserve their complete payloads under the transport/outbox bounds; never apply diagnostic string truncation to them.
@@ -641,7 +648,7 @@ catalog surfaces without granting session-only tools to heartbeat clients.
 Run cancellation remains available during scheduled workspace waits, including the
 current task header and composer monitor surfaces. The GUI cancels
 only the selected run and verifies its stop receipt. A cancelled Bridge run with a
-requested stop offers Finish cancellation, which rechecks the original receipt without
+requested stop offers 重新檢查, which rechecks the original receipt without
 replaying input or stopping a successor. Shared workspace release accepts acknowledged,
 unforced Bridge stop evidence only after controller, finalizer, operation and lease
 settlement. Unknown outcomes retain the claim and show an explicit error.

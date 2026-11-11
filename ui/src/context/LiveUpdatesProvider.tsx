@@ -1,5 +1,5 @@
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
-import { resolveAgentAppearance } from "@paperclipai/shared";
+import { readRunStopSettlement, resolveAgentAppearance } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import {
@@ -1324,6 +1324,12 @@ function applyRunLifecycleToCompanyLiveRuns(
           : {}),
         ...(has("finishedAt")
           ? { finishedAt: readString(payload.finishedAt) }
+          : {}),
+        ...(has("stopSettlement")
+          ? { stopSettlement: readRunStopSettlement({ stopSettlement: {
+              ...(payload.stopSettlement && typeof payload.stopSettlement === "object" ? payload.stopSettlement : {}),
+              schema: "paperclip.run-stop-settlement.v1",
+            } }) }
           : {}),
       };
     },

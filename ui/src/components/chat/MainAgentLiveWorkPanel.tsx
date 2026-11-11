@@ -145,10 +145,9 @@ export function MainAgentLiveWorkPanel({ companyId, agentId }: { companyId: stri
           <Bot className="h-3.5 w-3.5" />
           <span className="font-medium uppercase tracking-(--tracking-caps)">{active ? "Now" : "Last run"}</span>
           <StatusBadge status={run.status} />
-          {(active || run.status === "scheduled_retry" || (run.status === "cancelled" && !!run.resultJson?.bridgeSessionId &&
-            (run.resultJson?.executionCancellation as { state?: string } | undefined)?.state === "requested")) &&
+          {(active || run.status === "scheduled_retry" || (Boolean(run.stopSettlement) || ["cancelled", "timed_out"].includes(run.status))) &&
             <RunCancelButton key={run.id} runId={run.id} issueId={run.issueId} companyId={companyId}
-              agentId={agentId} finishCancellation={run.status === "cancelled"} />}
+              agentId={agentId} finishCancellation={(Boolean(run.stopSettlement) || ["cancelled", "timed_out"].includes(run.status))} resultJson={run.resultJson} settlement={run.stopSettlement} />}
           {elapsed && <span>{elapsed}</span>}
           {!active && run.finishedAt && <span>· {relativeTime(run.finishedAt)}</span>}
         </div>

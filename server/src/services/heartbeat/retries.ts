@@ -24,7 +24,8 @@ import {
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import {
   and,
   asc,
@@ -1503,126 +1504,31 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
   }
 
-  // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
-  // gate: cancel the run (contention is not a failure), schedule a
-  // workspace_busy retry, and leave the agent idle. The issue execution lock
-  // transfers to the scheduled retry run inside scheduleBoundedRetryForRun, so
-  // the issue keeps an active execution path and recovery leaves it alone.
-  // Deferral has no attempt ceiling — the retry keeps rescheduling while a
-  // live holder exists, and holder staleness (not a counter) is what prevents
-  // waiting on a zombie. If no retry could be scheduled (agent no longer
-  // invokable), the lock is released so the issue does not strand on a
-  // cancelled run.
-  async function finalizeWorkspaceBusyDeferral(
-    run: typeof heartbeatRuns.$inferSelect,
-    deferral: WorkspaceBusyDeferral,
-  ) {
-    const now = new Date();
-    const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
-      error: deferral.message,
-      errorCode: WORKSPACE_BUSY_ERROR_CODE,
-      finishedAt: now,
-      resultJson: {
-        executionRecovery: {
-          kind: "workspace_wait",
-          providerWorkStarted: false,
-        },
-        cancellation: {
-          source: "control_plane",
-          expected: true,
-          initiator: { type: "system" },
-          reason: `Waiting for the shared ${deferral.executionWorkspaceId ? "execution" : "project"} workspace`,
-          recordedAt: now.toISOString(),
-        },
-        workspaceBusy: {
-          projectWorkspaceId: deferral.projectWorkspaceId,
-          executionWorkspaceId: deferral.executionWorkspaceId,
+  // Park the admitted row. No provider has started at this gate, so retaining
+  // the issue lock and wake preserves intent without manufacturing retry runs.
+  async function finalizeWorkspaceBusyDeferral(run: HeartbeatRun, deferral: WorkspaceBusyDeferral) {
+    const holderKey = createHash("sha256").update(deferral.holder.runId).digest("hex");
+    const parked = await setRunStatusIfRunning(run.id, "scheduled_retry", {
+      error: "Waiting for the previous workspace writer to settle",
+      errorCode: WORKSPACE_BUSY_ERROR_CODE, finishedAt: null, scheduledRetryAt: null,
+      scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
+      resultJson: { ...parseObject(run.resultJson),
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        workspaceBusy: { projectWorkspaceId: deferral.projectWorkspaceId, executionWorkspaceId: deferral.executionWorkspaceId,
           holderRunId: deferral.discloseHolder ? deferral.holder.runId : null,
           holderIssueId: deferral.discloseHolder ? deferral.holder.issueId : null,
-          deferralAttempt: deferral.deferralAttempt,
-        },
-      },
-      // Recorded on the run (and inherited by the scheduled retry's context)
-      // so the retry promotion gate can tell a non-assignee wake — where an
-      // assignee mismatch is the expected state — from a reassignment race.
-      contextSnapshot: {
-        ...parseObject(run.contextSnapshot),
-        workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,
-      },
+          holderKey, deferralAttempt: deferral.deferralAttempt } },
+      contextSnapshot: { ...parseObject(run.contextSnapshot), workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee },
     });
-    if (!cancelWrite.updated) {
-      logger.info(
-        { runId: run.id, currentStatus: cancelWrite.run?.status ?? null },
-        "skipping workspace-busy deferral finalization because the run already left running state",
-      );
-      return;
-    }
-    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-      finishedAt: now,
-      error: deferral.message,
-    }).catch(() => undefined);
-
-    const cancelledRun =
-      cancelWrite.run ?? (await getRun(run.id).catch(() => null));
-    const agentRow = await getAgent(run.agentId).catch(() => null);
-    let scheduleOutcome: string | null = null;
-    if (cancelledRun && agentRow) {
-      const scheduleResult = await scheduleBoundedRetryForRun(
-        cancelledRun,
-        agentRow,
-        {
-          now,
-          retryReason: WORKSPACE_BUSY_RETRY_REASON,
-          wakeReason: WORKSPACE_BUSY_RETRY_WAKE_REASON,
-          // Always admit the next attempt: workspace-busy deferral is bounded by
-          // holder liveness, not by an attempt counter.
-          maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
-          delayMs: computeWorkspaceBusyRetryDelayMs(),
-        },
-      ).catch((scheduleErr) => {
-        logger.error(
-          { err: scheduleErr, runId: run.id },
-          "failed to schedule workspace-busy retry after deferral",
-        );
-        return null;
-      });
-      scheduleOutcome = scheduleResult?.outcome ?? null;
-    }
-
-    if (cancelledRun) {
-      await appendRunEvent(cancelledRun, {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "info",
-        message:
-          scheduleOutcome === "scheduled"
-            ? `Deferred: ${deferral.message}. Retry ${deferral.deferralAttempt + 1} scheduled; the run waits for the workspace to free.`
-            : `Deferred: ${deferral.message}. No retry could be scheduled; releasing the issue for other runs.`,
-        payload: {
-          projectWorkspaceId: deferral.projectWorkspaceId,
-          executionWorkspaceId: deferral.executionWorkspaceId,
-          holderRunId: deferral.discloseHolder ? deferral.holder.runId : null,
-          holderIssueId: deferral.discloseHolder ? deferral.holder.issueId : null,
-          deferralAttempt: deferral.deferralAttempt,
-          retryScheduled: scheduleOutcome === "scheduled",
-        },
-      }).catch(() => undefined);
-    }
-
-    if (cancelledRun && scheduleOutcome !== "scheduled") {
-      await releaseIssueExecutionAndPromote(cancelledRun).catch(
-        (releaseErr) => {
-          logger.error(
-            { err: releaseErr, runId: run.id },
-            "failed to release issue execution after workspace-busy deferral",
-          );
-        },
-      );
-    }
-
-    await finalizeAgentStatus(run.agentId, "cancelled", null, {
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-    }).catch(() => undefined);
+    if (!parked.updated) return;
+    await setWakeupStatus(run.wakeupRequestId, "queued", { finishedAt: null, error: null });
+    await appendRunEvent(parked.run ?? run, { eventType: "lifecycle", stream: "system", level: "info",
+      message: "Waiting for workspace cleanup. This run will be reconsidered when its holder settles.",
+      payload: { workspaceWait: true } });
+    // Covers a holder settling between admission and parking. The worker never
+    // wakes a run whose holder is still unsettled, so this is not a retry loop.
+    await db.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceWaitSettlement));
+    await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
   }
 
   async function scheduleInteractionContinuationInfrastructureRetryIfEligible(

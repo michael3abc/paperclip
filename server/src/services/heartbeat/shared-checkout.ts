@@ -103,6 +103,12 @@ export const REMOTE_HOST_REBOOT_EVENT = "workspace.remote_host_rebooted";
 export const REMOTE_HOST_REBOOT_SCHEMA = "paperclip.remote-host-boot-boundary.v1";
 const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
+            or (r.result_json#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
+              and r.result_json#>>'{stopSettlement,state}' = 'settled' and r.result_json#>>'{stopSettlement,stopVerified}' = 'true'
+              and (r.result_json#>>'{stopSettlement,processGeneration}')::integer =
+                (select coalesce(max(e.seq), 0) from heartbeat_run_events e where e.run_id = r.id
+                  and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
+                    'native.local_process_stopped', 'turn.started', 'session.resumed')))
             or (r.runtime_mode = 'legacy' and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
               and r.status in ('cancelled', 'timed_out')
               and r.result_json#>>'{executionCancellation,state}' = 'acknowledged'
@@ -126,13 +132,22 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
               and coalesce(f.recovery_state, 'blocked') = 'blocked'
               and r.result_json->>'workspaceRestoreFailure' is null
               and coalesce(r.result_json->'workspaceRestoreRecovery', 'null'::jsonb) = 'null'::jsonb
-              and exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
-                and c.process_stopped_at is not null)
+              and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
+                and c.process_stopped_at is not null) or r.result_json#>>'{stopSettlement,state}' = 'settled')
               and not exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
                 and (c.process_stopped_at is null or c.state not in ('saved', 'unchanged', 'unavailable')
-                  or c.receipt->>'cleanupPending' is distinct from 'false'
+                  or (c.receipt->>'cleanupPending' = 'true' or (c.receipt->>'schema' = 'paperclip.agent-files.v1' and c.receipt->>'cleanupPending' is distinct from 'false'))
                   or c.receipt ? 'retainedByRunId'))
             ))))
+          and not exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
+            and (c.process_stopped_at is null or c.state not in ('saved', 'unchanged', 'unavailable')
+              or (c.receipt->>'cleanupPending' = 'true' or (c.receipt->>'schema' = 'paperclip.agent-files.v1' and c.receipt->>'cleanupPending' is distinct from 'false')) or c.receipt ? 'retainedByRunId'))
+          and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
+            and ((e.source_event_id is null and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))
+              or e.event_type in ('turn.started', 'session.resumed'))
+            and not exists (select 1 from heartbeat_run_events stopped where stopped.run_id = r.id
+              and stopped.source_event_id is null and stopped.event_type = 'native.local_process_stopped' and stopped.seq > e.seq)
+            and exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and e.created_at > c.process_stopped_at))
           and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
           and not exists (select 1 from workspace_operations o where o.heartbeat_run_id = r.id
             and o.status in ('running', 'queued', 'pending'))

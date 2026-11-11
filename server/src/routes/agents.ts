@@ -7353,7 +7353,8 @@ export function agentRoutes(
         companyId: run.companyId,
         actorType: "user",
         actorId: req.actor.userId ?? "board",
-        action: "heartbeat.cancelled",
+        action: ["cancelled", "timed_out", "failed", "interrupted", "succeeded"].includes(existing.status)
+          ? "heartbeat.stop_rechecked" : "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
         details: { agentId: run.agentId },

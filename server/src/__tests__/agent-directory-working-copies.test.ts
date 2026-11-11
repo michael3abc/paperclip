@@ -1,4 +1,6 @@
 import { heartbeatService } from "../services/heartbeat.js";
+import { createRunStopSettlement } from "../services/heartbeat/stop-settlement.js";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDirectoryCleanup } from "../services/directory-cleanup-notifications.js";
@@ -83,6 +85,31 @@ describe("persistent agent directories", () => {
     await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: userId, permissionKey: "agents:configure", scope: { agentIds: [agentId] } });
     await fs.mkdir(path.dirname(path.join(root, entryFile)), { recursive: true });
     await fs.writeFile(path.join(root, entryFile), initial);
+  });
+
+  it("automatically collects a previously unavailable local copy after current stop proof, preserving edits and failure history", async () => {
+    const copy = await run();
+    await fs.writeFile(path.join(copy.localRoot, "retained-result.txt"), "original completed work");
+    await copies.reportUnavailable(companyId, copy.runId);
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, copy.runId));
+    await appendHeartbeatRunEvent(db, { companyId, runId: copy.runId, agentId, stream: "system",
+      eventType: "native.local_process_stopped", payload: { processPid: 2147483000, processGroupId: 2147483000, processStartedAt: new Date().toISOString() } });
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const service = createRunStopSettlement(db, { getAdapter: () => undefined, isRunActive: () => false });
+    try {
+      await copies.registerStoppedCollectionWork(coordinator, () => true, async () => true).ready;
+      await service.register(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        expect((await copies.get(companyId, copy.runId))?.receipt?.cleanupPending).toBe(false);
+        const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, copy.runId));
+        expect(stopped.resultJson?.stopSettlement).toMatchObject({ state: "settled" });
+        expect(stopped.status).toBe("failed");
+      }, { timeout: 5000 });
+      expect(await fs.readFile(path.join(root, "retained-result.txt"), "utf8")).toBe("original completed work");
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, copy.runId));
+      expect(events.filter(e => e.eventType === "execution.instruction_collection_rechecked")).toHaveLength(1);
+    } finally { await coordinator.stop(); }
   });
 
   describe("post-save directory cleanup worker", () => {

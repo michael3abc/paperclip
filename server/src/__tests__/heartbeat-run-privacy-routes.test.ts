@@ -203,6 +203,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       stream: "stdout",
       message: "private@example.test",
     });
+    await db.update(heartbeatRuns).set({ nextEventSeq: 2 }).where(eq(heartbeatRuns.id, privateRunId));
     await db.insert(workspaceOperations).values({
       id: operationId,
       companyId,
@@ -550,17 +551,17 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       .where(eq(nativeRunFinalizations.runId, fixture.privateRunId));
     const before = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
     const unchanged = await request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
-    expect(unchanged.status).toBe(200);
-    expect(unchanged.body).toMatchObject({ status: "failed", resultJson: null });
+    expect(unchanged.status, JSON.stringify(unchanged.body)).toBe(200);
+    expect(unchanged.body).toMatchObject({ status: "failed", resultJson: { stopSettlement: { state: "stopping" } } });
     const recorded = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
     expect(recorded).toHaveLength(before.length + 1);
-    expect(recorded.at(-1)?.action).toBe("heartbeat.cancelled");
+    expect(recorded.at(-1)?.action).toBe("heartbeat.stop_rechecked");
     const denied = await request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`)
       .send({ cancellationRequestId: randomUUID() });
     expect(denied.status).toBe(409);
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId))).toEqual(recorded);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0])
-      .toMatchObject({ status: "failed", resultJson: null });
+      .toMatchObject({ status: "failed", resultJson: unchanged.body.resultJson });
   });
 
   it("conceals private runs from unauthorized cancellation and watchdog mutations", async () => {

@@ -1,3 +1,4 @@
+import { readRunStopSettlement } from "@paperclipai/shared";
 import type { heartbeatRuns } from "@paperclipai/db";
 import { buildHeartbeatRunIssueComment } from "./heartbeat-run-summary.js";
 
@@ -24,6 +25,7 @@ export function buildHeartbeatRunStatusLiveEventPayload(
       ? run.contextSnapshot.issueId
       : null,
     status: run.status,
+    stopSettlement: readRunStopSettlement(run.resultJson),
     invocationSource: run.invocationSource,
     triggerDetail: run.triggerDetail,
     error: run.error ?? null,

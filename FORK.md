@@ -5,6 +5,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Durable run stop settlement (2026-11-11): read-only Bridge/native verification,
+  persistent four-check budgets, cleanup-only native finalization and same-row
+  event-driven workspace waits. Recheck keeps original sessions, errors and holds;
+  UI reflects stopping/cleaning/attention/settled states from one public projection.
+  Related PostgreSQL, heartbeat, adapter and UI tests cover evidence races and idle
+  behavior. No schema migration or historical task replay.
+
 - Remote host boot-boundary holder settlement (2026-11-11): holderless
   remote-managed workspace waits can be reconciled by the Owner. Admission's
   own owner query is reused; a read-only Bridge adapter observation of the host

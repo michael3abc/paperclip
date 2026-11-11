@@ -510,6 +510,8 @@ export interface AcpTargetDescriptor {
 
 /** Input for a read-only re-check of a cancelled run whose adapter stop was unconfirmed at cancel time. */
 export interface AdapterStopReverificationInput {
+  /** Cancels inspection I/O; must never be interpreted as provider Stop. */
+  signal?: AbortSignal;
   runId: string;
   companyId: string;
   agentId: string;

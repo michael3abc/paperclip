@@ -4,7 +4,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 
 const STOPPED_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
-const VERIFICATION_ERROR = "The stop was requested, but stopping could not be verified. Refresh and try Stop again if work is still running.";
+const VERIFICATION_ERROR = "The stop was requested, but stopping could not be verified. The server will recheck automatically; use Recheck on the original run to inspect it.";
 
 type StopRunEvidence = Pick<HeartbeatRun, "id" | "companyId" | "resultJson"> & {
   status: string;
@@ -54,7 +54,7 @@ export async function waitForStoppedRuns(
   while (remaining.length > 0) {
     if (Date.now() >= deadline) {
       throw new StopVerificationError(transientFailure ? VERIFICATION_ERROR
-        : "The stop was requested, but work is still stopping. Try Stop again if it continues.", targets);
+        : "The stop was requested, but work is still stopping. The server will recheck automatically.", targets);
     }
     let states;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -85,7 +85,7 @@ export async function waitForStoppedRuns(
     if (remaining.length === 0) return;
     if (Date.now() >= deadline) {
       throw new StopVerificationError(
-        "The stop was requested, but work is still stopping. Try Stop again if it continues.",
+        "The stop was requested, but work is still stopping. The server will recheck automatically.",
         targets,
       );
     }

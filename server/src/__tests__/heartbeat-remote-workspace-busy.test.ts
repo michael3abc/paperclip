@@ -1,3 +1,4 @@
+import { reconcileWorkspaceWaits } from "../services/heartbeat/workspace-wait-settlement.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -91,24 +92,27 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       expect(run).not.toBeNull();
       await heartbeat.drainActiveRunExecutions();
       const [deferred] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
-      expect(deferred).toMatchObject({ status: "cancelled", errorCode: "workspace_busy",
+      expect(deferred).toMatchObject({ status: "scheduled_retry", errorCode: "workspace_busy",
         contextSnapshot: { workspaceBusyDeferredWhileAssignee: true },
         resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
           workspaceBusy: { executionWorkspaceId: workspace.id, holderRunId: writer.id } } });
       const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
-      expect(retries).toHaveLength(1);
-      expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+      expect(retries).toHaveLength(0);
+      expect(deferred).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
       const [bound] = await db.select().from(issues).where(eq(issues.id, child.id));
-      expect(bound).toMatchObject({ executionRunId: retries[0].id, executionWorkspaceId: workspace.id });
+      expect(bound).toMatchObject({ executionRunId: run!.id, executionWorkspaceId: workspace.id });
       expect(bound.status).not.toBe("blocked");
       expect((await db.select().from(environmentLeases)).filter(lease => lease.heartbeatRunId === run!.id)).toEqual([]);
       expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, workspace.id)))[0].metadata)).toEqual(authority);
-      if (action === "Stop") await heartbeat.cancelRun(retries[0].id);
-      expect((await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).not.toContain(retries[0].id);
+      if (action === "Stop") await heartbeat.cancelRun(run!.id);
+      expect((await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).not.toContain(run!.id);
       if (action === "reassignment") {
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), nativeSessionId: null }).where(eq(heartbeatRuns.id, writer.id));
+        await reconcileWorkspaceWaits(db);
+        await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 1000));
         expect(reassignmentInjected).toBe(true);
-        expect(await heartbeat.getRun(retries[0].id)).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+        expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
       }
     } finally { transactionSpy.mockRestore(); }
   });

@@ -1,3 +1,5 @@
+import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { pmInstructionLayout, type PmInstructionLayoutVersion } from "@paperclipai/shared";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyInstructionCollection, type InstructionCollectionScope } from "./instruction-collection-notifications.js";
@@ -25,6 +27,7 @@ import { agentInstructionRevisionService } from "./agent-instruction-revisions.j
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionBytes, instructionPath, materializeInstructionBytes, MAX_INSTRUCTION_BYTES, readInstructionBytes, instructionGitExcludeProgram } from "./agent-instruction-files.js";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { hasCurrentStopVerification } from "./heartbeat/stop-settlement-evidence.js";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
 import type { AuthorizationActor } from "./authorization.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
@@ -117,6 +120,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     const signalsCleanup = directoryCleanupEntry(row) !== null || directoryCleanupEntry({ ...row, ...values }) !== null;
     const signalsCommit = row.state === "pending_commit" || values.state === "pending_commit";
     const write = async (tx: Db) => {
+      await notifyRunStopSettlement(tx, { companyId: row.companyId, runId: row.runId });
       await notifyStrandedAgentStatus(tx, { companyId: row.companyId, agentId: row.agentId });
       if (signalsCommit)
         await notifyInstructionCommit(tx, { companyId: row.companyId, runId: row.runId });
@@ -391,26 +395,45 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     return !row.receipt?.retainedByRunId && (
       row.attempts < MAX_COLLECTION_ATTEMPTS && (["prepared", "pending_collection", "unchanged_turn", "warm_saved"].includes(row.state)
         || row.state === "preparing" && isAgentDirectoryCopy(row))
-      || row.state === "unavailable" && !row.processStoppedAt && row.location.startsWith("remote:") && isAgentDirectoryCopy(row));
+      || row.state === "unavailable" && !row.processStoppedAt && isAgentDirectoryCopy(row));
   }
   function collectionPredicate() {
     return and(sql`NOT (coalesce(${copies.receipt}, '{}'::jsonb) ? 'retainedByRunId') AND (
       (${copies.attempts} < 3 AND (${copies.state} IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')
         OR (${copies.state} = 'preparing' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1')))
       OR (${copies.state} = 'unavailable' AND ${copies.processStoppedAt} IS NULL
-        AND ${copies.location} LIKE 'remote:%' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'))`,
-      inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]));
+        AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'
+        AND (${copies.location} LIKE 'remote:%' OR (
+          ${copies.location} = 'local' AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,stopVerified}' = 'true'
+          AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,state}' IN ('cleaning', 'needs_attention', 'settled')))))`,
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
+      // Exhausted stop verification has no new filesystem evidence to collect.
+      // A later proof or explicit recheck notifies this same collection worker.
+      sql`NOT coalesce(${heartbeatRuns.resultJson}#>>'{stopSettlement,state}' = 'needs_attention'
+        AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,stopVerified}' = 'false', false)`);
   }
   async function collectRecovered(row: Copy, runtimeMode: string | null) {
-    if (row.state === "unavailable" && isAgentDirectoryCopy(row)) {
+    const verifiedLocalStop = row.location === "local" && (row.processStoppedAt ||
+      runtimeMode === "native" && await hasNativeLocalProcessStop(db, row.companyId, row.runId) ||
+      await hasCurrentStopVerification(db, row.companyId, row.runId));
+    if (row.state === "unavailable" && isAgentDirectoryCopy(row) && row.location === "local") {
+      if (!verifiedLocalStop || !await hasCurrentStopVerification(db, row.companyId, row.runId)) return;
+      // The earlier unavailable result did not certify a stopped writer. Read
+      // the retained files through the original CAS collector before cleanup.
+      // Keep its failure in the run log; a successful later save cannot erase it.
+      await appendHeartbeatRunEvent(db, { companyId: row.companyId, runId: row.runId, agentId: row.agentId,
+        eventType: "execution.instruction_collection_rechecked", stream: "system",
+        payload: { previousState: row.state, previousErrorCode: row.errorCode, previousErrorMessage: row.errorMessage } });
+      row = await patch(row, { state: "pending_collection", attempts: 0, processStoppedAt: new Date() });
+      await collectStopped({ companyId: row.companyId, runId: row.runId });
+    } else if (row.state === "unavailable" && isAgentDirectoryCopy(row)) {
       await recoverDirectoryCleanup(row, () => directories.recoverUnavailable(row));
     } else if (row.state === "preparing" && isAgentDirectoryCopy(row)) {
 
 
       await directories.release(await patch(row, { state: "unavailable", processStoppedAt: new Date(),
         errorCode: "AGENT_FILES_PREPARE_FAILED", errorMessage: "Agent-file preparation was interrupted. The temporary copy was discarded.", nextAttemptAt: null }));
-    } else if (row.location === "local" && (row.processStoppedAt || runtimeMode === "native" &&
-        await hasNativeLocalProcessStop(db, row.companyId, row.runId))) {
+    } else if (verifiedLocalStop) {
       const result = await collectStopped({ companyId: row.companyId, runId: row.runId });
       if (result && isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
     } else if (row.location !== "local" && await remoteExecutionHasStopped(db, row.companyId, row.runId)) {

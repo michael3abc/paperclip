@@ -1,5 +1,23 @@
 # Developing
 
+## Durable stop settlement
+
+`heartbeat/stop-settlement.ts` owns the original-run claim and bounded verification
+budget; `stop-settlement-evidence.ts` verifies termination and independent resource
+obligations. The existing delivery coordinator reconstructs persisted deadlines
+and handles cancellation, process, lease and instruction-cleanup notifications.
+No recurring scan remains after settlement or evidence exhaustion. New evidence
+permits one inspection without resetting the budget. Terminal cancellation API
+requests are read-only toward the provider and audit `heartbeat.stop_rechecked`.
+`workspace-wait-settlement.ts` makes a parked original row eligible only after
+its holder settles; dispatch retains current permissions and holds.
+
+Run the focused stop-settlement, Bridge stop-reverification, shared-checkout,
+heartbeat workspace-busy (local/remote), agent-directory-working-copies and
+RunCancelButton/LiveUpdatesProvider tests. PostgreSQL tests use owned isolated
+databases. Preserve failed attempts and run the release-bound related selection,
+typecheck, build and token gates before sealing. See `execution-semantics.md`.
+
 ## Main-agent live work cards
 
 The Agent Chat live work panel shows harness, model and billing source on the current-run card

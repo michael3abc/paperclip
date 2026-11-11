@@ -1,4 +1,5 @@
 import { enqueuePushSource } from "../web-push-events.js";
+import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
@@ -1064,6 +1065,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     // commit cannot strand newly-actionable accounting after the live event.
     return db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
+      if (previous && isHeartbeatRunTerminalStatus(status))
+        await notifyRunStopSettlement(tx, { companyId: previous.companyId, runId: previous.id });
       if (previous?.runtimeMode === "native" && isHeartbeatRunTerminalStatus(status))
         await notifyExternalAgentSettlement(tx, { companyId: previous.companyId, runId: previous.id });
       if (previous?.runtimeMode === "native") await notifyNativeRecoveryNotices(tx, { companyId: previous.companyId, runId: previous.id });

@@ -441,9 +441,11 @@ subsequent wakes, so the original worker can resume the task. This prompt change
 does not clear any persisted execution reconciliation hold.
 
 Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
-continues automatically when the workspace is available. Internal scheduling
-attempts remain in the run log without conversation cancellation markers,
-cancellation toasts, or manual Retry controls. Users can keep sending instructions.
+parks the same admitted run as `scheduled_retry`, with no deadline while its
+holder remains unsettled. Holder settlement makes that row eligible once through
+the delivery coordinator; normal authority, pause and physical ownership checks
+still run at promotion. No child retry rows or cancellation receipts are created.
+An opaque holder digest keeps foreign project/run details out of public state.
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
@@ -3575,12 +3577,27 @@ the board-only cancellation API; it preserves task history and outputs and does
 not implicitly retry the task or cancel a newer attempt. The GUI waits for stop
 confirmation and reports failure visibly without retrying the mutation.
 
-A cancelled legacy Bridge run whose stop is still requested exposes **Finish
-cancellation**. The same cancellation endpoint rechecks its original Bridge/native
-identity and stop receipt. Unknown or unavailable evidence returns a conflict;
-it never synthesizes proof, resends input or stops a successor. An acknowledged,
-unforced Bridge stop can release a shared checkout only when the controller lease,
-workspace operations, finalizer and environment leases have also settled.
+Stop settlement separates the request, verified execution termination and completed
+cleanup. `resultJson.stopSettlement` records `paperclip.run-stop-settlement.v1`, a
+durable claim, evidence generation, attempts and completion-relative deadlines.
+Automatic external verification runs immediately, then after 30 seconds, 2 minutes
+and 5 minutes. Restart preserves the four-attempt budget; exhaustion has no scan
+deadline until new evidence or an explicit **重新檢查**. The existing board-only
+cancellation endpoint rechecks terminal runs without issuing another provider Stop.
+Details, lists and live events expose the same bounded status: 正在停止, 正在清理,
+需處理 or 已結清. Unverified evidence returns that pending receipt, not release proof.
+
+Bridge proof binds the original native session, run and input; a restored card or
+completed later input is separately identified as the observation source. Inspection
+never resumes, interrupts or sends input. Native cleanup reuses the latest launch's
+host/process or provider termination evidence; a newer launch invalidates old proof.
+An observed cancelled finalizer with no result, owner or recovery obligation can
+settle to terminal failure without rerunning the task. Historical failed native
+runs may verify termination and collect retained files while remaining failed.
+Unavailable local copies are re-read only after current settlement proof, through
+the original file collector and save CAS; retain the earlier failure in the run log.
+Controller/finalizer ownership, uncollected files, workspace recovery/operations and
+unreleased leases continue to block writers. No claim is forcibly deleted.
 
 ### Physical workspace admission
 

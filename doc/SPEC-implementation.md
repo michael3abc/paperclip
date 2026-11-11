@@ -81,6 +81,9 @@ Telemetry and infrastructure tracing.
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
 - Heartbeat invocation, status tracking, and cancellation
+- Automatic bounded stop settlement separates termination from resource cleanup,
+  preserves original receipts and same-row workspace waits, and exposes terminal
+  Recheck without provider replay (see `doc/execution-semantics.md`).
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs

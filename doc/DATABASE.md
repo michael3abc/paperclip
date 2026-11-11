@@ -199,6 +199,16 @@ Stop settlement still load complete run evidence. Workspace settlement reads the
 saved sync descriptor, export retry, and first-heartbeat flag. These projections
 leave stored prompts, logs, results, and recovery state unchanged.
 
+Stop settlement adds no table: `heartbeat_runs.result_json.stopSettlement` stores
+the schema, state, reason, check count, next deadline, evidence fingerprint and
+claim token/expiry. Claims consume attempts before external I/O, and a row-locked
+token/version check protects completion. Launch-event generation invalidates old
+stop evidence. Existing cancellation and finalization receipts remain authoritative.
+Public list/detail/live projections expose only bounded state/reason/timestamps.
+Workspace contention keeps the original row and wake request; a null retry time
+parks it until a holder-settlement notification. The holder digest does not grant
+cross-project visibility. All wake hints are registered in producer transactions.
+
 Settled native process release locks run identity, terminal state, process
 identity, and checkpoint presence without loading the checkpoint or execution
 payloads. It retains current coordinator checks, provider evidence, local-host

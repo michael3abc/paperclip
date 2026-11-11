@@ -29,7 +29,7 @@ it("cancels the displayed waiting run once and confirms its receipt", async () =
 it("shows an unverified cancellation without replaying it or claiming release", async () => {
   cancel.mockRejectedValue(new Error("Cancellation remains unverified"));
   await render(true);
-  expect(container.textContent).toContain("Finish cancellation");
+  expect(container.textContent).toContain("重新檢查");
   await act(async () => container.querySelector("button")!.click()); await flush();
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("Cancellation remains unverified");
   expect(cancel).toHaveBeenCalledTimes(1);

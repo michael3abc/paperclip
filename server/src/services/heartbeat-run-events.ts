@@ -81,7 +81,7 @@ export async function appendHeartbeatRunEvent(
   const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX));
   // Terminal proof may arrive after controller retirement and a quiet Stop
   // check. Register the scoped wake before writing it, in the same transaction.
-  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType)
+  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped", "turn.started", "session.resumed"].includes(input.eventType)
     || Boolean(input.nativeSource && ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(input.eventType));
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);

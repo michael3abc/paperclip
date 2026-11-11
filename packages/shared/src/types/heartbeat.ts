@@ -1,3 +1,4 @@
+import type { RunStopSettlement } from "../run-stop-settlement.js";
 import type {
   AgentRole,
   AgentStatus,
@@ -154,6 +155,7 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  stopSettlement?: RunStopSettlement | null;
   /** Persisted native driver identity; older servers may omit this field. */
   driverKind?: string | null;
   execution?: import("./execution-projection.js").ExecutionProjection | null;

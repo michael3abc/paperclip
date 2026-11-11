@@ -1,4 +1,5 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
 
 export type LiveRunRecoveryScope = { companyId: string; runId?: string; issueId?: string; agentId?: string };
 
@@ -13,6 +14,7 @@ export async function notifyActiveExecutionRecovery(tx: object, scope: { company
 }
 
 export async function notifyLiveRunRecovery(tx: object, scope?: LiveRunRecoveryScope) {
+  await notifyRunStopSettlement(tx, scope);
   const hint = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId }) : "*";
   for (const queue of [DELIVERY_QUEUES.nativeProcessSessions, DELIVERY_QUEUES.nativeQuestionCancellations,
     DELIVERY_QUEUES.activeExecutionRecovery, DELIVERY_QUEUES.settledNativeProcesses])
@@ -25,6 +27,7 @@ export async function notifyLiveRunRecovery(tx: object, scope?: LiveRunRecoveryS
 export type LiveResourceRecoveryScope = { companyId: string; runId?: string; leaseId?: string };
 
 export async function notifyLiveResourceRecovery(tx: object, scope?: LiveResourceRecoveryScope) {
+  await notifyRunStopSettlement(tx, scope);
   const hint = scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId, leaseId: scope.leaseId }) : "*";
   for (const queue of [DELIVERY_QUEUES.orphanActiveLeases, DELIVERY_QUEUES.legacyShutdownSettlement])
     await notifyDeliveryWork(tx, queue, hint);
