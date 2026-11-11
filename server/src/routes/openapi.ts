@@ -6399,8 +6399,8 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/dashboard/subscription-quotas",
   tags: ["dashboard"],
-  summary: "Read this host's subscription quotas",
-  description: "Instance administrators only, with company access. Explicit PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 opt-in; otherwise returns an empty list. Uses this host's Codex, Claude and Antigravity CLI logins, independently of managed AI connections. No inference or credit overage is started. Results are cached for 60 seconds; unavailable quotas remain explicit failures.",
+  summary: "Read subscription quotas for the company's configured execution hosts",
+  description: "Instance administrators only, with company access. Explicit PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 opt-in; otherwise returns an empty list. Non-terminated company agents select the accounts through their adapters. Local CLI accounts and registered remote Bridge hosts remain separate; managed AI connections and billing are unchanged. No inference is started. Host reads coalesce and cache for 60 seconds, including unavailable results, without idle probes or fallback to another host.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

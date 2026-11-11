@@ -20,10 +20,20 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("host subscription quotas", () => {
+  it("reads only selected providers and shares their caches across company selections", async () => {
+    const { fetchHostSubscriptionQuotas } = await import("../services/host-subscription-quotas.js");
+    const first = await fetchHostSubscriptionQuotas(["openai"]);
+    expect(first.map(value => value.provider)).toEqual(["openai"]);
+    expect(mocks.token).not.toHaveBeenCalled(); expect(mocks.antigravity).not.toHaveBeenCalled();
+    const second = await fetchHostSubscriptionQuotas(["openai", "anthropic"]);
+    expect(second[0]).toBe(first[0]); expect(mocks.codex).toHaveBeenCalledTimes(1);
+    expect(mocks.claude).toHaveBeenCalledTimes(1); expect(mocks.antigravity).not.toHaveBeenCalled();
+  });
+
   it("does no provider work without explicit opt-in", async () => {
     vi.stubEnv("PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS", "0");
     const { fetchHostSubscriptionQuotas } = await import("../services/host-subscription-quotas.js");
-    expect(await fetchHostSubscriptionQuotas()).toEqual([]);
+    expect(await fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"])).toEqual([]);
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.token).not.toHaveBeenCalled();
     expect(mocks.antigravity).not.toHaveBeenCalled();
@@ -32,16 +42,16 @@ describe("host subscription quotas", () => {
   it("shares simultaneous reads and caches without scheduling idle provider calls", async () => {
     vi.useFakeTimers();
     const { fetchHostSubscriptionQuotas } = await import("../services/host-subscription-quotas.js");
-    const [first, second] = await Promise.all([fetchHostSubscriptionQuotas(), fetchHostSubscriptionQuotas()]);
-    expect(first).toBe(second);
+    const [first, second] = await Promise.all([fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"]), fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"])]);
+    expect(first).toEqual(second);
     expect(first.map((value) => value.provider)).toEqual(["openai", "anthropic", "antigravity"]);
     expect(first.every((value) => value.ok && value.source === "host-subscription")).toBe(true);
-    await fetchHostSubscriptionQuotas();
+    await fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"]);
     expect(mocks.codex).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(120_000);
     expect(mocks.codex).toHaveBeenCalledTimes(1);
     expect(mocks.antigravity).toHaveBeenCalledTimes(1);
-    await fetchHostSubscriptionQuotas();
+    await fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"]);
     expect(mocks.codex).toHaveBeenCalledTimes(2);
   });
 
@@ -49,7 +59,7 @@ describe("host subscription quotas", () => {
     mocks.codex.mockRejectedValue(new Error("Authorization: Bearer fixture-secret-private /private/auth.json"));
     mocks.token.mockResolvedValue(null);
     const { fetchHostSubscriptionQuotas } = await import("../services/host-subscription-quotas.js");
-    const result = await fetchHostSubscriptionQuotas();
+    const result = await fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"]);
     expect(result[0]).toMatchObject({ ok: false, errorFamily: "provider_unavailable", windows: [] });
     expect(result[1]).toMatchObject({ ok: false, errorFamily: "credentials_unavailable", windows: [] });
     expect(result[2].ok).toBe(true);
@@ -63,12 +73,12 @@ describe("host subscription quotas", () => {
     const { fetchHostSubscriptionQuotas } = await import("../services/host-subscription-quotas.js");
     const { startTaskDrain, stopTaskDrain, idleWorkSnapshot } = await import("../services/task-admission.js");
     startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
-    expect(() => fetchHostSubscriptionQuotas()).toThrow("maintenance");
+    expect(() => fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"])).toThrow("maintenance");
     expect(mocks.codex).not.toHaveBeenCalled();
     stopTaskDrain();
     let settle!: (value: unknown) => void;
     mocks.codex.mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
-    const reading = fetchHostSubscriptionQuotas();
+    const reading = fetchHostSubscriptionQuotas(["openai", "anthropic", "antigravity"]);
     expect(idleWorkSnapshot().active).toBe(1);
     settle({ windows: [window] });
     await reading;

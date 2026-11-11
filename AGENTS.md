@@ -445,7 +445,11 @@ If anything cannot be run, explicitly report what was not run and why.
 Host subscription quotas are an explicit operator feature, enabled only with
 PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1. The dashboard endpoint requires instance
 admin and existing company access before any host login is read. Keep these
-snapshots separate from company-managed AI connections and billing. Poll only
+snapshots separate from company-managed AI connections and billing.
+Select hosts/providers from that company's non-terminated agents
+through adapter-owned getSubscriptionQuotas. Keep separate host/provider cards,
+never fall back to this server's login for a remote host, and retain capture times
+and explicit unreported quota. Poll only
 while the Dashboard is visible, cache for 60 seconds, track provider work through
 maintenance admission, and preserve unknown values and provider failures. Codex
 window labels derive from durations, never primary/secondary position. Subscription
