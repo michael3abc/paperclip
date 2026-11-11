@@ -44,6 +44,15 @@ remote Bridge reports Codex only; selected Claude/Antigravity providers explicit
 show unreported quota. The local host retains its detailed native readers.
 Compass credits remain a separate source and are not merged or inferred.
 
+Codex Business/Enterprise account RPCs can return individualLimit with null
+primary/secondary windows. Local readers and remote Bridge get_usage preserve
+that allocation as an Individual allocation row, displaying used/limit in quota
+units and the provider-reported remaining percentage. It is not a dollar balance
+or a fabricated 5h/7d window. Missing percentages/resets stay unknown; malformed
+allocation is a visible failure. The remote Bridge must include the additive
+individualLimit field for these accounts; older Bridges still report their
+explicit missing-quota error until upgraded.
+
 This project can run fully in local dev without setting up PostgreSQL manually.
 
 ## Persistent case handoffs

@@ -452,7 +452,10 @@ never fall back to this server's login for a remote host, and retain capture tim
 and explicit unreported quota. Poll only
 while the Dashboard is visible, cache for 60 seconds, track provider work through
 maintenance admission, and preserve unknown values and provider failures. Codex
-window labels derive from durations, never primary/secondary position. Subscription
+window labels derive from durations, never primary/secondary position.
+Codex Business individualLimit is an independent allocation, valid without
+primary/secondary windows. Preserve its reported percentage/reset and quota units;
+never label those units as dollars or infer an absent percentage. Subscription
 bar fill, percentage labels and accessible values all show remaining quota; warning
 colors still reflect depletion. Other spending bars retain consumption semantics.
 Antigravity shows only its reported quota groups; never infer Gemini quota or enable credits.
