@@ -4419,8 +4419,19 @@ export function heartbeatService(
     tickIssueMonitors,
     nextIssueMonitorAt,
 
-    cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) =>
-      cancelRunInternal(runId, reason, options),
+    cancelRun: async (runId: string, reason?: string, options?: CancelRunOptions) => {
+      const run = await getRun(runId);
+      // Inspect the original stop receipt without stopping a successor or replaying input.
+      if (run?.status === "cancelled" && run.runtimeMode === "legacy" &&
+          parseObject(run.resultJson?.executionCancellation).state === "requested") {
+        const outcome = await bridgeStopReverification.reconcile(run.id, run.companyId);
+        if (outcome !== "acknowledged") throw conflict(
+          "Cancellation remains unverified. The original run still holds its workspace; no new run was started.",
+          { runId: run.id, outcome });
+        return getRun(run.id);
+      }
+      return cancelRunInternal(runId, reason, options);
+    },
 
     requestCaseHandoffYield: async (input: { runId: string; issueId: string; handoffId: string }) => {
       const handoff = await pendingCaseHandoffForRun(db, input.runId);
