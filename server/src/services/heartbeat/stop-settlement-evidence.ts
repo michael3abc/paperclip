@@ -52,17 +52,21 @@ export async function inspectStopResources(db: Db, run: Run, ignoreFinalizer = f
 /** Rebind the last launch, including after mutable process columns were cleared. */
 export async function verifyNativeStop(db: Db, run: Run): Promise<string | null> {
   if (run.runtimeMode !== "native") return null;
-  const [generation] = await db.select({ type: heartbeatRunEvents.eventType }).from(heartbeatRunEvents)
+  const [generation] = await db.select({ type: heartbeatRunEvents.eventType, at: heartbeatRunEvents.createdAt }).from(heartbeatRunEvents)
     .where(and(eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.companyId, run.companyId),
       sql`((${heartbeatRunEvents.sourceEventId} is null and ${heartbeatRunEvents.eventType} in
         ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped'))
         or ${heartbeatRunEvents.eventType} in ('turn.started', 'session.resumed'))`))
     .orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  if (generation?.type === "turn.started" || generation?.type === "session.resumed") return null;
   const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, run.id));
-  if (leases.some(l => l.provider !== "local")) return leases.every(hasRemoteTerminationReceipt) ? "provider_termination_receipt" : null;
-  if (run.driverKind === "cursor_cloud_api") return await acknowledgedNativeApiStopExecutionHasStopped(db, run) ? "provider_api_stop_receipt" : null;
-  if (await readNativeLocalProcessStop(db, run.companyId, run.id)) return "local_process_stop_receipt";
+  if (leases.some(l => l.provider !== "local")) return leases.every(l => {
+    const proof = l.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined;
+    return hasRemoteTerminationReceipt(l) && (!generation || typeof proof?.confirmedAt === "string" &&
+      Date.parse(proof.confirmedAt) >= generation.at.getTime());
+  }) ? "provider_termination_receipt" : null;
+  const newerTurn = generation?.type === "turn.started" || generation?.type === "session.resumed";
+  if (run.driverKind === "cursor_cloud_api") return !newerTurn && await acknowledgedNativeApiStopExecutionHasStopped(db, run) ? "provider_api_stop_receipt" : null;
+  if (!newerTurn && await readNativeLocalProcessStop(db, run.companyId, run.id)) return "local_process_stop_receipt";
   const [event] = await db.select({ type: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
     .where(and(eq(heartbeatRunEvents.runId, run.id), eq(heartbeatRunEvents.companyId, run.companyId),
       isNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType,

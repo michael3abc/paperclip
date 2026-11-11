@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { and, eq } from "drizzle-orm";
-import { agentInstructionWorkingCopies, agents, companies, heartbeatRuns, heartbeatRunEvents, issues, nativeRunFinalizations,
+import { agentInstructionWorkingCopies, agents, companies, environmentLeases, heartbeatRuns, heartbeatRunEvents, issues, nativeRunFinalizations,
   createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -129,6 +129,38 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     clock += 1001; await service.reconcile(f.run.id, f.company.id);
     expect(hook).toHaveBeenCalledTimes(1);
     expect(await receipt(f.run.id)).toMatchObject({ state: "needs_attention", attempts: 4, nextCheckAt: null });
+  });
+
+  it("reconstructs the latest local launch after its turn starts, using host-bound process evidence", async () => {
+    const f = await seed(true);
+    const service = createRunStopSettlement(db, { getAdapter: () => undefined, isRunActive: () => false });
+    await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+      eventType: "native.process_identity_recorded", stream: "system", payload: { targetKind: "local", hostname: hostname(),
+        processPid: 2147483000, processGroupId: 2147483000, processStartedAt: "2026-01-01T00:00:00.000Z" } });
+    await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+      eventType: "turn.started", stream: "system", payload: {} });
+    await service.reconcile(f.run.id, f.company.id);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+  });
+
+  it("binds remote termination to the latest launch, accepting only a newer provider receipt", async () => {
+    const f = await seed(true);
+    const service = createRunStopSettlement(db, { getAdapter: () => undefined, isRunActive: () => false });
+    const leaseId = randomUUID();
+    const proof = (confirmedAt: string) => ({ remoteExecutionTermination: {
+      schema: "paperclip.remote-termination.v1", companyId: f.company.id, runId: f.run.id,
+      leaseId, provider: "test-remote", providerLeaseId: "sandbox", state: "stopped", confirmedAt,
+    } });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: f.company.id, heartbeatRunId: f.run.id,
+      provider: "test-remote", providerLeaseId: "sandbox", status: "released", cleanupStatus: "success",
+      releasedAt: new Date(), metadata: proof("2020-01-01T00:00:00.000Z") });
+    await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+      eventType: "turn.started", stream: "system", payload: {} });
+    await service.reconcile(f.run.id, f.company.id);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", stopVerified: false });
+    await db.update(environmentLeases).set({ metadata: proof(new Date().toISOString()) }).where(eq(environmentLeases.id, leaseId));
+    await service.reconcile(f.run.id, f.company.id);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
   });
 
   it.each(["turn.started", "session.resumed"])("invalidates a settled receipt on newer %s evidence", async eventType => {
