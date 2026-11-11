@@ -5,6 +5,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Integrated capability inventory synchronization (2026-11-11): refresh both
+  Runner inventories after worker-secret guidance changes, retain the existing
+  eval corpus and verify normative source headings in the contract regression.
+
 - Workspace recovery allowance and lower Task list identity (2026-11-11): new recovery actions
   pin three total repair admissions per original task, retaining uncertain receipts and historical
   limits. Chat handoff cards show task-owned invocation/usage identity or labelled pending settings;
