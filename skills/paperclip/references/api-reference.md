@@ -1624,6 +1624,21 @@ Agents may have at most 20 pending proposals and may create at most 20 proposals
 
 Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
 
+
+### Main-agent worker secret delegation
+
+A project main agent may delegate a secret already listed by its current run to an Owner-approved worker on a task it created in its current project. Use the run-bound standard JWT; long-lived, session/task-bridge, skill-test and low-trust principals cannot grant access.
+
+- `POST /api/agents/me/secret-delegations` accepts `{ issueId, workerAgentId, key, reason }`. Use the canonical `key` from `GET /api/agents/me/secrets`. The task must already be assigned to that worker, and the main must still be the project's lead with a valid v2 worker policy.
+- `GET /api/agents/me/secret-delegations?issueId=<UUID>` returns the main's metadata-only `{ delegations: [...] }` receipts for that task. Reconcile an uncertain creation through this endpoint.
+- `DELETE /api/agents/me/secret-delegations/<bindingId>` revokes the caller's own grant. Revocation does not require retaining source access.
+
+Creation returns `{ bindingId, issueId, workerAgentId, key, version, delivery: "api" }`. Identical creation returns the existing binding; a different version/source conflicts until the original is revoked. There is no new human approval and no worker wake, restart, task replay or resolution of existing human-only questions. Workers discover and fetch through the existing `/agents/me/secrets` APIs; instruct the worker to check again in its own current task turn. Values are never copied, injected into env or included in grant receipts.
+
+Delegation uses existing `company_secret_bindings`: target `issue`, path `worker_access.<worker UUID>.<canonical key>`, a pinned numeric version, and a reserved structured provenance label (`worker-secret-delegation.v1`, main/run/source binding IDs and source-binding digest). These paths are API-only and never env bindings. A grant is readable only by a running worker owning that exact issue through its current execution/checkout run; a forged context `issueId` is insufficient. The task creator, current project lead, active agent states, same-host worker policy and original source binding are rechecked on every list/read. Source deletion/change, worker-policy removal, project-lead change, reassignment and done/cancelled tasks remove access without copying or deleting credentials. An inherited source requires the original main run's manifest; delegated grants cannot be redelegated. Rotation does not advance the pinned version; normal version revocation still applies. Credentials already fetched cannot be recalled.
+
+Grant/revoke and their activity records commit atomically. `secret.worker_delegated` / `secret.worker_revoked` include the issue reference in activity details; normal reads retain value-access audit and redaction registration. No migration or background poll is added. Request cost grows with that task's grants and referenced source bindings/runs; all reads are company/task-scoped and batch source lookup.
+
 #### Agent secret access
 
 Agent secret access requires the current run-bound agent JWT. An `env.*` binding implies API read access; an `access.*` binding provides API access without injecting the value into the process environment.

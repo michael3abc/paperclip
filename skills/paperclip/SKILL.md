@@ -596,6 +596,8 @@ curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
 - Every value fetch, including failures, is audited in `secret_access_events` and `activity_log`; never print, persist, or paste fetched values into task comments.
 - These endpoints require the current run-bound agent JWT. Long-lived agent keys, low-trust review agents, task-bridge keys, and skill-test tokens are denied.
 
+Project main agents may delegate an accessible secret to an approved worker on a task they created: `POST /api/agents/me/secret-delegations` with `{ issueId, workerAgentId, key, reason }`. Use the key from the metadata list; no secret value is sent. This grants API access only for that worker's current run owning that task, pins the version, and requires no additional Owner question. List/reconcile receipts with `GET /api/agents/me/secret-delegations?issueId=<UUID>` and revoke with `DELETE /api/agents/me/secret-delegations/<bindingId>`. Workers check the existing secrets endpoints using their own identity. Never use the main token in a worker or auto-resolve an existing human-only question. See the API reference for revocation and scope rules.
+
 Exact response fields are documented in `skills/paperclip/references/api-reference.md`.
 
 ## Critical Rules

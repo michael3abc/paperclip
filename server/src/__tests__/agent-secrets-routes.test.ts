@@ -16,6 +16,8 @@ import {
   companySecrets,
   createDb,
   heartbeatRuns,
+  issues,
+  projects,
   secretAccessEvents,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, type AgentApiKeyScope } from "@paperclipai/shared";
@@ -53,6 +55,8 @@ describeEmbeddedPostgres("agent secret routes", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(issues);
+    await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -225,6 +229,139 @@ describeEmbeddedPostgres("agent secret routes", () => {
     expect(await db.select().from(activityLog)).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "secret.value.read", entityId: unboundSecret.id }),
     ]));
+  });
+
+  async function seedDelegation() {
+    const main = await seedAgentRun();
+    const projectId = randomUUID(), workerId = randomUUID(), issueId = randomUUID(), workerRunId = randomUUID();
+    const selectionId = randomUUID();
+    await db.update(agents).set({
+      adapterType: "ccpocket_bridge", adapterConfig: { role: "main", projectId, provider: "codex" },
+      runtimeConfig: { pmDelegation: { version: 2, defaultSelectionId: selectionId, workers: [{
+        agentId: workerId, harness: "ccpocket_bridge", selections: [{ id: selectionId, model: "michael-server/codex/test", thinking: "high", permission: "full-access", speed: "standard" }],
+      }] } },
+    }).where(eq(agents.id, main.agentId));
+    await db.insert(agents).values({ id: workerId, companyId: main.companyId, name: "Shared worker", role: "engineer",
+      adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex" }, runtimeConfig: { requireProjectWorkspace: true }, status: "idle" });
+    await db.insert(projects).values({ id: projectId, companyId: main.companyId, name: "Delegation project", leadAgentId: main.agentId });
+    await db.insert(heartbeatRuns).values({ id: workerRunId, companyId: main.companyId, agentId: workerId, status: "running", contextSnapshot: {} });
+    await db.insert(issues).values({ id: issueId, companyId: main.companyId, projectId, title: "Worker task", status: "in_progress",
+      assigneeAgentId: workerId, createdByAgentId: main.agentId, executionRunId: workerRunId });
+    const svc = secretService(db);
+    const secret = await svc.create(main.companyId, { key: "API_KEY", name: "API key", provider: "local_encrypted", value: "delegated-test-credential" });
+    const binding = await svc.createBinding({ companyId: main.companyId, secretId: secret.id, targetType: "agent", targetId: main.agentId, configPath: "access.API_KEY" });
+    const worker = { companyId: main.companyId, agentId: workerId, heartbeatRunId: workerRunId };
+    const input = { issueId, workerAgentId: workerId, key: "api_key", reason: "Run the assigned preflight" };
+    return { main, worker, secret, binding, input, projectId };
+  }
+
+  it("delegates metadata references, pins the version, and allows the exact worker task to fetch without a restart", async () => {
+    const f = await seedDelegation();
+    const mainApp = createApp(f.main), workerApp = createApp(f.worker);
+    expect((await request(workerApp).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+    const grant = await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input);
+    expect(grant.status).toBe(201);
+    expect(grant.body).toMatchObject({ issueId: f.input.issueId, workerAgentId: f.worker.agentId, key: "api_key", version: 1, delivery: "api" });
+    expect(JSON.stringify(grant.body)).not.toContain("delegated-test-credential");
+    expect(await db.select().from(secretAccessEvents)).toEqual([]);
+    const repeated = await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input);
+    expect(repeated.status).toBe(201);
+    expect(repeated.body.bindingId).toBe(grant.body.bindingId);
+    expect((await request(mainApp).get(`/api/agents/me/secret-delegations?issueId=${f.input.issueId}`)).body.delegations).toEqual([grant.body]);
+    expect((await request(workerApp).get(`/api/agents/me/secret-delegations?issueId=${f.input.issueId}`)).status).toBe(403);
+    await secretService(db).rotate(f.secret.id, { value: "rotated-test-credential" });
+    const list = await request(workerApp).get("/api/agents/me/secrets");
+    expect(list.body.secrets).toEqual([expect.objectContaining({ key: "api_key", delivery: "api", versionSelector: 1 })]);
+    const value = await request(workerApp).post("/api/agents/me/secrets/api_key/value");
+    expect(value.status).toBe(200);
+    expect(value.body).toEqual({ key: "api_key", value: "delegated-test-credential", version: 1 });
+    expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "secret.worker_delegated", agentId: f.main.agentId, details: expect.objectContaining({ issueId: f.input.issueId }) }),
+      expect.objectContaining({ action: "secret.value.read", agentId: f.worker.agentId, details: expect.objectContaining({ issueId: f.input.issueId }) }),
+    ]));
+    expect(JSON.stringify(await db.select().from(companySecretBindings))).not.toContain("delegated-test-credential");
+  });
+
+  it("revokes delegation and source revocation immediately removes worker access", async () => {
+    const f = await seedDelegation(), mainApp = createApp(f.main), workerApp = createApp(f.worker);
+    const grant = await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input);
+    expect(grant.status).toBe(201);
+    const workerRevoke = await request(workerApp).delete(`/api/agents/me/secret-delegations/${grant.body.bindingId}`);
+    expect(workerRevoke.status).toBe(403);
+    expect((await request(mainApp).delete(`/api/agents/me/secret-delegations/${grant.body.bindingId}`)).status).toBe(200);
+    expect((await request(workerApp).post("/api/agents/me/secrets/api_key/value")).status).toBe(403);
+    expect((await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(201);
+    await db.delete(companySecretBindings).where(eq(companySecretBindings.id, f.binding.id));
+    expect((await request(workerApp).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+    expect((await request(workerApp).post("/api/agents/me/secrets/api_key/value")).status).toBe(403);
+  });
+
+  it("never exposes a task grant to another run, task, project, or reassigned worker", async () => {
+    const f = await seedDelegation();
+    expect((await request(createApp(f.main)).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(201);
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: f.main.companyId, agentId: f.worker.agentId, status: "running", contextSnapshot: { issueId: f.input.issueId } });
+    const otherRun = createApp({ ...f.worker, heartbeatRunId: otherRunId });
+    expect((await request(otherRun).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+    expect((await request(otherRun).post("/api/agents/me/secrets/api_key/value")).status).toBe(403);
+    await db.update(issues).set({ assigneeAgentId: f.main.agentId }).where(eq(issues.id, f.input.issueId));
+    expect((await request(createApp(f.worker)).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+  });
+
+  it("denies inaccessible secrets, foreign tasks, unsupported tokens, and workers outside the owner policy", async () => {
+    const f = await seedDelegation();
+    const foreign = await seedAgentRun();
+    const mainApp = createApp(f.main);
+    for (const input of [
+      { ...f.input, key: "unbound" }, { ...f.input, issueId: randomUUID() },
+      { ...f.input, workerAgentId: foreign.agentId },
+    ]) expect((await request(mainApp).post("/api/agents/me/secret-delegations").send(input)).status).toBe(403);
+    for (const [scope, source] of [
+      [{ kind: "task_bridge", parentIssueId: f.input.issueId }, "agent_key"],
+      [{ kind: "skill_test", issueId: f.input.issueId }, "agent_jwt"],
+      [{ kind: "standard" }, "agent_key"],
+    ] as const) expect((await request(createApp(f.main, scope, source)).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(403);
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, f.main.agentId));
+    expect((await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(403);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(1);
+  });
+
+  it("withdraws grants when the task completes, the main loses its project, or the source binding changes", async () => {
+    const f = await seedDelegation(), workerApp = createApp(f.worker);
+    expect((await request(createApp(f.main)).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(201);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.input.issueId));
+    expect((await request(workerApp).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.input.issueId));
+    await db.update(projects).set({ leadAgentId: null }).where(eq(projects.id, f.projectId));
+    expect((await request(workerApp).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+    await db.update(projects).set({ leadAgentId: f.main.agentId }).where(eq(projects.id, f.projectId));
+    await db.update(companySecretBindings).set({ versionSelector: "1" }).where(eq(companySecretBindings.id, f.binding.id));
+    expect((await request(workerApp).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+  });
+
+  it("keeps inherited project grants usable after the main turn ends, but rechecks current main authority", async () => {
+    const f = await seedDelegation(), mainApp = createApp(f.main), workerApp = createApp(f.worker);
+    await db.update(companySecretBindings).set({ targetType: "project", targetId: f.projectId, configPath: "env.API_KEY" }).where(eq(companySecretBindings.id, f.binding.id));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { paperclipSecrets: { manifest: [{ bindingId: f.binding.id }] } } }).where(eq(heartbeatRuns.id, f.main.heartbeatRunId));
+    expect((await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(201);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.main.heartbeatRunId));
+    expect((await request(workerApp).post("/api/agents/me/secrets/api_key/value")).status).toBe(200);
+    expect((await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(403);
+    await db.update(agents).set({ permissions: { trustPreset: LOW_TRUST_REVIEW_PRESET,
+      authorizationPolicy: { trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, projectIds: [f.projectId] } } } }).where(eq(agents.id, f.main.agentId));
+    expect((await request(workerApp).get("/api/agents/me/secrets")).body.secrets).toEqual([]);
+  });
+
+  it("serializes concurrent grants, rejects changed versions, and validates receipt identifiers", async () => {
+    const f = await seedDelegation(), mainApp = createApp(f.main);
+    const responses = await Promise.all([1, 2].map(() => request(mainApp).post("/api/agents/me/secret-delegations").send(f.input)));
+    expect(responses.map(r => r.status)).toEqual([201, 201]);
+    expect(responses[0].body.bindingId).toBe(responses[1].body.bindingId);
+    expect((await db.select().from(activityLog)).filter(row => row.action === "secret.worker_delegated")).toHaveLength(1);
+    await secretService(db).rotate(f.secret.id, { value: "new-version-value" });
+    expect((await request(mainApp).post("/api/agents/me/secret-delegations").send(f.input)).status).toBe(409);
+    expect((await request(mainApp).get("/api/agents/me/secret-delegations?issueId=invalid")).status).toBe(422);
+    expect((await request(mainApp).delete("/api/agents/me/secret-delegations/invalid")).status).toBe(422);
   });
 
   it("fails closed when run redaction registration cannot be persisted", async () => {

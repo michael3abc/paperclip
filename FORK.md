@@ -535,3 +535,12 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   unforced stop evidence releases shared ownership only after all resource gates settle.
 - Canonical behavior: doc/execution-semantics.md. Release uses michael/main and
   related checks only; no task replay or forced claim deletion.
+
+### 2026-11-11 — Main-agent worker secret delegation
+
+- A current project main agent can grant/revoke an already accessible secret to
+  its configured worker on its own assigned task without another human approval.
+- Existing bindings store task/worker-scoped API-only references and pinned
+  versions; source, policy and ownership checks remove access when authority changes.
+- No migration, secret copying, task wake/replay or global worker configuration.
+  Canonical contract: doc/DEVELOPING.md and skills/paperclip/references/api-reference.md.

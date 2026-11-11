@@ -1,6 +1,8 @@
 import { Router, type Response } from "express";
+import { delegateWorkerSecretSchema, workerSecretDelegationService } from "../services/worker-secret-delegation.js";
 import type { Db } from "@paperclipai/db";
 import {
+  isUuidLike,
   createSecretProviderConfigSchema,
   createSecretSchema,
   createUserSecretDefinitionSchema,
@@ -309,6 +311,27 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       heartbeat,
     });
     res.json(await boardProposalView(req, await proposals.view(proposal)));
+  });
+
+  router.get("/agents/me/secret-delegations", async (req, res) => {
+    const context = agentSecretContext(req);
+    const issueId = req.query.issueId;
+    if (typeof issueId !== "string" || !isUuidLike(issueId)) throw unprocessable("issueId must be a UUID");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await workerSecretDelegationService(db).list(context.companyId, context, issueId));
+  });
+
+  router.post("/agents/me/secret-delegations", validate(delegateWorkerSecretSchema), async (req, res) => {
+    const context = agentSecretContext(req);
+    const result = await workerSecretDelegationService(db).delegate(context.companyId, context, req.body);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(201).json(result);
+  });
+
+  router.delete("/agents/me/secret-delegations/:bindingId", async (req, res) => {
+    const context = agentSecretContext(req);
+    if (!isUuidLike(req.params.bindingId)) throw unprocessable("bindingId must be a UUID");
+    res.json(await workerSecretDelegationService(db).revoke(context.companyId, context, req.params.bindingId as string));
   });
 
   router.get("/agents/me/secrets", async (req, res) => {
