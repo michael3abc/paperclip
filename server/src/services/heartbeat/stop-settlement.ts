@@ -47,7 +47,9 @@ async function evidenceKey(db: Db, run: Run) {
       from workspace_operations o where o.heartbeat_run_id = ${run.id}::uuid)) as evidence`);
   return createHash("sha256").update(JSON.stringify([run.status, run.runtimeMode, run.nativeSessionId,
     run.runnerInstanceId, run.processPid, run.processGroupId, run.processStartedAt, run.controllerLeaseExpiresAt,
-    run.resultJson?.executionCancellation, run.resultJson?.executionStopVerification, run.resultJson?.nativeCancellation,
+    // Retain the existing fingerprint shape when no separate failed-run proof
+    // exists: a code upgrade is not new evidence and cannot spend another check.
+    run.resultJson?.executionCancellation ?? run.resultJson?.executionStopVerification, run.resultJson?.nativeCancellation,
     run.resultJson?.workspaceRestoreFailure, run.resultJson?.workspaceRestoreRecovery, rows[0]?.evidence])).digest("hex");
 }
 
