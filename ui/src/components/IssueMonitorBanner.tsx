@@ -14,6 +14,7 @@ import {
   AlertDialogCancel,
 } from "@/components/ui/alert-dialog";
 import { InlineBanner } from "@/components/InlineBanner";
+import { RunCancelButton } from "@/components/RunCancelButton";
 import { IssuePullRequestLinks } from "@/components/IssuePullRequestLinks";
 import { getIssuePullRequests, pullRequestNeedsReview } from "@/lib/issue-pull-requests";
 import { cn } from "@/lib/utils";
@@ -261,6 +262,13 @@ export interface IssueMonitorSurfaceProps {
   onCancelMonitor?: (() => Promise<unknown>) | null;
 }
 
+function ScheduledRunCancel({ issue }: { issue: Issue }) {
+  const retry = issue.scheduledRetry;
+  if (retry?.status !== "scheduled_retry" || !retry.runId || !retry.agentId) return null;
+  return <RunCancelButton key={retry.runId} runId={retry.runId} issueId={issue.id}
+    companyId={issue.companyId} agentId={retry.agentId} />;
+}
+
 /**
  * Pinned banner rendered between the issue title and description while a
  * monitor is waiting. Replaces the description-area "Monitor scheduled" card
@@ -286,7 +294,10 @@ export function IssueMonitorBanner({
       icon={Clock}
       title={copy.bannerTitle}
       className={cn("relative my-3", canCancel && "pr-12")}
-      actions={onCheckNow && !copy.workspaceWait && !copy.checkUnavailable ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
+      actions={<div className="flex flex-wrap items-center gap-2">
+        <ScheduledRunCancel issue={issue} />
+        {onCheckNow && !copy.workspaceWait && !copy.checkUnavailable ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
+      </div>}
     >
       {canCancel ? <CancelMonitorButton key={issue.id} onCancel={onCancelMonitor} /> : null}
       <div className="flex flex-col gap-2">
@@ -330,7 +341,10 @@ export function IssueMonitorComposerStrip({
             <div className="text-xs text-muted-foreground">{copy.stripMeta.join(" · ")}</div>
           </div>
         </div>
-        {onCheckNow && !copy.workspaceWait && !copy.checkUnavailable ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <ScheduledRunCancel issue={issue} />
+          {onCheckNow && !copy.workspaceWait && !copy.checkUnavailable ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
+        </div>
       </div>
       {!copy.automaticChecksPaused ? (
         <p className="mt-1.5 text-xs text-muted-foreground">

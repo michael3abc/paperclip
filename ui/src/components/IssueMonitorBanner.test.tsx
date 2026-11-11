@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { heartbeatsApi } from "@/api/heartbeats";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue, type IssueWorkProduct } from "@paperclipai/shared";
@@ -204,6 +206,25 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(container.textContent).not.toContain("review requested");
     expect(container.querySelector("a")).toBeNull();
     flushSync(() => root.unmount());
+  });
+
+  it.each([IssueMonitorBanner, IssueMonitorComposerStrip])("cancels the displayed workspace wait in %s", async (Surface) => {
+    const issue = { id: "issue-1", companyId: "company-1", status: "todo",
+      scheduledRetry: { runId: "waiting-run", agentId: "worker-1", status: "scheduled_retry",
+        scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+    } as Issue;
+    const cancel = vi.spyOn(heartbeatsApi, "cancel").mockResolvedValue({
+      id: "waiting-run", companyId: "company-1", status: "cancelled", resultJson: null,
+    } as Awaited<ReturnType<typeof heartbeatsApi.cancel>>);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      flushSync(() => root.render(<QueryClientProvider client={client}><Surface issue={issue} /></QueryClientProvider>));
+      const button = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Cancel run");
+      expect(button).toBeDefined();
+      await act(async () => { button!.click(); });
+      expect(cancel).toHaveBeenCalledExactlyOnceWith("waiting-run");
+    } finally { flushSync(() => root.unmount()); client.clear(); cancel.mockRestore(); }
   });
 
   it("explains automatic workspace waiting without promising that a reply bypasses the lock", () => {

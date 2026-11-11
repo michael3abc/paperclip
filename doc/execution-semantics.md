@@ -3568,7 +3568,8 @@ run succeeded never implies task done. Same-key calls do not replay the mutation
 
 ### Cancelling a workspace wait or an unfinished Bridge cancellation
 
-The waiting-workspace banner, run detail and main-agent activity panel expose
+The task header's waiting-workspace banner, composer monitor strip, scheduled retry
+card, run detail and main-agent activity panel expose
 **Cancel run** for scheduled attempts. Cancellation targets that exact run through
 the board-only cancellation API; it preserves task history and outputs and does
 not implicitly retry the task or cancel a newer attempt. The GUI waits for stop

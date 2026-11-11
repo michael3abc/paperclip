@@ -593,7 +593,8 @@ Runner capability source anchors when legacy definitions move, and verify both
 catalog surfaces without granting session-only tools to heartbeat clients.
 
 
-Run cancellation remains available during scheduled workspace waits. The GUI cancels
+Run cancellation remains available during scheduled workspace waits, including the
+current task header and composer monitor surfaces. The GUI cancels
 only the selected run and verifies its stop receipt. A cancelled Bridge run with a
 requested stop offers Finish cancellation, which rechecks the original receipt without
 replaying input or stopping a successor. Shared workspace release accepts acknowledged,

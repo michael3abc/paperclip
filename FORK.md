@@ -516,7 +516,8 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
 
 ### 2026-11-11 — Cancel blocked runs
 
-- Scheduled workspace waits expose Cancel run in the task banner and run/activity views.
+- Scheduled workspace waits expose Cancel run in the task header, composer monitor
+  strip, scheduled retry card and run/activity views.
 - Finish cancellation rechecks the exact original Bridge stop receipt. Confirmed,
   unforced stop evidence releases shared ownership only after all resource gates settle.
 - Canonical behavior: doc/execution-semantics.md. Release uses michael/main and
