@@ -11,20 +11,22 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, afterEach, describe, it, expect, vi } from "vitest";
 import { agents, companies, companyMemberships, projects, projectWorkspaces, issues, heartbeatRuns, issueRecoveryActions,
-  issueComments, issueThreadInteractions, agentWakeupRequests, authUsers, createDb } from "@paperclipai/db";
+  issueComments, issueThreadInteractions, agentWakeupRequests, authUsers, environmentLeases, heartbeatRunEvents, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { routeWorkspaceToCreator, inspectWorkspaceCreator, creatorRecovery, verifyWorkspaceRecoveryWake } from "../services/recovery/workspace-creator.js";
 import { workspaceCreatorDelivery } from "../services/recovery/workspace-creator-delivery.js";
 import { reconcileWorkspaceHolder } from "../services/recovery/workspace-holder.js";
+import { unsettledWorkspaceHolders } from "../services/heartbeat/shared-checkout.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any): Promise<any> => ({ exitCode: 0, signal: null, timedOut: false })));
 const steering = vi.hoisted(() => ({ state: vi.fn(), send: vi.fn(), receipt: vi.fn() }));
+const observeRemoteHostBoot = vi.hoisted(() => vi.fn());
 vi.mock("../adapters/index.js", async original => {
   const actual = await original<typeof import("../adapters/index.js")>();
   const adapter = (type: string) => type === "ccpocket_bridge"
-    ? { ...actual.getServerAdapter("process"), type, execute, supportsLocalAgentJwt: false, chatSteering: steering } : actual.getServerAdapter(type);
+    ? { ...actual.getServerAdapter("process"), type, execute, supportsLocalAgentJwt: false, chatSteering: steering, observeRemoteHostBoot } : actual.getServerAdapter(type);
   return { ...actual, getServerAdapter: adapter, findActiveServerAdapter: adapter };
 });
 
@@ -334,6 +336,84 @@ describe("workspace creator recovery", () => {
     await expect(reconcileWorkspaceHolder(db, mainInput, reverify)).rejects.toThrow(/current project main agent/);
     await db.update(issues).set({ projectId: null }).where(eq(issues.id, holderTask));
     await expect(reconcileWorkspaceHolder(db, input, reverify)).rejects.toThrow(/outside/);
+  });
+
+  it("holderless remote waits settle only historical owners that finished before an observed host boot", async () => {
+    const f = await fixture(), hour = 3_600_000, finished = new Date(Date.now() - 3 * hour);
+    const [home] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Reviewer home",
+      cwd: "/home/yoyo/runtime", sourceType: "remote_managed", metadata: { hostId: "remote-e" } }).returning();
+    const sshHolder = randomUUID(), bridgeHolder = randomUUID(), foreignHolder = randomUUID(), holderTask = randomUUID();
+    const foreignCompany = randomUUID(), foreignAgent = randomUUID();
+    await db.insert(companies).values({ id: foreignCompany, name: "Foreign", issuePrefix: "F" + foreignCompany.slice(0, 6) });
+    await db.insert(agents).values({ id: foreignAgent, companyId: foreignCompany, name: "Foreign", adapterType: "codex_local" });
+    await db.insert(issues).values({ id: holderTask, companyId: f.companyId, projectId: f.projectId, title: "Old review", status: "done" });
+    const prior = { paperclipWorkspace: { cwd: "/home/yoyo/runtime", workspaceId: home.id } };
+    await db.insert(heartbeatRuns).values([
+      { id: sshHolder, companyId: f.companyId, agentId: f.workerId, issueId: holderTask, status: "succeeded", finishedAt: finished,
+        processPid: 2_000_000_001, processGroupId: 2_000_000_001, contextSnapshot: prior,
+        runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } },
+      { id: bridgeHolder, companyId: f.companyId, agentId: f.mainId, issueId: holderTask, status: "failed", finishedAt: finished,
+        nativeSessionId: randomUUID(), contextSnapshot: prior, runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" } } },
+      { id: foreignHolder, companyId: foreignCompany, agentId: foreignAgent, status: "running", processPid: 2_000_000_002,
+        contextSnapshot: { paperclipWorkspace: { cwd: "/home/yoyo/runtime/sub", remoteHostId: "remote-e" } } },
+    ]);
+    await db.insert(environmentLeases).values([
+      { companyId: f.companyId, heartbeatRunId: sshHolder, provider: "ssh", status: "released", releasedAt: finished,
+        metadata: { workspaceRealization: { remote: { host: "10.0.0.6", port: 2223, username: "yoyo", path: "/home/yoyo/runtime" } } } },
+      { companyId: f.companyId, heartbeatRunId: bridgeHolder, provider: "local", status: "failed", releasedAt: finished,
+        metadata: { workspaceRealization: { remote: { path: null } } } },
+    ]);
+    await db.update(heartbeatRuns).set({ errorCode: "workspace_busy", resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      workspaceBusy: { holderRunId: null, holderIssueId: null, projectWorkspaceId: home.id, executionWorkspaceId: null } } }).where(eq(heartbeatRuns.id, f.failedRunId));
+    const boot = (uptimeSeconds: number, endpoint = { host: "10.0.0.6", port: 2223, username: "yoyo" }) => vi.fn(async (hostId: string) =>
+      ({ schema: "ccpocket.remote-host-boot.v1" as const, hostId, bootId: "8e1fd79d-2d22-432e-972a-b5fd9efc197b", uptimeSeconds, endpoint }));
+    const input = { companyId: f.companyId, issueId: f.taskId, waitingRunId: f.failedRunId, expectedBindingRevision: 0, actor: { type: "board", userId: f.owner } };
+    const reverify = vi.fn(), absent = () => false;
+    const events = () => db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.eventType, "workspace.remote_host_rebooted"));
+
+    await expect(reconcileWorkspaceHolder(db, { ...input, actor: { type: "agent", agentId: f.mainId, runId: f.originRunId } }, reverify,
+      { observe: boot(3600) })).rejects.toThrow(/Owner-only/);
+    await expect(reconcileWorkspaceHolder(db, { ...input, expectedBindingRevision: 1 }, reverify, { observe: boot(3600) })).rejects.toThrow(/revision/);
+    // The boot predates the owners' finish: no evidence.
+    const early = await reconcileWorkspaceHolder(db, input, reverify, { observe: boot(4 * 3600), processExists: absent });
+    expect(early).toMatchObject({ holderRunId: null, state: "unverified", undisclosedHolders: 1 });
+    expect((early as { holders: unknown[] }).holders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runId: sshHolder, reason: "boot_not_after_finish" }), expect.objectContaining({ runId: bridgeHolder, reason: "boot_not_after_finish" })]));
+    expect(JSON.stringify(early)).not.toContain(foreignHolder);
+    const present = await reconcileWorkspaceHolder(db, input, reverify, { observe: boot(3600), processExists: () => true });
+    expect((present as { holders: unknown[] }).holders).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runId: sshHolder, state: "unverified", reason: "local_process_present" }),
+      expect.objectContaining({ runId: bridgeHolder, state: "settled", reason: "proven" })]));
+    const moved = await reconcileWorkspaceHolder(db, input, reverify, { observe: boot(3600, { host: "10.0.0.7", port: 2223, username: "yoyo" }), processExists: absent });
+    expect((moved as { holders: unknown[] }).holders).toContainEqual(expect.objectContaining({ runId: sshHolder, reason: "endpoint_mismatch" }));
+    expect((moved as { holders: unknown[] }).holders).toHaveLength(1);
+    expect(await events()).toHaveLength(1);
+    await expect(reconcileWorkspaceHolder(db, input, reverify, { observe: async () => ({ schema: "x" }) as never })).rejects.toThrow(/invalid/);
+
+    const proven = await reconcileWorkspaceHolder(db, input, reverify, { observe: boot(3600), processExists: absent });
+    expect(proven).toMatchObject({ state: "unverified", undisclosedHolders: 1, observation: { hostId: "remote-e" } });
+    expect((proven as { holders: unknown[] }).holders).toEqual([{ runId: sshHolder, issueId: holderTask, state: "settled", reason: "proven" }]);
+    const recorded = await events();
+    expect(recorded).toHaveLength(2);
+    expect(recorded.find(e => e.runId === sshHolder)?.payload).toMatchObject({ schema: "paperclip.remote-host-boot-boundary.v1",
+      runFinishedAt: expect.any(String), localProcess: "absent", endpoint: { host: "10.0.0.6" } });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, holderTask));
+    expect(runs.map(r => r.status).sort()).toEqual(["failed", "succeeded"]);
+    expect(reverify).not.toHaveBeenCalled();
+    const owners = await unsettledWorkspaceHolders(db, { host: "ccpocket:remote-e", path: "/home/yoyo/runtime", remote: true });
+    expect(owners.map(o => o.id)).toEqual([foreignHolder]);
+
+    // Once the other owner settles by its own evidence the wait is clear; repeated calls add no events.
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), processPid: null }).where(eq(heartbeatRuns.id, foreignHolder));
+    observeRemoteHostBoot.mockImplementation(boot(3600));
+    const res = await request(f.app).post(`/api/issues/${f.taskId}/workspace/reconcile-holder`)
+      .send({ waitingRunId: f.failedRunId, expectedBindingRevision: 0 });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ holderRunId: null, state: "settled", holders: [] });
+    expect(await events()).toHaveLength(2);
+    await db.update(heartbeatRuns).set({ resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      workspaceBusy: { holderRunId: sshHolder, holderIssueId: holderTask, projectWorkspaceId: home.id } } }).where(eq(heartbeatRuns.id, f.failedRunId));
+    await expect(reconcileWorkspaceHolder(db, input, reverify, { observe: boot(3600) })).rejects.toThrow(/holderless/);
   });
 
   it("runs full failure, creator repair and original worker admission while preserving dirty files", async () => {

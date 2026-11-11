@@ -635,6 +635,23 @@ export interface ServerAdapterModule {
    * proof only from provider evidence; never synthesize it.
    */
   reverifyCancelledRunStop?: (input: AdapterStopReverificationInput) => Promise<AdapterStopReverificationResult>;
+
+  /**
+   * Optional: read-only observation of a non-shared execution host's current
+   * boot (kernel boot id and boot-time uptime) and the endpoint the adapter's
+   * transport resolves to. The server times the call with its own clock to
+   * prove a reboot after a historical workspace holder finished; the adapter
+   * never stops, sends input or writes anything.
+   */
+  observeRemoteHostBoot?: (input: { hostId: string }) => Promise<AdapterRemoteHostBootObservation>;
+}
+
+export interface AdapterRemoteHostBootObservation {
+  schema: "ccpocket.remote-host-boot.v1";
+  hostId: string;
+  bootId: string;
+  uptimeSeconds: number;
+  endpoint: { host: string; port: number; username: string };
 }
 
 export interface AdapterChatSteeringScope {

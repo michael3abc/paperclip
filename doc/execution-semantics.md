@@ -3612,6 +3612,12 @@ Historical owners are inspected by their canonical physical directory and Git
 metadata root, without rerunning Git validation on a damaged old checkout. They
 still block overlapping writers; unrelated directories remain admissible. This
 inspection neither repairs metadata nor qualifies a broken source for a new run.
+A historical owner on a non-shared remote host whose stop was never recorded may
+be settled only by the Owner's holderless reconciliation: the Bridge host
+catalog reads the host's boot id and uptime, and a boot that began after the
+owner finished (with matching SSH endpoint and absent local process) is
+recorded as `workspace.remote_host_rebooted`. Idle, terminal status or task
+completion is still never stop proof, and the other settlement fences remain.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
 Selection is persistent and applies at the next normal admission; it does not

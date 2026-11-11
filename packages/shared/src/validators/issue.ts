@@ -622,7 +622,7 @@ export const reconstructWorkspaceSchema = z.object({
 }).strict();
 
 export const reconcileWorkspaceHolderSchema = z.object({
-  waitingRunId: z.string().guid(), holderRunId: z.string().guid(), expectedBindingRevision: z.number().int().nonnegative(),
+  waitingRunId: z.string().guid(), holderRunId: z.string().guid().optional(), expectedBindingRevision: z.number().int().nonnegative(),
 }).strict();
 
 export const notifyWorkspaceCreatorSchema = z.object({

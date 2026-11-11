@@ -37,6 +37,7 @@ export type {
   ServerAdapterModule,
   AdapterStopReverificationInput,
   AdapterStopReverificationResult,
+  AdapterRemoteHostBootObservation,
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,

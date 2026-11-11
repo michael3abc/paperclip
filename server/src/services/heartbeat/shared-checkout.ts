@@ -97,6 +97,10 @@ export async function sharedCheckoutPath(cwd: string): Promise<string> {
  * silence or a controller timeout alone never frees an admitted provider's files.
  * No idle scanner: the next queued admission inspects its exact checkout only.
  */
+/** Server-recorded proof that a non-shared execution host rebooted after a
+ * historical holder finished (written only by workspace-holder reconciliation). */
+export const REMOTE_HOST_REBOOT_EVENT = "workspace.remote_host_rebooted";
+export const REMOTE_HOST_REBOOT_SCHEMA = "paperclip.remote-host-boot-boundary.v1";
 const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
             or (r.runtime_mode = 'legacy' and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
@@ -108,7 +112,13 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
               and r.result_json->>'nativeSessionId' is null and r.result_json->>'bridgeSessionId' is null
               and not (coalesce(r.runner_profile_json, '{}'::jsonb) ? 'nativeExecutionInput')
               and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-                and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started')))))
+                and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started'))))
+            or exists (select 1 from heartbeat_run_events e where e.run_id = r.id
+              and e.event_type = ${REMOTE_HOST_REBOOT_EVENT} and e.stream = 'system' and e.source_event_id is null
+              and e.payload->>'schema' = ${REMOTE_HOST_REBOOT_SCHEMA}
+              and e.payload->>'runFinishedAt' is not null and e.payload->>'bootStartedAtLowerBound' is not null
+              and (e.payload->>'runFinishedAt')::timestamptz = r.finished_at
+              and (e.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at))
           and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
             and (f.lease_owner is not null or (f.phase <> 'committed' and not (
               f.phase = 'terminal_failure' and f.next_attempt_at is null
@@ -134,6 +144,64 @@ export async function sharedCheckoutHolderSettled(db: Db, companyId: string, run
   const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${runId}::uuid
     and r.company_id = ${companyId}::uuid and (${settledSharedCheckoutSql})`);
   return rows.length === 1;
+}
+
+type HolderExecutor = Pick<Db, "execute">;
+export interface UnsettledWorkspaceHolder {
+  id: string; company_id: string; agent_id: string; issue_id: string;
+  /** explicit: recorded sharedCheckoutClaim; prior: admitted before physical claims, keyed by its recorded cwd. */
+  kind: "explicit" | "prior";
+}
+/** Unsettled runs owning an equal, parent or child path on one claim host. Shared by
+ * admission (first owner only) and read-only holder reconciliation (all owners). */
+export async function unsettledWorkspaceHolders(db: HolderExecutor, input: {
+  host: string; path: string; remote: boolean; storage?: boolean; excludeRunId?: string | null; first?: boolean;
+}): Promise<UnsettledWorkspaceHolder[]> {
+  const exclude = input.excludeRunId ?? "00000000-0000-0000-0000-000000000000";
+  const explicit = await db.execute<{ id: string; company_id: string; agent_id: string; issue_id: string }>(sql`
+      select r.id, r.company_id, r.agent_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id
+      from heartbeat_runs r
+      where r.id <> ${exclude} and r.context_snapshot->'sharedCheckoutClaim'->>'host' = ${input.host}
+        and (r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${input.path}
+          or starts_with(r.context_snapshot->'sharedCheckoutClaim'->>'path', rtrim(${input.path}, '/') || '/')
+          or starts_with(${input.path}, rtrim(r.context_snapshot->'sharedCheckoutClaim'->>'path', '/') || '/'))
+        and not coalesce((
+          ${settledSharedCheckoutSql}
+        ), false) order by r.created_at, r.id ${input.first ? sql`limit 1` : sql``}`);
+  const found: UnsettledWorkspaceHolder[] = explicit.map(row => ({ ...row, kind: "explicit" as const }));
+  if ((input.first && found.length) || input.storage) return found;
+  // Runs admitted before physical claims were introduced retain ownership.
+  // Inspect their recorded execution directory, never their task prose or the
+  // project's current default. Do not mutate or restart those runs on upgrade.
+  const priorAdmissions = await db.execute<{
+    id: string; company_id: string; agent_id: string; issue_id: string; cwd: string; host: string;
+  }>(sql`select r.id, r.company_id, r.agent_id,
+      coalesce(r.issue_id::text, r.native_issue_id::text, r.context_snapshot->>'issueId') as issue_id,
+      r.context_snapshot#>>'{paperclipWorkspace,cwd}' as cwd,
+      case when coalesce(r.context_snapshot#>>'{paperclipWorkspace,remoteHostId}',
+        case when p.source_type = 'remote_managed' then p.metadata->>'hostId' end) is not null
+        then 'ccpocket:' || coalesce(r.context_snapshot#>>'{paperclipWorkspace,remoteHostId}', p.metadata->>'hostId')
+        else ${hostname()} end as host
+    from heartbeat_runs r left join project_workspaces p
+      on p.id::text = r.context_snapshot#>>'{paperclipWorkspace,workspaceId}'
+      and p.company_id = r.company_id
+    where r.id <> ${exclude} and r.context_snapshot->'sharedCheckoutClaim' is null
+      and r.context_snapshot#>>'{paperclipWorkspace,cwd}' is not null
+      and not coalesce((${settledSharedCheckoutSql}), false) order by r.created_at, r.id`);
+  for (const previous of priorAdmissions) {
+    if (previous.host !== input.host) continue;
+    const previousPath = input.remote ? previous.cwd : await sharedSource(previous.cwd, { inspectOwnership: true }).then(source => source.path).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return plannedDirectory(previous.cwd);
+    });
+    if (previousPath === input.path || previousPath.startsWith(input.path.replace(/\/$/, "") + "/")
+      || input.path.startsWith(previousPath.replace(/\/$/, "") + "/")) {
+      const { cwd: _cwd, host: _host, ...holder } = previous;
+      found.push({ ...holder, kind: "prior" });
+      if (input.first) break;
+    }
+  }
+  return found;
 }
 
 export async function claimSharedCheckout(db: Db, input: {
@@ -185,48 +253,8 @@ export async function claimSharedCheckout(db: Db, input: {
     if (services.length) throw new WorkspaceValidationFailure(
       "This checkout serves a running service. Configure a separate fixed development checkout before dispatch.",
       { workspaceValidation: { reason: "project_checkout_serves_running_service" } });
-    const holders = await tx.execute<{ id: string; company_id: string; agent_id: string; issue_id: string }>(sql`
-      select r.id, r.company_id, r.agent_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id
-      from heartbeat_runs r
-      where r.id <> ${input.runId} and r.context_snapshot->'sharedCheckoutClaim'->>'host' = ${claim.host}
-        and (r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${claim.path}
-          or starts_with(r.context_snapshot->'sharedCheckoutClaim'->>'path', rtrim(${claim.path}, '/') || '/')
-          or starts_with(${claim.path}, rtrim(r.context_snapshot->'sharedCheckoutClaim'->>'path', '/') || '/'))
-        and not coalesce((
-          ${settledSharedCheckoutSql}
-        ), false) order by r.created_at, r.id limit 1`);
-    const holder = holders[0];
-    // Runs admitted before physical claims were introduced retain ownership.
-    // Inspect their recorded execution directory, never their task prose or the
-    // project's current default. Do not mutate or restart those runs on upgrade.
-    const priorAdmissions = holder || storage ? [] : await tx.execute<{
-      id: string; company_id: string; agent_id: string; issue_id: string; cwd: string; host: string;
-    }>(sql`select r.id, r.company_id, r.agent_id,
-        coalesce(r.issue_id::text, r.native_issue_id::text, r.context_snapshot->>'issueId') as issue_id,
-        r.context_snapshot#>>'{paperclipWorkspace,cwd}' as cwd,
-        case when coalesce(r.context_snapshot#>>'{paperclipWorkspace,remoteHostId}',
-          case when p.source_type = 'remote_managed' then p.metadata->>'hostId' end) is not null
-          then 'ccpocket:' || coalesce(r.context_snapshot#>>'{paperclipWorkspace,remoteHostId}', p.metadata->>'hostId')
-          else ${hostname()} end as host
-      from heartbeat_runs r left join project_workspaces p
-        on p.id::text = r.context_snapshot#>>'{paperclipWorkspace,workspaceId}'
-        and p.company_id = r.company_id
-      where r.id <> ${input.runId} and r.context_snapshot->'sharedCheckoutClaim' is null
-        and r.context_snapshot#>>'{paperclipWorkspace,cwd}' is not null
-        and not coalesce((${settledSharedCheckoutSql}), false) order by r.created_at, r.id`);
-    let priorHolder: typeof holder | undefined;
-    for (const previous of priorAdmissions) {
-      if (previous.host !== claim.host) continue;
-      const previousPath = remote ? previous.cwd : await sharedSource(previous.cwd, { inspectOwnership: true }).then(source => source.path).catch(error => {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        return plannedDirectory(previous.cwd);
-      });
-      if (previousPath === claim.path || previousPath.startsWith(claim.path.replace(/\/$/, "") + "/")
-        || claim.path.startsWith(previousPath.replace(/\/$/, "") + "/")) {
-        priorHolder = previous; break;
-      }
-    }
-    const owner = holder ?? priorHolder;
+    const [owner] = await unsettledWorkspaceHolders(tx, { host: claim.host, path: claim.path,
+      remote: Boolean(remote), storage: Boolean(storage), excludeRunId: input.runId, first: true });
     if (owner) {
       throw new WorkspaceBusyDeferral({ holder: { runId: owner.id, agentId: owner.agent_id,
         issueId: owner.issue_id, issueIdentifier: null }, projectWorkspaceId: input.projectWorkspaceId,

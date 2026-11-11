@@ -18,6 +18,7 @@ import { INBOX_MINE_ISSUE_STATUS_FILTER, latestFailedRunsByAgent } from "@paperc
 import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../services/heartbeat-run-privacy.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
+import { findActiveServerAdapter } from "../adapters/index.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { listIssueSummaries } from "../services/issue-summaries.js";
@@ -10012,7 +10013,13 @@ export function issueRoutes(
     if (await assertLowTrustControlPlaneDenied(req, res, existing.companyId, existing)) return;
     if (req.actor.type === "agent" && !requireAgentRunId(req, res)) return;
     res.json(await reconcileWorkspaceHolder(db, { ...req.body, companyId: existing.companyId,
-      issueId: existing.id, actor: req.actor }, heartbeat.reconcileWorkspaceHolderStop));
+      issueId: existing.id, actor: req.actor }, heartbeat.reconcileWorkspaceHolderStop, {
+      observe: async (hostId) => {
+        const hook = findActiveServerAdapter("ccpocket_bridge")?.observeRemoteHostBoot;
+        if (!hook) throw conflict("The registered host catalog cannot observe remote boot state");
+        return hook({ hostId });
+      },
+    }));
   });
 
   router.post("/issues/:id/recovery-actions/notify-creator", validate(notifyWorkspaceCreatorSchema), async (req, res) => {

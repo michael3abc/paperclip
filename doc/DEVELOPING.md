@@ -4575,6 +4575,13 @@ error, preserving the failed run. Reconcile the same request if its response is 
 `expectedBindingRevision`. The project's current main agent can reverify a terminal holder named
 by that task's `workspaceBusy` evidence. It never cancels active work, erases claims or modifies files.
 Only verified stop/resource settlement releases admission; `unverified` retains the blocker.
+Omitting `holderRunId` is an Owner-only mode for a holderless `workspaceBusy` wait on a
+remote-managed project workspace. It discovers unsettled owners with the admission query and, through
+the Bridge adapter's read-only `observeRemoteHostBoot` (boot id, `/proc/uptime`, `ssh -G` endpoint),
+records `workspace.remote_host_rebooted` on each terminal same-company owner whose finish precedes the
+server-clock boot lower bound (`sentAt − uptime − 2s`). SSH lease endpoints must match, local pids must
+be absent (ESRCH) and controlled/held owners are skipped. The event replaces only stop proof: lease,
+finalizer, workspace-operation and controller gates still apply. Foreign-company owners are only counted.
 Regression: `workspace-creator-recovery.test.ts` exercises the HTTP repair plus assembled heartbeat,
 durable notices, lost receipts, authorization, preemption and retained dirty files. Shared-checkout,
 Bridge steering/reverification and execution-continuation suites cover the reused boundaries.

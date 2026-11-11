@@ -660,6 +660,9 @@ stop and fully settled file cleanup, without rewriting its failed outcome. Keep
 retry/recovery/export, retained-copy, operation and lease fences. Historical-owner
 inspection retains canonical directory/metadata-root scope even for damaged Git;
 new source admission still validates Git and fails explicitly.
+Holderless remote-managed waits settle only through Owner reconciliation with a
+server-observed host boot after the owner finished (`workspace.remote_host_rebooted`);
+never infer stop from idle/terminal status, fabricate claims or wake the task.
 Role-capacity tests use independently registered directories; workerSlots never
 permits simultaneous writers in one checkout. Adapter doubles returning session
 identity must model completed stop receipts before testing same-worktree reuse,

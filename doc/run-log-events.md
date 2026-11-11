@@ -358,6 +358,19 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+## Remote Host Boot Boundary Evidence
+
+`workspace.remote_host_rebooted` (stream `system`, schema
+`paperclip.remote-host-boot-boundary.v1`) is written only by the Owner's holderless
+`workspace/reconcile-holder` request on a terminal same-company run that still owns a
+remote-managed workspace. The payload records `hostId`, `bootId`,
+`bootStartedAtLowerBound` (server `sentAt − uptime − 2s`), `observedAt`, the exact
+`runFinishedAt`, the resolved SSH `endpoint`, `roundTripMs`, `localProcess` and the
+waiting run/issue. Admission accepts it as stop evidence only when its
+`runFinishedAt` equals the run's finish time and the lower bound is later. It
+never rewrites the run outcome and does not settle leases, finalizers or workspace
+operations. It stays in the local run log and adds no Telemetry export.
+
 ## Verified Local Codex Replacement Evidence
 
 The server writes `native.stopped_text_turn_verified` in the same transaction

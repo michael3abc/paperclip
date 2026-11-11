@@ -11294,6 +11294,7 @@ registerCurrentRoute({
 registerCurrentRoute({
   method: "post", path: "/api/issues/{id}/workspace/reconcile-holder", tags: ["issues"],
   summary: "Reconcile a terminal same-project workspace holder from original stop evidence", body: reconcileWorkspaceHolderSchema,
+  description: "With holderRunId, the project main agent or Owner reverifies the named holder. Without holderRunId (a holderless remote-managed wait), Owner-only: unsettled owners of that workspace are discovered through admission and each terminal owner may receive a server-observed remote host boot boundary as stop evidence. Leases, finalization and workspace operations must still settle; nothing is cancelled, woken or replayed, and other-company owners are counted but never disclosed.",
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 

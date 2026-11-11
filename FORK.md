@@ -5,6 +5,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Remote host boot-boundary holder settlement (2026-11-11): holderless
+  remote-managed workspace waits can be reconciled by the Owner. Admission's
+  own owner query is reused; a read-only Bridge adapter observation of the host
+  boot id/uptime/SSH endpoint records `workspace.remote_host_rebooted` for
+  terminal same-company owners that finished before the boot. All other
+  settlement fences remain; nothing is cancelled, woken or replayed.
+
 - Historical physical ownership settlement (2026-11-11): exhausted finalizers
   retain their failures while independently stopped and cleaned workspaces may
   pass ownership. Unsettled retries/files/leases stay fenced. Inspect historical

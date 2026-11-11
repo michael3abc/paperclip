@@ -8,12 +8,17 @@ import { sharedCheckoutHolderSettled } from "../heartbeat/shared-checkout.js";
 import { record } from "./workspace-creator.js";
 import { logActivity } from "../activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { reconcileRemoteHostRebootHolders, type RemoteHostRebootDeps } from "./remote-host-reboot.js";
 
-/** Re-check one terminal holder. This capability never cancels a live run or removes a claim. */
+/** Re-check one terminal holder. This capability never cancels a live run or removes a claim.
+ * Without holderRunId (a holderless wait) the Owner may settle remote owners only by a
+ * server-observed host boot boundary; see remote-host-reboot.ts. */
 export async function reconcileWorkspaceHolder(db: Db, input: {
-  companyId: string; issueId: string; waitingRunId: string; holderRunId: string; expectedBindingRevision: number;
+  companyId: string; issueId: string; waitingRunId: string; holderRunId?: string | null; expectedBindingRevision: number;
   actor: { type: string; agentId?: string | null; runId?: string | null; userId?: string | null };
-}, reverify: (runId: string, companyId: string) => Promise<unknown>) {
+}, reverify: (runId: string, companyId: string) => Promise<unknown>, remote: RemoteHostRebootDeps = {}) {
+  if (!input.holderRunId) return reconcileRemoteHostRebootHolders(db, input, remote);
+  const holderRunId = input.holderRunId;
   async function verify() {
     const [task] = await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
     if (!task?.projectId || task.workspaceBindingRevision !== input.expectedBindingRevision || ["done", "cancelled"].includes(task.status))
@@ -33,10 +38,10 @@ export async function reconcileWorkspaceHolder(db: Db, input: {
     const [wait] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.waitingRunId), eq(heartbeatRuns.companyId, input.companyId)));
     const busy = record(wait?.resultJson?.workspaceBusy);
     if (!wait || (wait.issueId ?? wait.nativeIssueId ?? wait.contextSnapshot?.issueId) !== task.id ||
-        wait.agentId !== task.assigneeAgentId || wait.errorCode !== "workspace_busy" || busy.holderRunId !== input.holderRunId ||
+        wait.agentId !== task.assigneeAgentId || wait.errorCode !== "workspace_busy" || busy.holderRunId !== holderRunId ||
         record(wait.resultJson?.executionRecovery).providerWorkStarted !== false || busy.projectWorkspaceId !== task.projectWorkspaceId)
       throw conflict("The waiting run does not identify this holder");
-    const [holder] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.holderRunId), eq(heartbeatRuns.companyId, input.companyId)));
+    const [holder] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, holderRunId), eq(heartbeatRuns.companyId, input.companyId)));
     const [source] = holder ? await db.select().from(issues).where(and(eq(issues.id, String(holder.issueId ?? holder.nativeIssueId ?? holder.contextSnapshot?.issueId)),
       eq(issues.companyId, input.companyId))) : [];
     if (!holder || !source || source.projectId !== task.projectId || source.id !== busy.holderIssueId ||
