@@ -1973,6 +1973,7 @@ function handleLiveEvent(
       });
     }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
+    queryClient.invalidateQueries({ queryKey: ["issues", "chat-handoffs"] });
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast && event.toastEligible === true && !suppressRunToast) {
@@ -1989,6 +1990,9 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.event") {
+    if (payload.eventType === "adapter.invoke") {
+      queryClient.invalidateQueries({ queryKey: ["issues", "chat-handoffs"] });
+    }
     return;
   }
 

@@ -11,6 +11,16 @@ selectors for display (codex · 6 Astra · compass). Missing child model/source 
 older logs without identity are not relabelled from current agent settings. Native children remain
 delegation cards and do not become Paperclip issues. There is no schema change or new polling.
 
+The lower Task list uses the authorized, viewer/session-scoped chat-handoffs page's
+`runtimeIdentity` projection. One bounded SQL query reads each task's latest run and its own
+invocation/usage identity; the creator Chat's sourceRunId is only creation provenance.
+Cards label this Last run, with source unknown until a billing receipt supplies it. Before
+execution, Configured shows that task's assignment/overrides (including Bridge selectors),
+without claiming provider acceptance or guessing billing. Historical runs with no evidence
+remain unknown rather than inheriting current agent settings. The projection contains only
+basis, runId, harness, model and billingRoute; no raw configs, credentials or transcript reads.
+Existing run lifecycle events invalidate the handoff query; no per-card requests or new polling.
+
 ## Host subscription quota dashboard
 
 Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service
@@ -4541,8 +4551,16 @@ Bind `actionId`, `outcome: restored`, `sourceIssueStatus: todo` and `resolutionN
 creator's current Chat run or board may resolve it. The transaction checks ownership, latest failure,
 holds, pending decisions and revision, stores selection intent, and records one worker admission.
 Normal admission applies the pending selection and rechecks execution controls. An identical API
-replay returns the receipt; a different intent or stale revision returns 409. A further failure
-requires Owner. `outcome: blocked` with `sourceIssueStatus: blocked` escalates without admission.
+replay returns the receipt; a different intent or stale revision returns 409. New actions pin
+`workspaceCreatorMaxRepairs: 3` in evidence. Count admitted repair receipts across the original task's
+actions, including pending/uncertain delivery, under the issue lock: three distinct failures may
+be repaired; a fourth returns to Owner without another notification. Repeated failure IDs,
+workspace changes, API replays and reconciliation do not reset usage. Pre-upgrade actions without
+this policy retain the original one-admission limit, so deployment never reopens old Owner waits.
+Unsettled prior repair receipts block another automatic attempt even with remaining allowance.
+Only reconciliation of that original receipt reactivates pending failure candidates through the
+existing delivery coordinator; never resend an uncertain wake or introduce a polling loop.
+`outcome: blocked` with `sourceIssueStatus: blocked` escalates without admission.
 
 Historical failures are not automatically forwarded. The Owner-only
 `POST /api/issues/:id/recovery-actions/notify-creator` requires `actionId`, `failedRunId`,

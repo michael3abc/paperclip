@@ -5,6 +5,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Workspace recovery allowance and lower Task list identity (2026-11-11): new recovery actions
+  pin three total repair admissions per original task, retaining uncertain receipts and historical
+  limits. Chat handoff cards show task-owned invocation/usage identity or labelled pending settings;
+  missing historical metadata stays unknown. No historical task replay or new polling.
+
 - Workspace creator recovery (2026-11-11): structured pre-provider failure evidence, original-Chat
   system delivery with durable receipts, revision-bound single original-worker repair admission,
   explicit Owner historical forwarding and restricted terminal-holder reconciliation. No new tables,

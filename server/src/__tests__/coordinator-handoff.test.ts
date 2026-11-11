@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, assets, chatTaskHandoffs, companies, companyMemberships, createDb, applyPendingMigrations, decisionRetention, decisionTriage, documentRevisions, documents, heartbeatRuns,
-  inboxDismissals, issueAttachments, issueComments, issueDocuments, issues, issueThreadInteractions } from "@paperclipai/db";
+  inboxDismissals, issueAttachments, issueComments, issueDocuments, issues, issueThreadInteractions, heartbeatRunEvents, costEvents } from "@paperclipai/db";
 import { requestConfirmationTargetSchema, suggestedTaskDraftSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -70,6 +70,32 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     });
     return { companyId, agentId, conversationId, userId, scope, service, propose, handoff, receipts, pendingQuestions, ask, direct };
   }
+
+  it("projects per-task invocation and usage without creator identity, credentials or current-config drift", async () => {
+    const f = await seed();
+    const { task: ran } = await f.handoff(), { task: waiting } = await f.handoff(), { task: old } = await f.handoff();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { model: "host/claude/default", env: { TOKEN: "PRIVATE" } } }).where(eq(agents.id, f.agentId));
+    await db.update(issues).set({ assigneeAdapterOverrides: { adapterConfig: { model: "shopee-e/claude/sonnet" } } }).where(eq(issues.id, waiting.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: ran.id, status: "succeeded" }).returning();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: old.id, status: "succeeded" });
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId, runId: run.id, seq: 1, eventType: "adapter.invoke",
+      payload: { adapterType: "ccpocket_bridge", context: { provider: "codex", model: "gpt-6-astra", secret: "PRIVATE" }, env: { TOKEN: "PRIVATE" } } });
+    await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId, issueId: ran.id, heartbeatRunId: run.id,
+      provider: "codex", model: "gpt-6-astra", biller: "openai_subscription", billingType: "subscription_included", costCents: 0, occurredAt: new Date() });
+    // Child usage within the same run must not relabel its task invocation.
+    await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId, issueId: ran.id, heartbeatRunId: run.id,
+      provider: "claude", model: "compass-sonnet5.5", biller: "compass", costCents: 0, occurredAt: new Date() });
+    const list = () => conversationDecisionReceiptsService(db).listCreatedTasks(f.companyId, f.conversationId, {
+      actor: { type: "board", userId: f.userId, source: "session", ignoreInstanceAdmin: true }, userId: f.userId,
+    });
+    const page = await list();
+    expect(page.items.find(t => t.issueId === ran.id)?.runtimeIdentity).toEqual({ basis: "run", runId: run.id, harness: "codex", model: "gpt-6-astra", billingRoute: "openai_subscription" });
+    expect(page.items.find(t => t.issueId === waiting.id)?.runtimeIdentity).toMatchObject({ basis: "configured", harness: "claude", model: "sonnet", billingRoute: null });
+    expect(page.items.find(t => t.issueId === old.id)?.runtimeIdentity).toMatchObject({ basis: "unknown", model: null, billingRoute: null });
+    expect(JSON.stringify(page)).not.toContain("PRIVATE");
+    await db.update(issues).set({ visibility: "private", privacyParentIssueId: null, privacyRootIssueId: ran.id, responsibleUserId: "someone-else", createdByUserId: "someone-else" }).where(eq(issues.id, ran.id));
+    expect((await list()).items.some(t => t.issueId === ran.id)).toBe(false);
+  });
 
   it.each(["omitted", "null", "agent", "person", "non-chat"])("assigns accepted suggestions correctly for %s ownership", async (mode) => {
     const f = await seed();

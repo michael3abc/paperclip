@@ -1,4 +1,4 @@
-import { creatorRecovery } from "./workspace-creator.js";
+import { creatorRecovery, WORKSPACE_CREATOR_MAX_REPAIRS } from "./workspace-creator.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -2629,7 +2629,7 @@ export function recoveryService(
         : { routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
             ...(recoveryCause === "workspace_validation_failed" &&
               readWorkspaceValidationPayload(input.latestRun)?.schema === "paperclip.workspace-validation/v1"
-              ? { workspaceCreatorCandidate: true } : {}),
+              ? { workspaceCreatorCandidate: true, workspaceCreatorMaxRepairs: WORKSPACE_CREATOR_MAX_REPAIRS } : {}),
           },
       nextAction:
         recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON

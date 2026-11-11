@@ -6,6 +6,7 @@ import { attentionService } from "./attention.js";
 import { decisionHistoryService, pageDecisionHistory } from "./decision-history.js";
 import { badRequest, notFound } from "../errors.js";
 import { z } from "zod";
+import { conversationTaskRuntime } from "./conversation-task-runtime.js";
 
 const handoffCursorIdSchema = z.uuid();
 
@@ -89,8 +90,9 @@ export function conversationDecisionReceiptsService(db: Db) {
         .orderBy(desc(chatTaskHandoffs.createdAt), desc(issues.id)).limit(limit + 1);
       const page = rows.slice(0, limit);
       const last = page.at(-1);
+      const runtimes = await conversationTaskRuntime(db, companyId, page.map(row => row.issueId));
       return {
-        items: page.map(({ createdAtCursor: _cursor, ...row }) => ({ ...row, id: `chat_handoff:${row.issueId}`, status: row.status as ConversationTaskHandoff["status"], createdAt: row.createdAt.toISOString() })),
+        items: page.map(({ createdAtCursor: _cursor, ...row }) => ({ ...row, id: `chat_handoff:${row.issueId}`, status: row.status as ConversationTaskHandoff["status"], createdAt: row.createdAt.toISOString(), runtimeIdentity: runtimes.get(row.issueId) })),
         nextCursor: rows.length > limit && last
           ? Buffer.from(JSON.stringify({ at: last.createdAtCursor, id: last.issueId })).toString("base64url") : null,
       };

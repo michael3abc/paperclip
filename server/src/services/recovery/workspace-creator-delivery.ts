@@ -26,6 +26,12 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
       const next = change(state);
       if (JSON.stringify(next) === JSON.stringify(state)) return;
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, id);
+      // A later bootstrap failure may have arrived before this original wake
+      // was reconciled. Its candidate can proceed only after receipt settlement.
+      if (state.repair?.status !== "queued" && next.repair?.status === "queued") {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery,
+          JSON.stringify({ companyId: action.companyId, issueId: action.sourceIssueId }));
+      }
       await tx.update(issueRecoveryActions).set({ evidence: { ...action.evidence, creatorRecovery: next },
         ...(detail ? { nextAction: detail } : {}),
         ...(next.delivery.status === "needs_owner" && action.status === "active" ? { ownerType: "board", ownerAgentId: null, status: "escalated" } : {}),
