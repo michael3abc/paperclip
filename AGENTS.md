@@ -331,6 +331,9 @@ If you change schema/API behavior, update all impacted layers:
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
 - Stop requires execution evidence, not a terminal status alone; pre-dispatch rejection proof requires the complete server-owned trace and no execution identity, lease, or finalizer.
+- Local legacy completion persists a host/process-generation-bound stop event even
+  without an instruction copy. Both PID and group must be absent; newer launch/resume
+  invalidates it. Keep file, controller, finalizer and lease fences and event-only wakes.
 - Stop settlement uses the original run and server-owned JSON receipt. Persist claims
   before read-only verification; use four completion-relative checks (0/30/120/300s),
   preserving budget across restart. Terminal Recheck never sends Stop or input.
@@ -344,6 +347,10 @@ If you change schema/API behavior, update all impacted layers:
   trace and retained resources prove no provider or checkout was admitted. Keep
   its recovery history; conflicting identities/events remain blocked. Deferred
   interrupt queues must not add polling beside the persisted stop-check budget.
+  Historical unstarted retry children require exact parent-event/wake bindings.
+  Notification hints project only company/run identifiers, never serialize
+  caller DB handles or private payloads. Restored successor transcript inputs
+  need the original native UUID and a real result, with provenance retained.
 - External Runner reads classified by the server must settle definite failures as tool errors. Unknown mutation outcomes stay unresolved and must never be replayed as a new operation.
 - Completion admission waits for outstanding tools and excludes new tools while pending. Forced cleanup must preserve unresolved receipts and distinguish local Runner shutdown from external-provider termination.
 - External-provider assignments, settled tool results, and input responses are authoritative PRP execution data. Preserve their complete payloads under the transport/outbox bounds; never apply diagnostic string truncation to them.

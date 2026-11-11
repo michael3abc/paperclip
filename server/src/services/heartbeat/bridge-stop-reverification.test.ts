@@ -12,6 +12,17 @@ const BRIDGE = "bridge-session-1", NATIVE = "native-session-1", KEY = "a".repeat
 const support = await getEmbeddedPostgresTestSupport();
 
 describe.skipIf(!support.supported)("bridge stop re-verification", () => {
+  it("retains native transcript input provenance and rejects an unbound reconstructed input", () => {
+    const input = { runId: randomUUID(), bridgeSessionId: BRIDGE, nativeSessionId: NATIVE };
+    const observation = { kind: "later_input", bridgeSessionId: "restored", runId: randomUUID(), acceptedSeq: -1, resultSeq: 9 };
+    const proof = { ...proofFor(input.runId).proof, observation };
+    expect(validBridgeStopProof({ verified: true, proof }, input)).toBeNull();
+    const inputEvidence = { source: "native_transcript", nativeInputId: randomUUID() };
+    expect(validBridgeStopProof({ verified: true, proof: { ...proof, observation: { ...observation, inputEvidence } } }, input))
+      .toMatchObject({ observation: { ...observation, inputEvidence } });
+    expect(validBridgeStopProof({ verified: true, proof: { ...proof, observation: { ...observation,
+      inputEvidence: { source: "native_transcript", nativeInputId: "" } } } }, input)).toBeNull();
+  });
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {

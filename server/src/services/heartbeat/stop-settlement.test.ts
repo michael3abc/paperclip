@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { and, eq } from "drizzle-orm";
-import { agentInstructionWorkingCopies, agents, companies, environmentLeases, heartbeatRuns, heartbeatRunEvents, issues, issueRecoveryActions, nativeRunFinalizations,
+import { agentInstructionWorkingCopies, agentWakeupRequests, agents, companies, environmentLeases, heartbeatRuns, heartbeatRunEvents, issues, issueRecoveryActions, nativeRunFinalizations,
   createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -58,7 +58,9 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       expect((await read(waiter.id)).scheduledRetryAt).toBeNull();
       expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
       await db.transaction(async tx => {
-        await notifyRunStopSettlement(tx, { companyId: f.company.id, runId: f.run.id });
+        // Upstream producers pass richer inputs, including a circular DB handle.
+        const producer = { companyId: f.company.id, runId: f.run.id, db: tx };
+        await notifyRunStopSettlement(tx, producer);
         await tx.update(agentInstructionWorkingCopies).set({ receipt: { schema: "paperclip.agent-files.v1", cleanupPending: false } })
           .where(eq(agentInstructionWorkingCopies.runId, f.run.id));
       });
@@ -97,6 +99,39 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     await service.reconcile(f.run.id, f.company.id);
     expect(hook).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["unstarted", "started", "launch", "foreign_parent", "wrong_child", "missing_wake", "instruction_copy"])(
+    "verifies the original scheduling trace of a historical cancelled workspace retry (%s)", async evidence => {
+      const f = await seed();
+      const [parent] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+        issueId: f.issue.id, contextSnapshot: { issueId: f.issue.id }, status: "cancelled", errorCode: "workspace_busy", finishedAt: new Date() }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+        source: "automation", status: "cancelled", reason: "workspace_busy_retry", runId: f.run.id,
+        payload: { retryOfRunId: parent.id, retryReason: "workspace_busy", scheduledRetryAttempt: 24 } }).returning();
+      await db.update(heartbeatRuns).set({ errorCode: "cancelled", retryOfRunId: parent.id, wakeupRequestId: wake.id,
+        scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 24, scheduledRetryAt: new Date(), contextSnapshot: { issueId: f.issue.id },
+        resultJson: { startupCancellation: { errorCode: "cancelled" }, executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.run.id));
+      await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: parent.id, agentId: f.agent.id, eventType: "lifecycle", stream: "system",
+        payload: { retryRunId: evidence === "wrong_child" ? randomUUID() : f.run.id, retryReason: "workspace_busy", scheduledRetryAttempt: 24 } });
+      if (evidence === "started") await db.update(heartbeatRuns).set({ startedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      if (evidence === "launch") await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke" });
+      if (evidence === "foreign_parent") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, parent.id));
+      if (evidence === "missing_wake") await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, f.run.id));
+      if (evidence === "instruction_copy") await db.insert(agentInstructionWorkingCopies).values({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
+        responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test", location: "local", state: "unchanged" });
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.issue.id, kind: "execution_reconciliation",
+        cause: "legacy_execution_requires_reconciliation", fingerprint: f.run.id, nextAction: "Verify original execution", evidence: { runId: f.run.id } });
+      expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(evidence === "unstarted");
+      const hook = vi.fn();
+      await createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false }).reconcile(f.run.id, f.company.id);
+      expect(await receipt(f.run.id)).toMatchObject({ stopVerified: evidence === "unstarted" });
+      if (evidence === "unstarted") {
+        expect(await receipt(f.run.id)).toMatchObject({ state: "settled" });
+        expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).toBeNull();
+      } else expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).not.toBeNull();
+      expect(hook).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(2);
+    });
 
   async function parkedCancellation() {
     const f = await seed();

@@ -42,7 +42,8 @@ type BridgeStopProof = {
   resultSeq?: number;
   checkedAt: string;
   background: { known: true; active: [] };
-  observation?: { kind: "later_input" | "restored_card"; bridgeSessionId: string; runId: string; acceptedSeq: number; resultSeq?: number };
+  observation?: { kind: "later_input" | "restored_card"; bridgeSessionId: string; runId: string; acceptedSeq: number; resultSeq?: number;
+    inputEvidence?: { source: "native_transcript"; nativeInputId: string } };
 };
 
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -62,10 +63,14 @@ export function validBridgeStopProof(
       background.known !== true || !Array.isArray(background.active) || background.active.length !== 0 ||
       Object.keys(background).some(key => key !== "known" && key !== "active")) return null;
   const observation = parseObject(proof.observation);
+  const inputEvidence = parseObject(observation.inputEvidence);
+  const transcriptInput = observation.kind === "later_input" && inputEvidence.source === "native_transcript"
+    && nonEmpty(inputEvidence.nativeInputId);
   if (proof.observation !== undefined && (
       !["later_input", "restored_card"].includes(String(observation.kind)) ||
       !nonEmpty(observation.bridgeSessionId) || !nonEmpty(observation.runId) ||
-      !Number.isSafeInteger(observation.acceptedSeq) || Number(observation.acceptedSeq) < 0 ||
+      !Number.isSafeInteger(observation.acceptedSeq) || Number(observation.acceptedSeq) < 0 && !transcriptInput ||
+      (observation.inputEvidence !== undefined && !transcriptInput) ||
       (observation.kind === "later_input" && (!Number.isSafeInteger(observation.resultSeq) || Number(observation.resultSeq) < 0)) ||
       (observation.kind === "restored_card" && observation.runId !== expected.runId))) return null;
   return {
@@ -73,6 +78,7 @@ export function validBridgeStopProof(
       kind: observation.kind as "later_input" | "restored_card", bridgeSessionId: observation.bridgeSessionId as string,
       runId: observation.runId as string, acceptedSeq: observation.acceptedSeq as number,
       ...(Number.isSafeInteger(observation.resultSeq) ? { resultSeq: observation.resultSeq as number } : {}),
+      ...(transcriptInput ? { inputEvidence: { source: "native_transcript" as const, nativeInputId: inputEvidence.nativeInputId as string } } : {}),
     } } : {}),
     schema: BRIDGE_STOP_REVERIFICATION_SCHEMA,
     bridgeSessionId: expected.bridgeSessionId,

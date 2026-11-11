@@ -28,7 +28,7 @@ import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { admitProjectPmRun } from "./heartbeat/project-pm-run.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
-import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
+import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement, recordLegacyLocalProcessStop } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
@@ -4037,6 +4037,9 @@ export function heartbeatService(
         if (adapterExecutionControls.get(run.id) === executionControl) {
           adapterExecutionControls.delete(run.id);
         }
+      }
+      if (latestRun?.runtimeMode === "legacy" && legacyLocalAdapterEntered) {
+        await recordLegacyLocalProcessStop(db, run.id, run.companyId);
       }
       if (latestRun) await db.transaction(tx => notifyRunStopSettlement(tx, { companyId: run.companyId, runId: run.id }));
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);

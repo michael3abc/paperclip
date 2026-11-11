@@ -2361,7 +2361,7 @@ describe("automatic retained workspace recovery", () => {
     const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board", actorSource: "local_implicit",
       observedRunId: source.id, idempotencyKey: randomUUID() });
     await heartbeatService(db).resumeTaskRetry(f.companyId, request.requestId!);
-    const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    let [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
     expect(successor).toBeDefined();
     const [receipt] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
       eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded")));
@@ -2369,6 +2369,9 @@ describe("automatic retained workspace recovery", () => {
     expect(readiness).toEqual({ mode: "resume_preserved_workspace", preservationReceiptId: receipt.id });
     const [agent] = await db.select().from(agents).where(eq(agents.id, source.agentId));
     const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    // Workspace preparation follows dispatch admission; queued runs cannot claim a directory.
+    [successor] = await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, successor.id)).returning();
     const localEnvironment = await environmentService(db).ensureLocalEnvironment(f.companyId);
     const prepared = await prepareHeartbeatWorkspace(db, {
       run: successor, agent,

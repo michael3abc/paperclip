@@ -4,11 +4,14 @@ import { mkdtemp, mkdir, symlink, rm, writeFile, readFile, access } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, it, expect, vi } from "vitest";
 import { companies, agents, projects, projectWorkspaces, issues, heartbeatRuns, agentInstructionWorkingCopies,
-  nativeRunFinalizations, createDb, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
+  heartbeatRunEvents, nativeRunFinalizations, createDb, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { claimSharedCheckout, sharedCheckoutPath } from "./shared-checkout.js";
+import { runChildProcess } from "../../adapters/utils.js";
+import { persistHeartbeatRunProcessMetadata } from "./run-lifecycle.js";
+import { recordLegacyLocalProcessStop } from "./process-settlement.js";
 
 const execFile = promisify(execFileCallback);
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -218,6 +221,25 @@ it.each([false,true])("requires a retained process-stop receipt before another w
   await db.update(agentInstructionWorkingCopies).set({ state: "unchanged", receipt: { cleanupPending: false } })
     .where(eq(agentInstructionWorkingCopies.runId, a.runId));
   await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
+});
+
+it("releases a real local process without an instruction copy only after its bound stop receipt, and invalidates it on another launch", async () => {
+  const [a, b] = await fixture(false); await claimSharedCheckout(db, a);
+  await runChildProcess(a.runId, process.execPath, ["-e", "console.log('settled-process')"], {
+    cwd: a.cwd, env: {}, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+    onSpawn: async meta => { await persistHeartbeatRunProcessMetadata(db, a.runId, meta); },
+  });
+  await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, a.runId));
+  await expect(claimSharedCheckout(db, b)).rejects.toMatchObject({ code: "workspace_busy" });
+  expect(await recordLegacyLocalProcessStop(db, a.runId, a.companyId)).toBe(true);
+  expect(await recordLegacyLocalProcessStop(db, a.runId, a.companyId)).toBe(false);
+  expect(await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, a.runId))).toEqual([]);
+  expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, a.runId),
+    eq(heartbeatRunEvents.eventType, "execution.local_process_stopped")))).toHaveLength(1);
+  await expect(claimSharedCheckout(db, b)).resolves.toMatchObject({ path: a.cwd });
+  await persistHeartbeatRunProcessMetadata(db, a.runId, { pid: process.pid, processGroupId: process.pid, startedAt: new Date().toISOString() });
+  expect(await recordLegacyLocalProcessStop(db, a.runId, a.companyId)).toBe(false);
+  await expect(claimSharedCheckout(db, b)).rejects.toMatchObject({ code: "workspace_busy" });
 });
 
 it.each(["settled", "unknown_stop", "pending_files", "cleanup_pending", "retained_copy",

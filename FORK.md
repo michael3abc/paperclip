@@ -11,6 +11,8 @@ The local release line is `michael/main`; previous releases and consolidation me
   UI reflects stopping/cleaning/attention/settled states from one public projection.
   Related PostgreSQL, heartbeat, adapter and UI tests cover evidence races and idle
   behavior. No schema migration or historical task replay.
+  Local legacy completion now retains independent process-tree stop evidence for
+  copy-free runs, so an actually completed writer does not strand its successor.
 
 - Remote host boot-boundary holder settlement (2026-11-11): holderless
   remote-managed workspace waits can be reconciled by the Owner. Admission's
@@ -609,3 +611,8 @@ are settled only after provider/resource absence is verified. Historical false
 incidents remain in the audit trail without blocking new authorized input.
 Interrupt delivery uses settlement notifications, with no independent polling
 that could outlive the durable four-check budget.
+
+Follow-up: project stop notification hints without caller objects; preserve native
+result/review commits. Prove historical unstarted retry children from the original
+scheduling event and wake, and accept restored successor transcript inputs only
+with a matching native UUID and a real Bridge result.

@@ -46,8 +46,42 @@ function cancelledWorkspaceWaitPredicate() {
     AND NOT EXISTS (SELECT 1 FROM workspace_operations o WHERE o.heartbeat_run_id = ${heartbeatRuns.id}), false)`;
 }
 
+/** Historical retry children could be cancelled before their first admission.
+ * Bind the original server scheduling event and wake to this exact child; an
+ * empty process identity or a terminal parent alone is not execution proof. */
+function cancelledScheduledWorkspaceRetryPredicate() {
+  return sql`coalesce(
+    ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
+    AND ${heartbeatRuns.finishedAt} IS NOT NULL AND ${heartbeatRuns.errorCode} = 'cancelled'
+    AND ${heartbeatRuns.scheduledRetryReason} = 'workspace_busy'
+    AND ${heartbeatRuns.scheduledRetryAt} IS NOT NULL
+    AND ${heartbeatRuns.resultJson}#>>'{executionCancellation,state}' IN ('requested', 'acknowledged')
+    AND coalesce(${heartbeatRuns.resultJson}#>>'{executionCancellation,forced}', 'false') <> 'true'
+    AND ${heartbeatRuns.resultJson}#>>'{startupCancellation,errorCode}' = 'cancelled'
+    AND ${heartbeatRuns.resultJson}->>'bridgeSessionId' IS NULL
+    AND ${heartbeatRuns.resultJson}->>'nativeSessionId' IS NULL
+    AND ${heartbeatRuns.contextSnapshot}->>'sharedCheckoutClaim' IS NULL
+    AND ${noRetainedExecutionPredicate()}
+    AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c WHERE c.run_id = ${heartbeatRuns.id})
+    AND NOT EXISTS (SELECT 1 FROM workspace_operations o WHERE o.heartbeat_run_id = ${heartbeatRuns.id})
+    AND EXISTS (SELECT 1 FROM heartbeat_runs parent
+      JOIN heartbeat_run_events e ON e.run_id = parent.id AND e.company_id = parent.company_id
+      JOIN agent_wakeup_requests w ON w.id = ${heartbeatRuns.wakeupRequestId}
+      WHERE parent.id = ${heartbeatRuns.retryOfRunId} AND parent.company_id = ${heartbeatRuns.companyId}
+        AND parent.agent_id = ${heartbeatRuns.agentId} AND parent.status = 'cancelled' AND parent.error_code = 'workspace_busy'
+        AND parent.context_snapshot->>'issueId' = ${heartbeatRuns.contextSnapshot}->>'issueId'
+        AND w.company_id = ${heartbeatRuns.companyId} AND w.agent_id = ${heartbeatRuns.agentId}
+        AND w.run_id = ${heartbeatRuns.id} AND w.reason = 'workspace_busy_retry'
+        AND w.payload->>'retryOfRunId' = parent.id::text AND w.payload->>'retryReason' = 'workspace_busy'
+        AND w.payload->>'scheduledRetryAttempt' = ${heartbeatRuns.scheduledRetryAttempt}::text
+        AND e.source_event_id IS NULL AND e.event_type = 'lifecycle' AND e.stream = 'system'
+        AND e.payload->>'retryRunId' = ${heartbeatRuns.id}::text AND e.payload->>'retryReason' = 'workspace_busy'
+        AND e.payload->>'scheduledRetryAttempt' = ${heartbeatRuns.scheduledRetryAttempt}::text), false)`;
+}
+
 function preDispatchExecutionWaitPredicate() {
-  return sql`(${staleDispatchExecutionWaitPredicate()} OR ${cancelledWorkspaceWaitPredicate()})`;
+  return sql`(${staleDispatchExecutionWaitPredicate()} OR ${cancelledWorkspaceWaitPredicate()}
+    OR ${cancelledScheduledWorkspaceRetryPredicate()})`;
 }
 
 export async function isPreDispatchExecutionWaitVerified(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {

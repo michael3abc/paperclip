@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createServer } from "node:http";
 import { conflict, HttpError } from "../errors.js";
 import { setImmediate as immediate } from "node:timers/promises";
@@ -93,13 +96,15 @@ describe("deferred receipt durable dispatch", () => {
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   async function fixture() {
     const companyId = randomUUID(), actorId = "deferred-receipt-user";
+    const cwd = await mkdtemp(path.join(os.tmpdir(), "deferred-receipt-workspace-"));
+    extraStops.push(() => rm(cwd, { recursive: true, force: true }));
     await db.insert(authUsers).values({ id: actorId, name: "Receipt operator", email: `${actorId}@example.test`,
       createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
     await db.insert(companies).values({ id: companyId, name: "Deferred dispatch", issuePrefix: `DE${companyId.slice(0, 6)}`,
       defaultResponsibleUserId: actorId, requireBoardApprovalForNewAgents: false });
     await db.insert(companyMemberships).values({ companyId, principalId: actorId, principalType: "user", status: "active", membershipRole: "owner" });
     const [agent] = await db.insert(agents).values({ companyId, name: "Receipt process", adapterType: "process", status: "idle",
-      adapterConfig: { command: process.execPath, args: ["-e", "console.log('receipt-proof')"], cwd: process.cwd() },
+      adapterConfig: { command: process.execPath, args: ["-e", "console.log('receipt-proof')"], cwd },
       runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true } } }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Resume saved task", status: "todo", assigneeAgentId: agent.id }).returning();
     const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId: issue.id,
@@ -132,8 +137,9 @@ describe("deferred receipt durable dispatch", () => {
       expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.status} in ('queued', 'running')`)).toHaveLength(0);
     }, { timeout: 15_000 });
     const saved = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "scheduled_retry"));
-    if (saved.length) {
-      const due = Math.max(...saved.map(run => run.scheduledRetryAt!.getTime()));
+    const deadlines = saved.flatMap(run => run.scheduledRetryAt ? [run.scheduledRetryAt.getTime()] : []);
+    if (deadlines.length) {
+      const due = Math.max(...deadlines);
       while (Date.now() <= due) {
         await vi.advanceTimersByTimeAsync(Math.min(500, due - Date.now() + 1));
         await Promise.allSettled([...passes]); await immediate();
@@ -222,7 +228,7 @@ describe("deferred receipt durable dispatch", () => {
     await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await waitForReal(async () => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
     }, { timeout: 15_000 });
     // Observe the requested run before joining all background cleanup. A
@@ -249,7 +255,7 @@ describe("deferred receipt durable dispatch", () => {
     await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
     }, { timeout: 15_000 });
     await finish(f.issue.id);
@@ -330,7 +336,7 @@ describe("deferred receipt durable dispatch", () => {
     await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
     }, { timeout: 15_000 });
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
@@ -455,7 +461,7 @@ describe("deferred receipt durable dispatch", () => {
     extraStops.push(async () => { listener.closeAllConnections(); await new Promise<void>(resolve => listener.close(() => resolve())); });
     const port = (listener.address() as { port: number }).port;
     const script = `fetch("http://127.0.0.1:${port}/complete", {method:"POST",body:JSON.stringify({runId:process.env.PAPERCLIP_RUN_ID})}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("receipt-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
-    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } })
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: f.agent.adapterConfig.cwd } })
       .where(eq(agents.id, f.agent.id));
     const at = Date.now();
     const intents = await db.insert(agentWakeupRequests).values(Array.from({ length: count }, (_, index) => ({
@@ -486,7 +492,7 @@ describe("deferred receipt durable dispatch", () => {
     await waitForReal(async () => {
       await Promise.all(owners.map(owner => owner.drainActiveRunExecutions()));
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first.runId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
     }, { timeout: 15_000 });
     expect(cohort.failures).toEqual([]);
@@ -504,6 +510,10 @@ describe("deferred receipt durable dispatch", () => {
   });
   it("keeps other issues and companies separate within one native worker batch", async () => {
     const f = await fixture(), cohort = await nativeCohort(f), foreign = await fixture(), foreignCohort = await nativeCohort(foreign);
+    // Concurrent notices may park behind the still-cleaning prior process. Use
+    // the same holder-settlement and same-row dispatch workers as server startup.
+    await heartbeat.registerRunStopSettlementWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     const [otherIssue] = await db.insert(issues).values({ companyId: f.companyId, assigneeAgentId: f.agent.id,
       status: "todo", title: "Separate native issue" }).returning();
     const otherIntents = await db.insert(agentWakeupRequests).values(cohort.intents.map((_, index) => ({
@@ -518,6 +528,8 @@ describe("deferred receipt durable dispatch", () => {
     const first = await nativeCohortResult(f, cohort);
     const other = await nativeCohortResult({ ...f, issue: otherIssue }, { intents: otherIntents, failures: cohort.failures });
     const third = await nativeCohortResult(foreign, foreignCohort);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(3);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, foreign.companyId))).toHaveLength(2);
     expect(new Set([first, other, third]).size).toBe(3); await quiet();
   });
   it("dispatches a notice committed during held admission in a fresh native pass even with old requestedAt", async () => {
@@ -569,7 +581,7 @@ describe("deferred receipt durable dispatch", () => {
     await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lateRunId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
       expect(run.contextSnapshot?.nativeStatusWakeIntentId).toBe(late!.id);
     }, { timeout: 15_000 });
@@ -876,7 +888,7 @@ describe("deferred receipt durable dispatch", () => {
     // Observe this Retry before closing the task and draining its follow-ups.
     await waitForReal(async () => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
       expect(run.stdoutExcerpt).toContain("receipt-proof");
     }, { timeout: 15_000 });
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);
@@ -964,7 +976,7 @@ describe("deferred receipt durable dispatch", () => {
         await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
         const port = (listener.address() as { port: number }).port;
         const script = `fetch("http://127.0.0.1:${port}", {method:"POST",body:process.env.PAPERCLIP_RUN_ID}).then(async response=>{if(!response.ok)throw new Error(await response.text());console.log("held-retry-proof")}).catch(error=>{console.error(error);process.exitCode=1})`;
-        await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: process.cwd() } }).where(eq(agents.id, other.agent.id));
+        await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", script], cwd: other.agent.adapterConfig.cwd } }).where(eq(agents.id, other.agent.id));
         await requestTaskRetry({ db, companyId: other.companyId, issueId: other.issue.id, actorId: other.actorId,
           observedRunId: other.source.id, idempotencyKey: randomUUID() });
         await waitForReal(() => expect(admitted).toBe(true), { timeout: 15_000 });
@@ -987,7 +999,7 @@ describe("deferred receipt durable dispatch", () => {
       // Observe this Retry before closing the task and draining unrelated runs.
       await waitForReal(async () => {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
-        expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+        expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode, workspaceBusy: run.resultJson?.workspaceBusy })).toBe("succeeded");
         expect(run.stdoutExcerpt).toContain("receipt-proof");
       }, { timeout: 15_000 });
       expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${request.requestId}`)).toHaveLength(1);

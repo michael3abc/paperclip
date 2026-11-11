@@ -3588,7 +3588,9 @@ Details, lists and live events expose the same bounded status: 正在停止, 正
 需處理 or 已結清. Unverified evidence returns that pending receipt, not release proof.
 
 Bridge proof binds the original native session, run and input; a restored card or
-completed later input is separately identified as the observation source. Inspection
+completed later input is separately identified as the observation source. A
+reconstructed successor input requires its native UUID to match the original
+dispatch receipt plus a real sequenced result; retain native_transcript provenance. Inspection
 never resumes, interrupts or sends input. Native cleanup reuses the latest launch's
 host/process or provider termination evidence; a newer launch invalidates old proof.
 An observed cancelled finalizer with no result, owner or recovery obligation can
@@ -3608,11 +3610,20 @@ receipt together with absence of provider identity/events, finalizer, lease,
 instruction copies, workspace operations and checkout claim. This proof permits
 settlement and exempts that exact historical recovery incident; it never releases
 the actual holder. Conflicting execution evidence invalidates the exemption.
+An older scheduled retry cancelled before first admission requires its exact
+parent scheduling event and wake receipt, same company/agent/issue, and no
+start/controller/provider/resource trace. Its parent remains separately fenced.
 Deferred interrupt input has no independent backoff timer: the original run's
 persisted stop checks own the deadline and notify input delivery after settlement.
 
 Controller/finalizer ownership, uncollected files, workspace recovery/operations and
 unreleased leases continue to block writers. No claim is forcibly deleted.
+Local legacy execution also persists `execution.local_process_stopped` after its
+executor returns, even without an instruction copy. The receipt binds the latest
+server-recorded local host, PID/group, process birth and identity event; both the
+process and group must be absent. A later launch/resume invalidates it. Physical
+admission still requires all cleanup fences, and the receipt wakes the existing
+workspace-wait coordinator without a recurring scan.
 
 ### Physical workspace admission
 

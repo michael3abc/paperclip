@@ -103,6 +103,15 @@ export const REMOTE_HOST_REBOOT_EVENT = "workspace.remote_host_rebooted";
 export const REMOTE_HOST_REBOOT_SCHEMA = "paperclip.remote-host-boot-boundary.v1";
 const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
+            or (r.runtime_mode = 'legacy' and exists (select 1 from heartbeat_run_events stopped
+              where stopped.run_id = r.id and stopped.company_id = r.company_id
+                and stopped.source_event_id is null and stopped.stream = 'system'
+                and stopped.event_type = 'execution.local_process_stopped'
+                and stopped.payload->>'schema' = 'paperclip.local-process-stop.v1'
+                and (stopped.payload->>'identitySeq')::integer =
+                  (select max(e.seq) from heartbeat_run_events e where e.run_id = r.id
+                    and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
+                      'turn.started', 'session.resumed'))))
             or (r.result_json#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
               and r.result_json#>>'{stopSettlement,state}' = 'settled' and r.result_json#>>'{stopSettlement,stopVerified}' = 'true'
               and (r.result_json#>>'{stopSettlement,processGeneration}')::integer =
