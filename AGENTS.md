@@ -566,7 +566,13 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 Workspace bootstrap failures may return the original recovery action to the verified project main
 agent's original Chat. Use system provenance, pre-provider/settlement evidence and durable receipts;
 unknown sends only reconcile the original receipt. Repair uses revision-bound `workspaceRepair`
-and one original-worker admission, preserving assignment/model/review/holds. Historical forwarding
+and at most three original-worker admissions across new actions for the same task, preserving
+assignment/model/review/holds. Count committed repair receipts, including pending/uncertain delivery;
+same-failure API replay or workspace changes never replenish the allowance. Pre-upgrade actions
+retain their one-admission limit; exhaustion returns ownership to Owner without another notice.
+Unsettled repair receipts block later attempts; original-receipt settlement notifies the existing
+coordinator to reconsider pending candidates without polling or re-sending.
+Historical forwarding
 is Owner-only and explicit. Terminal-holder reconciliation never cancels live work or clears files
 based on idle status. Keep `doc/DEVELOPING.md`, validators and OpenAPI aligned.
 The shared task detail page must mount the creator recovery card for system-attributed startup
@@ -577,6 +583,10 @@ Live work cards render runtime identity only from the run's model_identity activ
 own delegation payload. Preserve harness, raw model/provider, billing route and unavailable metadata;
 never use the current agent config or parent model to label a historical run or native child.
 See doc/DEVELOPING.md (Main-agent live work cards).
+The lower conversation Task list also shows each task's harness/model/source. Project only its
+latest run's invocation/usage evidence through the authorized handoff page; never the creator run.
+Label unstarted assignment settings Configured and unavailable historical fields unknown. Do not
+expose adapter configs, credentials or transcripts, fetch each card separately, or poll for identity.
 
 Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
 through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the

@@ -8494,7 +8494,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List tasks created from your conversation",
   description:
-    "Requires a board user who owns the conversation and has current issue read access. Returns a ConversationTaskHandoffPage for the current conversation session, newest first, omitting tasks the user can no longer read. Accepts only cursor and limit; the default page size is 40. This read does not create tasks or wake agents.",
+    "Requires a board user who owns the conversation and has current issue read access. Returns a ConversationTaskHandoffPage for the current conversation session, newest first, omitting tasks the user can no longer read. Each runtimeIdentity contains basis (run/configured/unknown), runId, harness, model and billingRoute (nullable). It uses only that task's latest run invocation/usage evidence, or explicitly labelled current assignment settings before execution; unavailable historical values remain null. Accepts only cursor and limit; the default page size is 40. This read does not create tasks or wake agents.",
   request: {
     params: z.object({ id: z.string() }),
     query: z.object({
@@ -11281,6 +11281,7 @@ registerCurrentRoute({
   path: "/api/issues/{id}/recovery-actions/resolve",
   tags: ["issues"],
   summary: "Resolve an issue recovery action",
+  description: "Workspace repair is bound to the original creator, failed run and binding revision. New workspace creator actions allow at most three admitted repair receipts across the original task; pending or uncertain delivery consumes an admission. Replays and selection changes do not reset the limit. Pre-upgrade actions retain their original limit; exhausted or unsafe recovery stays with Owner.",
   body: resolveIssueRecoveryActionSchema,
 });
 

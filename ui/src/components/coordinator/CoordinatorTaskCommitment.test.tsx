@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
+import { CoordinatorCreatedTaskLink, CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 import { TaskChatCompactInteractionCard } from "../task-chat/TaskChatCompactInteractionCard";
 import { pendingSuggestedTasksInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TooltipProvider } from "../ui/tooltip";
@@ -30,6 +30,23 @@ function render(interaction: typeof pendingSuggestedTasksInteraction, onAcceptIn
 }
 
 describe("Coordinator task commitment", () => {
+  it("shows each task's own runtime, configuration provenance and missing historical values", async () => {
+    await act(() => root.render(<>
+      <CoordinatorCreatedTaskLink task={{ issueId: "one", identifier: "T-1", title: "Executed", runtimeIdentity: {
+        basis: "run", runId: "run-1", harness: "codex", model: "gpt-6-astra", billingRoute: "openai_subscription",
+      } }} />
+      <CoordinatorCreatedTaskLink task={{ issueId: "two", identifier: "T-2", title: "Waiting", runtimeIdentity: {
+        basis: "configured", runId: null, harness: "claude", model: "sonnet", billingRoute: null,
+      } }} />
+      <CoordinatorCreatedTaskLink task={{ issueId: "three", identifier: "T-3", title: "Old", runtimeIdentity: {
+        basis: "unknown", runId: "old", harness: null, model: null, billingRoute: null,
+      } }} />
+    </>));
+    expect([...host.querySelectorAll('[data-testid="task-runtime-identity"]')].map(node => node.textContent)).toEqual([
+      "Last run: codex · 6 Astra · subscription", "Configured: claude · sonnet · source unknown",
+      "Unknown run: harness unknown · model unknown · source unknown",
+    ]);
+  });
   it("does not claim creation when acceptance is still pending or failed", async () => {
     let fail!: (reason: Error) => void;
     const accept = vi.fn(() => new Promise<void>((_, reject) => { fail = reject; }));

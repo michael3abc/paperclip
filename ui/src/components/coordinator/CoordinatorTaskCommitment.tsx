@@ -9,6 +9,7 @@ import { Link } from "@/lib/router";
 import { StatusIcon } from "@/components/StatusIcon";
 import { CoordinatorRelativeTime } from "./CoordinatorRelativeTime";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { runtimeIdentityLabel } from "@/lib/main-agent-work";
 
 // Presentation-only memory. It contains no task text or authority, and prevents
 // revisiting a conversation from replaying its task-creation celebration.
@@ -122,13 +123,18 @@ export function CoordinatorTaskMotion({
  * handoffs, so both creation paths settle into the same card. */
 export function CoordinatorCreatedTaskLink({ task, createdAt }: {
   createdAt?: Date | string | null;
-  task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title"> & { status?: ConversationTaskHandoff["status"] };
+  task: Pick<ConversationTaskHandoff, "issueId" | "identifier" | "title" | "runtimeIdentity"> & { status?: ConversationTaskHandoff["status"] };
 }) {
   return <Link to={`/issues/${task.identifier ?? task.issueId}`} className="coordinator-created-task">
     {task.status ? <StatusIcon status={task.status} size="lg" /> : <FileCheck2 className="size-5 shrink-0 text-muted-foreground" aria-label="Task created" />}
     <span className="min-w-0 flex-1">
       <span className="block truncate text-sm font-medium">{task.title}</span>
       <span className="block truncate text-xs text-muted-foreground"><span className="font-mono">{task.identifier ?? task.issueId}</span> · Created</span>
+      {task.runtimeIdentity && <span className="block break-words text-xs text-muted-foreground" data-testid="task-runtime-identity" title={task.runtimeIdentity.model ?? undefined}>
+        {task.runtimeIdentity.basis === "configured" ? "Configured" : task.runtimeIdentity.basis === "run" ? "Last run" : "Unknown run"}: {runtimeIdentityLabel({
+          ...task.runtimeIdentity, harness: task.runtimeIdentity.harness ?? "harness unknown", modelProvider: null, metadataError: null,
+        })}
+      </span>}
     </span>
     {createdAt ? <CoordinatorRelativeTime value={createdAt} className="shrink-0 text-xs text-muted-foreground" /> : null}
     <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />

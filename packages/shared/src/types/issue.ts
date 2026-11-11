@@ -1303,6 +1303,14 @@ export interface ConversationTaskHandoff {
   sourceRunId: string | null;
   /** When present, the accepted suggestion already renders this task card. */
   suggestionInteractionId: string | null;
+  /** Task-owned execution evidence, never the creating conversation's run. */
+  runtimeIdentity?: {
+    basis: "run" | "configured" | "unknown";
+    runId: string | null;
+    harness: string | null;
+    model: string | null;
+    billingRoute: string | null;
+  };
 }
 
 export interface ConversationTaskHandoffPage {

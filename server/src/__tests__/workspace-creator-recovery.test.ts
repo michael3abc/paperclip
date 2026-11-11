@@ -236,6 +236,67 @@ describe("workspace creator recovery", () => {
     expect(wakeup.mock.calls[0][1].contextSnapshot.paperclipChatPreemption.preemptedRunId).toBe(otherRunId);
   });
 
+  it("admits at most three distinct failures across actions, counting pending and uncertain receipts", async () => {
+    const f = await fixture();
+    let action = f.action, failedRunId = f.failedRunId;
+    let priorActionId: string | null = null;
+    const url = "/api/issues/" + f.taskId + "/recovery-actions/resolve";
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      if (attempt > 1) {
+        failedRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: failedRunId, companyId: f.companyId, agentId: f.workerId, issueId: f.taskId,
+          createdAt: new Date(Date.now() + attempt * 1000), status: "failed", finishedAt: new Date(), errorCode: "workspace_validation_failed",
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, workspaceValidation: { reason: "shared_checkout_unsaved_changes" } } });
+        await db.update(issues).set({ status: "blocked", workspaceBindingRevision: attempt - 1 }).where(eq(issues.id, f.taskId));
+        [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.taskId, kind: "environment_repair",
+          status: "active", ownerType: "board", cause: "workspace_validation_failed", fingerprint: randomUUID(), nextAction: "Owner",
+          evidence: { latestRunId: failedRunId, workspaceCreatorMaxRepairs: 3 } }).returning();
+      } else {
+        [action] = await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, workspaceCreatorMaxRepairs: 3 } }).where(eq(issueRecoveryActions.id, action.id)).returning();
+      }
+      if (priorActionId) {
+        // A new failure cannot bypass an unresolved original delivery receipt.
+        expect(await routeWorkspaceToCreator(db, action, { requestKey: action.id })).toBeNull();
+        const [prior] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, priorActionId));
+        const settled = creatorRecovery(prior.evidence)!;
+        await db.update(issueRecoveryActions).set({ evidence: { ...prior.evidence,
+          creatorRecovery: { ...settled, repair: { ...settled.repair, status: "queued" } },
+        } }).where(eq(issueRecoveryActions.id, priorActionId));
+      }
+      const routed = await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.taskId)).for("update");
+        return routeWorkspaceToCreator(tx as unknown as typeof db, action, { requestKey: action.id });
+      });
+      if (attempt === 4) { expect(routed).toBeNull(); break; }
+      expect(routed).not.toBeNull();
+      const body = { actionId: action.id, outcome: "restored", sourceIssueStatus: "todo", resolutionNote: "Repair evidence",
+        workspaceRepair: { failedRunId, expectedBindingRevision: attempt - 1 } };
+      const responses = await Promise.all([request(f.app).post(url).send(body), request(f.app).post(url).send(body)]);
+      expect(responses.map(r => r.body.error ?? r.status)).toEqual([200, 200]);
+      const [saved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      const state = creatorRecovery(saved.evidence)!;
+      expect(state.repair?.status).toBe("pending");
+      if (attempt === 1) {
+        await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.taskId));
+        const [duplicate] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.taskId, kind: "environment_repair",
+          status: "active", ownerType: "board", cause: "workspace_validation_failed", fingerprint: randomUUID(), nextAction: "Owner",
+          evidence: { latestRunId: failedRunId, workspaceCreatorMaxRepairs: 3 } }).returning();
+        expect(await routeWorkspaceToCreator(db, duplicate, { requestKey: duplicate.id })).toBeNull();
+        await db.update(issueRecoveryActions).set({ status: "cancelled" }).where(eq(issueRecoveryActions.id, duplicate.id));
+      }
+      if (attempt === 2) await db.update(issueRecoveryActions).set({ evidence: { ...saved.evidence,
+        creatorRecovery: { ...state, repair: { ...state.repair, status: "uncertain" } },
+      } }).where(eq(issueRecoveryActions.id, action.id));
+      priorActionId = action.id;
+    }
+    const notices = await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId));
+    expect(notices).toHaveLength(3);
+    expect(notices.map(n => n.body).join(" ")).toContain("3/3");
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.taskId));
+    expect(actions.filter(a => creatorRecovery(a.evidence)?.repair)).toHaveLength(3);
+    expect(actions.find(a => a.id === action.id)?.ownerType).toBe("board");
+  });
+
   it("Owner changes and a consumed recovery cannot be overwritten by another repair", async () => {
     const f = await fixture(); await f.route();
     const body = { actionId: f.action.id, outcome: "restored", sourceIssueStatus: "todo", resolutionNote: "Repaired",
@@ -306,6 +367,7 @@ describe("workspace creator recovery", () => {
       const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.taskId), eq(issueRecoveryActions.status, "active")));
       expect(action).toBeDefined();
       expect(action.evidence.workspaceCreatorCandidate).toBe(true);
+      expect(action.evidence.workspaceCreatorMaxRepairs).toBe(3);
       expect(creatorRecovery(action.evidence)).toBeNull();
       expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.conversationId))).toHaveLength(0);
       const delivery = workspaceCreatorDelivery(db, { wakeup: heartbeat.wakeup, cancelRun: heartbeat.cancelRun, schedulingSuppressed: async () => false });

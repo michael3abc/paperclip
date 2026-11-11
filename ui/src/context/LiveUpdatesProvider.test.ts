@@ -16,6 +16,24 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes task identity on run lifecycle changes, without log polling or foreign events", () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const gate = { cooldownHits: new Map<string, number[]>(), suppressUntil: 0, observedRunOutcomes: new Set<string>() };
+    const deliver = (type: "heartbeat.run.status" | "heartbeat.run.log" | "heartbeat.run.event", companyId = "company-1", eventType?: string) =>
+      __liveUpdatesTestUtils.handleLiveEvent(client, "company-1", "/PAP/chats/agent-1", {
+        id: 1, type, companyId, createdAt: "2026-11-11T00:00:00Z",
+        payload: { runId: "task-run", issueId: "task-1", agentId: "worker", status: "succeeded", eventType },
+      }, () => null, gate, { userId: "viewer", agentId: null });
+    deliver("heartbeat.run.status");
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["issues", "chat-handoffs"] });
+    invalidate.mockClear(); deliver("heartbeat.run.event", "company-1", "adapter.invoke");
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["issues", "chat-handoffs"] });
+    invalidate.mockClear(); deliver("heartbeat.run.log"); deliver("heartbeat.run.status", "other-company");
+    deliver("heartbeat.run.event", "company-1", "tool.started");
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["issues", "chat-handoffs"] });
+    client.clear();
+  });
   it("refreshes mirrored replies on the bound conversation", () => {
     const client = new QueryClient();
     const own = queryKeys.issues.comments("chat-1"), other = queryKeys.issues.comments("chat-2");
