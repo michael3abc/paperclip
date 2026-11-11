@@ -570,6 +570,11 @@ and one original-worker admission, preserving assignment/model/review/holds. His
 is Owner-only and explicit. Terminal-holder reconciliation never cancels live work or clears files
 based on idle status. Keep `doc/DEVELOPING.md`, validators and OpenAPI aligned.
 
+Live work cards render runtime identity only from the run's model_identity activity or the child's
+own delegation payload. Preserve harness, raw model/provider, billing route and unavailable metadata;
+never use the current agent config or parent model to label a historical run or native child.
+See doc/DEVELOPING.md (Main-agent live work cards).
+
 Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
 through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the
 queued-comment reservation before provider I/O, preserve original run/result
