@@ -66,6 +66,13 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
   const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
+  const mobileTaskPanelControl = isMobile && breadcrumbPanelControl ? (
+    <Button variant="ghost" size="icon-sm" className="size-9 shrink-0"
+      aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
+      onClick={toggleTaskPanel}>
+      {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+    </Button>
+  ) : null;
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -123,6 +130,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           <CrumbIdentifier identifier={currentCrumb.identifier} />
         </h1>
         {globalToolbarSlots}
+        {mobileTaskPanelControl}
       </div>
     );
   }
@@ -218,6 +226,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
         ) : null}
         {globalToolbarSlots}
+        {mobileTaskPanelControl}
       </div>
     );
   }

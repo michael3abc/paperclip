@@ -5398,6 +5398,26 @@ describe("IssueDetail", () => {
     ).not.toBeNull();
   });
 
+  it("opens and closes the mobile sheet through the breadcrumb panel control", async () => {
+    mockSidebarState.isMobile = true;
+    coordinatorPreference.enabled = true;
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockSetBreadcrumbPanelControl.mockClear();
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    await flushReact();
+    const control = () => [...mockSetBreadcrumbPanelControl.mock.calls].reverse()
+      .map(([value]) => value).find(value => value !== null);
+    expect(control()).toMatchObject({ open: false });
+    await act(async () => { control().onToggle(); });
+    await flushReact();
+    expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
+    expect(control()).toMatchObject({ open: true });
+    await act(async () => { control().onToggle(); });
+    await flushReact();
+    expect(control()).toMatchObject({ open: false });
+  });
+
   it("starts a planning-mode task as chat-only until its plan document exists", async () => {
     mockSetBreadcrumbToolbar.mockClear();
     mockSetBreadcrumbPanelControl.mockClear();

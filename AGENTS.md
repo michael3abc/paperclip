@@ -592,6 +592,8 @@ Live work cards render runtime identity only from the run's model_identity activ
 own delegation payload. Preserve harness, raw model/provider, billing route and unavailable metadata;
 never use the current agent config or parent model to label a historical run or native child.
 See doc/DEVELOPING.md (Main-agent live work cards).
+Mobile conversation headers must open the actual task side-panel sheet through
+the page's panel control, so Tasks remains reachable at phone widths.
 The lower conversation Task list also shows each task's harness/model/source. Project only its
 latest run's invocation/usage evidence through the authorized handoff page; never the creator run.
 Label unstarted assignment settings Configured and unavailable historical fields unknown. Do not

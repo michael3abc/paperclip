@@ -5973,13 +5973,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }
 
     setBreadcrumbPanelControl({
-      open: panelVisible && !suppressPanelUntilPlan,
-      onToggle: toggleTaskSidePanel,
+      open: isMobile ? mobilePropsOpen : panelVisible && !suppressPanelUntilPlan,
+      onToggle: isMobile ? () => setMobilePropsOpen(open => !open) : toggleTaskSidePanel,
     });
 
     return () => setBreadcrumbPanelControl(null);
   }, [
     issue?.id,
+    isMobile,
+    mobilePropsOpen,
     panelVisible,
     setBreadcrumbPanelControl,
     streamlinedTaskDetailEnabled,

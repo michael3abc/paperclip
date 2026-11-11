@@ -20,6 +20,9 @@ without claiming provider acceptance or guessing billing. Historical runs with n
 remain unknown rather than inheriting current agent settings. The projection contains only
 basis, runId, harness, model and billingRoute; no raw configs, credentials or transcript reads.
 Existing run lifecycle events invalidate the handoff query; no per-card requests or new polling.
+At phone widths, the conversation header's properties control opens the mobile
+task side-panel sheet. Its Tasks tab uses the same conversation list and identity
+projection as desktop; do not toggle only the hidden desktop panel.
 
 ## Host subscription quota dashboard
 
