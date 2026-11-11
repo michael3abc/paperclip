@@ -14,6 +14,7 @@ import { liveRunRefetchInterval } from "../lib/live-runs-cache";
 import { useTaskRetry } from "../hooks/useTaskRetry";
 import { grokBotApi } from "@/api/grokBot";
 import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
+import { IssueRecoveryActionCard } from "../components/IssueRecoveryActionCard";
 import { WorkspaceRetryControl } from "../components/WorkspaceRetryButton";
 import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
 import { canManageIssuePrivacy } from "../lib/issuePrivacy";
@@ -8202,6 +8203,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               showStatus={!issue.interruption && !issue.executionBlocker?.workspaceRecovery}
               action={issue.activeRecoveryAction ?? null} />
           )}
+          {resolvedDetailTab === "chat" && hasWorkspaceCreatorRecovery && issue.activeRecoveryAction && (
+            <IssueRecoveryActionCard className={shellSectionClass}
+              action={issue.activeRecoveryAction} agentMap={agentMap}
+              scheduledRetry={issue.scheduledRetry}
+              onResolve={handleResolveRecoveryAction} />
+          )}
           {resolvedDetailTab === "chat" && !hasWorkspaceCreatorRecovery && (
             <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
               issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
@@ -8579,7 +8586,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockerAttention={issue.blockerAttention ?? null}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={(issue.interruption?.responsibility === "system" && !hasWorkspaceCreatorRecovery) || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
+                  recoveryAction={hasWorkspaceCreatorRecovery || issue.interruption?.responsibility === "system" || issue.activeRecoveryAction?.cause === "native_workspace_finalization_owner_unverified" ? null : issue.activeRecoveryAction ?? null}
                   onResolveRecoveryAction={handleResolveRecoveryAction}
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
