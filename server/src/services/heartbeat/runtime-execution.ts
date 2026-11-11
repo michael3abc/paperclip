@@ -11,6 +11,8 @@ import { environmentService } from "../environments.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { realpath } from "node:fs/promises";
+import { sharedCheckoutPath } from "./shared-checkout.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -519,6 +521,19 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     context.goalControlRequestId,
   );
   try {
+    const directoryClaim = parseObject(context.sharedCheckoutClaim);
+    if (directoryClaim.version === 1 && directoryClaim.kind !== "storage"
+      && typeof directoryClaim.host === "string" && !directoryClaim.host.startsWith("ccpocket:")
+      && executionTarget?.kind !== "remote") {
+      const launchCwd = nativeExecution && "cwd" in nativeExecution.workspace
+        ? nativeExecution.workspace.cwd : executionWorkspace.cwd;
+      if (typeof directoryClaim.executionCwd !== "string" || typeof launchCwd !== "string"
+        || await realpath(launchCwd) !== await realpath(directoryClaim.executionCwd)
+        || await sharedCheckoutPath(launchCwd) !== directoryClaim.path) {
+        throw new WorkspaceValidationFailure("The provider working directory differs from the admitted workspace.",
+          { workspaceValidation: { reason: "workspace_binding_mismatch" } });
+      }
+    }
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
         throw new Error("native_runtime_selection_not_persisted");

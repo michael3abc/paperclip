@@ -129,6 +129,47 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     };
     return { input, source, issue, run, envOrchestrator };
   }
+  async function sibling(input: HeartbeatWorkspacePreparationInput): Promise<HeartbeatWorkspacePreparationInput> {
+    const [issue] = await db.insert(issues).values({ companyId: input.agent.companyId,
+      projectId: input.task.issueRef!.projectId, projectWorkspaceId: input.task.issueRef!.projectWorkspaceId,
+      identifier: "WSP-2", title: "Independent writer", assigneeAgentId: input.agent.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId, agentId: input.agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+    return { ...input, run, task: { ...input.task, issueRef: issue, issueId: issue.id,
+      context: { issueId: issue.id, projectId: issue.projectId } }, nativeRunnerPreparationSpans: [] };
+  }
+
+  it("claims independent worktrees of one source for ordinary adapters before provider admission", async () => {
+    const { input, source } = await fixture(true);
+    input.config.mergedConfig.workspaceStrategy = { type: "git_worktree", baseRef: "main",
+      branchTemplate: "test-{{issue.identifier}}", worktreeParentDir: join(home,"independent") };
+    const second = await sibling(input);
+    const a = await prepareHeartbeatWorkspace(db,input), b = await prepareHeartbeatWorkspace(db,second);
+    expect(a.executionWorkspace.cwd).not.toBe(source);
+    expect(a.executionWorkspace.cwd).not.toBe(b.executionWorkspace.cwd);
+    for (const [value,result] of [[input,a],[second,b]] as const) {
+      expect(value.task.context.sharedCheckoutClaim).toMatchObject({path:result.executionWorkspace.cwd});
+      expect((await readIssue(value.task.issueId!)).executionWorkspaceId).toBe(result.persistedExecutionWorkspace!.id);
+    }
+  });
+
+  it("serializes ordinary adapters using one source before environment acquisition", async () => {
+    const { input } = await fixture();
+    const second = await sibling(input);
+    await prepareHeartbeatWorkspace(db,input);
+    const acquire = vi.spyOn(second.services.envOrchestrator,"acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db,second)).rejects.toMatchObject({code:"workspace_busy"});
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it("refuses an isolated mode that would still run in the source directory", async () => {
+    const { input } = await fixture(true); input.config.mergedConfig = {};
+    const acquire = vi.spyOn(input.services.envOrchestrator,"acquireForRun");
+    await expect(prepareHeartbeatWorkspace(db,input)).rejects.toMatchObject({
+      resultJson:{workspaceValidation:{reason:"isolated_workspace_not_realized"}}});
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
   it.each(["fresh", "cached", "worker_bound"])("keeps a worker task worktree binding when a native PM prepares its review home (%s)", async scenario => {
     const { input, source, issue } = await fixture();
     const pmHome = join(home, `pm-${input.agent.id}`); await mkdir(pmHome);
@@ -856,7 +897,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
-  it.each(["shared_workspace", "agent_default"] as const)("rejects concurrent shared writers resolved from %s before resolving a remote source", async requestedMode => {
+  it.each(["shared_workspace", "agent_default"] as const)("preserves remote sandbox qualification independently of the %s sharing preference", async requestedMode => {
     const { input, envOrchestrator } = await fixture();
     configureRemotePersistence();
     input.policy.useIsolatedTaskDirectory = true;
@@ -867,8 +908,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.policy.requestedExecutionWorkspaceMode = requestedMode;
     input.policy.issueExecutionWorkspaceSettings = { sharedWorkspaceConcurrency: "allow" };
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("one active writer");
-    expect(acquire).not.toHaveBeenCalled();
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("qualified native sandbox");
+    expect(acquire).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])("holds execution while the selected workspace is migrating (remote: %s)", async remote => {
@@ -1446,6 +1487,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   );
 
   async function reuse(input: HeartbeatWorkspacePreparationInput, workspace: NonNullable<Awaited<ReturnType<typeof prepareHeartbeatWorkspace>>["persistedExecutionWorkspace"]>) {
+    // These fixtures stop at preparation: no provider was invoked. Settle the
+    // previous prepared run and its actual environment lease before continuation.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, input.run.id));
+    await environmentRunOrchestrator(db).releaseForRun({ heartbeatRunId: input.run.id,
+      companyId: input.run.companyId, agentId: input.agent.id, status: "released" });
     input.reuse.requestedShouldReuseExisting = true;
     input.reuse.existingExecutionWorkspace = workspace;
     input.reuse.reusableExistingExecutionWorkspace = workspace;
@@ -1532,7 +1579,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await leases(input.run.id)).toMatchObject([{ status: "active", executionWorkspaceId: result.persistedExecutionWorkspace!.id }]);
     expect(input.nativeRunnerPreparationSpans.map(span => span.name)).toEqual(["environment.acquire", "environment.workspace.realize"]);
     expect(input.nativeRunnerPreparationSpans.every(span => span.parentName === "task.provider_session")).toBe(true);
-    expect(input.controllerLease.assertOwned).toHaveBeenCalledTimes(2);
+    expect(input.controllerLease.assertOwned).toHaveBeenCalledTimes(4);
   });
 
   it("records workspace steps around real persistence before environment acquisition", async () => {
@@ -2023,7 +2070,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await intact();
   });
 
-  it("admits independent sessions at the same fixed path with separate run leases", async () => {
+  it("serializes independent sessions at the same fixed path before acquiring a lease", async () => {
     const { input, source, issue } = await fixture();
     input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
     const [secondIssue] = await db.insert(issues).values({ companyId: issue.companyId, projectId: issue.projectId,
@@ -2031,13 +2078,11 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const [secondRun] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId, agentId: input.agent.id, issueId: secondIssue.id, scopeKind: "issue", status: "running" }).returning();
     const second: HeartbeatWorkspacePreparationInput = { ...input, run: secondRun, nativeRunnerPreparationSpans: [],
       task: { ...input.task, issueId: secondIssue.id, issueRef: secondIssue, context: { issueId: secondIssue.id } } };
-    const results = await Promise.all([prepareHeartbeatWorkspace(db, input), prepareHeartbeatWorkspace(db, second)]);
-    expect(results.map(result => result.executionWorkspace.cwd)).toEqual([source, source]);
-    const firstLease = (await leases(input.run.id))[0];
-    const secondLease = (await leases(secondRun.id))[0];
-    expect(firstLease.id).not.toBe(secondLease.id);
-    expect(firstLease.heartbeatRunId).toBe(input.run.id);
-    expect(secondLease.heartbeatRunId).toBe(secondRun.id);
+    const first = await prepareHeartbeatWorkspace(db, input);
+    expect(first.executionWorkspace.cwd).toBe(source);
+    await expect(prepareHeartbeatWorkspace(db, second)).rejects.toBeInstanceOf(WorkspaceBusyDeferral);
+    expect(await leases(input.run.id)).toMatchObject([{ status: "active" }]);
+    expect(await leases(secondRun.id)).toEqual([]);
   });
 
   it.each(["missing", "project", "isolation", "external", "provision"])("rejects fixed workspace %s conflicts before acquiring a lease", async (kind) => {
@@ -2229,7 +2274,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const error = new Error(`${failure} failed`);
     if (failure === "acquire") vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValueOnce(error);
     if (failure === "realize") vi.spyOn(envOrchestrator, "realizeForRun").mockRejectedValueOnce(error);
-    if (failure === "ownership") vi.mocked(input.controllerLease.assertOwned).mockResolvedValueOnce(undefined).mockRejectedValueOnce(error);
+    if (failure === "ownership") vi.mocked(input.controllerLease.assertOwned)
+      .mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined).mockRejectedValueOnce(error);
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(error);
     expect(input.nativeRunnerPreparationSpans.at(-1)).toMatchObject({ name: failure === "realize" ? "environment.workspace.realize" : "environment.acquire", outcome: "failed" });
     expect((await readRun(input.run.id)).status).toBe("running");

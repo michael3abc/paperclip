@@ -279,3 +279,14 @@ The invariant is pinned by the "no-remote-git contract" case in `packages/adapte
 - [External Adapters](/adapters/external-adapters) — build a standalone adapter plugin
 - [UI Parser Contract](/adapters/adapter-ui-parser) — ship a custom run-log parser
 - [How Agents Work](/guides/agent-developer/how-agents-work) — the heartbeat lifecycle
+
+## Formal workspace binding
+
+Provider launch must use the admitted task workspace. Do not reinterpret a path
+in task text, substitute configured project cwd, or create an unbound private
+worktree. Core claims the canonical host path before setup and retains it through
+verified stop and settlement. A remote adapter validates the claimed directory
+on its host before launch; a mismatch or unsupported isolation fails explicitly.
+Provider-owned storage retains its namespace/reference, lease and cleanup gates.
+Different worktree roots can run together; the shared Git common directory is
+not an execution lock. See ../../doc/execution-semantics.md.

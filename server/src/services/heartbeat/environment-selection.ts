@@ -14,7 +14,6 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
-  resolveSharedWorkspaceConcurrency,
   type ParsedExecutionWorkspaceMode,
 } from "../execution-workspace-policy.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
@@ -93,7 +92,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     projectExecutionWorkspacePolicy, issueExecutionWorkspaceSettings,
   } = input.policy;
   const { config, sourceWorkspaceConfig, issueAssigneeOverrides } = input.config;
-  const { executionWorkspacesSvc, environmentsSvc, instanceSettings, findSharedWorkspaceHolder, findExecutionWorkspaceHolder } = input.services;
+  const { executionWorkspacesSvc, environmentsSvc, instanceSettings, findExecutionWorkspaceHolder } = input.services;
   // A native run's execution input is immutable once persisted. Recovery must therefore
   // restore the workspace bound to that input rather than consulting the issue's current
   // workspace pointer: a newer run may already have moved or cleared the issue binding while
@@ -369,15 +368,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       },
     );
   }
-  const sharedWorkspaceConcurrency = resolveSharedWorkspaceConcurrency({
-    projectPolicy: projectExecutionWorkspacePolicy,
-    issueSettings: issueExecutionWorkspaceSettings,
-  });
-  // A reused shared execution workspace (for example one a child task inherited from a
-  // parent whose run is still live) follows the same policy as a shared project workspace:
-  // only an explicit "allow" is unsupported outside local/SSH; otherwise wait for the holder.
-  // A holder silent past the staleness cutoff is still running, so its folder is not free:
-  // fail rather than overlap it or wait on it forever.
+  // A reused durable workspace keeps its runtime lease gate. Presentation
+  // preferences and holder silence cannot authorize another writer.
   if (!nativeRecoveryExecutionWorkspaceId && reusableExistingExecutionWorkspace &&
       effectiveExecutionWorkspaceMode === "shared_workspace" &&
       selectedEnvironmentForConfig?.driver !== "local" && selectedEnvironmentForConfig?.driver !== "ssh") {
@@ -387,18 +379,9 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       excludeRunId: run.id,
     });
     if (executionWorkspaceHolder) {
-      if (executionWorkspaceHolder.stale) {
-        throw new ConfigurationIncompleteFailure(`This environment cannot place concurrent agents in one physical shared folder, and run ${executionWorkspaceHolder.runId} still holds this shared execution workspace after more than an hour without output. Use local/SSH sharing or isolated task workspaces.`, {
-          configurationIncomplete: { reason: "shared_realization_unsupported", issueId, holderRunId: executionWorkspaceHolder.runId, holderStale: true },
-        });
-      }
-      if (sharedWorkspaceConcurrency === "allow") {
-        throw new ConfigurationIncompleteFailure("This environment cannot place concurrent agents in one physical shared folder. Use local/SSH sharing or isolated task workspaces.", {
-          configurationIncomplete: { reason: "shared_realization_unsupported", issueId },
-        });
-      }
       throw new WorkspaceBusyDeferral({
         holder: executionWorkspaceHolder,
+        discloseHolder: executionWorkspaceHolder.issueId === issueId,
         executionWorkspaceId: reusableExistingExecutionWorkspace.id,
         deferralAttempt:
           run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
@@ -408,92 +391,9 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       });
     }
   }
-  // A live holder is always consulted for shared workspaces. Depending on policy and the final
-  // execution target it either remains the existing deferral gate or becomes dispatch context.
-  // Project-exclusive workers claim the physical checkout in workspace preparation.
-  // Existing unrestricted host profiles retain their separate sharing policy.
-  if (
-    agent.runtimeConfig?.requireProjectWorkspace !== true && !controllerOnly && issueRef?.projectWorkspaceId &&
-    effectiveExecutionWorkspaceMode === "shared_workspace"
-  ) {
-    const workspaceHolder = await findSharedWorkspaceHolder({
-      companyId: agent.companyId,
-      projectWorkspaceId: issueRef.projectWorkspaceId,
-      excludeIssueId: issueRef.id,
-      excludeRunId: run.id,
-      honorIsolatedWorkspaceModes: runtimeWorkspaceSelectionEnabled,
-    });
-    if (workspaceHolder) {
-      const environmentDriver =
-        selectedEnvironmentForConfig?.driver ?? null;
-      if (!nativeRecoveryExecutionWorkspaceId && sharedWorkspaceConcurrency === "allow" &&
-          (executionForcedToKubernetes || (environmentDriver !== "local" && environmentDriver !== "ssh"))) {
-        throw new ConfigurationIncompleteFailure("This environment cannot place concurrent agents in one physical shared folder. Use local/SSH sharing or isolated task workspaces.", {
-          configurationIncomplete: { reason: "shared_realization_unsupported", issueId },
-        });
-      }
-      const shouldSerialize =
-        sharedWorkspaceConcurrency !== "allow" &&
-        (executionForcedToKubernetes ||
-          (environmentDriver !== "local" &&
-            environmentDriver !== "ssh"));
-      if (shouldSerialize) {
-        throw new WorkspaceBusyDeferral({
-          holder: workspaceHolder,
-          projectWorkspaceId: issueRef.projectWorkspaceId,
-          deferralAttempt:
-            run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
-              ? (run.scheduledRetryAttempt ?? 0)
-              : 0,
-          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
-        });
-      }
-
-      const holderIssueLabel =
-        workspaceHolder.issueIdentifier ?? workspaceHolder.issueId;
-      const concurrentWorkspaceNote =
-        `shared workspace is concurrently held by run ${workspaceHolder.runId} (issue ${holderIssueLabel}); ` +
-        "expect concurrent mutations, coordinate via commits";
-      const appendConcurrentWorkspaceNote = (value: unknown) => {
-        const existing = typeof value === "string" ? value.trimEnd() : "";
-        return existing
-          ? `${existing}\n${concurrentWorkspaceNote}`
-          : concurrentWorkspaceNote;
-      };
-      context.paperclipTaskMarkdown = appendConcurrentWorkspaceNote(
-        context.paperclipTaskMarkdown,
-      );
-      context.paperclipTaskMarkdownAssignment = appendConcurrentWorkspaceNote(
-        context.paperclipTaskMarkdownAssignment,
-      );
-      if (typeof context.paperclipTaskMarkdownCompact === "string") {
-        context.paperclipTaskMarkdownCompact =
-          appendConcurrentWorkspaceNote(
-            context.paperclipTaskMarkdownCompact,
-          );
-      }
-      if (typeof context.paperclipTaskMarkdownAssignmentCompact === "string") {
-        context.paperclipTaskMarkdownAssignmentCompact =
-          appendConcurrentWorkspaceNote(
-            context.paperclipTaskMarkdownAssignmentCompact,
-          );
-      }
-      logger.info(
-        {
-          event: "shared_workspace_concurrent_dispatch",
-          runId: run.id,
-          issueId: issueRef.id,
-          projectWorkspaceId: issueRef.projectWorkspaceId,
-          holderRunId: workspaceHolder.runId,
-          holderIssueId: workspaceHolder.issueId,
-          sharedWorkspaceConcurrency,
-          environmentDriver,
-          executionForcedToKubernetes,
-        },
-        "Dispatching alongside a live shared-workspace holder",
-      );
-    }
-  }
+  // Source/project identity is a recipe, not ownership of a physical directory.
+  // Workspace preparation claims the realized host path; managed runtimes retain
+  // their workspace/lease gates. Independent copies of one source may overlap.
   if (!controllerOnly && taskWorkspaceIntent && !boundSourceWorkspace && !nativeRecoveryExecutionWorkspaceId) {
     await executionWorkspacesSvc.validateStoredSelectionForRun({ companyId: agent.companyId,
       actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },

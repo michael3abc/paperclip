@@ -1,8 +1,10 @@
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
-import { useQuery } from "@tanstack/react-query";
+import type { Issue, ExecutionWorkspace, TaskWorkspaceSelection } from "@paperclipai/shared";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { issuesApi } from "../api/issues";
+import { ApiError } from "../api/client";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -28,7 +30,7 @@ import { Badge } from "@/components/ui/badge";
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Project default" },
+  { value: "shared_workspace", label: "Selected source directory" },
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
@@ -161,6 +163,7 @@ interface IssueWorkspaceCardProps {
     >,
     "companyId"
   > & {
+    id?: string;
     companyId: string | null;
     currentExecutionWorkspace?: ExecutionWorkspace | null;
   };
@@ -172,7 +175,7 @@ interface IssueWorkspaceCardProps {
       defaultProjectWorkspaceId?: string | null;
       environmentId?: string | null;
     } | null;
-    workspaces?: Array<{ id: string; isPrimary: boolean }>;
+    workspaces?: Array<{ id: string; isPrimary: boolean; name?: string; cwd?: string | null }>;
   } | null;
   onUpdate: (data: Record<string, unknown>) => void;
   initialEditing?: boolean;
@@ -198,6 +201,17 @@ export function IssueWorkspaceCard({
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
+  const queryClient = useQueryClient();
+  const inspection = useQuery({ queryKey: ["task-workspace", issue.id],
+    queryFn: () => issuesApi.workspace(issue.id!), enabled: Boolean(issue.id), retry: false });
+  const [saving, setSaving] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const selectionRequest = useRef<{ fingerprint: string; expectedBindingRevision: number; requestKey: string } | null>(null);
+  const [draftSourceId, setDraftSourceId] = useState(issue.projectWorkspaceId
+    ?? project?.executionWorkspacePolicy?.defaultProjectWorkspaceId
+    ?? project?.workspaces?.find(source => source.isPrimary)?.id ?? project?.workspaces?.[0]?.id ?? "");
+
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -212,8 +226,6 @@ export function IssueWorkspaceCard({
   // path the policy exists to hide.
   const hideHostPaths =
     experimentalSettings === undefined || experimentalSettings.enableManagedSandboxOnly === true;
-  const policyEnabled = experimentalSettings?.enableIsolatedWorkspaces === true
-    && Boolean(project?.executionWorkspacePolicy?.enabled);
 
   const workspace = issue.currentExecutionWorkspace as ExecutionWorkspace | null | undefined;
   const { data: environments } = useQuery({
@@ -270,9 +282,14 @@ export function IssueWorkspaceCard({
 
   useEffect(() => {
     if (editing) return;
-    setDraftSelection(currentSelection);
-    setDraftExecutionWorkspaceId(issue.executionWorkspaceId ?? "");
-  }, [currentSelection, editing, issue.executionWorkspaceId]);
+    const pending = inspection.data?.pendingSelection?.intent.selection;
+    setDraftSelection(pending?.kind === "configured_source" ? pending.mode === "managed_isolated" ? "isolated_workspace" : "shared_workspace"
+      : pending?.kind === "existing" ? "reuse_existing" : currentSelection);
+    setDraftExecutionWorkspaceId(pending?.kind === "existing" ? pending.workspaceId : issue.executionWorkspaceId ?? "");
+    setDraftSourceId(pending?.kind === "configured_source" ? pending.projectWorkspaceId : issue.projectWorkspaceId
+      ?? project?.executionWorkspacePolicy?.defaultProjectWorkspaceId
+      ?? project?.workspaces?.find(source => source.isPrimary)?.id ?? project?.workspaces?.[0]?.id ?? "");
+  }, [currentSelection, editing, inspection.data?.pendingSelection, issue.executionWorkspaceId, issue.projectWorkspaceId, project?.executionWorkspacePolicy?.defaultProjectWorkspaceId, project?.workspaces]);
 
   const activeNonDefaultWorkspace = Boolean(workspace && workspace.mode !== "shared_workspace");
 
@@ -291,7 +308,13 @@ export function IssueWorkspaceCard({
     workspace,
   });
 
-  const canSaveWorkspaceConfig = draftSelection !== "reuse_existing" || draftExecutionWorkspaceId.length > 0;
+  const canSaveWorkspaceConfig = !uncertain && (draftSelection === "reuse_existing"
+    ? draftExecutionWorkspaceId.length > 0 : !project || draftSourceId.length > 0);
+  const formalSelection = useMemo<TaskWorkspaceSelection>(() => draftSelection === "reuse_existing"
+    ? { kind: "existing", workspaceId: draftExecutionWorkspaceId }
+    : draftSourceId ? { kind: "configured_source", projectWorkspaceId: draftSourceId,
+      mode: draftSelection === "isolated_workspace" ? "managed_isolated" : "shared" }
+    : { kind: "task_directory" }, [draftSelection, draftExecutionWorkspaceId, draftSourceId]);
   const draftWorkspaceBranchName =
     draftSelection === "reuse_existing" && configuredReusableWorkspace?.mode !== "shared_workspace"
       ? configuredReusableWorkspace?.branchName ?? null
@@ -309,24 +332,40 @@ export function IssueWorkspaceCard({
 
   useEffect(() => {
     if (!onDraftChange || !workspaceIsolationControlsVisible) return;
-    onDraftChange(buildWorkspaceDraftUpdate(), {
+    const update = buildWorkspaceDraftUpdate();
+    onDraftChange(update ? { ...update, workspaceSelection: formalSelection } : null, {
       canSave: canSaveWorkspaceConfig,
       workspaceBranchName: draftWorkspaceBranchName,
     });
-  }, [buildWorkspaceDraftUpdate, canSaveWorkspaceConfig, draftWorkspaceBranchName, onDraftChange, workspaceIsolationControlsVisible]);
+  }, [buildWorkspaceDraftUpdate, canSaveWorkspaceConfig, draftWorkspaceBranchName, formalSelection, onDraftChange, workspaceIsolationControlsVisible]);
 
-  const handleSave = useCallback(() => {
-    if (!canSaveWorkspaceConfig || !workspaceIsolationControlsVisible) return;
+  const handleSave = async () => {
+    if (!canSaveWorkspaceConfig || !workspaceIsolationControlsVisible || saving) return;
     const update = buildWorkspaceDraftUpdate();
     if (!update) return;
-    onUpdate(update);
-    setEditing(false);
-  }, [
-    buildWorkspaceDraftUpdate,
-    canSaveWorkspaceConfig,
-    workspaceIsolationControlsVisible,
-    onUpdate,
-  ]);
+    const selection = formalSelection;
+    if (!issue.id) { onUpdate({ ...update, workspaceSelection: selection }); setEditing(false); return; }
+    if (!inspection.data) return;
+    const fingerprint = JSON.stringify(selection);
+    const request = selectionRequest.current?.fingerprint === fingerprint ? selectionRequest.current
+      : { fingerprint, expectedBindingRevision: inspection.data.bindingRevision, requestKey: crypto.randomUUID() };
+    selectionRequest.current = request;
+    setSaving(true); setSaveError(null);
+    try {
+      await issuesApi.selectWorkspace(issue.id, { selection, expectedBindingRevision: request.expectedBindingRevision, requestKey: request.requestKey });
+      await queryClient.invalidateQueries({ queryKey: ["task-workspace", issue.id] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      selectionRequest.current = null;
+      setEditing(false);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Workspace selection failed");
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        selectionRequest.current = null;
+        await queryClient.invalidateQueries({ queryKey: ["task-workspace", issue.id] });
+      } else setUncertain(true);
+    }
+    finally { setSaving(false); }
+  };
 
   const handleCancel = useCallback(() => {
     setDraftSelection(currentSelection);
@@ -334,7 +373,7 @@ export function IssueWorkspaceCard({
     setEditing(false);
   }, [currentSelection, issue.executionWorkspaceId]);
 
-  if (!policyEnabled || !project) return null;
+  if (!project && !issue.id) return null;
 
   const showEditingControls = workspaceIsolationControlsVisible && (livePreview || editing);
 
@@ -365,7 +404,7 @@ export function IssueWorkspaceCard({
                   size="sm"
                   className="h-6 px-2 text-xs"
                   onClick={handleSave}
-                  disabled={!canSaveWorkspaceConfig}
+                  disabled={!canSaveWorkspaceConfig || saving || Boolean(issue.id && !inspection.data)}
                 >
                   Save
                 </Button>
@@ -384,6 +423,24 @@ export function IssueWorkspaceCard({
         )}
       </div>
 
+      {(inspection.error || saveError) && <p role="alert" className="text-xs text-destructive">{saveError ?? "Workspace binding could not be loaded."}</p>}
+      {uncertain && <div className="text-xs">
+        <p>Workspace selection outcome is unknown. Check the original request before making another change.</p>
+        <Button variant="ghost" size="sm" onClick={async () => {
+          const result = await inspection.refetch();
+          const key = selectionRequest.current?.requestKey;
+          if (key && (result.data?.pendingSelection?.requestKey === key || result.data?.selection?.request?.key === key)) {
+            setUncertain(false); setSaveError(null); selectionRequest.current = null; setEditing(false);
+          }
+        }}>Check selection status</Button>
+      </div>}
+      {inspection.data && <div className="space-y-1 text-xs text-muted-foreground">
+        <p>{inspection.data.admission.binding === "pending" ? "Workspace change pending · applies at next admission"
+          : inspection.data.admission.binding === "bound" ? "Workspace bound" : "Workspace not yet bound"}</p>
+        {!hideHostPaths && inspection.data.admission.host && <p>Host: {inspection.data.admission.host}</p>}
+        {!hideHostPaths && inspection.data.admission.cwd && <CopyableInline value={inspection.data.admission.cwd} mono />}
+        {inspection.data.admission.waitingReason && <p>Waiting: {inspection.data.admission.waitingReason}</p>}
+      </div>}
       {/* Read-only info */}
       {!showEditingControls && (
         <div className="space-y-1.5 text-xs">
@@ -477,6 +534,12 @@ export function IssueWorkspaceCard({
             ))}
           </select>
 
+          {draftSelection !== "reuse_existing" && Boolean(project?.workspaces?.length) && (
+            <select aria-label="Workspace source" className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs"
+              value={draftSourceId} onChange={event => setDraftSourceId(event.target.value)}>
+              {project!.workspaces!.map(source => <option key={source.id} value={source.id}>{source.name ?? (!hideHostPaths ? source.cwd : null) ?? source.id}</option>)}
+            </select>
+          )}
           {draftSelection === "reuse_existing" && (
             <ReusableExecutionWorkspaceSelect
               value={draftExecutionWorkspaceId}

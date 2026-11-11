@@ -132,6 +132,25 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(acquired).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("rejects a launch directory outside its physical claim before invoking the provider (native: %s)", async native => {
+    const { input, adapter } = await fixture(native);
+    input.task.context.sharedCheckoutClaim = { version: 1, kind: "directory", host: "test-host",
+      path: tmpdir(), executionCwd: tmpdir(), issueId: input.task.issueId };
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "workspace_binding_mismatch" } },
+    });
+    expect(adapter.execute).not.toHaveBeenCalled();
+    expect(executePaperclipNativeSession).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("dispatches in its admitted physical directory (native: %s)", async native => {
+    const { input, adapter } = await fixture(native);
+    input.task.context.sharedCheckoutClaim = { version: 1, kind: "directory", host: "test-host",
+      path: home, executionCwd: home, issueId: input.task.issueId };
+    await executeHeartbeatRuntime(db, input);
+    expect(native ? executePaperclipNativeSession : adapter.execute).toHaveBeenCalledOnce();
+  });
+
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);
     input.control.dispatchResolvedInteractionContinuationWithAtomicGate = async () => ({ dispatched: false });

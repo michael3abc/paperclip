@@ -282,6 +282,13 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  workspace: (issueId: string) => api.get<{ issueId: string; bindingRevision: number;
+    selection: import("@paperclipai/shared").TaskWorkspaceIntent | null;
+    pendingSelection: import("@paperclipai/shared").TaskWorkspacePendingSelection | null;
+    admission: { binding: "pending" | "bound" | "unbound"; host: string | null; cwd: string | null; waitingReason: string | null }
+  }>(`/issues/${issueId}/workspace`),
+  selectWorkspace: (issueId: string, body: { selection: import("@paperclipai/shared").TaskWorkspaceSelection;
+    expectedBindingRevision: number; requestKey: string }) => api.put(`/issues/${issueId}/workspace`, body),
   inboxMine: (companyId: string, options?: RequestOptions) => {
     const path = `/companies/${companyId}/inbox/mine`;
     detachInflightGet(path);

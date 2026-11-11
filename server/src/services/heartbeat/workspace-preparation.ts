@@ -37,7 +37,7 @@ import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "../workspace-host-provision.js";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { type ExecutionWorkspace } from "@paperclipai/shared";
 import { executionWorkspaces as executionWorkspacesTable, heartbeatRuns, issues, projectWorkspaces } from "@paperclipai/db";
 import { getStartupTracer } from "../../instrumentation.js";
@@ -64,7 +64,6 @@ import {
 } from "../workspace-instance-cleanup.js";
 import { isRuntimeOwnedGitBranch } from "../execution-workspace-branch-ownership.js";
 import {
-  resolveSharedWorkspaceConcurrency,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   resolveEffectiveWorkspaceStrategyType,
 } from "../execution-workspace-policy.js";
@@ -399,10 +398,9 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         else {
           remoteSourceState.value = sourceState;
           if (!enrolledRemoteAuthority) await assertRemotePreparationOwned();
-          if (effectiveExecutionWorkspaceMode === "shared_workspace" && resolveSharedWorkspaceConcurrency({
-            projectPolicy: projectExecutionWorkspacePolicy, issueSettings: issueExecutionWorkspaceSettings,
-          }) === "allow") throw new WorkspaceValidationFailure(
-            "Remote workspace storage requires one active writer per workspace.", { reason: "remote_workspace_concurrent_writers_unsupported" });
+          // The remote storage reservation below owns its actual workspace.
+          // Project-wide sharing preferences cannot authorize a second writer
+          // or forbid independent storage identities.
           if (Array.isArray(workspaceServices) && workspaceServices.length > 0) throw new WorkspaceValidationFailure(
             "Remote workspace storage does not support Core workspace services.", { reason: "remote_workspace_runtime_services_unsupported" });
           const source = sourceState.source;
@@ -696,20 +694,27 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     trustPreset: trustPreset.kind,
     lowTrustSandboxDriver: lowTrustPreflightEnvironmentDriver,
   };
-  // PM review homes are coordination storage; providers writing project sources
-  // must own the physical checkout before provision/setup or execution.
-  if (agent.runtimeConfig?.requireProjectWorkspace === true && !remoteAuthority && !pluginTaskWorkspace && !controllerOnly && !input.task.context.paperclipPmWorkspace &&
-      effectiveExecutionWorkspaceMode === "shared_workspace" && issueId && issueRef?.projectWorkspaceId) {
-    if (selectedEnvironmentForConfig?.driver !== "local") throw new WorkspaceValidationFailure(
-      "Shared host checkout ownership is available on the local environment; use managed remote storage or an isolated workspace for this environment.",
-      { reason: "shared_checkout_environment_unsupported" });
-    await claimSharedCheckout(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id,
-      issueId, projectWorkspaceId: issueRef.projectWorkspaceId, cwd: executionWorkspaceBase.baseCwd,
-      // The remote host's Bridge owns that filesystem; the controller serializes writers by host and path only.
-      remoteHostId: remoteWorkerHost,
-      requireGit: !remoteWorkerHost && Boolean(executionWorkspaceBase.repoUrl || executionWorkspaceBase.repoRef),
-      deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0, context });
-  }
+  // Every host-backed task claims its actual writing directory, irrespective of
+  // adapter, project or shared/isolated presentation mode. Remote storage and
+  // plugin-owned workspaces keep their native writer/lease authority below.
+  const hostPathAdmission = Boolean(issueId && !remoteAuthority && !pluginTaskWorkspace
+    && !pluginPrepared && !controllerOnly && !pmCoordination && !providerApiPlacement
+    && hostProvisionDriver !== "sandbox");
+  const claimHost = remoteWorkerHost ?? fixedBinding?.hostId ?? null;
+  const claimExecutionDirectory = async (cwd: string, preparingWorktree = false, recordedRecovery = false) => {
+    if (!hostPathAdmission) return;
+    await controllerLease.assertOwned();
+    await claimSharedCheckout(db, {
+      companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issueId!,
+      projectWorkspaceId: issueRef?.projectWorkspaceId ?? null, cwd,
+      remoteHostId: claimHost, preparingWorktree, wasIssueAssignee: input.task.wasIssueAssignee,
+      requireGit: !recordedRecovery && !preparingWorktree && !claimHost && Boolean(executionWorkspaceBase.repoUrl || executionWorkspaceBase.repoRef),
+      checkSourceHandoff: agent.runtimeConfig?.requireProjectWorkspace === true
+        && effectiveExecutionWorkspaceMode === "shared_workspace",
+      deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0,
+      context,
+    });
+  };
   const workspaceFreshnessSource = resolvedWorkspace.freshnessSource ?? executionWorkspaceBase;
   const latestWorkspaceConfigMetadata =
     buildEffectiveRunWorkspaceConfigMetadata({
@@ -817,6 +822,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     resolvedWorkspace.cwd = cwd;
     await controllerLease.assertOwned();
   }
+  // Claim before restore/provision can write. New worktrees reserve their target
+  // through the runtime callback, never the common source checkout.
+  if (latestWorkspaceStrategyType !== "git_worktree") {
+    await claimExecutionDirectory(
+      workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.cwd
+        ? reusableExistingExecutionWorkspace.cwd : resolvedWorkspace.cwd,
+    );
+  }
   const {
     executionWorkspace,
     reusedExecutionWorkspace,
@@ -843,6 +856,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       restoreExistingWorkspace: reusableExistingExecutionWorkspace
         ? () =>
             ensurePersistedExecutionWorkspaceAvailable({
+              beforeSourceCopy: (_source, target) => claimExecutionDirectory(target, true),
               prepareRestoredLocalSource: issueId ? sourceCwd => executionWorkspacesSvc.prepareConfiguredRepositoryCopy({
                 companyId: agent.companyId, issueId, workspaceId: reusableExistingExecutionWorkspace.id,
                 cwd: reusableExistingExecutionWorkspace.cwd!, agentId: agent.id, runId: run.id, sourceCwd,
@@ -904,6 +918,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         : null,
       realizeWorkspace: () =>
         realizeExecutionWorkspace({
+          beforeSourceCopy: (_source, target) => claimExecutionDirectory(target, true),
           skipHostProvision,
           db,
           base: executionWorkspaceBase,
@@ -936,6 +951,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         }),
     },
   ));
+  // Revalidate canonical identity after materialization and before repository
+  // setup or provider launch. Failed realization never falls back to the source.
+  await claimExecutionDirectory(executionWorkspace.cwd);
+  if (hostPathAdmission && effectiveExecutionWorkspaceMode === "isolated_workspace"
+    && executionWorkspace.strategy !== "git_worktree" && !fresh && !useIsolatedTaskDirectory
+    && executionWorkspace.cwd === executionWorkspaceBase.baseCwd
+    && executionWorkspace.source !== "task_session") {
+    throw new WorkspaceValidationFailure("The isolated selection did not create an independent workspace. Select a supported isolated source or register the existing worktree as its own source.",
+      { workspaceValidation: { reason: "isolated_workspace_not_realized" } });
+  }
   if (agent.runtimeConfig?.requireTaskWorktree === true && (
     executionWorkspace.strategy !== "git_worktree" || !executionWorkspace.worktreePath ||
     executionWorkspace.cwd === executionWorkspaceBase.baseCwd
@@ -1292,6 +1317,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     ));
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
+  if (issueId && persistedExecutionWorkspace && (pluginPrepared || pluginTaskWorkspace)) {
+    const binding = readWorkspaceProviderBinding(persistedExecutionWorkspace.metadata);
+    await claimSharedCheckout(db, { companyId: agent.companyId, agentId: agent.id,
+      runId: run.id, issueId, projectWorkspaceId: persistedExecutionWorkspace.projectWorkspaceId,
+      cwd: executionWorkspace.cwd, checkSourceHandoff: false,
+      wasIssueAssignee: input.task.wasIssueAssignee,
+      storageIdentity: binding ? { namespace: `plugin:${binding.pluginId}`, workspaceRef: binding.workspaceRef }
+        : { namespace: "execution-workspace", workspaceRef: persistedExecutionWorkspace.id },
+      deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0, context });
+  }
   const projectRepositoryPaths: string[] = [];
   if (remoteAuthority) projectRepositoryPaths.push(...(remoteSourceState.value?.source.repositories ?? [])
     .filter(repository => !repository.readOnly).map(repository => repository.relativePath));
@@ -1427,6 +1462,21 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     throw error;
   }
   const selectedEnvironment = acquiredEnvironment.environment;
+  // A sandbox's guest cwd is not a controller path. Reserve the actual provider
+  // allocation before realization can write; the runtime retains its lease and
+  // persistent-workspace cleanup gates. Independent allocations may run together.
+  if (issueId && selectedEnvironment.driver === "sandbox") {
+    const lease = acquiredEnvironment.lease;
+    if (!lease.providerLeaseId || !lease.provider) throw new WorkspaceValidationFailure(
+      "The sandbox did not provide a durable storage identity.",
+      { workspaceValidation: { reason: "workspace_storage_identity_missing" } });
+    await claimSharedCheckout(db, { companyId: agent.companyId, agentId: agent.id,
+      runId: run.id, issueId, projectWorkspaceId: persistedExecutionWorkspace?.projectWorkspaceId ?? null,
+      cwd: executionWorkspace.cwd, checkSourceHandoff: false,
+      wasIssueAssignee: input.task.wasIssueAssignee,
+      storageIdentity: { namespace: String(lease.metadata?.pluginId ?? lease.provider), workspaceRef: lease.providerLeaseId },
+      deferralAttempt: run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON ? run.scheduledRetryAttempt ?? 0 : 0, context });
+  }
   // Defense-in-depth: re-check the actually-acquired environment against the
   // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
   // non-k8s) environment FAILS the run here rather than executing untrusted.
@@ -1528,6 +1578,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
+  const storageClaim = parseObject(context.sharedCheckoutClaim);
+  if (storageClaim.kind === "storage") {
+    const executionCwd = executionTarget?.kind === "remote" ? executionTarget.remoteCwd : executionWorkspace.cwd;
+    const [recorded] = await db.update(heartbeatRuns).set({
+      contextSnapshot: sql`jsonb_set(${heartbeatRuns.contextSnapshot}, '{sharedCheckoutClaim,executionCwd}', ${JSON.stringify(executionCwd)}::jsonb)`,
+    }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->'sharedCheckoutClaim' = ${JSON.stringify(storageClaim)}::jsonb`)).returning({ id: heartbeatRuns.id });
+    if (!recorded) throw new Error("workspace_storage_claim_changed");
+    context.sharedCheckoutClaim = { ...storageClaim, executionCwd };
+  }
   if (remoteAuthority && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId, issueId,
@@ -1569,6 +1629,9 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         && executionTarget?.kind !== "remote"
         ? persistedNativeExecutionInput.workspace.cwd
         : executionWorkspace.cwd;
+    // The admitted native root/sync descriptor governs recovery; current source
+    // repository settings do not turn that root into a Git checkout.
+    await claimExecutionDirectory(cwd, false, true);
     await timeWorkspace("workspace_recovery_root", () => executionWorkspacesSvc.assertTaskRepositoryRecoveryBinding({ companyId: agent.companyId,
       issueId, workspaceId, cwd, agentId: agent.id, runId: run.id }));
   }

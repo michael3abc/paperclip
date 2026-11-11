@@ -50,6 +50,19 @@ describe("paperclip MCP tools", () => {
     expect(JSON.parse(init.body as string)).toMatchObject({ assigneeAdapterOverrides: { workerSelectionId: selection }, workspaceSelection: { projectWorkspaceId: source } });
     expect(init.headers).not.toHaveProperty("X-Paperclip-Run-Id");
   });
+  it("round-trips formal workspace inspection and revision-bound selection without starting a run", async () => {
+    const client = new PaperclipApiClient({ apiUrl: "http://localhost:3100/api", apiKey: "test", companyId: "11111111-1111-4111-8111-111111111111", agentId: null, runId: null, sessionBridge: true });
+    const tools = createToolDefinitions(client);
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ bindingRevision: 4 })); vi.stubGlobal("fetch",fetchMock);
+    const issueId = "22222222-2222-4222-8222-222222222222";
+    const selection = {kind:"configured_source",projectWorkspaceId:"33333333-3333-4333-8333-333333333333",mode:"shared"};
+    await tools.find(t=>t.name==="paperclipInspectTaskWorkspace")!.execute({issueId});
+    await tools.find(t=>t.name==="paperclipSelectTaskWorkspace")!.execute({issueId,selection,expectedBindingRevision:4,requestKey:"same-intent"});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toBe("http://localhost:3100/api/issues/"+issueId+"/workspace");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({selection,expectedBindingRevision:4,requestKey:"same-intent"});
+    expect(fetchMock.mock.calls[1][1].method).toBe("PUT");
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
   });
