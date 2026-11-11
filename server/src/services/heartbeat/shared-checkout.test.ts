@@ -110,6 +110,28 @@ it("still rejects damaged ancestor repository metadata", async () => {
   await expect(claimSharedCheckout(db,a)).rejects.toThrow();
 });
 
+it("admits a resident root with only .git/info/exclude without Git and keeps overlapping writers fenced", async () => {
+  const [a,b] = await fixture(false);
+  await mkdir(join(a.cwd,".git","info"),{ recursive:true });
+  await writeFile(join(a.cwd,".git","info","exclude"),"private-files\n");
+  b.cwd = join(a.cwd,"documents"); await mkdir(b.cwd);
+  vi.stubEnv("PATH",join(root,"no-executables"));
+  try {
+    await expect(claimSharedCheckout(db,{ ...a, checkSourceHandoff:false })).resolves.toMatchObject({ path:a.cwd, kind:"directory" });
+    await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ code:"workspace_busy" });
+    await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).rejects.toMatchObject({ resultJson:{ workspaceValidation:{ reason:"shared_workspace_git_required" } } });
+  } finally { vi.unstubAllEnvs(); }
+  expect(await readFile(join(a.cwd,".git","info","exclude"),"utf8")).toBe("private-files\n");
+});
+
+it.each(["HEAD","config","objects","refs","unexpected"])("does not classify local ignore metadata plus %s as an ignore-only directory", async marker => {
+  const [a] = await fixture(false);
+  await mkdir(join(a.cwd,".git","info"),{ recursive:true });
+  await writeFile(join(a.cwd,".git","info","exclude"),"private-files\n");
+  await writeFile(join(a.cwd,".git",marker),"broken\n");
+  await expect(claimSharedCheckout(db,a)).rejects.toThrow();
+});
+
 it("does not require a Git executable for ordinary directories", async () => {
   const [a] = await fixture(false); vi.stubEnv("PATH", join(root,"no-executables"));
   try { await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd, kind:"directory" }); }

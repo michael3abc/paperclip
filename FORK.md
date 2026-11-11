@@ -563,3 +563,12 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   versions; source, policy and ownership checks remove access when authority changes.
 - No migration, secret copying, task wake/replay or global worker configuration.
   Canonical contract: doc/DEVELOPING.md and skills/paperclip/references/api-reference.md.
+
+### 2026-11-11 — Ignore-only workspace roots
+
+- Physical admission recognizes exact .git/info/exclude-only roots as ordinary
+  directories, including resident home directories. Preserve the ignore file.
+- Empty, damaged or additional local metadata still requires Git validation;
+  explicit Git requirements, canonical claims and overlap exclusion are unchanged.
+- Deployed failure evidence and isolated regression checks are retained in
+  artifacts/workspace-binding-admission-20261111; publish through michael/main.

@@ -53,6 +53,8 @@ async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | 
   // Ordinary document folders need no Git executable. A local .git entry or
   // ancestor repository metadata keeps Git validation authoritative. Ancestor
   // ignore-only directories (for example ~/.git/info/exclude) are not repos.
+  // The same exact ignore-only layout is valid at the selected root itself.
+  // Empty, partial or additional metadata must still undergo Git validation.
   const entry = async (file: string) => fs.lstat(file).catch(error => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -60,7 +62,12 @@ async function sharedSource(cwd: string): Promise<{ path: string; kind: "git" | 
   let directory = real, git = false;
   for (;;) {
     const marker = path.join(directory, ".git"), metadata = await entry(marker);
-    if ((metadata && (directory === real || !metadata.isDirectory() ||
+    const localIgnoreOnly = directory === real && metadata?.isDirectory()
+      && (await fs.readdir(marker)).join("\0") === "info"
+      && (await entry(path.join(marker, "info")))?.isDirectory()
+      && (await fs.readdir(path.join(marker, "info"))).join("\0") === "exclude"
+      && (await entry(path.join(marker, "info", "exclude")))?.isFile();
+    if ((metadata && ((directory === real && !localIgnoreOnly) || !metadata.isDirectory() ||
         await entry(path.join(marker, "HEAD")) || await entry(path.join(marker, "config")) ||
         await entry(path.join(marker, "objects")) || await entry(path.join(marker, "refs")))) ||
         (await entry(path.join(directory, "HEAD")) && await entry(path.join(directory, "objects")) &&

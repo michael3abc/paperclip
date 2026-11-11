@@ -237,11 +237,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
     await expect(access(join(source,".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it.each(["source", "retained", "canonical_active", "canonical_idle", "canonical_pm_overlap"])("starts and settles a document worker through heartbeat without a Git repository (%s)", async scenario => {
-    const retained = scenario !== "source";
+  it.each(["source", "source_ignore_only", "retained", "canonical_active", "canonical_idle", "canonical_pm_overlap"])("starts and settles a document worker through heartbeat without a Git repository (%s)", async scenario => {
+    const retained = scenario !== "source" && scenario !== "source_ignore_only";
     const canonical = scenario.startsWith("canonical_");
     const { input, source, issue } = await fixture();
     await rm(join(source,".git"),{ recursive:true });
+    if (scenario === "source_ignore_only") {
+      await mkdir(join(source,".git","info"),{ recursive:true });
+      await writeFile(join(source,".git","info","exclude"),"private-files\n");
+    }
     const cwd = canonical
       ? join(await materializeIsolatedTaskDirectory({ companyId: issue.companyId, issueId: issue.id, attemptId: input.run.id }), "workspace")
       : retained ? join(home, `recovery-${issue.id}`) : source;
@@ -322,7 +326,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         await expect(access(join(source, "completed.txt"))).rejects.toMatchObject({ code: "ENOENT" });
       }
       expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
-      await expect(access(join(source,".git"))).rejects.toMatchObject({ code:"ENOENT" });
+      if (scenario === "source_ignore_only") {
+        expect(await readFile(join(source,".git","info","exclude"),"utf8")).toBe("private-files\n");
+      } else await expect(access(join(source,".git"))).rejects.toMatchObject({ code:"ENOENT" });
     } finally { await heartbeat.drainActiveRunExecutions();registerServerAdapter(originalAdapter); }
   });
   it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("refuses a shared worker without a task worktree: %s", async kind => {

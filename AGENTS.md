@@ -650,3 +650,7 @@ lease and cleanup evidence; reject unrealized isolation before launch. Preserve
 project defaults and existing runs until their next normal admission. UI/MCP
 selection uses expectedBindingRevision/requestKey and never starts a run. See
 doc/execution-semantics.md (Physical workspace admission).
+An exact .git/info/exclude-only directory is ignore metadata even at the selected
+workspace root. It must remain an ordinary canonical directory without requiring
+Git. Empty, partial, symlinked or additional local Git metadata still requires Git
+validation; explicit Git source requirements and overlapping-path claims remain.

@@ -3611,3 +3611,10 @@ The task workspace card displays binding state, observed host/cwd and waiting
 reason. Main-agent MCP exposes inspection/selection with the same authorization;
 new worker dispatch must persist workspaceSelection. Never invent a free cwd
 input or infer a path from task text during bulk reconciliation.
+
+An exact local .git/info/exclude-only layout is ignore metadata, including when
+it lives at the selected workspace root (for example a resident home directory).
+Recognize it by directory entries without reading the ignore contents or running
+Git. Empty, partial, symlinked or additional local Git metadata still goes through
+Git validation. Explicit repository/revision requirements still reject a non-Git
+directory, and canonical parent/child ownership is unchanged.
