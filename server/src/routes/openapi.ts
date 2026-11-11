@@ -1,3 +1,4 @@
+import { delegateWorkerSecretSchema } from "../services/worker-secret-delegation.js";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -3580,6 +3581,25 @@ const AgentSecretListResponseSchema = z.object({
       resolvedVersion: z.number().int().positive(),
     }),
   ),
+});
+
+registry.registerPath({
+  method: "get", path: "/api/agents/me/secret-delegations", tags: ["secrets"],
+  summary: "List your task-scoped worker secret delegation receipts",
+  request: { query: z.object({ issueId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registry.registerPath({
+  method: "post", path: "/api/agents/me/secret-delegations", tags: ["secrets"],
+  summary: "Delegate an accessible secret to an approved worker on your own task",
+  request: { body: jsonBody(delegateWorkerSecretSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+registry.registerPath({
+  method: "delete", path: "/api/agents/me/secret-delegations/{bindingId}", tags: ["secrets"],
+  summary: "Revoke your worker secret delegation",
+  request: { params: z.object({ bindingId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 const createAgentSecretProposalSchema = z

@@ -86,6 +86,8 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
+import { loadWorkerSecretBindings, WORKER_ACCESS_PREFIX } from "./worker-secret-access.js";
+
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
@@ -1621,7 +1623,8 @@ export function secretService(db: Db | DbTransaction) {
     if (!isUuidLike(context.heartbeatRunId)) {
       throw forbidden("Agent secret access requires a verified heartbeat run");
     }
-    if (!context.configPath.startsWith("env.") && !context.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)) {
+    if (!context.configPath.startsWith("env.") && !context.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)
+      && !context.configPath.startsWith(WORKER_ACCESS_PREFIX)) {
       throw forbidden("Secret access is not granted for this binding path");
     }
     assertSecretBindingConfigPath({ targetType: "agent", configPath: context.configPath });
@@ -1668,6 +1671,7 @@ export function secretService(db: Db | DbTransaction) {
       issueId: context.issueId ?? null,
       heartbeatRunId: context.heartbeatRunId,
     };
+    let delegatedIssueId: string | null = null;
     if (context.bindingId) {
       const binding = await db
         .select()
@@ -1692,9 +1696,13 @@ export function secretService(db: Db | DbTransaction) {
           : [],
       );
       const isDirectAgentBinding = binding.targetType === "agent" && binding.targetId === context.agentId;
-      if (!isDirectAgentBinding && !manifestBindingIds.has(binding.id)) {
+      const delegated = binding.configPath.startsWith(WORKER_ACCESS_PREFIX)
+        ? (await loadWorkerSecretBindings(db as Db, companyId, context.agentId, context.heartbeatRunId)).some(row => row.id === binding.id)
+        : false;
+      if (binding.configPath.startsWith(WORKER_ACCESS_PREFIX) ? !delegated : !isDirectAgentBinding && !manifestBindingIds.has(binding.id)) {
         throw forbidden("Secret access is not granted for this agent run");
       }
+      if (delegated) delegatedIssueId = binding.targetId;
       bindingContext = {
         ...bindingContext,
         consumerType: binding.targetType as SecretBindingTargetType,
@@ -1703,7 +1711,7 @@ export function secretService(db: Db | DbTransaction) {
     }
 
     const runContext = asRecord(run.contextSnapshot) ?? {};
-    const effectiveIssueId = context.issueId ?? (
+    const effectiveIssueId = context.issueId ?? delegatedIssueId ?? (
       typeof runContext.issueId === "string"
         ? runContext.issueId
         : typeof (asRecord(runContext.paperclipIssue) ?? {}).id === "string"
@@ -1741,6 +1749,7 @@ export function secretService(db: Db | DbTransaction) {
         runId: context.heartbeatRunId,
         issueId: effectiveIssueId,
         details: {
+          issueId: effectiveIssueId,
           configPath: context.configPath,
           outcome: "success",
           version: resolution.manifestEntry.version,
@@ -1763,6 +1772,7 @@ export function secretService(db: Db | DbTransaction) {
         runId: context.heartbeatRunId,
         issueId: effectiveIssueId,
         details: {
+          issueId: effectiveIssueId,
           configPath: context.configPath,
           outcome: "failure",
           errorCode,
@@ -1817,7 +1827,7 @@ export function secretService(db: Db | DbTransaction) {
           return typeof bindingId === "string" ? [bindingId] : [];
         })
       : [];
-    const [directBindings, runtimeBindings] = await Promise.all([
+    const [directBindings, runtimeBindings, workerBindings] = await Promise.all([
       db.select().from(companySecretBindings).where(and(
         eq(companySecretBindings.companyId, companyId),
         eq(companySecretBindings.targetType, "agent"),
@@ -1833,8 +1843,9 @@ export function secretService(db: Db | DbTransaction) {
             inArray(companySecretBindings.id, manifestBindingIds),
           ))
         : Promise.resolve([]),
+      loadWorkerSecretBindings(db as Db, companyId, context.agentId, context.heartbeatRunId),
     ]);
-    const bindings = [...new Map([...directBindings, ...runtimeBindings].map((binding) => [binding.id, binding])).values()];
+    const bindings = [...new Map([...directBindings, ...runtimeBindings.filter(binding => !binding.configPath.startsWith(WORKER_ACCESS_PREFIX)), ...workerBindings].map((binding) => [binding.id, binding])).values()];
     if (bindings.length === 0) return [];
 
     const secrets = await db
@@ -1857,7 +1868,7 @@ export function secretService(db: Db | DbTransaction) {
     return [...bindingsBySecret.entries()].flatMap(([secretId, secretBindings]) => {
       const secret = secretsById.get(secretId);
       if (!secret) return [];
-      const accessBinding = secretBindings.find((binding) => binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX));
+      const accessBinding = secretBindings.find((binding) => binding.configPath.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX) || binding.configPath.startsWith(WORKER_ACCESS_PREFIX));
       const selectedBinding = accessBinding ?? secretBindings[0];
       const hasEnv = secretBindings.some((binding) => binding.configPath.startsWith("env."));
       const hasApi = Boolean(accessBinding);

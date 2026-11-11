@@ -442,6 +442,15 @@ If anything cannot be run, explicitly report what was not run and why.
 
 ## 8. API and Auth Expectations
 
+Main-agent secret delegation is task-scoped API access through existing bindings,
+not an agent-wide shared-worker grant. Reauthorize the running standard JWT,
+current project lead, own task, v2 worker policy, same-host eligibility and original
+source binding; pin the version and preserve structured provenance. Never copy
+values, modify worker env/config, auto-answer human-only questions or wake/replay
+work. Revoke source changes and ownership/policy changes at read time; preserve
+transactional grant/revoke audit. See doc/DEVELOPING.md and the agent API reference.
+
+
 Host subscription quotas are an explicit operator feature, enabled only with
 PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1. The dashboard endpoint requires instance
 admin and existing company access before any host login is read. Keep these
