@@ -512,3 +512,12 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   preserve the assigned gateway's typed status, reason and public receipts at
   the HTTP boundary; unknown failures remain redacted and calls are never retried.
   Native SeaTalk acceptance exposed an expired upstream login and a masked 500.
+
+
+### 2026-11-11 — Cancel blocked runs
+
+- Scheduled workspace waits expose Cancel run in the task banner and run/activity views.
+- Finish cancellation rechecks the exact original Bridge stop receipt. Confirmed,
+  unforced stop evidence releases shared ownership only after all resource gates settle.
+- Canonical behavior: doc/execution-semantics.md. Release uses michael/main and
+  related checks only; no task replay or forced claim deletion.

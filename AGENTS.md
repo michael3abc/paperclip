@@ -591,3 +591,11 @@ Session-bridge-only MCP definitions live in packages/mcp-server/src/session-brid
 keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate the
 Runner capability source anchors when legacy definitions move, and verify both
 catalog surfaces without granting session-only tools to heartbeat clients.
+
+
+Run cancellation remains available during scheduled workspace waits. The GUI cancels
+only the selected run and verifies its stop receipt. A cancelled Bridge run with a
+requested stop offers Finish cancellation, which rechecks the original receipt without
+replaying input or stopping a successor. Shared workspace release accepts acknowledged,
+unforced Bridge stop evidence only after controller, finalizer, operation and lease
+settlement. Unknown outcomes retain the claim and show an explicit error.

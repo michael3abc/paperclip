@@ -164,3 +164,17 @@ it.each(["relative/path", "/home/yoyo/../etc", "/home/yoyo/Projects/"])("rejects
   await expect(claimSharedCheckout(db, { ...a, cwd: remotePath, remoteHostId: "shopee-e" }))
     .rejects.toMatchObject({ resultJson: { reason: "remote_worker_path_invalid" } });
 });
+
+
+it.each(["requested", "forced", "acknowledged", "live_controller"])("retains or releases a Bridge claim from stop evidence: %s", async evidence => {
+  const [a,b] = await fixture(false);
+  await claimSharedCheckout(db,a);
+  await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), sessionIdAfter: "native-session",
+    runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" } },
+    controllerLeaseExpiresAt: evidence === "live_controller" ? new Date(Date.now()+60_000) : null,
+    resultJson: { executionCancellation: { state: evidence === "requested" ? "requested" : "acknowledged",
+      forced: evidence === "forced", acknowledgedAt: new Date().toISOString() } },
+  }).where(eq(heartbeatRuns.id,a.runId));
+  if (evidence === "acknowledged") await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
+  else await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ code:"workspace_busy" });
+});

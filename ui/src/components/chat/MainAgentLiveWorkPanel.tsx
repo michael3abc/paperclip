@@ -1,3 +1,4 @@
+import { RunCancelButton } from "../RunCancelButton";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, CheckCircle2, CircleDashed, CircleX, Loader2, Wrench } from "lucide-react";
@@ -141,6 +142,10 @@ export function MainAgentLiveWorkPanel({ companyId, agentId }: { companyId: stri
           <Bot className="h-3.5 w-3.5" />
           <span className="font-medium uppercase tracking-(--tracking-caps)">{active ? "Now" : "Last run"}</span>
           <StatusBadge status={run.status} />
+          {(active || run.status === "scheduled_retry" || (run.status === "cancelled" && !!run.resultJson?.bridgeSessionId &&
+            (run.resultJson?.executionCancellation as { state?: string } | undefined)?.state === "requested")) &&
+            <RunCancelButton key={run.id} runId={run.id} issueId={run.issueId} companyId={companyId}
+              agentId={agentId} finishCancellation={run.status === "cancelled"} />}
           {elapsed && <span>{elapsed}</span>}
           {!active && run.finishedAt && <span>· {relativeTime(run.finishedAt)}</span>}
         </div>

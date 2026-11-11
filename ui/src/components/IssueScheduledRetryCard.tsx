@@ -1,3 +1,4 @@
+import { RunCancelButton } from "./RunCancelButton";
 import { Clock, RotateCcw, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -33,10 +34,13 @@ export function IssueScheduledRetryCard({
   if (!scheduledRetry || !issueId) return null;
   if (scheduledRetry.status !== "scheduled_retry") return null;
 
+  const cancelButton = <RunCancelButton key={scheduledRetry.runId} runId={scheduledRetry.runId}
+    issueId={issueId} agentId={scheduledRetry.agentId} />;
+
   if (scheduledRetry.scheduledRetryReason === "workspace_busy") {
     return (
-      <InlineBanner tone="info" icon={Clock} title="Waiting for workspace" className="mb-3">
-        Another task is using this workspace. Work starts automatically when it is available.
+      <InlineBanner tone="info" icon={Clock} title="Waiting for workspace" className="mb-3" actions={cancelButton}>
+        Waiting for the previous workspace owner to finish and release it. Cancel run stops this waiting attempt.
       </InlineBanner>
     );
   }
@@ -129,6 +133,7 @@ export function IssueScheduledRetryCard({
           ) : null}
         </div>
         <div className="flex flex-col items-stretch gap-1 sm:items-end">
+          {cancelButton}
           <Button
             type="button"
             variant="outline"

@@ -97,12 +97,20 @@ export async function claimSharedCheckout(db: Db, input: {
         and not (
           r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
+            or (r.runtime_mode = 'legacy' and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
+              and r.status in ('cancelled', 'timed_out')
+              and r.result_json#>>'{executionCancellation,state}' = 'acknowledged'
+              and r.result_json#>>'{executionCancellation,forced}' = 'false'
+              and r.result_json#>>'{executionCancellation,acknowledgedAt}' is not null)
             or (r.process_pid is null and r.process_group_id is null and r.process_started_at is null and r.native_session_id is null and r.session_id_after is null
               and not (coalesce(r.runner_profile_json, '{}'::jsonb) ? 'nativeExecutionInput')
               and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
                 and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started')))))
           and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
             and (f.lease_owner is not null or f.phase <> 'committed'))
+          and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
+          and not exists (select 1 from workspace_operations o where o.heartbeat_run_id = r.id
+            and o.status in ('running', 'queued', 'pending'))
           and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
             and (l.status = 'pending_cleanup' or l.cleanup_status = 'failed' or l.metadata ? 'nativeWorkspaceExportResume'
               or (l.released_at is null and not coalesce(l.status = 'retained' and l.lease_policy = 'reuse_by_environment' and l.cleanup_status = 'success', false))))
