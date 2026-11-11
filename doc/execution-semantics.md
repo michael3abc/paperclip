@@ -3596,6 +3596,11 @@ settle to terminal failure without rerunning the task. Historical failed native
 runs may verify termination and collect retained files while remaining failed.
 Unavailable local copies are re-read only after current settlement proof, through
 the original file collector and save CAS; retain the earlier failure in the run log.
+Failed/interrupted Bridge holders without a cancellation receipt also enter this
+flow. Their verified original-session proof is recorded separately as
+resultJson.executionStopVerification, never as an invented cancellation request.
+The failed outcome and original error remain unchanged.
+
 Controller/finalizer ownership, uncollected files, workspace recovery/operations and
 unreleased leases continue to block writers. No claim is forcibly deleted.
 

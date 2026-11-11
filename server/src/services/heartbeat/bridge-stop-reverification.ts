@@ -85,8 +85,19 @@ export function validBridgeStopProof(
   };
 }
 
+export function hasVerifiedBridgeTerminalStop(run: Pick<Run, "id" | "status" | "resultJson">) {
+  const receipt = parseObject(run.resultJson?.executionStopVerification);
+  return ["failed", "interrupted"].includes(run.status) && run.resultJson?.executionCancellation == null &&
+    receipt.schema === "paperclip.bridge-terminal-stop.v1" &&
+    nonEmpty(run.resultJson?.bridgeSessionId) && nonEmpty(run.resultJson?.nativeSessionId) &&
+    validBridgeStopProof({ verified: true, proof: parseObject(receipt.bridgeStopProof) }, {
+      runId: run.id, bridgeSessionId: run.resultJson.bridgeSessionId as string,
+      nativeSessionId: run.resultJson.nativeSessionId as string,
+    }) !== null;
+}
+
 /**
- * Compare-and-set a bridge run's requested, unforced cancellation to acknowledged with validated bridge proof.
+ * Compare-and-set validated stop evidence without changing a failed outcome or inventing cancellation.
  * The exact existing cancellation and both recorded session IDs must still match; otherwise nothing is written.
  */
 async function acknowledgeBridgeStop(
@@ -96,6 +107,12 @@ async function acknowledgeBridgeStop(
   options: { proofKind: string; at: Date; publishLiveEvent: typeof publishLiveEventDefault; extra?: Record<string, unknown> },
 ): Promise<Run | null> {
   const existing = parseObject(run.resultJson?.executionCancellation);
+  const failedWithoutCancellation = ["failed", "interrupted"].includes(run.status) && run.resultJson?.executionCancellation == null;
+  const patch = failedWithoutCancellation
+    ? { executionStopVerification: { schema: "paperclip.bridge-terminal-stop.v1",
+        verifiedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof } }
+    : { executionCancellation: { ...existing, state: "acknowledged", forced: false,
+        acknowledgedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) } };
   // Opening this gate must wake the deferred interrupt receipts in the same
   // commit; a stop acknowledged without a signal used to strand them.
   const acknowledged = await db.transaction(async tx => {
@@ -104,16 +121,14 @@ async function acknowledgeBridgeStop(
     if (typeof run.resultJson?.workspaceRecoveryActionId === "string")
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, run.resultJson.workspaceRecoveryActionId);
     return tx.update(heartbeatRuns).set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
-        executionCancellation: { ...existing, state: "acknowledged", forced: false,
-          acknowledgedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) },
-      })}::jsonb`,
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
       updatedAt: options.at,
     }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
       eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, run.status), eq(heartbeatRuns.runtimeMode, "legacy"),
-      sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
-      sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
-      sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`,
+      failedWithoutCancellation ? sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation', 'null'::jsonb) = 'null'::jsonb`
+        : and(sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
+          sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
+          sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`),
       sql`${heartbeatRuns.resultJson}->>'bridgeSessionId' = ${proof.bridgeSessionId}`,
       sql`${heartbeatRuns.resultJson}->>'nativeSessionId' = ${proof.nativeSessionId}`))
       .returning();
@@ -197,9 +212,11 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
   const inFlight = new Map<string, Promise<BridgeStopReconciliation>>();
 
   function candidate(run: Run | undefined, companyId: string): run is Run {
-    if (!run || run.companyId !== companyId || !["cancelled", "timed_out"].includes(run.status) || run.runtimeMode !== "legacy") return false;
+    if (!run || run.companyId !== companyId || !["cancelled", "timed_out", "failed", "interrupted"].includes(run.status) || run.runtimeMode !== "legacy") return false;
     const cancellation = parseObject(run.resultJson?.executionCancellation);
-    return cancellation.state === "requested" && cancellation.forced !== true &&
+    const requested = ["cancelled", "timed_out"].includes(run.status) && cancellation.state === "requested" && cancellation.forced !== true;
+    const failed = ["failed", "interrupted"].includes(run.status) && run.resultJson?.executionCancellation == null;
+    return (requested || failed) &&
       nonEmpty(run.resultJson?.bridgeSessionId) && nonEmpty(run.resultJson?.nativeSessionId);
   }
 

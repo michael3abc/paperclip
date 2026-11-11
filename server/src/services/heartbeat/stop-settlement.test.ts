@@ -79,6 +79,22 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     } finally { vi.useRealTimers(); await worker.stop(); await coordinator.stop(); }
   });
 
+  it("settles a failed Bridge holder without manufacturing cancellation or losing its failure", async () => {
+    const f = await seed();
+    const resultJson = { ...f.run.resultJson }; delete resultJson.executionCancellation;
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "original_adapter_failure", resultJson }).where(eq(heartbeatRuns.id, f.run.id));
+    const hook = vi.fn(async () => proof(f.run.id));
+    const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
+    await service.reconcile(f.run.id, f.company.id);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "original_adapter_failure",
+      resultJson: { originalFailure: "retained", stopSettlement: { state: "settled" },
+        executionStopVerification: { schema: "paperclip.bridge-terminal-stop.v1" } } });
+    expect((await read(f.run.id)).resultJson?.executionCancellation).toBeUndefined();
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
+    await service.reconcile(f.run.id, f.company.id);
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+
   it("persists four checks with completion-relative deadlines across restart, then stays quiet until explicit recheck", async () => {
     const f = await seed(); let clock = Date.now();
     const hook = vi.fn(async () => ({ verified: false as const, reason: "bridge_unavailable" }));

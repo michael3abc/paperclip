@@ -12,7 +12,7 @@ import type { RunStopSettlementScope } from "../run-stop-settlement-notification
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
-import { createBridgeStopReverification } from "./bridge-stop-reverification.js";
+import { createBridgeStopReverification, hasVerifiedBridgeTerminalStop } from "./bridge-stop-reverification.js";
 import { historicalAdapterType } from "../conversation-continuation.js";
 import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop } from "./stop-settlement-evidence.js";
 import { registerWorkspaceWaitSettlement } from "./workspace-wait-settlement.js";
@@ -22,7 +22,8 @@ const SCHEMA = "paperclip.run-stop-settlement.v1";
 export const STOP_CHECK_DELAYS = [30_000, 120_000, 300_000] as const;
 const CLAIM_MS = 150_000;
 const candidate = and(inArray(heartbeatRuns.status, ["cancelled", "timed_out", "failed", "interrupted"]), sql`(
-  ${heartbeatRuns.runtimeMode} = 'native' OR ${heartbeatRuns.resultJson} ? 'executionCancellation')`);
+  ${heartbeatRuns.runtimeMode} = 'native' OR ${heartbeatRuns.resultJson} ? 'executionCancellation'
+  OR ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge')`);
 
 /** Our bookkeeping and cleanup retry counters cannot replenish the inspection
  * budget. Only changes to actual stop/resource evidence permit an extra check. */
@@ -46,7 +47,7 @@ async function evidenceKey(db: Db, run: Run) {
       from workspace_operations o where o.heartbeat_run_id = ${run.id}::uuid)) as evidence`);
   return createHash("sha256").update(JSON.stringify([run.status, run.runtimeMode, run.nativeSessionId,
     run.runnerInstanceId, run.processPid, run.processGroupId, run.processStartedAt, run.controllerLeaseExpiresAt,
-    run.resultJson?.executionCancellation, run.resultJson?.nativeCancellation,
+    run.resultJson?.executionCancellation, run.resultJson?.executionStopVerification, run.resultJson?.nativeCancellation,
     run.resultJson?.workspaceRestoreFailure, run.resultJson?.workspaceRestoreRecovery, rows[0]?.evidence])).digest("hex");
 }
 
@@ -96,6 +97,7 @@ export function createRunStopSettlement(db: Db, deps: {
           let stopProof: string | null = null;
           if (run.runtimeMode === "native") stopProof = await verifyNativeStop(db, run);
           else if (cancellation.forced === true) reason = "forced_stop_unverified";
+          else if (hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_terminal_stop_receipt";
           else if (cancellation.state === "acknowledged") {
             // Stop acknowledgement and resource cleanup are separate facts.
             // Requiring a released checkout here would deadlock cleanup itself.
@@ -108,7 +110,7 @@ export function createRunStopSettlement(db: Db, deps: {
               onUnverified: value => { reason = /^[a-z0-9_]+$/.test(value) ? value.slice(0, 160) : "stop_unverified"; },
             }).reconcile(runId, companyId);
             run = (await read(runId, companyId))!;
-            if (parseObject(run.resultJson?.executionCancellation).state === "acknowledged") stopProof = "bridge_stop_receipt";
+            if (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_stop_receipt";
           }
           if (stopProof && !options.signal?.aborted) {
             state = "cleaning";
@@ -131,7 +133,9 @@ export function createRunStopSettlement(db: Db, deps: {
         .for("update");
       if (!current || parseObject(current.resultJson?.stopSettlement).claimToken !== claimed.receipt.claimToken) return null;
       if (current.nativeSessionId !== claimed.run.nativeSessionId || current.runnerInstanceId !== claimed.run.runnerInstanceId ||
-          current.processStartedAt?.getTime() !== claimed.run.processStartedAt?.getTime()) {
+          current.processStartedAt?.getTime() !== claimed.run.processStartedAt?.getTime() ||
+          current.resultJson?.bridgeSessionId !== claimed.run.resultJson?.bridgeSessionId ||
+          current.resultJson?.nativeSessionId !== claimed.run.resultJson?.nativeSessionId) {
         state = "stopping"; reason = "execution_changed";
       }
       if (state !== "stopping" && (deps.isRunActive(runId) ||

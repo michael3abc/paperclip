@@ -599,3 +599,7 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   explicit Git requirements, canonical claims and overlap exclusion are unchanged.
 - Deployed failure evidence and isolated regression checks are retained in
   artifacts/workspace-binding-admission-20261111; publish through michael/main.
+
+Follow-up: failed/interrupted Bridge directory holders without Stop receipts join
+the same bounded settlement flow. Preserve their errors and store verified stop
+evidence separately; no cancellation or task replay is manufactured.
