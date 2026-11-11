@@ -655,6 +655,10 @@ lease and cleanup evidence; reject unrealized isolation before launch. Preserve
 project defaults and existing runs until their next normal admission. UI/MCP
 selection uses expectedBindingRevision/requestKey and never starts a run. See
 doc/execution-semantics.md (Physical workspace admission).
+Role-capacity tests use independently registered directories; workerSlots never
+permits simultaneous writers in one checkout. Adapter doubles returning session
+identity must model completed stop receipts before testing same-worktree reuse,
+and assert that terminal status without those receipts still retains ownership.
 An exact .git/info/exclude-only directory is ignore metadata even at the selected
 workspace root. It must remain an ordinary canonical directory without requiring
 Git. Empty, partial, symlinked or additional local Git metadata still requires Git

@@ -9,6 +9,8 @@ The local release line is `michael/main`; previous releases and consolidation me
   registered fixed home for the run while retaining the worker's explicit source
   and task workspace. Actual-path claims remain enforced on the reviewer home;
   unrelated/stale actors keep existing source-conflict failures.
+  Acceptance fixtures separate role capacity from physical-directory ownership
+  and preserve the stop-receipt requirement across worker review/revision reuse.
 
 - Mobile conversation task-panel access (2026-11-11): show the page-owned
   panel control in mobile headers and route it to the mobile sheet, keeping the

@@ -5,13 +5,14 @@ import { mkdtemp, mkdir, realpath, rm, writeFile, readFile } from "node:fs/promi
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agentInstructionWorkingCopies, agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { sharedCheckoutHolderSettled } from "../services/heartbeat/shared-checkout.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
 vi.mock("../adapters/index.js", () => ({
@@ -73,9 +74,9 @@ suite("project PM role and workspace at claim", () => {
   }
 
   /** A second project of the same company with its own primary workspace directory. */
-  async function seedOtherProject(companyId: string) {
+  async function seedOtherProject(companyId: string, directory = "other-repo") {
     const otherProjectId = randomUUID();
-    const otherRoot = path.join(root, companyId, "other-repo");
+    const otherRoot = path.join(root, companyId, directory);
     await mkdir(otherRoot, { recursive: true });
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: otherRoot });
     await db.insert(projects).values({ id: otherProjectId, companyId, name: "Other", status: "in_progress" });
@@ -189,12 +190,25 @@ suite("project PM role and workspace at claim", () => {
       for (const release of gates.values()) release();
       execute.mockImplementation(deliver);
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      // This adapter double returns a session ID but has no child process or
+      // instruction collector. Model its completed stop explicitly; success
+      // alone must not make the original worktree available to a successor.
+      for (const [i, run] of runs.entries()) {
+        expect((await heartbeat.getRun(run.id))!.status).toBe("succeeded");
+        expect(await sharedCheckoutHolderSettled(db, pm.companyId, run.id)).toBe(false);
+        const cwd = calls[i].context.paperclipWorkspace.cwd;
+        await db.insert(agentInstructionWorkingCopies).values({ runId: run.id, companyId: pm.companyId, agentId: workerId,
+          responsibleUserId: "responsible-user", entryFile: "AGENTS.md", baseHash: "a".repeat(64),
+          localRoot: cwd, executionRoot: cwd, location: "local", state: "captured",
+          receipt: { source: "completed-test-adapter" }, processStoppedAt: new Date() });
+        expect(await sharedCheckoutHolderSettled(db, pm.companyId, run.id)).toBe(true);
+      }
       const [submitted] = await db.select().from(issues).where(eq(issues.id, taskIds[0]!));
       const returned = applyIssueExecutionPolicyTransition({ issue: submitted!, policy, requestedStatus: "in_progress",
         requestedAssigneePatch: {}, actor: { agentId: pm.agentId }, commentBody: "Revise the same output" });
       await db.update(issues).set(returned.patch).where(eq(issues.id, taskIds[0]!));
       const revision = await runToEnd(workerId, { issueId: taskIds[0] });
-      expect(revision.run.status).toBe("succeeded");
+      expect({ status: revision.run.status, errorCode: revision.run.errorCode, error: revision.run.error }).toEqual({ status: "succeeded", errorCode: null, error: null });
       expect(revision.calls[0]![0].context.paperclipWorkspace.cwd).toBe(calls[0].context.paperclipWorkspace.cwd);
       expect(revision.calls[0]![0].config.model).toBe("task-model-0");
       expect(revision.calls[0]![0].runtime.sessionId).toBe(sessionIds.get(taskIds[0]!));
@@ -294,21 +308,25 @@ suite("project PM role and workspace at claim", () => {
   }, 60_000);
 
   it("runs one PM turn beside up to workerSlots worker turns and keeps a full role queued", async () => {
-    const pm = await seedPm();
+    // Role capacity is independent of the physical writer claim. Give each
+    // worker a registered, disjoint directory so only role slots limit it.
+    const pm = await seedPm({ allowCrossProject: true });
+    const second = await seedOtherProject(pm.companyId);
+    const third = await seedOtherProject(pm.companyId, "third-repo");
     const gates = new Map<string, () => void>();
     execute.mockImplementation(async (input: any) => {
       await new Promise<void>((resolve) => gates.set(input.runId, resolve));
       return { exitCode: 0, signal: null, timedOut: false };
     });
     try {
-      const child = async (title: string) => {
+      const child = async (title: string, projectId: string) => {
         const id = randomUUID();
-        await db.insert(issues).values({ id, companyId: pm.companyId, projectId: pm.projectId, parentId: pm.inboxIssueId, title, status: "todo", assigneeAgentId: pm.agentId });
+        await db.insert(issues).values({ id, companyId: pm.companyId, projectId, parentId: pm.inboxIssueId, title, status: "todo", assigneeAgentId: pm.agentId });
         return id;
       };
       const topLevelId = randomUUID();
       await db.insert(issues).values({ id: topLevelId, companyId: pm.companyId, projectId: pm.projectId, title: "Plan the release", status: "todo", assigneeAgentId: pm.agentId });
-      const [c1, c2, c3] = [await child("One"), await child("Two"), await child("Three")];
+      const [c1, c2, c3] = [await child("One", pm.projectId), await child("Two", second.otherProjectId), await child("Three", third.otherProjectId)];
       const wake = async (issueId: string) => (await heartbeat.wakeup(pm.agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId } }))!.id;
       const status = async (runId: string) => (await heartbeat.getRun(runId))!.status;
       const started = () => new Set(execute.mock.calls.map(([input]) => input.runId as string));
@@ -327,6 +345,11 @@ suite("project PM role and workspace at claim", () => {
       const roles = running.filter((run) => run.status === "running")
         .map((run) => (run.contextSnapshot as Record<string, any>).paperclipPmWorkspace?.role).sort();
       expect(roles).toEqual(["pm", "worker", "worker"]);
+      for (const [runId, cwd] of [[w1, pm.workerRoot], [w2, second.otherRoot]]) {
+        const call = execute.mock.calls.find(([input]) => input.runId === runId)!;
+        expect(call[0].context.paperclipWorkspace.cwd).toBe(cwd);
+        expect((await heartbeat.getRun(runId!))!.contextSnapshot).toMatchObject({ sharedCheckoutClaim: { path: cwd } });
+      }
 
       gates.get(pm1)!();
       await vi.waitFor(() => expect(started().has(pm2)).toBe(true), { timeout: 15_000 });
@@ -337,7 +360,7 @@ suite("project PM role and workspace at claim", () => {
       gates.get(w1)!();
       await vi.waitFor(() => expect(started().has(w3)).toBe(true), { timeout: 15_000 });
       const w3Call = execute.mock.calls.find(([input]) => input.runId === w3)!;
-      expect(w3Call[0].context.paperclipPmWorkspace).toMatchObject({ role: "worker", cwd: pm.workerRoot, issueId: c3 });
+      expect(w3Call[0].context.paperclipPmWorkspace).toMatchObject({ role: "worker", cwd: third.otherRoot, issueId: c3 });
     } finally {
       // Later executions use the default; gated ones (gates are set synchronously) are released.
       execute.mockImplementation(async () => ({ exitCode: 0, signal: null, timedOut: false }));
