@@ -208,10 +208,15 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     flushSync(() => root.unmount());
   });
 
-  it.each([IssueMonitorBanner, IssueMonitorComposerStrip])("cancels the displayed workspace wait in %s", async (Surface) => {
+  it.each([
+    [IssueMonitorBanner, NOW.toISOString()],
+    [IssueMonitorBanner, null],
+    [IssueMonitorComposerStrip, NOW.toISOString()],
+    [IssueMonitorComposerStrip, null],
+  ] as const)("cancels the displayed workspace wait in %s with deadline %s", async (Surface, scheduledRetryAt) => {
     const issue = { id: "issue-1", companyId: "company-1", status: "todo",
       scheduledRetry: { runId: "waiting-run", agentId: "worker-1", status: "scheduled_retry",
-        scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+        scheduledRetryReason: "workspace_busy", scheduledRetryAt },
     } as Issue;
     const cancel = vi.spyOn(heartbeatsApi, "cancel").mockResolvedValue({
       id: "waiting-run", companyId: "company-1", status: "cancelled", resultJson: null,
@@ -220,6 +225,8 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     const root = createRoot(container);
     try {
       flushSync(() => root.render(<QueryClientProvider client={client}><Surface issue={issue} /></QueryClientProvider>));
+      expect(container.textContent).toContain("Waiting for workspace");
+      expect(container.textContent).not.toMatch(/due now|overdue|Attempt/);
       const button = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Cancel run");
       expect(button).toBeDefined();
       await act(async () => { button!.click(); });

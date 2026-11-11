@@ -616,3 +616,8 @@ Follow-up: project stop notification hints without caller objects; preserve nati
 result/review commits. Prove historical unstarted retry children from the original
 scheduling event and wake, and accept restored successor transcript inputs only
 with a matching native UUID and a real Bridge result.
+
+Candidate HTTP/UI acceptance caught a hidden workspace-wait banner when the
+event-driven wait had no deadline. Header and composer now retain the waiting
+status and exact-run cancellation control with scheduledRetryAt=null. Preserve
+the failed c3b8a423d candidate receipt alongside the corrective validation.

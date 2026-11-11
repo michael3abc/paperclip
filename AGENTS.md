@@ -341,6 +341,8 @@ If you change schema/API behavior, update all impacted layers:
   evidence cannot release a writer. Workspace waits park the same run until a
   holder event, then recheck existing admission authority. Preserve historical
   failures and holds. See `doc/execution-semantics.md`.
+  Header and composer workspace-wait surfaces must remain visible and cancellable
+  when scheduledRetryAt is null; event-driven admission has no retry deadline.
   Include failed/interrupted Bridge holders without cancellation receipts. Store
   verified termination separately; never fabricate a Stop request or change their outcome.
   A cancelled parked workspace wait is pre-dispatch only when its original gate

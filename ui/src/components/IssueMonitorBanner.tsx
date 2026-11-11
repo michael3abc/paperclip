@@ -86,7 +86,8 @@ export function buildMonitorSurfaceCopy(
   pendingPullRequestReviews = 0,
   issueStatus?: string,
 ): MonitorSurfaceCopy | null {
-  if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
+  if (!isWaitingMonitorState(derived.state)) return null;
+  if (!derived.nextCheckAt && derived.source !== "scheduled-retry") return null;
 
   if (derived.source === "monitor" && areAutomaticMonitorChecksPaused({ status: issueStatus })) {
     const canCheckNow = canCheckIssueMonitorNow({ status: issueStatus }, derived.serviceName);
@@ -114,6 +115,7 @@ export function buildMonitorSurfaceCopy(
       workspaceWait: true,
     };
   }
+  if (!derived.nextCheckAt) return null;
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"

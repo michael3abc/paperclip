@@ -3576,6 +3576,9 @@ card, run detail and main-agent activity panel expose
 the board-only cancellation API; it preserves task history and outputs and does
 not implicitly retry the task or cancel a newer attempt. The GUI waits for stop
 confirmation and reports failure visibly without retrying the mutation.
+The header and composer retain the workspace-wait status and cancellation control
+with a null scheduledRetryAt. Event-driven workspace admission has no countdown;
+absence of a deadline must not hide the waiting run.
 
 Stop settlement separates the request, verified execution termination and completed
 cleanup. `resultJson.stopSettlement` records `paperclip.run-stop-settlement.v1`, a
