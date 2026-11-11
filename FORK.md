@@ -5,6 +5,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Physical workspace admission (2026-11-11): formal UI/MCP source selection and
+  revision-bound pending changes, canonical host directory/worktree ownership,
+  independent storage identities and provider launch binding validation. Preserve
+  project defaults, admitted runs, stop/lease fences and cross-project conflicts.
+  Pair with the CC Pocket adapter's remote directory validation; deploy only from
+  michael/main through the existing related-check and readiness workflow.
+
 - Workspace creator recovery (2026-11-11): structured pre-provider failure evidence, original-Chat
   system delivery with durable receipts, revision-bound single original-worker repair admission,
   explicit Owner historical forwarding and restricted terminal-holder reconciliation. No new tables,

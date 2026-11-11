@@ -11,7 +11,25 @@ import { WorkspaceValidationFailure } from "./workspaces.js";
 import { workspaceProcessConsumers } from "../workspace-process-consumers.js";
 
 const execFile = promisify(execFileCallback);
-export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" };
+export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" | "storage"; executionCwd?: string };
+
+/** Resolve a not-yet-created worktree through its nearest real ancestor. Never
+ * collapse it to the source repository (or Git common directory). */
+async function plannedDirectory(cwd: string): Promise<string> {
+  if (!path.isAbsolute(cwd)) throw new Error("workspace_path_not_absolute");
+  let current = path.resolve(cwd);
+  const suffix: string[] = [];
+  for (;;) {
+    try { return path.join(await fs.realpath(current), ...suffix); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      suffix.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
 
 /** Porcelain -z never quotes names. A rename has a second NUL-delimited name.
  * Paths are diagnostic data only; no file contents or shell commands are read. */
@@ -96,23 +114,38 @@ export async function sharedCheckoutHolderSettled(db: Db, companyId: string, run
 
 export async function claimSharedCheckout(db: Db, input: {
   companyId: string; agentId: string; runId: string; issueId: string;
-  projectWorkspaceId: string; cwd: string; deferralAttempt: number;
+  projectWorkspaceId: string | null; cwd: string; deferralAttempt: number;
+  wasIssueAssignee?: boolean;
   requireGit?: boolean;
+  /** Only the runtime's worktree creation callback may reserve a missing path. */
+  preparingWorktree?: boolean;
+  /** Shared-source handoff additionally checks unmanaged processes and dirtiness.
+   * Task-owned copies and resident sessions retain their runtime's own checks. */
+  checkSourceHandoff?: boolean;
+  /** Server-owned durable provider namespace and storage reference, never cwd. */
+  storageIdentity?: { namespace: string; workspaceRef: string };
   /** A CC Pocket Bridge host other than the controller. Its filesystem is not visible here: claims key on
    * that host and the source's canonical registered path, and the remote Bridge verifies the directory. */
   remoteHostId?: string | null;
   context: Record<string, unknown>;
 }): Promise<SharedCheckoutClaim> {
   const remote = input.remoteHostId ?? null;
-  const source = remote ? null : await sharedSource(input.cwd);
+  const storage = input.storageIdentity;
+  if (storage && (!storage.namespace || !storage.workspaceRef || remote)) throw new Error("workspace_storage_identity_invalid");
+  const source = remote || storage ? null : await sharedSource(input.cwd).catch(async error => {
+    if (!input.preparingWorktree || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return { path: await plannedDirectory(input.cwd), kind: "directory" as const };
+  });
   if (remote && (!input.cwd.startsWith("/") || path.posix.normalize(input.cwd) !== input.cwd || (input.cwd.length > 1 && input.cwd.endsWith("/")))) {
     throw new WorkspaceValidationFailure("The remote project source path is not a canonical absolute path.", { workspaceValidation: { reason: "remote_worker_path_invalid" } });
   }
   if (input.requireGit && source?.kind !== "git") throw new WorkspaceValidationFailure(
     "This source declares a Git repository or revision but its directory is not a Git checkout. Repair that source or select an ordinary document directory without Git settings.",
     { workspaceValidation: { reason: "shared_workspace_git_required" } });
-  const claim: SharedCheckoutClaim = { version: 1, ...(source ? { host: hostname(), ...source } : { host: `ccpocket:${remote}`, path: input.cwd }),
-    issueId: input.issueId, acquiredAt: new Date().toISOString() };
+  const claim: SharedCheckoutClaim = { version: 1, ...(storage
+    ? { host: `storage:${storage.namespace}`, path: `/${createHash("sha256").update(storage.workspaceRef).digest("hex")}`, kind: "storage" as const }
+    : source ? { host: hostname(), ...source } : { host: `ccpocket:${remote}`, path: input.cwd }),
+    issueId: input.issueId, executionCwd: input.cwd, acquiredAt: new Date().toISOString() };
   await db.transaction(async tx => {
     // Serialize only the admission transaction per host, so parent and child
     // directory claims cannot race. Independent admitted providers run in parallel.
@@ -122,7 +155,7 @@ export async function claimSharedCheckout(db: Db, input: {
       .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
         eq(heartbeatRuns.agentId, input.agentId))).for("update");
     if (current?.status !== "running") throw new Error("shared_checkout_run_not_running");
-    const services = remote ? [] : await tx.execute(sql`select 1 from workspace_runtime_services
+    const services = remote || storage ? [] : await tx.execute(sql`select 1 from workspace_runtime_services
       where status <> 'stopped' and (cwd = ${claim.path} or starts_with(cwd, rtrim(${claim.path}, '/') || '/')
         or starts_with(${claim.path}, rtrim(cwd, '/') || '/')) limit 1`);
     if (services.length) throw new WorkspaceValidationFailure(
@@ -135,21 +168,51 @@ export async function claimSharedCheckout(db: Db, input: {
         and (r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${claim.path}
           or starts_with(r.context_snapshot->'sharedCheckoutClaim'->>'path', rtrim(${claim.path}, '/') || '/')
           or starts_with(${claim.path}, rtrim(r.context_snapshot->'sharedCheckoutClaim'->>'path', '/') || '/'))
-        and not (
+        and not coalesce((
           ${settledSharedCheckoutSql}
-        ) order by r.created_at, r.id limit 1`);
+        ), false) order by r.created_at, r.id limit 1`);
     const holder = holders[0];
-    if (holder) {
-      if (holder.company_id !== input.companyId) throw new WorkspaceValidationFailure(
-        "This checkout has another active owner; select a dedicated development source.", { workspaceValidation: { reason: "shared_checkout_owned_elsewhere" } });
-      throw new WorkspaceBusyDeferral({ holder: { runId: holder.id, agentId: holder.agent_id,
-        issueId: holder.issue_id, issueIdentifier: null }, projectWorkspaceId: input.projectWorkspaceId,
-        deferralAttempt: input.deferralAttempt, wasIssueAssignee: true });
+    // Runs admitted before physical claims were introduced retain ownership.
+    // Inspect their recorded execution directory, never their task prose or the
+    // project's current default. Do not mutate or restart those runs on upgrade.
+    const priorAdmissions = holder || storage ? [] : await tx.execute<{
+      id: string; company_id: string; agent_id: string; issue_id: string; cwd: string; host: string;
+    }>(sql`select r.id, r.company_id, r.agent_id,
+        coalesce(r.issue_id::text, r.native_issue_id::text, r.context_snapshot->>'issueId') as issue_id,
+        r.context_snapshot#>>'{paperclipWorkspace,cwd}' as cwd,
+        case when coalesce(r.context_snapshot#>>'{paperclipWorkspace,remoteHostId}',
+          case when p.source_type = 'remote_managed' then p.metadata->>'hostId' end) is not null
+          then 'ccpocket:' || coalesce(r.context_snapshot#>>'{paperclipWorkspace,remoteHostId}', p.metadata->>'hostId')
+          else ${hostname()} end as host
+      from heartbeat_runs r left join project_workspaces p
+        on p.id::text = r.context_snapshot#>>'{paperclipWorkspace,workspaceId}'
+        and p.company_id = r.company_id
+      where r.id <> ${input.runId} and r.context_snapshot->'sharedCheckoutClaim' is null
+        and r.context_snapshot#>>'{paperclipWorkspace,cwd}' is not null
+        and not coalesce((${settledSharedCheckoutSql}), false) order by r.created_at, r.id`);
+    let priorHolder: typeof holder | undefined;
+    for (const previous of priorAdmissions) {
+      if (previous.host !== claim.host) continue;
+      const previousPath = remote ? previous.cwd : await sharedCheckoutPath(previous.cwd).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        return plannedDirectory(previous.cwd);
+      });
+      if (previousPath === claim.path || previousPath.startsWith(claim.path.replace(/\/$/, "") + "/")
+        || claim.path.startsWith(previousPath.replace(/\/$/, "") + "/")) {
+        priorHolder = previous; break;
+      }
     }
-    if (!remote && (await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
+    const owner = holder ?? priorHolder;
+    if (owner) {
+      throw new WorkspaceBusyDeferral({ holder: { runId: owner.id, agentId: owner.agent_id,
+        issueId: owner.issue_id, issueIdentifier: null }, projectWorkspaceId: input.projectWorkspaceId,
+        discloseHolder: owner.company_id === input.companyId && owner.issue_id === input.issueId,
+        deferralAttempt: input.deferralAttempt, wasIssueAssignee: input.wasIssueAssignee ?? true });
+    }
+    if (input.checkSourceHandoff !== false && !remote && !storage && (await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
       "Another local process still uses this checkout. Release that writer or service; production needs a separate fixed development checkout.",
       { workspaceValidation: { reason: "shared_checkout_process_active" } });
-    const dirty = source?.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    const dirty = input.checkSourceHandoff !== false && source?.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
       { timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout : "";
     const prior = await tx.execute<{ issue_id: string; run_id: string }>(sql`select r.id as run_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id from heartbeat_runs r
       where r.company_id = ${input.companyId}

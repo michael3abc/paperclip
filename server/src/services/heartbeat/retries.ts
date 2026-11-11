@@ -198,6 +198,7 @@ export class WorkspaceBusyDeferral extends Error {
   executionWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
+  discloseHolder: boolean;
 
   constructor(input: {
     holder: SharedWorkspaceHolder;
@@ -205,8 +206,10 @@ export class WorkspaceBusyDeferral extends Error {
     executionWorkspaceId?: string | null;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
+    discloseHolder?: boolean;
   }) {
     super(
+      input.discloseHolder === false ? "Workspace is busy; its previous writer has not settled" :
       `Shared ${input.executionWorkspaceId ? "execution" : "project"} workspace is busy: run ${input.holder.runId} (issue ${
         input.holder.issueIdentifier ?? input.holder.issueId
       }) is still running`,
@@ -217,6 +220,7 @@ export class WorkspaceBusyDeferral extends Error {
     this.executionWorkspaceId = input.executionWorkspaceId ?? null;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
+    this.discloseHolder = input.discloseHolder !== false;
   }
 }
 
@@ -1533,8 +1537,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         workspaceBusy: {
           projectWorkspaceId: deferral.projectWorkspaceId,
           executionWorkspaceId: deferral.executionWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          holderRunId: deferral.discloseHolder ? deferral.holder.runId : null,
+          holderIssueId: deferral.discloseHolder ? deferral.holder.issueId : null,
           deferralAttempt: deferral.deferralAttempt,
         },
       },
@@ -1597,8 +1601,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         payload: {
           projectWorkspaceId: deferral.projectWorkspaceId,
           executionWorkspaceId: deferral.executionWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          holderRunId: deferral.discloseHolder ? deferral.holder.runId : null,
+          holderIssueId: deferral.discloseHolder ? deferral.holder.issueId : null,
           deferralAttempt: deferral.deferralAttempt,
           retryScheduled: scheduleOutcome === "scheduled",
         },

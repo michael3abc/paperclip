@@ -1,3 +1,4 @@
+import { WorkspaceBusyDeferral } from "./retries.js";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
@@ -2368,7 +2369,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
-    if (isWorkspaceValidationFailure(error)) {
+    if (isWorkspaceValidationFailure(error) || error instanceof WorkspaceBusyDeferral) {
       throw error;
     }
     reuseFailure = formatInheritedExecutionWorkspaceReuseFailure({

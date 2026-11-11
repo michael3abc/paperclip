@@ -615,3 +615,13 @@ requested stop offers Finish cancellation, which rechecks the original receipt w
 replaying input or stopping a successor. Shared workspace release accepts acknowledged,
 unforced Bridge stop evidence only after controller, finalizer, operation and lease
 settlement. Unknown outcomes retain the claim and show an explicit error.
+
+Workspace admission is platform-wide: formally select registered sources or managed
+isolation; prose paths never select cwd. Claims identify the actual canonical
+working directory/worktree root or provider storage namespace, not project or
+Git common directory. Equal/alias/overlapping directories serialize; independent
+worktrees and storage identities may run concurrently. Retain provider-stop,
+lease and cleanup evidence; reject unrealized isolation before launch. Preserve
+project defaults and existing runs until their next normal admission. UI/MCP
+selection uses expectedBindingRevision/requestKey and never starts a run. See
+doc/execution-semantics.md (Physical workspace admission).

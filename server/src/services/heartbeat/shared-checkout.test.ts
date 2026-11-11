@@ -70,6 +70,22 @@ it("allows settled document ownership to pass without deleting prior output", as
   expect(await readFile(join(a.cwd,"draft.txt"),"utf8")).toBe("preserved draft");
 });
 
+it.each([false, true])("preserves an admitted run without a claim during upgrade (remote: %s)", async remote => {
+  const [a, b] = await fixture(false);
+  const alias = a.cwd + "-legacy";
+  if (!remote) await symlink(a.cwd, alias);
+  const workspace = { cwd: remote ? a.cwd : alias, workspaceId: a.projectWorkspaceId,
+    ...(remote ? { remoteHostId: "test-remote" } : {}) };
+  await db.update(heartbeatRuns).set({ contextSnapshot: { paperclipWorkspace: workspace } })
+    .where(eq(heartbeatRuns.id, a.runId));
+  await expect(claimSharedCheckout(db, { ...b, remoteHostId: remote ? "test-remote" : null }))
+    .rejects.toMatchObject({ code: "workspace_busy" });
+  await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+    .where(eq(heartbeatRuns.id, a.runId));
+  await expect(claimSharedCheckout(db, { ...b, remoteHostId: remote ? "test-remote" : null }))
+    .resolves.toMatchObject({ path: b.cwd });
+});
+
 it("does not reinterpret broken Git metadata as an ordinary directory", async () => {
   const [a] = await fixture(false); await mkdir(join(a.cwd,".git"));
   await expect(claimSharedCheckout(db,a)).rejects.toThrow();
@@ -137,6 +153,14 @@ it("releases a terminal pre-provider admission without replaying the old task", 
   expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.status).toBe("failed");
 });
 
+it.each(["cancelled", "timed_out"])("does not treat missing historical adapter metadata as stop proof for %s", async status => {
+  const [a, b] = await fixture(false);
+  await claimSharedCheckout(db, a);
+  await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), processPid: 12345,
+    runnerProfileJson: null, resultJson: null }).where(eq(heartbeatRuns.id, a.runId));
+  await expect(claimSharedCheckout(db, b)).rejects.toMatchObject({ code: "workspace_busy" });
+});
+
 it("does not infer pre-provider safety from missing events when Bridge identity was recorded", async () => {
   const [a,b] = await fixture(); await claimSharedCheckout(db,a);
   await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
@@ -185,4 +209,58 @@ it.each(["requested", "forced", "acknowledged", "live_controller"])("retains or 
   }).where(eq(heartbeatRuns.id,a.runId));
   if (evidence === "acknowledged") await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
   else await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({ code:"workspace_busy" });
+});
+
+it("admits sibling worktrees of the same Git repository concurrently", async () => {
+  const [a,b] = await fixture();
+  await execFile("git", ["-C",a.cwd,"-c","user.name=Test","-c","user.email=test@example.com","commit","--allow-empty","-m","base"]);
+  const source = a.cwd;
+  a.cwd = source + "-one"; b.cwd = source + "-two";
+  await execFile("git", ["-C",source,"worktree","add","-b","one",a.cwd]);
+  await execFile("git", ["-C",source,"worktree","add","-b","two",b.cwd]);
+  const claims = await Promise.all([claimSharedCheckout(db,a),claimSharedCheckout(db,b)]);
+  expect(claims.map(c=>c.path)).toEqual([a.cwd,b.cwd]);
+  expect((await execFile("git",["-C",a.cwd,"rev-parse","--git-common-dir"])).stdout)
+    .toBe((await execFile("git",["-C",b.cwd,"rev-parse","--git-common-dir"])).stdout);
+});
+
+it("reserves a new worktree target without claiming its source or hiding a parent writer", async () => {
+  const [a,b] = await fixture(false);
+  const source = a.cwd;
+  a.cwd = source + "-new";
+  await expect(claimSharedCheckout(db,{...a,preparingWorktree:true})).resolves.toMatchObject({path:a.cwd});
+  await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({path:source});
+  await expect(claimSharedCheckout(db,{...a,cwd:join(source,"child"),preparingWorktree:true}))
+    .rejects.toMatchObject({code:"workspace_busy"});
+});
+
+it("serializes separate project registrations of one physical directory", async () => {
+  const [a,b] = await fixture(false);
+  const [project] = await db.insert(projects).values({companyId:a.companyId,name:"Other project"}).returning();
+  const [source] = await db.insert(projectWorkspaces).values({companyId:a.companyId,projectId:project.id,name:"Alias registration",cwd:a.cwd}).returning();
+  b.projectWorkspaceId = source.id as typeof b.projectWorkspaceId;
+  await claimSharedCheckout(db,a);
+  await expect(claimSharedCheckout(db,b)).rejects.toMatchObject({code:"workspace_busy"});
+});
+
+it("queues a foreign company's overlapping writer without disclosing holder identity", async () => {
+  const [a] = await fixture(false), [b] = await fixture(false);
+  b.cwd = a.cwd;
+  await claimSharedCheckout(db, a);
+  const error = await claimSharedCheckout(db, b).catch(error => error);
+  expect(error).toMatchObject({ code: "workspace_busy", discloseHolder: false });
+  expect(error.message).not.toContain(a.runId);
+  expect(error.message).not.toContain(a.issueId);
+  expect(error.message).not.toContain(a.companyId);
+});
+
+it("keys managed workspaces by storage namespace and identity rather than guest cwd", async () => {
+  const [a,b] = await fixture(false);
+  const storageIdentity = {namespace:randomUUID(),workspaceRef:"workspace-one"};
+  const claim = await claimSharedCheckout(db,{...a,cwd:"/workspace",storageIdentity});
+  expect(claim.kind).toBe("storage");
+  await expect(claimSharedCheckout(db,{...b,cwd:"/workspace",storageIdentity}))
+    .rejects.toMatchObject({code:"workspace_busy"});
+  await expect(claimSharedCheckout(db,{...b,cwd:"/workspace",storageIdentity:{...storageIdentity,workspaceRef:"workspace-two"}}))
+    .resolves.toMatchObject({kind:"storage"});
 });

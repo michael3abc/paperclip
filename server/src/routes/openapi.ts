@@ -4471,6 +4471,7 @@ registry.registerPath({
   path: "/api/issues/{id}/workspace",
   tags: ["issues"],
   summary: "Inspect the task workspace and repository preparation state",
+  description: "Returns the formal selection, pending selection, binding revision, and this task's observed admission host, directory and wait reason. Does not expose another task's workspace holder identity.",
   request: { params: z.object({ id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

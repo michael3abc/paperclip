@@ -1580,8 +1580,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .where(and(eq(executionWorkspaces.id, task.executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(db, actor))) : [];
     if (task.executionWorkspaceId && !workspace) throw notFound("Workspace is unavailable or inaccessible");
     if (workspace) await assertExecutionWorkspaceRecordAccess(db, actor, companyId, workspace.id);
+    const [latestRun] = await db.select({ status: heartbeatRuns.status, context: heartbeatRuns.contextSnapshot,
+      reason: heartbeatRuns.scheduledRetryReason }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        or(eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.nativeIssueId, issueId)),
+      )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+    const claim = parseObject(latestRun?.context?.sharedCheckoutClaim);
+    // Report only this task's placement/reason. Holder records retain their own
+    // authorization boundary; no cross-task identity is exposed by inspection.
+    const admission = {
+      binding: task.workspacePendingSelection ? "pending" as const : workspace ? "bound" as const : "unbound" as const,
+      host: typeof claim.host === "string" ? claim.host : null,
+      cwd: typeof claim.executionCwd === "string" ? claim.executionCwd : workspace?.cwd ?? null,
+      waitingReason: latestRun?.status === "scheduled_retry" ? latestRun.reason : null,
+    };
     return { issueId, bindingRevision: task.workspaceBindingRevision, selection: task.workspaceSelection,
-      pendingSelection: task.workspacePendingSelection, workspace: workspace ? toExecutionWorkspace(workspace) : null };
+      pendingSelection: task.workspacePendingSelection, workspace: workspace ? toExecutionWorkspace(workspace) : null, admission };
   }
 
   async function selectTaskWorkspace(input: { companyId: string; issueId: string; actor: AuthorizationActor;

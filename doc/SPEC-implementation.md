@@ -2757,7 +2757,7 @@ and required Git or folder settings do not become empty-source fallbacks.
 
 Chat connection and destination settings may supply project/workspace defaults. Destination fields override connection fields; omitted values inherit and null clears the inherited choice. Resolve and authorize these defaults once for a new conversation, then retain the resulting task intent. Existing conversations do not change when settings change. Trust confinement still takes precedence.
 
-Agents inspect/select workspaces and request contained repository preparation through ordinary authorized APIs. Repository preparation is idempotent and may require the next admission; it never claims a host-only clone is available in an already-running remote session. Simultaneous tasks may still explicitly share one physical local/SSH folder. Remote sharing requires actual placement and coherent persistence capability.
+Agents inspect/select workspaces and request contained repository preparation through ordinary authorized APIs. Repository preparation is idempotent and may require the next admission; it never claims a host-only clone is available in an already-running remote session. Tasks may select the same physical local/SSH folder, but writing admissions serialize by canonical path, including aliases and parent/child overlaps. Independent worktree roots and provider storage identities can execute concurrently. Remote sharing requires actual placement and coherent persistence capability.
 
 See [the layer architecture](plans/2026-10-09-task-workspaces.md) for resolution rules, module ownership, persistence versions, rollout, and verification.
 

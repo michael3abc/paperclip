@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps } from "react";
+import { act as reactAct, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
+import { issuesApi } from "../api/issues";
 
 function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> | undefined;
@@ -16,12 +17,17 @@ function act(callback: () => void | Promise<void>) {
 }
 
 const useQueryMock = vi.fn();
+const invalidateQueries = vi.fn(async () => {});
+const inspectRefetch = vi.fn();
 
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
     ...actual,
-    useQuery: (options: unknown) => useQueryMock(options),
+    useQueryClient: () => ({ invalidateQueries }),
+    useQuery: (options: { queryKey: unknown[] }) => options.queryKey[0] === "task-workspace"
+      ? { refetch: inspectRefetch, data: { bindingRevision: 3, admission: { binding: "bound", host: "test-host", cwd: "/tmp/issue-sandbox", waitingReason: null } } }
+      : useQueryMock(options),
   };
 });
 
@@ -175,7 +181,8 @@ describe("IssueWorkspaceCard", () => {
     act(() => root.unmount());
   });
 
-  it("clears the legacy issue environment override when reusing a workspace", () => {
+  it("selects an existing workspace through the revision-checked API without patching the task", async () => {
+    const select = vi.spyOn(issuesApi, "selectWorkspace").mockResolvedValue({ kind: "scheduled", bindingRevision: 4 });
     const root = createRoot(container);
     const onUpdate = vi.fn();
     const reusableWorkspace = createExecutionWorkspace();
@@ -226,22 +233,44 @@ describe("IssueWorkspaceCard", () => {
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save"));
     expect(saveButton).not.toBeUndefined();
 
-    act(() => {
+    await act(async () => {
       saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
     });
 
-    expect(onUpdate).toHaveBeenCalledWith({
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceId: "workspace-1",
-      executionWorkspaceSettings: {
-        mode: "isolated_workspace",
-        environmentId: null,
-      },
+    expect(select).toHaveBeenCalledWith("issue-1", {
+      selection: { kind: "existing", workspaceId: "workspace-1" },
+      expectedBindingRevision: 3, requestKey: expect.any(String),
     });
+    expect(onUpdate).not.toHaveBeenCalled();
 
     act(() => {
       root.unmount();
     });
+  });
+
+  it("reconciles an uncertain selection by reading its original request without resending", async () => {
+    const select = vi.spyOn(issuesApi, "selectWorkspace").mockRejectedValue(new Error("Response lost"));
+    select.mockClear();
+    const root = createRoot(container);
+    useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => ({
+      data: options.queryKey[0] === "instance" ? { enableIsolatedWorkspaces: true } : [createExecutionWorkspace()],
+    }));
+    await reactAct(() => root.render(<IssueWorkspaceCard issue={createIssue()} project={{ id: "project-1" }}
+      initialEditing onUpdate={vi.fn()} />));
+    const save = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Save")!;
+    await reactAct(async () => { save.click(); await Promise.resolve(); });
+    expect(select).toHaveBeenCalledOnce();
+    expect(save.disabled).toBe(true);
+    expect(container.textContent).toContain("outcome is unknown");
+    const key = select.mock.calls[0]![1].requestKey;
+    inspectRefetch.mockResolvedValue({ data: { pendingSelection: { requestKey: key } } });
+    const check = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Check selection status")!;
+    await reactAct(async () => { check.click(); await Promise.resolve(); });
+    expect(inspectRefetch).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain("outcome is unknown");
+    await reactAct(() => root.unmount());
   });
 
   it("hides environment UI when environments are disabled", () => {

@@ -3581,3 +3581,33 @@ identity and stop receipt. Unknown or unavailable evidence returns a conflict;
 it never synthesizes proof, resends input or stops a successor. An acknowledged,
 unforced Bridge stop can release a shared checkout only when the controller lease,
 workspace operations, finalizer and environment leases have also settled.
+
+### Physical workspace admission
+
+Every managed writing task keeps selection, provider cwd and ownership in one
+formal workspace binding. Preserve project defaults. Task prose is not a
+workspace selection: register an existing worktree through the project source
+API, then select it with workspaceSelection (configured_source/shared), or use
+a supported managed_isolated selection and bind its realized result. Remote
+worktrees are separate remote_managed sources on their own Bridge host. Shared
+means sharing that source directory, not locking an entire project/repository.
+
+Admission serializes equal, symlink-aliased and parent/child physical paths,
+including registrations in different projects. Independent Git worktree roots
+remain concurrent even when they share Git objects. Worktree creation reserves
+the target before setup; it never claims the common Git directory. Native,
+local and Bridge tasks use the same host-path claims. Provider-managed storage
+uses its durable namespace/reference and retains runtime writer, lease,
+persistence and cleanup fences. GPU/capacity/deployment limits are independent.
+Invalid paths, mismatched bindings and unsupported isolation fail before
+provider launch, without a source-directory fallback. Existing admitted work
+keeps its contract until its next normal admission; terminal status alone is
+not stop or cleanup proof. Cross-scope holder details remain private.
+
+Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
+Selection is persistent and applies at the next normal admission; it does not
+Retry or start a task. Inspect the original receipt after uncertain delivery.
+The task workspace card displays binding state, observed host/cwd and waiting
+reason. Main-agent MCP exposes inspection/selection with the same authorization;
+new worker dispatch must persist workspaceSelection. Never invent a free cwd
+input or infer a path from task text during bulk reconciliation.
