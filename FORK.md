@@ -5,6 +5,12 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Legacy resident authority index recovery (2026-11-12): an admitted new run may
+  reconstruct a missing task-session row from the exact host current-run pointer
+  and original server invocation/result identity receipts. Preserve generation
+  CAS, foreign/native owner exclusion and feature-era revocation history; no
+  terminal-status enrollment, historical replay or direct database repair.
+
 - Creator-notice deferred admission classification (2026-11-12): an exact durable
   `deferred_issue_execution` wake without a run retains its execution-wait reason
   instead of reporting unknown delivery. Event/restart reconciliation reads the

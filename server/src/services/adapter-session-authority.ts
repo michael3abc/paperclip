@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { agentTaskSessions, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { agentTaskSessions, heartbeatRuns, heartbeatRunEvents, issues, type Db } from "@paperclipai/db";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { isUuidLike } from "@paperclipai/shared";
 import { conflict, forbidden } from "../errors.js";
@@ -10,7 +10,8 @@ const schema = "paperclip.adapter-session-authority.v1" as const;
 type Claim = Parameters<NonNullable<AdapterExecutionContext["onSessionAuthority"]>>[0];
 type Receipt = Awaited<ReturnType<NonNullable<AdapterExecutionContext["onSessionAuthority"]>>>;
 type Authority = Receipt & { hostId: string; provider: string; nativeSessionId: string | null; bridgeSessionId: string;
-  taskKey: string; previousRunId: string | null; previousGeneration: number; revoked?: true };
+  taskKey: string; previousRunId: string | null; previousGeneration: number; revoked?: true;
+  legacySessionRecovery?: { sourceRunId: string; sourceEventId: number } };
 export const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export function readAdapterSessionAuthority(value: unknown): Authority | null {
   const v = object(object(value)[ADAPTER_SESSION_AUTHORITY]);
@@ -47,6 +48,9 @@ export async function claimAdapterSessionAuthority(db: Db, bound: { companyId: s
       owner.nativeSessionId === null && owner.hostId === input.hostId && owner.provider === input.provider && owner.bridgeSessionId === input.bridgeSessionId);
     const selectedSessions = and(scope, or(
       eq(agentTaskSessions.taskKey, bound.taskKey), sql`${agentTaskSessions.sessionParamsJson}->${ADAPTER_SESSION_AUTHORITY}->>'bindingKey' = ${bindingKey}`,
+      sql`(${agentTaskSessions.sessionParamsJson}->>'nativeSessionId' = ${input.nativeSessionId}
+        AND ${agentTaskSessions.sessionParamsJson}->>'hostId' = ${input.hostId}
+        AND ${agentTaskSessions.sessionParamsJson}->>'provider' = ${input.provider})`,
       sql`(${agentTaskSessions.sessionParamsJson}->${ADAPTER_SESSION_AUTHORITY}->>'nativeSessionId' IS NULL
         AND ${agentTaskSessions.sessionParamsJson}->${ADAPTER_SESSION_AUTHORITY}->>'hostId' = ${input.hostId}
         AND ${agentTaskSessions.sessionParamsJson}->${ADAPTER_SESSION_AUTHORITY}->>'provider' = ${input.provider}
@@ -98,22 +102,51 @@ export async function claimAdapterSessionAuthority(db: Db, bound: { companyId: s
           (previous.revoked && previous.bindingKey === bindingKey)) throw denied();
     } else if (input.expectedGeneration !== 0) throw denied();
     if (nativeOwner && nativeOwner.runId !== input.expectedPreviousRunId) throw denied();
+    let legacySessionRecovery: Authority["legacySessionRecovery"];
     if (!previous && input.expectedPreviousRunId) {
       // Backfill only from the host's currentRunId plus its original result identity.
       // lastRunId is a publication pointer, never authority. Missing proof fails closed.
       const prior = runs.find(row => row.id === input.expectedPreviousRunId);
+      const rejectLegacy = () => conflict("Original host binding needs reconciliation", { code: "binding_reconciliation_required" });
       if (!prior || prior.resultJson?.nativeSessionId !== input.nativeSessionId
-          || typeof prior.resultJson?.bridgeSessionId !== "string"
-          || object(existing?.sessionParamsJson).nativeSessionId !== input.nativeSessionId
-          || object(existing?.sessionParamsJson).hostId !== input.hostId
-          || object(existing?.sessionParamsJson).provider !== input.provider) {
-        throw conflict("Original host binding needs reconciliation", { code: "binding_reconciliation_required" });
+          || typeof prior.resultJson?.bridgeSessionId !== "string") throw rejectLegacy();
+      if (existing) {
+        if (object(existing.sessionParamsJson).nativeSessionId !== input.nativeSessionId
+            || object(existing.sessionParamsJson).hostId !== input.hostId
+            || object(existing.sessionParamsJson).provider !== input.provider) throw rejectLegacy();
+      } else {
+        // A legacy Chat index may have been cleared independently of the host's
+        // exact currentRunId. Require original server invocation/result identity.
+        if ((prior.issueId ?? prior.nativeIssueId ?? prior.contextSnapshot?.issueId) !== bound.taskKey
+            || object(prior.runnerProfileJson)[ADAPTER_SESSION_AUTHORITY] !== undefined
+            || object(object(prior.runnerProfileJson).adapterDispatch).adapterType !== "ccpocket_bridge"
+            || prior.contextSnapshot?.conversationSessionGeneration !== run.contextSnapshot?.conversationSessionGeneration)
+          throw rejectLegacy();
+        const priorAuthority = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, bound.companyId), eq(heartbeatRuns.agentId, bound.agentId),
+          sql`${heartbeatRuns.runnerProfileJson}->${ADAPTER_SESSION_AUTHORITY}->>'bindingKey' = ${bindingKey}`)).limit(1);
+        // A deleted feature-era binding must never reenroll as generation zero.
+        if (priorAuthority.length) throw rejectLegacy();
+        if (sessions.some(row => row.taskKey !== bound.taskKey
+            && object(row.sessionParamsJson).nativeSessionId === input.nativeSessionId
+            && object(row.sessionParamsJson).hostId === input.hostId
+            && object(row.sessionParamsJson).provider === input.provider)) throw rejectLegacy();
+        const invocation = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+          eq(heartbeatRunEvents.companyId, bound.companyId), eq(heartbeatRunEvents.agentId, bound.agentId),
+          eq(heartbeatRunEvents.runId, prior.id), eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+          sql`${heartbeatRunEvents.payload}->>'adapterType' = 'ccpocket_bridge'`,
+          sql`${heartbeatRunEvents.payload}#>>'{context,hostId}' = ${input.hostId}`,
+          sql`${heartbeatRunEvents.payload}#>>'{context,provider}' = ${input.provider}`,
+          sql`${heartbeatRunEvents.payload}#>>'{context,bridgeSessionId}' = ${prior.resultJson.bridgeSessionId}`)).limit(1);
+        if (!invocation.length) throw rejectLegacy();
+        legacySessionRecovery = { sourceRunId: prior.id, sourceEventId: invocation[0].id };
       }
     }
     const generation = Math.max(saved?.generation ?? 0, nativeOwner?.generation ?? 0) + 1;
     const authority: Authority = { schema, runId: bound.runId, generation, operationId: input.operationId, bindingKey,
       previousRunId: input.expectedPreviousRunId, previousGeneration: input.expectedGeneration,
-      taskKey: bound.taskKey, hostId: input.hostId, provider: input.provider, nativeSessionId: input.nativeSessionId, bridgeSessionId: input.bridgeSessionId };
+      taskKey: bound.taskKey, hostId: input.hostId, provider: input.provider, nativeSessionId: input.nativeSessionId, bridgeSessionId: input.bridgeSessionId,
+      ...(legacySessionRecovery ? { legacySessionRecovery } : {}) };
     for (const row of sessions) {
       if (row.id === existing?.id) continue;
       const old = readAdapterSessionAuthority(row.sessionParamsJson);

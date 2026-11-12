@@ -9,6 +9,9 @@ callback before saving host ownership or sending input. Never grant authority fr
 suppressed. Business mutations use the current receipt as well as cancellation
 and existing scope checks. Native-session identity can span task rows; supersede
 all matching rows in the same transaction. See `doc/execution-semantics.md`.
+Missing legacy task-session indexes may be reconstructed only by the admitted
+server claim from the host's exact current-run pointer and matching original
+invocation/result receipts. Never reenroll a deleted feature-era authority.
 
 Original-main blocker delivery uses the recovery action's protected evidence and
 the existing delivery coordinator. Preserve exact creator/conversation/generation,

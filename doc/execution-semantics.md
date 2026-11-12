@@ -41,6 +41,13 @@ native identity, previous run, generation and operation ID. A lost response may
 only read the original operation; it never authorizes input replay. `lastRunId`
 remains a publication pointer, not authority. Legacy enrollment requires the host's
 current run and its original native identity receipt; missing proof is explicit.
+When a legacy task-session index was cleared, enrollment additionally requires
+the same task and conversation generation, the server's original `adapter.invoke`
+host/provider/card receipt and matching original run result. The existing v1
+authority records `legacySessionRecovery.sourceRunId/sourceEventId`; no new table
+or polling is introduced. A foreign native owner or any feature-era authority
+history prevents this generation-zero reconstruction. It never revives an old
+run, infers permission from terminal status, or resends an input.
 New Claude cards may not expose a native ID until their first input. Their initial
 authority uses the exact host/provider/Bridge card identity with a null native ID;
 only that card may later attach its observed native identity. This bootstrap

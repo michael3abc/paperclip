@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentTaskSessions, agents, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { ADAPTER_SESSION_AUTHORITY, claimAdapterSessionAuthority, adapterSessionWriteAllowed,
   lockAdapterSessionAuthority, mergeProtectedSessionParams } from "../services/adapter-session-authority.js";
@@ -84,6 +84,67 @@ const support = await getEmbeddedPostgresTestSupport();
       bridgeSessionId: f.claim.bridgeSessionId } }).where(eq(heartbeatRuns.id, f.first.runId));
     await claimAdapterSessionAuthority(db, next, { ...f.claim, expectedPreviousRunId: f.first.runId });
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
+  });
+  async function missingLegacyFixture() {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ status: "succeeded", resultJson: { nativeSessionId: f.claim.nativeSessionId,
+      bridgeSessionId: f.claim.bridgeSessionId } }).where(eq(heartbeatRuns.id, f.first.runId));
+    const [event] = await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId,
+      runId: f.first.runId, seq: 1, eventType: "adapter.invoke", payload: { adapterType: "ccpocket_bridge",
+        context: { hostId: f.claim.hostId, provider: f.claim.provider, bridgeSessionId: f.claim.bridgeSessionId } } }).returning();
+    const next = await f.run();
+    return { ...f, next, event, recovery: { ...f.claim, operationId: randomUUID(), bridgeSessionId: randomUUID(),
+      expectedPreviousRunId: f.first.runId } };
+  }
+  it("recovers a missing legacy Chat index from original invocation and result receipts with CAS", async () => {
+    const f = await missingLegacyFixture();
+    const receipt = await claimAdapterSessionAuthority(db, f.next, f.recovery);
+    expect(receipt.generation).toBe(1);
+    expect(await claimAdapterSessionAuthority(db, f.next, f.recovery)).toEqual(receipt);
+    const [row] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
+    expect(row.sessionParamsJson?.adapterSessionAuthority).toMatchObject({ legacySessionRecovery: {
+      sourceRunId: f.first.runId, sourceEventId: f.event.id } });
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
+    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(true);
+    const rival = await f.run();
+    await expect(claimAdapterSessionAuthority(db, rival, { ...f.recovery, operationId: randomUUID() })).rejects.toThrow();
+  });
+  it("missing legacy index rejects absent or mismatched invocation and result identity", async () => {
+    for (const mismatch of ["host", "provider", "bridge", "native", "absent"]) {
+      const f = await missingLegacyFixture();
+      if (mismatch === "native") await db.update(heartbeatRuns).set({ resultJson: {
+        nativeSessionId: randomUUID(), bridgeSessionId: f.claim.bridgeSessionId } }).where(eq(heartbeatRuns.id, f.first.runId));
+      else if (mismatch === "absent") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, f.event.id));
+      else await db.update(heartbeatRunEvents).set({ payload: { adapterType: "ccpocket_bridge", context: {
+        hostId: mismatch === "host" ? "foreign-host" : f.claim.hostId,
+        provider: mismatch === "provider" ? "claude" : f.claim.provider,
+        bridgeSessionId: mismatch === "bridge" ? randomUUID() : f.claim.bridgeSessionId } } }).where(eq(heartbeatRunEvents.id, f.event.id));
+      await expect(claimAdapterSessionAuthority(db, f.next, f.recovery)).rejects.toThrow("needs reconciliation");
+      expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey))).toHaveLength(0);
+    }
+  });
+  it("missing legacy index rejects foreign tasks, changed generations and existing native owners", async () => {
+    for (const mismatch of ["task", "generation", "owner"]) {
+      const f = await missingLegacyFixture();
+      if (mismatch === "task") {
+        const otherTask = randomUUID();
+        await db.insert(issues).values({ id: otherTask, companyId: f.companyId, title: "Foreign task" });
+        f.next = await f.run(otherTask);
+      }
+      if (mismatch === "generation") await db.update(heartbeatRuns).set({ contextSnapshot: { conversationSessionGeneration: 1 } }).where(eq(heartbeatRuns.id, f.first.runId));
+      if (mismatch === "owner") await db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: f.agentId,
+        taskKey: randomUUID(), adapterType: "ccpocket_bridge", sessionParamsJson: { nativeSessionId: f.claim.nativeSessionId,
+          hostId: f.claim.hostId, provider: f.claim.provider } });
+      await expect(claimAdapterSessionAuthority(db, f.next, f.recovery)).rejects.toThrow("needs reconciliation");
+    }
+  });
+  it("missing legacy index cannot resurrect a deleted feature-era authority", async () => {
+    const f = await missingLegacyFixture();
+    await claimAdapterSessionAuthority(db, f.next, f.recovery);
+    await db.delete(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
+    const later = await f.run();
+    await expect(claimAdapterSessionAuthority(db, later, { ...f.recovery, operationId: randomUUID() })).rejects.toThrow("needs reconciliation");
+    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(false);
   });
   it("one native identity cannot keep authority in two task rows", async () => {
     const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
