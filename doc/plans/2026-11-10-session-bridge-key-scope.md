@@ -24,10 +24,20 @@ A long-lived agent key cannot do any of this on the existing scopes:
 
 ### Scope `session_bridge`
 
-`{ kind: "session_bridge", projectIds: string[], conversationAgentId?: string, allowCreateTasks?: boolean, allowAssignedTools?: boolean }`, strict, at
+`{ kind: "session_bridge", projectIds: string[], conversationAgentId?: string, allowCreateTasks?: boolean, allowAssignedTools?: boolean, workerCardOnly?: boolean }`, strict, at
 least one project. Created only through the existing board-only `POST /api/agents/:id/keys`, which additionally verifies
 that every project belongs to the company and that `conversationAgentId` is the key's own agent. The one-time `token` is
 returned once (201) and never stored or logged. `DELETE /api/agents/:id/keys/:keyId` revokes.
+
+`workerCardOnly: true` is the read-only observer variant for completed worker
+cards. The edge guard permits only GET `worker-card-proof` and `events`; the
+events response omits chat inbox, native controls, holds and agent details.
+Current project/worker policy and issue-read permission still apply. These keys
+are never injected into native MCP or chat and cannot dispatch or modify tasks.
+Malformed/unsupported explicit scopes fail closed; only absent legacy scope is
+standard. Before rollback to a release predating `workerCardOnly`, revoke these
+new observer keys and remove only their observer configuration. Such releases
+normalized unknown scopes to standard and cannot safely retain observer keys.
 
 `decideSessionBridgeAccess` in `authorization.ts` is deny-by-default with an allowlist:
 

@@ -9,7 +9,9 @@ result. Pending input/questions and newer runs deny completion. The Bridge must
 also prove its current turn, saved response and settled tools; idle alone is not
 completion. Reuse execution-status delivery and control events, including session
 publication after terminal status, without adding a card polling loop. Preserve
-main/manual/pinned cards and all histories. See `doc/execution-semantics.md`.
+main/manual/pinned cards and all histories. Dedicated `workerCardOnly` keys can
+only GET proof/events; never expose native controls, inbox or other API routes
+to observers. See `doc/execution-semantics.md`.
 
 Resident Bridge session authority is server-owned. Use the awaited heartbeat
 callback before saving host ownership or sending input. Never grant authority from
@@ -748,6 +750,9 @@ Registration records repository_root or linked_worktree kind and full canonical
 cwd, including existing nested task directories. Source/project/host scope,
 generation CAS and operation receipts remain mandatory. Explicit initialize
 creates only Git metadata (no add/commit/remote); unborn roots may execute. Keep
+existing local `git_repo` source IDs/types: a canonical cwd with no remote
+provider/ref and absent or exact-local host identity uses the local Git verifier.
+Foreign or unknown host identities never fall through to local execution. Keep
 dirty/ignored files and .lmas. Root retirement is metadata-only, never directory
 removal or linked-tree merge. Never infer initialization authority from dispatch.
 The task card, properties and Chat defaults share this contract; historical source

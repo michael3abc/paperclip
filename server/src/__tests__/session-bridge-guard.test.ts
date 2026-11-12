@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { describe, expect, it, vi } from "vitest";
-import { sessionBridgeAgentKeyScopeSchema } from "@paperclipai/shared";
+import { sessionBridgeAgentKeyScopeSchema, normalizeAgentApiKeyScope } from "@paperclipai/shared";
 import {
   assertSessionBridgeApiRequest,
   sessionBridgeGuardMiddleware,
@@ -33,6 +33,12 @@ function check(
 }
 
 describe("sessionBridgeAgentKeyScopeSchema", () => {
+  it("never broadens unsupported observer scopes into a standard key", () => {
+    expect(normalizeAgentApiKeyScope(null)).toEqual({ kind: "standard" });
+    expect(() => normalizeAgentApiKeyScope({ kind: "session_bridge", projectIds: [projectId], workerCardOnly: "true" })).toThrow(/Unsupported/);
+    expect(() => normalizeAgentApiKeyScope({ kind: "future_observer" })).toThrow(/Unsupported/);
+    expect(() => normalizeAgentApiKeyScope({ kind: "session_bridge", projectIds: [projectId], unknownCapability: true })).toThrow(/Unsupported/);
+  });
   it("accepts a project-bounded scope", () => {
     const parsed = sessionBridgeAgentKeyScopeSchema.parse({
       kind: "session_bridge",
@@ -67,6 +73,16 @@ describe("sessionBridgeAgentKeyScopeSchema", () => {
 });
 
 describe("assertSessionBridgeApiRequest", () => {
+  it("restricts worker-card observer credentials to their read-only endpoints", () => {
+    const observer = { companyId, projectIds: [projectId], workerCardOnly: true, query: {} };
+    expect(sessionBridgeAgentKeyScopeSchema.parse({ kind: "session_bridge", projectIds: [projectId], workerCardOnly: true }).workerCardOnly).toBe(true);
+    for (const path of ["/api/agents/me/session-bridge/events", "/api/agents/me/session-bridge/worker-card-proof"])
+      expect(() => assertSessionBridgeApiRequest({ ...observer, method: "GET", path })).not.toThrow();
+    for (const [method, path] of [["POST", `/api/issues/${issueId}/comments`], ["GET", `/api/issues/${issueId}`],
+      ["GET", "/api/agents/me/session-bridge/workers"], ["POST", "/api/agents/me/session-bridge/tools-call"],
+      ["POST", "/api/agents/me/session-bridge/events"]])
+      expect(() => assertSessionBridgeApiRequest({ ...observer, method: method!, path: path! })).toThrow(/observers may only/);
+  });
   it.each([
     ["GET", "/api/health"],
     ["GET", "/api/agents/me"],

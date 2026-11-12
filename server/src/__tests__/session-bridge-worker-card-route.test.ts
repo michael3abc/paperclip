@@ -16,12 +16,12 @@ vi.mock("../services/session-bridge-events.js", async importOriginal => {
 });
 const companyId = randomUUID(), projectId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
 const issue = { id: issueId, companyId, projectId, parentId: null, assigneeAgentId: randomUUID(), assigneeUserId: null, status: "in_progress" };
-function app(projectIds = [projectId], conversationAgentId = agentId) {
+function app(projectIds = [projectId], conversationAgentId = agentId, workerCardOnly = false) {
   const db = { select: () => ({ from: () => ({ where: async () => [issue] }) }) } as unknown as Db;
   const result = express(); result.use(express.json());
   result.use((req, _res, next) => {
     req.actor = { type: "agent", source: "agent_key", agentId, companyId, keyId: randomUUID(),
-      keyScope: { kind: "session_bridge", projectIds, conversationAgentId } }; next();
+      keyScope: { kind: "session_bridge", projectIds, conversationAgentId, workerCardOnly } }; next();
   });
   result.use("/api", sessionBridgeRoutes(db)); result.use(errorHandler); return result;
 }
@@ -34,6 +34,14 @@ beforeEach(() => {
   }));
 });
 describe("worker card HTTP read authorization", () => {
+  it("observer-only events omit chat inbox, holds, native control and agent details", async () => {
+    mocks.poll.mockResolvedValue({ cursor: "opaque", hasMore: false, agent: { status: "idle" },
+      events: [{ type: "agent_paused" }, { type: "worker_card_changed", runId }],
+      snapshot: { agent: { status: "idle" }, activeHolds: [{ reason: "private" }], workerCardRunIds: [runId] } });
+    const result = await request(app([projectId], agentId, true)).get(`${prefix}/events`).query({ wait: 0 });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ cursor: "opaque", hasMore: false, events: [{ type: "worker_card_changed", runId }], snapshot: { workerCardRunIds: [runId] } });
+  });
   it("proof requires current issue read and disables caching", async () => {
     const result = await request(app()).get(`${prefix}/worker-card-proof`).query({ runId });
     expect(result.status).toBe(200); expect(result.headers["cache-control"]).toBe("no-store");

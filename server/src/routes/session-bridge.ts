@@ -244,7 +244,8 @@ export function sessionBridgeRoutes(db: Db) {
       if (!res.writableEnded) abort.abort();
     });
 
-    const binding = await sessionBridgeChatBinding(db, identity.companyId, identity.agentId);
+    const observerOnly = req.actor.type === "agent" && req.actor.keyScope?.kind === "session_bridge" && req.actor.keyScope.workerCardOnly === true;
+    const binding = observerOnly ? null : await sessionBridgeChatBinding(db, identity.companyId, identity.agentId);
     const events = sessionBridgeEventsService(db, { canReadWorkerIssue: (issueId, projectId) => canReadWorkerIssue(req, issueId, projectId) });
     const page = await events.poll({
       companyId: identity.companyId,
@@ -257,6 +258,12 @@ export function sessionBridgeRoutes(db: Db) {
     if (!page || abort.signal.aborted) return;
 
     res.setHeader("Cache-Control", "no-store");
+    if (observerOnly) {
+      res.json({ cursor: page.cursor, hasMore: page.hasMore,
+        events: page.events.filter(event => event.type === "worker_card_changed"),
+        ...(page.snapshot ? { snapshot: { workerCardRunIds: page.snapshot.workerCardRunIds } } : {}) });
+      return;
+    }
     const inbox = identity.scopeConversationAgentId === identity.agentId ? await chat.pending(identity.companyId, identity.agentId, identity.onBehalfOfUserId, identity.projectIds) : null;
     res.json({ ...page, inbox });
   });

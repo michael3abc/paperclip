@@ -307,6 +307,8 @@ export const sessionBridgeAgentKeyScopeSchema = z.object({
   /** Permit creating issues inside `projectIds` (stamped originKind=session_bridge). */
   allowCreateTasks: z.boolean().optional(),
   allowAssignedTools: z.boolean().optional(),
+  /** Read only worker-card proofs/events; never grants the ordinary bridge surface. */
+  workerCardOnly: z.boolean().optional(),
 }).strict();
 
 export const standardAgentKeyScopeSchema = z.object({
@@ -331,8 +333,12 @@ export type SessionBridgeAgentKeyScope = z.infer<typeof sessionBridgeAgentKeySco
 export type SkillTestAgentKeyScope = z.infer<typeof skillTestAgentKeyScopeSchema>;
 
 export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
+  // Only absent legacy scope is standard. Unknown scoped credentials must never
+  // gain unrestricted authority when a field/version is unsupported.
+  if (value === undefined || value === null) return { kind: "standard" };
   const parsed = agentApiKeyScopeSchema.safeParse(value);
-  return parsed.success ? parsed.data : { kind: "standard" };
+  if (!parsed.success) throw new Error("Unsupported agent API key scope");
+  return parsed.data;
 }
 
 export const createAgentKeySchema = z.object({

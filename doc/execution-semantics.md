@@ -8,6 +8,11 @@ session-bridge endpoint. It requires the key's company/project scope, the curren
 main's worker policy and normal issue read permission. Names and an idle session
 are never role or completion evidence. The response contains no prompt, answer
 body, credentials or paths.
+Hosts without a native Paperclip session link use a separate worker-card observer
+configuration and a project-scoped `session_bridge` key with `workerCardOnly: true`.
+The HTTP guard restricts that key to GET proofs/events. It cannot read task bodies,
+write comments, dispatch work or call tools. The Bridge consumes only worker-card
+events; configuring observers never injects MCP, chat mirrors or native controls.
 
 The `paperclip.worker-card-proof.v1` projection requires a current, unrevoked
 server session authority with matching run/generation/binding/operation, a

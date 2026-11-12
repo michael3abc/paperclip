@@ -80,12 +80,15 @@ export type SessionBridgeRequestShape = {
   body?: Record<string, unknown>;
   companyId: string;
   projectIds: string[];
+  workerCardOnly?: boolean;
 };
 
 /** Throws when the request is outside the session-bridge allowlist. */
 export function assertSessionBridgeApiRequest(request: SessionBridgeRequestShape): void {
   const path = normalizePath(request.path);
   const method = request.method.toUpperCase();
+  if (request.workerCardOnly && !(method === "GET" && /^\/api\/agents\/me\/session-bridge\/(worker-card-proof|events)$/i.test(path)))
+    throw sessionBridgeApiDenied("Worker card observers may only read proofs and events");
   const rule = rules.find((candidate) => candidate.method === method && candidate.pattern.test(path));
   if (!rule) throw sessionBridgeApiDenied();
   if (method === "PATCH" && /^\/api\/issues\/[^/]+$/i.test(path)) {
@@ -128,6 +131,7 @@ export function sessionBridgeGuardMiddleware(): RequestHandler {
           body: req.body,
           companyId: actor.companyId,
           projectIds: actor.keyScope.projectIds,
+          workerCardOnly: actor.keyScope.workerCardOnly,
         });
       }
       next();
