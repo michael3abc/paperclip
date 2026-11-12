@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { agentRuntimeConfigSchema } from "@paperclipai/shared";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
-import { assertFixedProjectWorkspace, assertFixedWorkspacePolicy, assertRemoteFixedBinding, controllerLocalCwd, fixedBindingOnlyRevision, fixedWorkspaceMatchesRun, readWorkspaceBinding, validateFixedLocalDirectory } from "./agent-workspace-binding.js";
+import { appliedFixedWorkspaceStrategies, bridgeFixedBindingConflict, assertFixedProjectWorkspace, assertFixedWorkspacePolicy, assertRemoteFixedBinding, controllerLocalCwd, fixedBindingOnlyRevision, fixedWorkspaceMatchesRun, readWorkspaceBinding, validateFixedLocalDirectory } from "./agent-workspace-binding.js";
 
 describe("fixed workspace binding", () => {
   const binding = { mode: "fixed" as const, cwd: "/projects/example" };
@@ -28,6 +28,40 @@ describe("fixed workspace binding", () => {
       expect(() => assertFixedWorkspacePolicy({ ...input, ...patch })).toThrow();
     }
     expect(() => assertFixedWorkspacePolicy({ ...input, environment: { driver: "ssh", config: { workspaceMode: "in_place", remoteWorkspacePath: binding.cwd } } })).not.toThrow();
+  });
+  it("rejects only the strategies that would actually shape a fixed run", () => {
+    const input = { binding, environment: { driver: "local", config: {} }, trustPreset: "standard", mode: "shared_workspace", external: false, isDot: false };
+    const workerDefault = { type: "git_worktree", branchTemplate: "paperclip/{{issue.id}}" };
+    // A project's worker worktree default is unused by a shared fixed run.
+    const shared = appliedFixedWorkspaceStrategies({ mode: "shared_workspace", mergedConfig: {}, configSnapshot: {},
+      projectPolicy: { workspaceStrategy: workerDefault }, issueStrategy: { type: "project_primary" }, environmentStrategy: undefined });
+    expect(shared).not.toContain(workerDefault);
+    expect(() => assertFixedWorkspacePolicy({ ...input, strategies: shared })).not.toThrow();
+    // Applied strategies still reject: merged, explicit task, environment or a storage provider's project strategy.
+    for (const strategies of [
+      appliedFixedWorkspaceStrategies({ mode: "shared_workspace", mergedConfig: { workspaceStrategy: workerDefault }, configSnapshot: {}, projectPolicy: null, issueStrategy: undefined, environmentStrategy: undefined }),
+      appliedFixedWorkspaceStrategies({ mode: "shared_workspace", mergedConfig: {}, configSnapshot: {}, projectPolicy: null, issueStrategy: workerDefault, environmentStrategy: undefined }),
+      appliedFixedWorkspaceStrategies({ mode: "shared_workspace", mergedConfig: {}, configSnapshot: {}, projectPolicy: null, issueStrategy: undefined, environmentStrategy: workerDefault }),
+      appliedFixedWorkspaceStrategies({ mode: "shared_workspace", mergedConfig: {}, configSnapshot: {}, projectPolicy: { workspaceStrategy: workerDefault, storageProviderPluginId: "p" }, issueStrategy: undefined, environmentStrategy: undefined }),
+      appliedFixedWorkspaceStrategies({ mode: "shared_workspace", mergedConfig: { provisionCommand: "make" }, configSnapshot: {}, projectPolicy: null, issueStrategy: undefined, environmentStrategy: undefined }),
+    ]) expect(() => assertFixedWorkspacePolicy({ ...input, strategies })).toThrow(/provisioning/);
+    expect(appliedFixedWorkspaceStrategies({ mode: "isolated_workspace", mergedConfig: {}, configSnapshot: {},
+      projectPolicy: { workspaceStrategy: workerDefault }, issueStrategy: undefined, environmentStrategy: undefined })).toContain(workerDefault);
+  });
+  it("requires a CC Pocket session cwd to have the same server-side fixed binding", () => {
+    const agent = { adapterType: "ccpocket_bridge", adapterConfig: { cwd: "/projects/example" } };
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: binding } })).toBeNull();
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, cwd: "/projects/example/" } } })).toBeNull();
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, hostId: "shopee-e" } } })).toBeNull();
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: {} })).toMatchObject({ reason: "missing", cwd: "/projects/example" });
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: null })).toMatchObject({ reason: "missing" });
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, cwd: "/projects/other" } } }))
+      .toMatchObject({ reason: "cwd_mismatch" });
+    // Project PMs keep their own role rules; workers without a session cwd and other adapters are not fixed sessions.
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { mode: "project_pm" } } })).toBeNull();
+    expect(bridgeFixedBindingConflict({ adapterType: "ccpocket_bridge", adapterConfig: {}, runtimeConfig: {} })).toBeNull();
+    expect(bridgeFixedBindingConflict({ adapterType: "ccpocket_bridge", adapterConfig: { cwd: "  " }, runtimeConfig: {} })).toBeNull();
+    expect(bridgeFixedBindingConflict({ adapterType: "codex_local", adapterConfig: { cwd: "/projects/example" }, runtimeConfig: {} })).toBeNull();
   });
   it("validates existing directories without creating missing paths or accepting files and aliases", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "fixed-cwd-"));

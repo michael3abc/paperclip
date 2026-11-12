@@ -809,6 +809,54 @@ describe("automatic retained workspace recovery", () => {
     expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("existing task work\n");
   });
 
+  it.each(["fixed", "unbound"] as const)(
+    "never reuses a failed task directory for a CC Pocket session cwd: %s", async mode => {
+    const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), sourceRunId = randomUUID(),
+      successorRunId = randomUUID(), requestId = randomUUID(), sessionCwd = "/projects/main-agent";
+    await db.insert(companies).values({ id: companyId, name: "Fixed main Retry", issuePrefix: `F${companyId.slice(0, 6)}` });
+    fixtureCompanyIds.add(companyId);
+    await db.insert(agents).values({ id: agentId, companyId, name: "Main", adapterType: "ccpocket_bridge",
+      adapterConfig: { cwd: sessionCwd }, runtimeConfig: mode === "fixed" ? { workspaceBinding: { mode: "fixed", cwd: sessionCwd } } : {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Chat", status: "blocked", assigneeAgentId: agentId });
+    const cwd = await materializeIsolatedTaskDirectory({ companyId, issueId });
+    await writeFile(path.join(cwd, "saved.txt"), "existing task work\n");
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issueId,
+      mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", name: "Task directory", cwd }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issueId));
+    const error = "The selected existing task directory has no Git checkout.";
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, issueId, runtimeMode: "legacy",
+      status: "failed", finishedAt: new Date(), errorCode: "workspace_validation_failed", error, executionStage: "preparing",
+      contextSnapshot: { issueId }, runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" } },
+      usageJson: { ledgerScope: { issueId, projectId: null, billingCode: null } },
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        workspaceValidation: { reason: "git_worktree_base_not_git_checkout", issueId,
+          resolvedWorkspaceSource: "task_session", requestedExecutionWorkspaceMode: "isolated_workspace",
+          issueExecutionWorkspacePreference: "reuse_existing", issueExecutionWorkspaceId: workspace.id,
+          issueProjectId: null, issueProjectWorkspaceId: null, resolvedWorkspaceCwd: cwd } } });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "error", level: "error", stream: "system", message: error });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: sourceRunId, eventType: "lifecycle", level: "info", stream: "system",
+      message: "task.run.measured", payload: { phase: "task.run.measured", outcome: "failed", durationMs: 1, durableSettlement: true } });
+    const [successor] = await db.insert(heartbeatRuns).values({ id: successorRunId, companyId, agentId, issueId, status: "queued",
+      contextSnapshot: { issueId, previousRunId: sourceRunId, taskRetryRequestId: requestId } }).returning();
+    await db.insert(agentWakeupRequests).values({ id: requestId, companyId, agentId, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "coalesced", runId: successor.id, requestedByActorType: "user", requestedByActorId: "local-board",
+      idempotencyKey: `task-retry:${randomUUID()}`, payload: { issueId, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: requestId, sourceRunId, actorId: "local-board", actorSource: "session", strategy: "evaluate" } } });
+    if (mode === "fixed") {
+      // The fixed contract wins over the failed directory; preparation runs in the session cwd.
+      expect(await readFreshWorkspaceReadiness(db, successor)).toBeNull();
+    } else {
+      // No implicit directory is chosen for a session the adapter pins elsewhere.
+      await expect(readFreshWorkspaceReadiness(db, successor)).rejects.toMatchObject({ code: "workspace_validation_failed",
+        resultJson: { workspaceValidation: { reason: "fixed_workspace_placement_required" } } });
+    }
+    const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+    expect((saved.payload?.taskRetry as { strategy: string }).strategy).toBe(mode === "fixed" ? "continue" : "evaluate");
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, companyId))).toHaveLength(1);
+    expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("existing task work\n");
+    expect((await run(sourceRunId)).status).toBe("failed");
+  });
+
   it.each(["complete", "catalog", "catalog_warning", "catalog_unknown_warning", "catalog_provider_warning"] as const)(
     "dispatches the recovered failed-preparation Retry once through the native provider boundary (%s)", async mode => {
     const unavailableCatalog = mode !== "complete", withWarning = mode.includes("warning");

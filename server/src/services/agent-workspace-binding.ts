@@ -2,7 +2,7 @@ import { mkdir, stat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
-import { chatConversations, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { agents, chatConversations, issues, projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import {
   agentProjectPmWorkspaceBindingSchema,
   agentWorkspaceBindingSchema,
@@ -77,6 +77,70 @@ export function workspaceBindingConflict(reason: string, message: string): never
     code: "workspace_validation_failed",
     resultJson: { workspaceValidation: { reason: `fixed_workspace_${reason}` } },
   });
+}
+
+function normalizedWorkspacePath(value: string) {
+  return path.posix.normalize(value.trim()).replace(/(.)\/$/, "$1");
+}
+
+/** The session cwd a CC Pocket agent's adapter always launches in, or null. */
+export function bridgeSessionCwd(agent: { adapterType: string; adapterConfig: unknown }): string | null {
+  if (agent.adapterType !== "ccpocket_bridge") return null;
+  const cwd = record(agent.adapterConfig).cwd;
+  return typeof cwd === "string" && cwd.trim() ? cwd.trim() : null;
+}
+
+export type BridgeFixedBindingConflict = { reason: "missing" | "cwd_mismatch"; cwd: string; message: string };
+
+/**
+ * A CC Pocket agent with an adapter session cwd always runs there, so the
+ * server must treat that directory as a fixed placement. runtimeConfig.workspaceBinding
+ * is the single authority the server reads; it must exist and name the same
+ * directory. A project PM binding has its own role rules and is not checked here.
+ */
+export function bridgeFixedBindingConflict(agent: {
+  adapterType: string; adapterConfig: unknown; runtimeConfig: unknown;
+}): BridgeFixedBindingConflict | null {
+  const cwd = bridgeSessionCwd(agent);
+  if (!cwd) return null;
+  const binding = record(record(agent.runtimeConfig).workspaceBinding);
+  if (binding.mode === "project_pm") return null;
+  if (binding.mode !== "fixed" || typeof binding.cwd !== "string") {
+    return { reason: "missing", cwd, message: `This CC Pocket agent always runs in ${cwd}; register the same directory as runtimeConfig.workspaceBinding {mode: "fixed", cwd} before saving.` };
+  }
+  if (normalizedWorkspacePath(binding.cwd) !== normalizedWorkspacePath(cwd)) {
+    return { reason: "cwd_mismatch", cwd, message: `The adapter session cwd ${cwd} differs from the fixed working directory ${binding.cwd}; both must name the same directory.` };
+  }
+  return null;
+}
+
+/** Read-only startup audit: every non-terminated CC Pocket agent whose session cwd lacks its binding. */
+export async function auditBridgeFixedBindings(db: Db) {
+  const rows = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterType: agents.adapterType,
+    adapterConfig: agents.adapterConfig, runtimeConfig: agents.runtimeConfig }).from(agents)
+    .where(and(eq(agents.adapterType, "ccpocket_bridge"), sql`${agents.status} <> 'terminated'`));
+  return rows.flatMap(row => {
+    const conflict = bridgeFixedBindingConflict(row);
+    return conflict ? [{ agentId: row.id, companyId: row.companyId, name: row.name, reason: conflict.reason, cwd: conflict.cwd }] : [];
+  });
+}
+
+/**
+ * The strategies that actually shape a fixed run. A project's workspaceStrategy
+ * is its implementation workers' default: buildExecutionWorkspaceAdapterConfig
+ * applies it only for isolated/branch modes or a storage provider, and then
+ * mergedConfig already carries it. An unused worker default must not reject a
+ * main agent's fixed directory; an explicit task or environment strategy still does.
+ */
+export function appliedFixedWorkspaceStrategies(input: {
+  mode: string; mergedConfig: Record<string, unknown>; configSnapshot: unknown;
+  projectPolicy: { workspaceStrategy?: unknown; storageProviderPluginId?: unknown } | null | undefined;
+  issueStrategy: unknown; environmentStrategy: unknown;
+}): unknown[] {
+  const projectApplies = ["isolated_workspace", "operator_branch"].includes(input.mode)
+    || Boolean(input.projectPolicy?.storageProviderPluginId);
+  return [input.mergedConfig, input.mergedConfig.workspaceStrategy, input.configSnapshot,
+    ...(projectApplies ? [input.projectPolicy?.workspaceStrategy] : []), input.issueStrategy, input.environmentStrategy];
 }
 
 /**

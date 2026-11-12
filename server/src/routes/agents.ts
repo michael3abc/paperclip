@@ -49,7 +49,7 @@ import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
 import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
-import { readProjectPmBinding, resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
+import { bridgeFixedBindingConflict, readProjectPmBinding, resolveProjectPmBinding } from "../services/agent-workspace-binding.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
@@ -2176,6 +2176,12 @@ export function agentRoutes(
    * Validate a `project_pm` binding against server state and store its canonical
    * form: the agent home is always this agent's default workspace directory.
    */
+  /** A CC Pocket session cwd is a fixed placement; the server binding must name it. */
+  function assertBridgeFixedBinding(agent: { adapterType: string; adapterConfig: unknown; runtimeConfig: unknown }) {
+    const conflict = bridgeFixedBindingConflict(agent);
+    if (conflict) throw unprocessable(conflict.message, { code: "workspace_binding_required", reason: conflict.reason, cwd: conflict.cwd });
+  }
+
   /** A remote-host fixed directory is reached only through the CC Pocket adapter. */
   function assertRemoteFixedBindingAdapter(runtimeConfig: Record<string, unknown> | null | undefined, adapterType: string) {
     const binding = asRecord(runtimeConfig?.workspaceBinding);
@@ -2211,6 +2217,7 @@ export function agentRoutes(
       throw forbidden("Only an operator can configure a fixed working directory.");
     }
     normalized = await canonicalizeProjectPmRuntimeConfig(companyId, agentId, normalized, adapterType);
+    assertBridgeFixedBinding({ adapterType, adapterConfig, runtimeConfig: normalized });
     if (normalized.aiConnection) return normalized;
     if (req.actor.type === "agent") {
       const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -5817,6 +5824,11 @@ export function agentRoutes(
       }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
+    if (touchesAdapterConfiguration || requestedRuntimeConfig) {
+      assertBridgeFixedBinding({ adapterType: requestedAdapterType,
+        adapterConfig: hasOwn(patchData, "adapterConfig") ? patchData.adapterConfig : existing.adapterConfig,
+        runtimeConfig: requestedRuntimeConfig ?? existing.runtimeConfig });
+    }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
