@@ -3840,6 +3840,18 @@ authorize deletion. Primary checkouts may be explicitly registered in place. Mai
 session homes, data, models and services remain external unless explicitly selected;
 the platform never initializes Git merely to dispatch them.
 
+Finalization of a main-managed Git directory uses its server-owned registration
+(`mainManagedWorktree.hostId`, kind, source, cwd and branch). The owning host's
+read-only inspector verifies canonical roots, Git repository identity, linked-tree
+registration where applicable, branch and HEAD. The controller validates the
+returned operation/run ID, cwd, branch and commit evidence and records that host
+receipt with the finalization operation. A registered unborn repository root may
+have a null HEAD; a linked tree may not. Shared-tree commits may advance, so a
+historical registration HEAD is not a fixed-version lock. Missing or mismatched
+host evidence fails visibly without controller-local fallback or provider replay.
+Legacy branch restoration, forward reconciliation and quarantine never apply to
+main-managed trees, even when a collaborator changed the branch during a run.
+
 Issue executionWorkspaceSettings.sessionOnly=true explicitly selects external
 resource or existing-script work without an execution workspace. Resident Chats
 and main coordination default to session-only. Project policy may explicitly set

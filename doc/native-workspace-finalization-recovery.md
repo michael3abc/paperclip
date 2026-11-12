@@ -1,5 +1,13 @@
 # Native workspace finalization ownership and recovery
 
+Main-managed Git directories are finalized through a read-only inspection on
+their registered host, with run/operation, cwd, branch and HEAD evidence retained
+in the workspace operation. Remote paths are never checked or repaired on the
+controller. A failed or unknown inspection preserves the original failure and
+does not replay provider input; shared-tree branch changes require main-owned
+lifecycle handling, not automatic checkout or quarantine. See
+`execution-semantics.md` for repository-root and unborn-HEAD handling.
+
 Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown

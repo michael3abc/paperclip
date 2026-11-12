@@ -25,6 +25,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Registered-host finalization (2026-11-12): main-managed repository roots and
+  linked trees use the owning host's Git inspector with run/cwd/branch/HEAD
+  receipt checks. No remote path is resolved on the controller and no shared
+  branch is automatically restored. Host failure stays explicit; old input is
+  never replayed. Targeted Git and isolated PostgreSQL tests retain failures and
+  verify successful completion on a registered remote host.
+
 - Git workspace registration (2026-11-12 follow-up): explicit repository roots
   and linked worktrees share the lifecycle API. Preserve complete canonical
   nested cwd, existing IDs, dirty/ignored files and .lmas. Explicit initialization

@@ -7,6 +7,11 @@ registration after lifecycle admission; wake JSON cannot supply those fields.
 Bridge adapters verify plain worker task projects and accept canonical roots or
 nested approved paths. Ship the matching adapter with this boundary change.
 
+Registered main-managed Git directories finalize through their registered host's
+read-only inspector, including repository roots. Verify receipt/run identity,
+branch and commit evidence; never fall back to controller paths or auto-repair
+a collaborator's branch. See `doc/execution-semantics.md`.
+
 Worker-card collapse is presentation only. The session-bridge proof endpoint
 requires the current main's project/worker policy and issue read permission,
 server session authority, the exact accepted native input and a saved successful

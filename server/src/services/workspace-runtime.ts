@@ -1,4 +1,5 @@
-import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
+import { isMainManagedExecutionWorkspace, readMainManagedWorktree } from "@paperclipai/shared";
+import { managedWorktreeHostOperation, type ManagedWorktreeHostResult } from "@paperclipai/adapter-utils/managed-worktree-host";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
@@ -50,6 +51,7 @@ import { conflict, unprocessable } from "../errors.js";
 import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
+import { resolvePaperclipConfigPath } from "../paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   buildManagedWorkspaceGuestEnv,
@@ -2695,6 +2697,7 @@ export type ManagedGitWorktreeBranchInspection = {
   worktreePath: string;
   expectedBranchName: string | null;
   actualBranchName: string | null;
+  hostInspection?: { hostId: string | null; operationId: string; receipt?: ManagedWorktreeHostResult };
 };
 
 function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
@@ -2867,6 +2870,61 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
   return { paths };
 }
 
+/** Main-owned coordinates are inspected on their registered host. No legacy
+ * branch repair, local fallback or historical HEAD pin applies to a shared tree. */
+export async function inspectMainManagedGitWorkspaceBranch(input: {
+  workspace: { cwd: string | null; branchName: string | null; metadata: Record<string, unknown> | null };
+  operationId: string;
+}): Promise<ManagedGitWorktreeBranchInspection> {
+  const managed = readMainManagedWorktree(input.workspace.metadata);
+  const base: ManagedGitWorktreeBranchInspection = {
+    valid: false, reason: "worktree_marker_unrecognized", reasonCode: "git_inspection_failed",
+    repoRoot: managed?.sourceCwd ?? null, worktreePath: input.workspace.cwd ?? "",
+    expectedBranchName: input.workspace.branchName, actualBranchName: null,
+    hostInspection: { hostId: managed?.hostId ?? null, operationId: input.operationId },
+  };
+  if (!managed) return base;
+  if (!input.workspace.cwd || !input.workspace.branchName || managed.branch !== input.workspace.branchName
+    || (managed.hostId !== null && !managed.hostId.trim())) {
+    return { ...base, reason: "worktree_registration_mismatch" };
+  }
+  const operation = { action: "inspect" as const, operationId: input.operationId, kind: managed.kind,
+    cwd: input.workspace.cwd, sourceCwd: managed.sourceCwd, parentDir: managed.parentDir,
+    branch: managed.branch, targetBranch: managed.targetBranch,
+    // Inspect writes no receipt; the remote adapter owns its private receipt root.
+    receiptRoot: path.dirname(resolvePaperclipConfigPath()),
+  };
+  try {
+    let observed: ManagedWorktreeHostResult;
+    if (managed.hostId !== null) {
+      const { getServerAdapter } = await import("../adapters/registry.js");
+      const adapter = getServerAdapter("ccpocket_bridge");
+      if (!adapter.managedWorktreeOperation) return { ...base, reason: "worktree_host_capability_unavailable" };
+      observed = await adapter.managedWorktreeOperation({ hostId: managed.hostId, operation });
+    } else {
+      observed = await managedWorktreeHostOperation(operation);
+    }
+    const isCommit = (value: unknown) => typeof value === "string" && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value);
+    if (observed?.schema !== "paperclip.managed-worktree-host.v1" || observed.action !== "inspect"
+      || observed.operationId !== input.operationId || observed.cwd !== input.workspace.cwd
+      || observed.branch !== managed.branch || typeof observed.commonDir !== "string"
+      || !path.posix.isAbsolute(observed.commonDir) || typeof observed.dirty !== "boolean"
+      || typeof observed.merged !== "boolean"
+      || !(isCommit(observed.head) || (managed.kind === "repository_root" && observed.head === null))
+      || !(managed.kind === "repository_root" ? observed.targetHead === null : isCommit(observed.targetHead))) {
+      return { ...base, reason: "worktree_host_receipt_mismatch" };
+    }
+    return { ...base, valid: true, reason: null, reasonCode: null, actualBranchName: observed.branch,
+      hostInspection: { hostId: managed.hostId, operationId: input.operationId, receipt: observed } };
+  } catch (error) {
+    // Never copy arbitrary transport output, paths or credentials into run diagnostics.
+    const code = (error as { code?: unknown })?.code;
+    if (code === "workspace_branch_mismatch") return { ...base, reason: code, reasonCode: "branch_mismatch" };
+    if (code === "worktree_repository_mismatch") return { ...base, reason: code, reasonCode: "wrong_repository_root" };
+    return { ...base, reason: "worktree_host_inspection_failed" };
+  }
+}
+
 export async function inspectManagedGitWorktreeBranch(input: {
   worktreePath: string;
   expectedBranchName: string | null | undefined;
@@ -2999,6 +3057,7 @@ export function formatManagedGitWorktreeBranchInspection(input: ManagedGitWorktr
     worktreePath: input.worktreePath,
     expectedBranchName: input.expectedBranchName,
     actualBranchName: input.actualBranchName,
+    ...(input.hostInspection ? { hostInspection: input.hostInspection } : {}),
     ...(input.inspectionDiagnostic ? { inspectionDiagnostic: input.inspectionDiagnostic } : {}),
   };
 }
