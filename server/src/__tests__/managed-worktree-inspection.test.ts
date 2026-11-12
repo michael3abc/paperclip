@@ -4,13 +4,93 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensurePersistedExecutionWorkspaceAvailable, inspectManagedGitWorktreeBranch } from "../services/workspace-runtime.js";
+import { ensurePersistedExecutionWorkspaceAvailable, inspectManagedGitWorktreeBranch, inspectMainManagedGitWorkspaceBranch } from "../services/workspace-runtime.js";
+import * as adapterRegistry from "../adapters/registry.js";
+import type { ServerAdapterModule } from "../adapters/index.js";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
+});
+
+describe("registered host finalization", () => {
+  const registered = (cwd = "/remote-only/trees/work", hostId: string | null = "remote-host") => ({
+    cwd, branchName: "work", metadata: { mainManagedWorktree: {
+      schema: "paperclip.main-managed-worktree.v1", phase: "open", hostId,
+      sourceCwd: "/remote-only/repo", parentDir: "/remote-only/trees", branch: "work",
+      targetBranch: "main", pendingOperationId: null, participants: {},
+    } },
+  });
+  const receipt = { schema: "paperclip.managed-worktree-host.v1", action: "inspect",
+    operationId: "run-finalize", cwd: "/remote-only/trees/work", commonDir: "/remote-only/repo/.git",
+    branch: "work", head: "a".repeat(40), targetHead: "b".repeat(40), dirty: true, merged: false };
+  function remoteHost(result: unknown = receipt) {
+    const operation = vi.fn().mockResolvedValue(result);
+    vi.spyOn(adapterRegistry, "getServerAdapter").mockReturnValue({ managedWorktreeOperation: operation } as unknown as ServerAdapterModule);
+    return operation;
+  }
+
+  it("uses the registered remote host without resolving its cwd on the controller", async () => {
+    const operation = remoteHost();
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace: registered(), operationId: "run-finalize" }))
+      .toMatchObject({ valid: true, actualBranchName: "work", hostInspection: { hostId: "remote-host", receipt } });
+    expect(operation).toHaveBeenCalledExactlyOnceWith({ hostId: "remote-host", operation: expect.objectContaining({
+      action: "inspect", operationId: "run-finalize", cwd: receipt.cwd, branch: "work",
+      sourceCwd: "/remote-only/repo", parentDir: "/remote-only/trees", targetBranch: "main",
+    }) });
+  });
+
+  it.each([
+    { operationId: "another-run" }, { action: "merge" }, { cwd: "/another-tree" },
+    { branch: "another-branch" }, { head: null }, { head: "unverified" }, { targetHead: null },
+  ])("rejects a mismatched or unverifiable host receipt %j", async changed => {
+    remoteHost({ ...receipt, ...changed });
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace: registered(), operationId: "run-finalize" }))
+      .toMatchObject({ valid: false, reason: "worktree_host_receipt_mismatch" });
+  });
+
+  it("keeps transport failure bounded and never falls back to controller Git", async () => {
+    remoteHost().mockRejectedValue(new Error("secret provider stderr"));
+    const result = await inspectMainManagedGitWorkspaceBranch({ workspace: registered(), operationId: "run-finalize" });
+    expect(result).toMatchObject({ valid: false, reason: "worktree_host_inspection_failed" });
+    expect(JSON.stringify(result)).not.toContain("secret provider stderr");
+  });
+
+  it("rejects unknown markers and inconsistent registration before contacting a host", async () => {
+    const operation = remoteHost(), workspace = registered();
+    workspace.metadata.mainManagedWorktree.schema = "future-version";
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" }))
+      .toMatchObject({ valid: false, reason: "worktree_marker_unrecognized" });
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace: { ...registered(), branchName: "other" }, operationId: "run-finalize" }))
+      .toMatchObject({ valid: false, reason: "worktree_registration_mismatch" });
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it("checks a real local shared tree and retains a collaborator branch without repair", async () => {
+    const { repo, worktree, root } = await fixture();
+    const workspace = registered(worktree, null);
+    Object.assign(workspace.metadata.mainManagedWorktree, { sourceCwd: repo, parentDir: root,
+      targetBranch: (await exec("git", ["-C", repo, "branch", "--show-current"])).stdout.trim() });
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" })).toMatchObject({ valid: true });
+    await exec("git", ["-C", worktree, "switch", "-c", "collaborator"]);
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" }))
+      .toMatchObject({ valid: false, reasonCode: "branch_mismatch" });
+    expect((await exec("git", ["-C", worktree, "branch", "--show-current"])).stdout.trim()).toBe("collaborator");
+    expect(await fs.readFile(path.join(worktree, "retained.txt"), "utf8")).toBe("retained work\n");
+  });
+
+  it("accepts an explicitly registered unborn repository root without creating a commit", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finalize-unborn-")); roots.push(root);
+    await exec("git", ["init", "--initial-branch=work", root]);
+    const workspace = registered(root, null);
+    Object.assign(workspace.metadata.mainManagedWorktree, { kind: "repository_root", sourceCwd: root, parentDir: root });
+    expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" }))
+      .toMatchObject({ valid: true, hostInspection: { hostId: null, receipt: { head: null, branch: "work", targetHead: null } } });
+    await expect(exec("git", ["-C", root, "rev-parse", "--verify", "HEAD"])).rejects.toMatchObject({ code: 128 });
+  });
 });
 
 async function fixture() {

@@ -2,6 +2,11 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Registered main-managed Git directories finalize through their registered host's
+read-only inspector, including repository roots. Verify receipt/run identity,
+branch and commit evidence; never fall back to controller paths or auto-repair
+a collaborator's branch. See `doc/execution-semantics.md`.
+
 Worker-card collapse is presentation only. The session-bridge proof endpoint
 requires the current main's project/worker policy and issue read permission,
 server session authority, the exact accepted native input and a saved successful

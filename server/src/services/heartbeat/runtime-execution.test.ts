@@ -16,6 +16,8 @@ import { createRunPreparationTiming, measureRunPhase, measureWorkspaceSyncPhase,
 import { recoveryPostgresSupport as support, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import * as pluginWorkspaces from "../plugin-workspaces.js";
 import * as legacyRecovery from "../legacy-execution-recovery.js";
+import * as adapterRegistry from "../../adapters/registry.js";
+import * as workspaceRuntime from "../workspace-runtime.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
@@ -121,6 +123,46 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(revokeHeartbeatRunGatewayTokens).toHaveBeenCalledWith({ db, companyId: input.agent.companyId, runId: input.run.id });
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
+
+  it.each(["valid", "branch_mismatch", "receipt_mismatch"])("registered host finalization preserves the remote outcome: %s", async outcome => {
+    const { input, adapter } = await fixture();
+    const cwd = "/remote-only/trees/work";
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      companyId: input.agent.companyId, name: "Remote registered tree", mode: "isolated_workspace",
+      strategyType: "git_worktree", cwd, providerRef: cwd, branchName: "work",
+      metadata: { mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open",
+        hostId: "remote-host", sourceCwd: "/remote-only/repo", parentDir: "/remote-only/trees",
+        branch: "work", targetBranch: "main", pendingOperationId: null, participants: {} } },
+    }).returning();
+    input.workspace.persistedExecutionWorkspace = workspace;
+    Object.assign(input.workspace.executionWorkspace, { cwd, worktreePath: cwd, branchName: "work", strategy: "git_worktree" });
+    const hostInspect = vi.fn(async () => {
+      if (outcome === "branch_mismatch") throw Object.assign(new Error("workspace_branch_mismatch"), { code: "workspace_branch_mismatch" });
+      return { schema: "paperclip.managed-worktree-host.v1" as const, action: "inspect" as const,
+        operationId: outcome === "receipt_mismatch" ? "old-run" : input.run.id, cwd, commonDir: "/remote-only/repo/.git",
+        branch: "work", head: "a".repeat(40), targetHead: "b".repeat(40), dirty: true, merged: false };
+    });
+    const registry = vi.spyOn(adapterRegistry, "getServerAdapter").mockReturnValue({ ...adapter, managedWorktreeOperation: hostInspect });
+    const repair = vi.spyOn(workspaceRuntime, "ensureGitWorktreeBranchCoherent");
+    try {
+      if (outcome === "valid") {
+        expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true, adapterResult: { exitCode: 0 } });
+        expect(await finalizations()).toMatchObject([{ status: "succeeded", metadata: { managedGitWorktreeBranch: {
+          valid: true, hostInspection: { hostId: "remote-host", operationId: input.run.id, receipt: { head: "a".repeat(40) } },
+        } } }]);
+      } else {
+        await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
+        const finalizes = await finalizations();
+        expect(finalizes.length).toBeGreaterThan(0);
+        expect(finalizes.every(row => row.status === "failed")).toBe(true);
+      }
+      expect(adapter.execute).toHaveBeenCalledOnce();
+      expect(hostInspect).toHaveBeenCalledExactlyOnceWith({ hostId: "remote-host", operation: expect.objectContaining({ action: "inspect", cwd, operationId: input.run.id }) });
+      // New rule: shared trees are inspected on the owner host, never auto-repaired.
+      expect(repair).not.toHaveBeenCalled();
+      expectCleanup(input);
+    } finally { registry.mockRestore(); repair.mockRestore(); }
+  });
 
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);

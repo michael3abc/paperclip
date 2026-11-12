@@ -48,7 +48,7 @@ import {
 } from "../native-runtime/native-workspace-finalization-ownership.js";
 import { createRunUsageRecorder, readAcceptedRunUsageCheckpoint } from "../usage-receipts.js";
 import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-result";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import { isConversation } from "../agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
@@ -82,6 +82,7 @@ import {
   ensureGitWorktreeBranchCoherent,
   formatManagedGitWorktreeBranchInspection,
   inspectManagedGitWorktreeBranch,
+  inspectMainManagedGitWorkspaceBranch,
 } from "../workspace-runtime.js";
 import {
   blockRunnerGoalRecovery,
@@ -298,6 +299,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           persistedExecutionWorkspace.id,
         )
       : persistedExecutionWorkspace;
+    if (workspaceRecord && isMainManagedExecutionWorkspace(workspaceRecord)) {
+      const inspection = await inspectMainManagedGitWorkspaceBranch({ workspace: workspaceRecord, operationId: run.id });
+      return { workspaceRecord, inspection };
+    }
     pluginWorkspaceFinalization = workspaceRecord
       ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
       : null;
@@ -343,6 +348,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               formatManagedGitWorktreeBranchInspection(inspection);
             if (
               !inspection.valid &&
+              !isMainManagedExecutionWorkspace(branchInspection.workspaceRecord) &&
               inspection.reasonCode === "branch_mismatch" &&
               inspection.repoRoot
             ) {
