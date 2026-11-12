@@ -13,6 +13,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { createBridgeStopReverification, hasVerifiedBridgeTerminalStop } from "./bridge-stop-reverification.js";
+import { hasVerifiedBridgeUndispatchedStop } from "./bridge-undispatched-stop.js";
 import { historicalAdapterType } from "../conversation-continuation.js";
 import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop, verifyBridgeHostReboot } from "./stop-settlement-evidence.js";
 import { registerWorkspaceWaitSettlement } from "./workspace-wait-settlement.js";
@@ -55,7 +56,7 @@ async function evidenceKey(db: Db, run: Run) {
 }
 
 export function createRunStopSettlement(db: Db, deps: {
-  getAdapter: (type: string) => Pick<ServerAdapterModule, "reverifyCancelledRunStop"> | null | undefined;
+  getAdapter: (type: string) => Pick<ServerAdapterModule, "reverifyCancelledRunStop" | "reverifyUndispatchedRunStop"> | null | undefined;
   isRunActive: (id: string) => boolean;
   now?: () => number;
 }) {
@@ -107,6 +108,7 @@ export function createRunStopSettlement(db: Db, deps: {
             remoteHostStopped = true; stopProof = "remote_host_reboot_receipt";
           }
           else if (hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_terminal_stop_receipt";
+          else if (hasVerifiedBridgeUndispatchedStop(run)) stopProof = "bridge_undispatched_stop_receipt";
           else if (cancellation.state === "acknowledged") {
             if (cancellation.proof === "verified_pre_dispatch_wait") reason = "pre_dispatch_evidence_invalidated";
             // Stop acknowledgement and resource cleanup are separate facts.
@@ -121,6 +123,7 @@ export function createRunStopSettlement(db: Db, deps: {
             }).reconcile(runId, companyId);
             run = (await read(runId, companyId))!;
             if (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_stop_receipt";
+            else if (hasVerifiedBridgeUndispatchedStop(run)) stopProof = "bridge_undispatched_stop_receipt";
           }
           if (stopProof && !options.signal?.aborted) {
             state = "cleaning";

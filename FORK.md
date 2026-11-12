@@ -501,6 +501,21 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   other agents' runs and same-issue chat behavior are unchanged. Main agents are also told
   to implement in chat and create tasks only when separate tracking is needed
   (`890f9672d`). No schema change.
+- Bridge never-delivered stop proof (2026-11-12): an Agent Chat message that interrupted a
+  `ccpocket_bridge` run before the adapter had recorded any session (cancelled in about ten
+  seconds, no `executionCancellation`, no bridge or native session ids) stayed on
+  `process_identity_missing` and exhausted the four stop-settlement checks, because every existing
+  proof needs those ids. Adapters may now expose a read-only `reverifyUndispatchedRunStop`
+  hook. The server asks it only for a legacy, cancelled, finished run with no cancellation,
+  session identity, process or earlier receipt, and accepts only
+  `ccpocket.bridge-undispatched-stop.v1` proof bound to that run: the adapter persists a dispatch
+  before it sends input, so a run absent from its state whose card history matches the recorded
+  inputs exactly, with an idle card, no current turn and known empty background work, delivered
+  nothing. The receipt is written under `executionStopVerification` (no cancellation is invented)
+  through a compare-and-set on the inspected row, wakes the same deferred and stop-settlement
+  work as other proofs, and is honored by `bridgeSessionStopAcknowledged` and stop settlement.
+  Unverified, busy, recorded or changed runs keep the hold; nothing is sent, interrupted,
+  replayed or forced. Requires the matching ccpocket adapter. No schema change.
 - Bridge stop re-verification (2026-11-09): a cancelled, legacy `ccpocket_bridge` run whose
   unforced Stop stayed `requested` (the adapter could not confirm it at cancel time) blocked
   that task's queued messages with `process_identity_missing` forever. Adapters may now expose
