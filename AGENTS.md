@@ -70,6 +70,10 @@ all matching rows in the same transaction. See `doc/execution-semantics.md`.
 Missing legacy task-session indexes may be reconstructed only by the admitted
 server claim from the host's exact current-run pointer and matching original
 invocation/result receipts. Never reenroll a deleted feature-era authority.
+After maintenance replaces a bootstrap Bridge card, attach its already-published
+native identity only with the current server authority, original accepted-input
+and invocation receipts, and the unchanged predecessor/generation CAS. A late
+finalizer, restored card ID alone or missing/deleted binding grants no authority.
 
 Original-main blocker delivery uses the recovery action's protected evidence and
 the existing delivery coordinator. Preserve exact creator/conversation/generation,

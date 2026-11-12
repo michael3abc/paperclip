@@ -11,7 +11,8 @@ type Claim = Parameters<NonNullable<AdapterExecutionContext["onSessionAuthority"
 type Receipt = Awaited<ReturnType<NonNullable<AdapterExecutionContext["onSessionAuthority"]>>>;
 type Authority = Receipt & { hostId: string; provider: string; nativeSessionId: string | null; bridgeSessionId: string;
   taskKey: string; previousRunId: string | null; previousGeneration: number; revoked?: true;
-  legacySessionRecovery?: { sourceRunId: string; sourceEventId: number } };
+  legacySessionRecovery?: { sourceRunId: string; sourceEventId: number };
+  bootstrapNativeRecovery?: { sourceRunId: string; sourceEventId: number } };
 export const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export function readAdapterSessionAuthority(value: unknown): Authority | null {
   const v = object(object(value)[ADAPTER_SESSION_AUTHORITY]);
@@ -92,11 +93,48 @@ export async function claimAdapterSessionAuthority(db: Db, bound: { companyId: s
         (issue.conversationAgentId && (issue.conversationAgentId !== bound.agentId ||
           run.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration)))) throw denied();
     const previous = nativeOwner ?? saved;
-    // Claude reports a native ID only after its first input. Bootstrap authority
+    // Claude/Antigravity may report a native ID only after their first input. Bootstrap authority
     // is tied to that exact new card; it cannot replace an existing native owner.
     if (input.nativeSessionId === null && (previous || input.expectedPreviousRunId)) throw denied();
-    if (previous?.nativeSessionId === null && (previous.hostId !== input.hostId || previous.provider !== input.provider
-        || previous.bridgeSessionId !== input.bridgeSessionId)) throw denied();
+    let bootstrapNativeRecovery: Authority["bootstrapNativeRecovery"];
+    if (previous?.nativeSessionId === null) {
+      if (previous.hostId !== input.hostId || previous.provider !== input.provider) throw denied();
+      if (previous.bridgeSessionId !== input.bridgeSessionId) {
+        // Maintenance may replace the host card after its first turn published
+        // the native ID. Keep the bootstrap CAS; prove the identity transition
+        // from the still-current server publication and original accepted input.
+        const prior = runs.find(row => row.id === previous.runId);
+        const priorAuthority = readAdapterSessionAuthority(prior?.runnerProfileJson);
+        const published = object(existing?.sessionParamsJson);
+        const accepted = object(prior?.resultJson?.bridgeInputReceipt);
+        if (!input.nativeSessionId || !prior || prior.status !== "succeeded" || previous.revoked
+            || previous.taskKey !== bound.taskKey || saved?.runId !== previous.runId
+            || saved.generation !== previous.generation || saved.bindingKey !== previous.bindingKey
+            || !priorAuthority || priorAuthority.revoked || priorAuthority.nativeSessionId !== null
+            || priorAuthority.runId !== previous.runId || priorAuthority.taskKey !== previous.taskKey
+            || priorAuthority.hostId !== previous.hostId || priorAuthority.provider !== previous.provider
+            || priorAuthority.bridgeSessionId !== previous.bridgeSessionId
+            || priorAuthority.operationId !== previous.operationId || priorAuthority.bindingKey !== previous.bindingKey
+            || priorAuthority.generation !== previous.generation
+            || published.hostId !== input.hostId || published.provider !== input.provider
+            || published.nativeSessionId !== input.nativeSessionId || published.bridgeSessionId !== previous.bridgeSessionId
+            || prior.resultJson?.nativeSessionId !== input.nativeSessionId
+            || prior.resultJson?.bridgeSessionId !== previous.bridgeSessionId
+            || accepted.schema !== "paperclip.bridge-input.v1" || accepted.runId !== prior.id
+            || accepted.nativeSessionId !== input.nativeSessionId || accepted.bridgeSessionId !== previous.bridgeSessionId
+            || typeof accepted.clientMessageId !== "string" || !accepted.clientMessageId
+            || !Number.isSafeInteger(accepted.acceptedSeq) || Number(accepted.acceptedSeq) < 1) throw denied();
+        const [invocation] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+          eq(heartbeatRunEvents.companyId, bound.companyId), eq(heartbeatRunEvents.agentId, bound.agentId),
+          eq(heartbeatRunEvents.runId, prior.id), eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+          sql`${heartbeatRunEvents.payload}->>'adapterType' = 'ccpocket_bridge'`,
+          sql`${heartbeatRunEvents.payload}#>>'{context,hostId}' = ${input.hostId}`,
+          sql`${heartbeatRunEvents.payload}#>>'{context,provider}' = ${input.provider}`,
+          sql`${heartbeatRunEvents.payload}#>>'{context,bridgeSessionId}' = ${previous.bridgeSessionId}`)).limit(1);
+        if (!invocation) throw denied();
+        bootstrapNativeRecovery = { sourceRunId: prior.id, sourceEventId: invocation.id };
+      }
+    }
     if (previous) {
       if (previous.generation !== input.expectedGeneration || previous.runId !== input.expectedPreviousRunId ||
           (previous.revoked && previous.bindingKey === bindingKey)) throw denied();
@@ -146,7 +184,8 @@ export async function claimAdapterSessionAuthority(db: Db, bound: { companyId: s
     const authority: Authority = { schema, runId: bound.runId, generation, operationId: input.operationId, bindingKey,
       previousRunId: input.expectedPreviousRunId, previousGeneration: input.expectedGeneration,
       taskKey: bound.taskKey, hostId: input.hostId, provider: input.provider, nativeSessionId: input.nativeSessionId, bridgeSessionId: input.bridgeSessionId,
-      ...(legacySessionRecovery ? { legacySessionRecovery } : {}) };
+      ...(legacySessionRecovery ? { legacySessionRecovery } : {}),
+      ...(bootstrapNativeRecovery ? { bootstrapNativeRecovery } : {}) };
     for (const row of sessions) {
       if (row.id === existing?.id) continue;
       const old = readAdapterSessionAuthority(row.sessionParamsJson);

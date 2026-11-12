@@ -1,5 +1,12 @@
 # Paperclip fork
 
+2026-11-12 bootstrap native restoration: maintenance may replace a Bridge card
+before its null-native bootstrap authority has advanced. Permit a new admitted
+run to bind the published original native session only through current server
+authority, exact original accepted-input/invocation proof and predecessor/generation
+CAS. Preserve late-writer rejection, missing-binding fences and original failures.
+No input replay, authority backfill, task resurrection or adapter bypass.
+
 2026-11-12 queued authority rejection: distinguish a proven pre-dispatch input
 rejection from uncertain provider delivery using the exact gate event, skipped
 wake and all retained execution/resource fences. Admit a later independently
