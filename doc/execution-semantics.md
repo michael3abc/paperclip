@@ -3967,6 +3967,16 @@ generic continuation or transient retry budget. The original notification owns
 the Owner question even when its input was accepted before the run failed.
 Ancestry checks are bounded, event-triggered and stop at independent Owner input;
 they never replay input, cancel user intent or settle historical stop evidence.
+Cancellation also revokes generic automatic retry authority: the scheduler,
+persisted retry promotion and queued dispatch check the durable source, not just
+its copied input context. Reopening a task cannot revive cancelled disposition
+work. The narrow historical exception is a system resource wait: exact matching
+workspace/AI-connection wait reason and error plus `providerWorkStarted=false`
+preserve only the original resource-wait lane; an explicit Stop or startup
+cancellation overrides that receipt. Fresh explicit comments have independent
+actor/input receipts, never coalesce into a retry or rendered continuation, and
+are checked again against the locked run before merging. This does not authorize
+resending unknown input or rewriting any prior failed/cancelled attempt.
 Original-main and workspace-creator
 notices validate their protected action/wake, current source and original
 conversation, and only the recorded system comment. Missing receipts, changed

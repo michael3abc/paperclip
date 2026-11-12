@@ -63,7 +63,8 @@ export type ScheduledRetryGateErrorCode =
   | "issue_paused"
   | "issue_dependencies_blocked"
   | "issue_disposition_repair_superseded"
-  | "issue_waiting_for_response";
+  | "issue_waiting_for_response"
+  | "retry_source_cancelled";
 
 export type GateDecision =
   | { allowed: true }
@@ -80,6 +81,7 @@ export type ScheduledRetryFacts = {
   runAgentId: string;
   issueId: string | null;
   retryReasonKind: RetryReasonKind;
+  cancelledRetrySourceId?: string | null;
   enforceIssueExecutionLock: boolean;
 
   budgetBlock: BudgetBlockFacts | null;
@@ -108,6 +110,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "retry_source_cancelled"
   | "issue_waiting_for_response"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
@@ -264,6 +267,11 @@ export function decideScheduledRetryGate(
   facts: ScheduledRetryFacts,
   _now: Date,
 ): GateDecision {
+  if (facts.cancelledRetrySourceId) return {
+    allowed: false, errorCode: "retry_source_cancelled", issueId: facts.issueId,
+    reason: "Cancelled execution cannot acquire an automatic retry; new input requires its own admission.",
+    details: { sourceRunId: facts.cancelledRetrySourceId },
+  };
   if (facts.budgetBlock) {
     return {
       allowed: false,

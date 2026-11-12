@@ -2,6 +2,15 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Cancellation revokes automatic retry authority. Recheck the durable source at
+scheduling, persisted retry promotion and queued dispatch; task reopening is not
+authority to replay a cancelled execution. Only matching historical system
+resource-wait receipts with providerWorkStarted=false retain their original wait
+lane, and Stop overrides those receipts. Fresh explicit comments retain their own
+input receipt and never merge into a prior retry/continuation envelope, including
+after the locked coalescing recheck. Unknown delivered input remains denied.
+See `doc/execution-semantics.md`.
+
 Adapter non-delivery survives independent workspace finalizer failures. Persist
 its original error/provenance before finalization; admit a new authorized Bridge
 message only with the server-held non-delivery fact and no contradictory session,

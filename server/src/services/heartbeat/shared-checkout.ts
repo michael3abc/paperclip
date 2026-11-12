@@ -129,7 +129,8 @@ export const verifiedBridgeHostRebootSql = sql`r.runtime_mode = 'legacy'
         'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started')
       and (launched.seq > boot.seq or launched.created_at >= (boot.payload->>'bootStartedAtLowerBound')::timestamptz)))`;
 
-const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
+// Recovery services share this predicate; construct it after module initialization.
+const settledSharedCheckoutSql = () => sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
           and (r.result_json#>>'{stopSettlement,proof}' IS DISTINCT FROM 'remote_host_reboot_receipt'
             OR (${verifiedBridgeHostRebootSql}))
           and (r.error_code IS DISTINCT FROM 'legacy_disposition_repair_suppressed' OR EXISTS (
@@ -202,7 +203,7 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
 
 export async function sharedCheckoutHolderSettled(db: Db, companyId: string, runId: string) {
   const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${runId}::uuid
-    and r.company_id = ${companyId}::uuid and (${settledSharedCheckoutSql})`);
+    and r.company_id = ${companyId}::uuid and (${settledSharedCheckoutSql()})`);
   return rows.length === 1;
 }
 
@@ -226,7 +227,7 @@ export async function unsettledWorkspaceHolders(db: HolderExecutor, input: {
           or starts_with(r.context_snapshot->'sharedCheckoutClaim'->>'path', rtrim(${input.path}, '/') || '/')
           or starts_with(${input.path}, rtrim(r.context_snapshot->'sharedCheckoutClaim'->>'path', '/') || '/'))
         and not coalesce((
-          ${settledSharedCheckoutSql}
+          ${settledSharedCheckoutSql()}
         ), false) order by r.created_at, r.id ${input.first ? sql`limit 1` : sql``}`);
   const found: UnsettledWorkspaceHolder[] = explicit.map(row => ({ ...row, kind: "explicit" as const }));
   if ((input.first && found.length) || input.storage) return found;
@@ -247,7 +248,7 @@ export async function unsettledWorkspaceHolders(db: HolderExecutor, input: {
       and p.company_id = r.company_id
     where r.id <> ${exclude} and r.context_snapshot->'sharedCheckoutClaim' is null
       and r.context_snapshot#>>'{paperclipWorkspace,cwd}' is not null
-      and not coalesce((${settledSharedCheckoutSql}), false) order by r.created_at, r.id`);
+      and not coalesce((${settledSharedCheckoutSql()}), false) order by r.created_at, r.id`);
   for (const previous of priorAdmissions) {
     if (previous.host !== input.host) continue;
     const previousPath = input.remote ? previous.cwd : await sharedSource(previous.cwd, { inspectOwnership: true }).then(source => source.path).catch(error => {

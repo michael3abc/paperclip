@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
 import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -266,7 +267,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { company, agent, issue, wake, run };
   }
 
-  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author", "retry-envelope", "disposition-envelope", "cancelled-envelope"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
     const f = await fixture("queued");
     let admissionAgent: typeof agents.$inferSelect = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
     await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
@@ -292,7 +293,13 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         : withQueuedCommentIdsInWakePayload({ issueId: f.issue.id, retainedSource: "original-source" }, [oldComment.id]),
     }).where(eq(agentWakeupRequests.id, f.wake.id));
     const [scanned] = await db.update(heartbeatRuns).set({ responsibleUserId: userId,
-      contextSnapshot: withQueuedCommentIdsInRunContext({ issueId: f.issue.id, wakeReason: "issue_commented" }, [oldComment.id]),
+      ...(scenario === "retry-envelope" ? { status: "scheduled_retry" } : {}),
+      ...(scenario === "cancelled-envelope" ? { status: "cancelled", errorCode: "legacy_disposition_repair_suppressed",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } } : {}),
+      contextSnapshot: withQueuedCommentIdsInRunContext({ issueId: f.issue.id, wakeReason: "issue_commented",
+        ...(scenario === "retry-envelope" ? { retryOfRunId: randomUUID(), executionContinuation: { messages: [{ body: "OLD INPUT" }] } } : {}),
+        ...(["disposition-envelope", "cancelled-envelope"].includes(scenario) ? { dispositionRepairSourceRunId: randomUUID(), executionContinuation: { messages: [{ body: "OLD INPUT" }] } } : {}),
+      }, [oldComment.id]),
     }).where(eq(heartbeatRuns.id, f.run.id)).returning();
     let foreignPrimary: typeof agentWakeupRequests.$inferSelect | undefined;
     if (scenario === "foreign-primary") {
@@ -326,7 +333,20 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const coalesced = await queue.enqueueWakeup(admissionAgent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
       requestedByActorType: "user", requestedByActorId: incomingActorId });
-    if (["running", "foreign-primary", "same-named-agent"].includes(scenario)) {
+    if (scenario === "cancelled-envelope") {
+      expect(coalesced).toMatchObject({ status: "queued", contextSnapshot: { wakeCommentId: newComment.id } });
+      expect(coalesced?.id).not.toBe(scanned.id);
+      expect(coalesced?.contextSnapshot).not.toHaveProperty("executionContinuation");
+      expect(coalesced?.contextSnapshot).not.toHaveProperty("retryOfRunId");
+      expect(coalesced?.contextSnapshot).not.toHaveProperty("dispositionRepairSourceRunId");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scanned.id)))[0]).toEqual(scanned);
+      deps.canStartNewExternalBotWork.mockResolvedValue(true);
+      expect(await queue.claimQueuedRun(coalesced!)).toMatchObject({ id: coalesced!.id, status: "running",
+        contextSnapshot: { wakeCommentId: newComment.id, wakeCommentIds: [newComment.id] } });
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
+    if (["running", "foreign-primary", "same-named-agent", "retry-envelope", "disposition-envelope"].includes(scenario)) {
       expect(coalesced).toBeNull();
       const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
       expect(preserved.contextSnapshot).toMatchObject({ wakeCommentId: oldComment.id, wakeCommentIds: [oldComment.id] });
