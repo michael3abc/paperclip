@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, budgetPolicies, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, budgetPolicies, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, executionWorkspaces, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { trace } from "@opentelemetry/api";
@@ -237,6 +237,27 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
     expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed" } }]);
     expect(input.effects.onLegacyAdapterEntered).toHaveBeenCalledOnce();
+    expectCleanup(input);
+  });
+
+  it.each([false, undefined] as const)("preserves adapter delivery provenance across finalizer failure: provider work %s", async providerWorkStarted => {
+    const { input, adapter, run } = await fixture();
+    adapter.execute.mockResolvedValueOnce({ exitCode: 1, signal: null, timedOut: false, errorCode: "workspace_binding_mismatch",
+      ...(providerWorkStarted === false ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } : {}) });
+    const error = new Error("independent workspace finalizer failed");
+    vi.spyOn(input.workspace.workspaceOperationRecorder, "recordOperation").mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    const stored = await read(run.id);
+    const receipts = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id));
+    const proof = receipts.filter(row => row.eventType === "execution.adapter_non_delivery");
+    if (providerWorkStarted === false) {
+      expect(stored?.usageJson?.accountingProviderWorkStarted).toBe(false);
+      expect(proof).toMatchObject([{ payload: { schema: "paperclip.adapter-non-delivery.v1",
+        adapterType: "process", errorCode: "workspace_binding_mismatch", providerWorkStarted: false } }]);
+    } else {
+      expect(stored?.usageJson?.accountingProviderWorkStarted).not.toBe(false);
+      expect(proof).toEqual([]);
+    }
     expectCleanup(input);
   });
 

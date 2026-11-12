@@ -1,4 +1,5 @@
 import { claimAdapterSessionAuthority } from "../adapter-session-authority.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { verifyMainBlockerRun } from "../recovery/main-blocker.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { readDecisionDelegation } from "../delegated-decision-policy.js";
@@ -993,9 +994,19 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     } else {
       // Stop may already own the terminal result. Preserve its metadata
       // while durably recording the proof needed to release admission.
-      await db.update(heartbeatRuns).set({ costAccountingPending: true,
-        usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
-      }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
+      await db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set({ costAccountingPending: true,
+          usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingProviderWorkStarted":false}'::jsonb`,
+        }).where(and(eq(heartbeatRuns.id, run.id), isNull(heartbeatRuns.costAccountedAt)));
+        // Keep adapter provenance outside the terminal result: a finalizer may
+        // fail independently and must not erase the original delivery outcome.
+        await appendHeartbeatRunEvent(tx as unknown as Db, { companyId: run.companyId, runId: run.id, agentId: agent.id,
+          eventType: "execution.adapter_non_delivery", stream: "system", level: "info",
+          message: "Adapter confirmed this input was not delivered before workspace finalization.",
+          payload: { schema: "paperclip.adapter-non-delivery.v1", adapterType: adapter.type,
+            errorCode: adapterResult.errorCode ?? null, providerWorkStarted: false },
+        });
+      });
     }
     adapterResult = applyWorkspaceRestoreFailure(adapterResult);
     // A returned result can include a failed restore. Keep the workspace

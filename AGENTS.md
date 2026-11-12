@@ -2,6 +2,12 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Adapter non-delivery survives independent workspace finalizer failures. Persist
+its original error/provenance before finalization; admit a new authorized Bridge
+message only with the server-held non-delivery fact and no contradictory session,
+input, provider or process evidence. Missing PID alone grants nothing. Preserve
+the saved wake and original failed run; never replay it or synthesize a stop.
+
 Managed workspace participation rebuilds kind/sourceCwd from the current stored
 registration after lifecycle admission; wake JSON cannot supply those fields.
 Valid v1 registrations that omit kind retain linked-worktree semantics: normalize
