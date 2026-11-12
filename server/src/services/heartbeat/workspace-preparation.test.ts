@@ -246,6 +246,28 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await leases(fourth.run.id)).toEqual([]);
   });
 
+  it("normalizes an existing v1 registration without kind to linked-worktree participation without rewriting metadata", async () => {
+    const { input, issue, source, cwd, workspaceId } = await registeredSharedFixture();
+    const stored = (await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!;
+    const metadata = structuredClone(stored.metadata!);
+    delete (metadata.mainManagedWorktree as Record<string, unknown>).kind;
+    // Reconstruct the persisted v1 shape from before repository-root registration existed.
+    await db.update(executionWorkspaces).set({ metadata }).where(eq(executionWorkspaces.id, workspaceId));
+    const legacy = (await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!;
+    expect(readMainManagedWorktree(legacy.metadata)?.kind).toBeUndefined();
+    await reuse(input, legacy);
+    await db.update(issues).set({ executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, issue.id));
+    input.task.context.managedWorktreeParticipation = { kind: "repository_root", sourceCwd: "/forged" };
+    const prepared = await prepareHeartbeatWorkspace(db, input);
+    expect(prepared.executionWorkspace.cwd).toBe(cwd);
+    expect(input.task.context.managedWorktreeParticipation).toMatchObject({ kind: "linked_worktree", sourceCwd: source,
+      cwd, projectId: issue.projectId, workspaceId, generation: 1 });
+    const current = (await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!;
+    expect(readMainManagedWorktree(current.metadata)?.kind).toBeUndefined();
+    expect(current.metadata?.lifecycleGeneration).toBe(legacy.metadata?.lifecycleGeneration);
+  });
+
   it("rebuilds repository-root participation from registration rather than caller coordinates", async () => {
     const { input, source, issue } = await fixture(true);
     const parent = join(home, "separate-parent"); await mkdir(parent);

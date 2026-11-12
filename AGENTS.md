@@ -4,6 +4,8 @@ Guidance for human and AI contributors working in this repository.
 
 Managed workspace participation rebuilds kind/sourceCwd from the current stored
 registration after lifecycle admission; wake JSON cannot supply those fields.
+Valid v1 registrations that omit kind retain linked-worktree semantics: normalize
+only the authoritative adapter output; never rewrite stored markers to pass a guard.
 Bridge adapters verify plain worker task projects and accept canonical roots or
 nested approved paths. Ship the matching adapter with this boundary change.
 

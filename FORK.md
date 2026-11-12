@@ -4,6 +4,8 @@
 kind/sourceCwd along with lifecycle participation. The paired adapter admits
 repository roots and nested registered paths for plain shared workers while
 checking task project, host and canonical identity before sending input.
+Existing valid v1 markers with absent kind emit linked_worktree at this server
+boundary; their original metadata and generation remain intact.
 
 2026-11-12 worker-card presentation: a project-scoped session-bridge read endpoint
 proves the current worker run/input and saved successful result. Existing durable
