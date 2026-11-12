@@ -9,6 +9,7 @@ import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { authorizationService } from "../authorization.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
+import { bridgeSessionStopAcknowledged } from "../explicit-native-continuation.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -18,7 +19,8 @@ export const MAIN_BLOCKER_REASON = "original_main_blocker";
 type Action = typeof issueRecoveryActions.$inferSelect;
 type Notice = { key: string; mainAgentId: string | null; conversationIssueId: string | null; conversationGeneration: number | null;
   wakeId: string; commentId: string; requestedAt: string; sourceRunId: string | null;
-  status: "pending" | "waiting_main" | "held" | "sending" | "queued" | "acknowledged" | "needs_owner" | "uncertain";
+  status: "pending" | "waiting_main" | "held" | "sending" | "queued" | "acknowledged" | "needs_owner" | "uncertain" | "superseded";
+  recheck?: Record<string, unknown>;
   reason?: string; runId?: string; receiptDeadlineAt?: string };
 export type MainBlockerWake = { id: string; actionId: string; noticeKey: string; requestedAt: Date };
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -66,6 +68,75 @@ export async function inspectOriginalMain(db: Db, action: Action) {
       await issueTreeControlService(db).getActivePauseHoldGate(action.companyId, source.id) ||
       await issueTreeControlService(db).getActivePauseHoldGate(action.companyId, conversation.id)) return { reason: "owner_hold", source, main, conversation } as const;
   return { source, main, conversation, reason: null } as const;
+}
+
+/** Caller owns the explicit Owner recheck transaction. Withdrawal never proves
+ * creator input was unsent and never independently wakes the original main. */
+export async function reconcileMainBlockerQuestionsAfterCreatorInterruption(db: Db, input: {
+  companyId: string; creatorActionId: string; interruptedRunId: string; actorUserId: string; requestKey: string;
+}) {
+  const result = { withdrawnInteractionIds: [] as string[], supersededActionIds: [] as string[] };
+  const [creatorAction] = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.creatorActionId)));
+  const creator = object(creatorAction?.evidence.creatorRecovery), delivery = object(creator.delivery), preemption = object(creator.preemption);
+  if (creator.version !== 1 || creator.responsibleUserId !== input.actorUserId || !input.requestKey ||
+      (delivery.targetRunId !== input.interruptedRunId && preemption.runId !== input.interruptedRunId) ||
+      typeof creator.conversationIssueId !== "string") return result;
+  const [conversation] = await db.select().from(issues).where(and(eq(issues.companyId, input.companyId),
+    eq(issues.id, creator.conversationIssueId))).for("update", { noWait: true });
+  if (!conversation || conversation.conversationUserId !== input.actorUserId ||
+      conversation.conversationAgentId !== creator.creatorAgentId ||
+      conversation.conversationSessionGeneration !== creator.conversationGeneration) return result;
+  const [stopped] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.id, input.interruptedRunId)));
+  if (!stopped || stopped.agentId !== creator.creatorAgentId || stopped.issueId !== conversation.id ||
+      stopped.status !== "cancelled" || stopped.errorCode !== "operator_interrupted" || !stopped.finishedAt ||
+      stopped.resultJson?.interruptionSource !== "workspace_creator_recovery" ||
+      stopped.resultJson?.interruptedByActorType !== "system" ||
+      stopped.resultJson?.interruptedByActorId !== creatorAction!.id ||
+      stopped.resultJson?.workspaceRecoveryActionId !== creatorAction!.id ||
+      stopped.resultJson?.interruptedIssueId !== conversation.id || !bridgeSessionStopAcknowledged(stopped)) return result;
+  const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, stopped.agentId),
+    inArray(heartbeatRuns.status, ["queued", "running"]))).limit(1);
+  if (active) return result;
+  const actions = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), inArray(issueRecoveryActions.status, ["active", "escalated"]),
+    sql`${issueRecoveryActions.evidence}->>'mainBlockerPolicy' = '1'`,
+    sql`EXISTS (SELECT 1 FROM jsonb_each(COALESCE(${issueRecoveryActions.evidence}->'mainBlockerNotices', '{}'::jsonb)) n
+      WHERE n.value->>'conversationIssueId' = ${conversation.id} AND n.value->>'status' = 'needs_owner')`,
+  )).orderBy(asc(issueRecoveryActions.id)).for("update");
+  for (const action of actions) {
+    const notice = readMainBlockerNotice(action);
+    if (!notice || notice.status !== "needs_owner" || notice.reason !== "original_main_session_blocked" ||
+        notice.receiptDeadlineAt !== undefined || notice.runId !== undefined ||
+        notice.mainAgentId !== stopped.agentId || notice.conversationIssueId !== conversation.id ||
+        notice.conversationGeneration !== conversation.conversationSessionGeneration) continue;
+    const context = await inspectOriginalMain(db, action);
+    if (context.reason) continue;
+    const [wake] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(eq(agentWakeupRequests.id, notice.wakeId));
+    const [comment] = await db.select({ id: issueComments.id }).from(issueComments).where(eq(issueComments.id, notice.commentId));
+    if (wake || comment) continue; // Missing wake alone is never non-delivery proof.
+    const [card] = await db.select().from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, input.companyId), eq(issueThreadInteractions.issueId, conversation.id),
+      eq(issueThreadInteractions.idempotencyKey, "main-blocker:" + notice.key))).for("update");
+    if (!card || card.status !== "pending" || card.createdByAgentId || card.createdByUserId || card.sourceRunId ||
+        card.kind !== "ask_user_questions" || card.continuationPolicy !== "none" ||
+        card.effectiveResolverPolicy !== "human_only" || card.addresseeUserId !== input.actorUserId ||
+        card.createdAt.getTime() < stopped.finishedAt.getTime()) continue;
+    await issueThreadInteractionService(db).withdrawInteraction(conversation, card.id, {
+      reason: "Owner 明確重新檢查：撤回平台中斷後產生的未送達系統問題；原 blocker 轉交 creator recovery 對帳，不代表 main 已接受，未重送原輸入。",
+    }, { systemId: "original-main-blocker" });
+    const next: Notice = { ...notice, status: "superseded", reason: "creator_recheck_after_system_interruption", recheck: {
+      creatorActionId: creatorAction!.id, interruptedRunId: stopped.id, actorUserId: input.actorUserId,
+      requestKey: input.requestKey, interactionId: card.id, at: new Date().toISOString(), previousNotice: notice,
+    } };
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, mainBlockerNotices: {
+      ...object(action.evidence.mainBlockerNotices), [notice.key]: next,
+    } }, updatedAt: new Date() }).where(eq(issueRecoveryActions.id, action.id));
+    result.withdrawnInteractionIds.push(card.id); result.supersededActionIds.push(action.id);
+  }
+  return result;
 }
 
 /** This verifies a server-only wake at queue entry and again under the issue lock. */
@@ -192,6 +263,7 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
     if (!["active", "escalated"].includes(action.status)) return;
     let notice = readMainBlockerNotice(action);
     if (notice && ["sending", "queued", "uncertain"].includes(notice.status)) return reconcile(action, notice);
+    if (notice?.status === "superseded") return;
     if (notice?.status === "acknowledged") return withdrawOwnerQuestion(action, notice);
     if (notice?.status === "needs_owner") return askOwner(action, notice);
     const failedId = sourceRunId(action);

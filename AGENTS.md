@@ -636,7 +636,15 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 Workspace bootstrap failures may return the original recovery action to the verified project main
 agent's original Chat. Use system provenance, pre-provider/settlement evidence and durable receipts;
 unknown sends only reconcile the original receipt. Repair uses revision-bound `workspaceRepair`
-and at most three original-worker admissions across new actions for the same task, preserving
+with the ordinary registered-worktree or session-only selection service; recovery
+must not impose the retired configured-source-only contract. Busy main agents
+wait for completion events instead of being interrupted by recovery notices.
+Owner delivery rechecks retain action revision, original wake identity and human
+decisions; missing receipts alone never authorize resending provider input.
+An explicit Owner creator recheck may withdraw only an unsent system blocker
+question proven to follow that recovery's acknowledged system interruption;
+retain human questions, holds and unknown delivery. Withdrawal grants no replay.
+Allow at most three original-worker admissions across new actions for the same task, preserving
 assignment/model/review/holds. Count committed repair receipts, including pending/uncertain delivery;
 same-failure API replay or workspace changes never replenish the allowance. Pre-upgrade actions
 retain their one-admission limit; exhaustion returns ownership to Owner without another notice.

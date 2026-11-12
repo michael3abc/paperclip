@@ -144,6 +144,18 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host).not.toHaveBeenCalled();
   });
 
+  it.each(["paused", "manual_hold", "project_paused"])("prepareRun preserves %s while permitting recovery of error status", async blocker => {
+    const f = await fixture(); await f.service.operate(f.scope, f.registration);
+    await db.update(issues).set({ executionWorkspaceId: f.workspaceId,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "existing", workspaceId: f.workspaceId } },
+    }).where(eq(issues.id, f.issueId));
+    if (blocker === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    if (blocker === "manual_hold") await db.update(agents).set({ status: "error", lifecycleHolds: ["manual"] }).where(eq(agents.id, f.agentId));
+    if (blocker === "project_paused") await db.update(projects).set({ pausedAt: new Date() }).where(eq(projects.id, f.projectId));
+    await expect(f.service.prepareRun(f.scope, f.issueId, 1)).rejects.toThrow("worktree_run_no_longer_admitted");
+    expect(f.host).toHaveBeenCalledTimes(1); // registration only; no host dispatch after the hold.
+  });
+
   it("routes a remote source to its registered host, never to controller filesystem operations", async () => {
     const f = await fixture(true); await f.service.operate(f.scope, f.registration);
     expect(f.host.mock.calls[0]).toMatchObject(["fixture-remote", { cwd: f.parentDir + "/batch", sourceCwd: f.sourceCwd }]);

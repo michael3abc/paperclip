@@ -2357,7 +2357,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, reason, request: workspaceRequest }) : null;
     if (workspaceRequest) {
       if (!issueId || durableRequest || dotRequest || museRequest || caseReceipt) throw conflict("Invalid recovery wake scope");
-      await verifyWorkspaceRequest(db);
+      try {
+        await verifyWorkspaceRequest(db);
+      } catch (error) {
+        // This validation precedes every reservation and provider effect in
+        // this invocation. Preserve that fact for the originating coordinator.
+        if (error instanceof HttpError) error.details = { ...parseObject(error.details),
+          workspaceRecoveryAdmission: "rejected_before_reservation", wakeId: workspaceRequest.id };
+        throw error;
+      }
       opts = { ...opts, allowRunCoalescing: false, idempotencyKey: "workspace-recovery:" + workspaceRequest.id };
     }
     const mainBlockerRequest = opts.mainBlockerRequest;

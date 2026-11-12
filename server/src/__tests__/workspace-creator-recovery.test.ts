@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { mainManagedWorktreeService } from "../services/main-managed-worktrees.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -11,7 +12,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, afterEach, describe, it, expect, vi } from "vitest";
 import { agents, companies, companyMemberships, projects, projectWorkspaces, issues, heartbeatRuns, issueRecoveryActions,
-  issueComments, issueThreadInteractions, agentWakeupRequests, authUsers, environmentLeases, heartbeatRunEvents, activityLog, createDb } from "@paperclipai/db";
+  issueComments, issueThreadInteractions, agentWakeupRequests, authUsers, executionWorkspaces, environmentLeases, heartbeatRunEvents, activityLog, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { routeWorkspaceToCreator, inspectWorkspaceCreator, creatorRecovery, verifyWorkspaceRecoveryWake } from "../services/recovery/workspace-creator.js";
 import { workspaceCreatorDelivery } from "../services/recovery/workspace-creator-delivery.js";
@@ -108,24 +109,22 @@ describe("workspace creator recovery", () => {
     expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toHaveLength(0);
   });
 
-  it("steers Codex once and reconciles an uncertain send from its original receipt", async () => {
+  it.each(["codex", "claude"])("shared-worktree rule: busy %s main completes before recovery notification", async provider => {
     const f = await fixture(); await f.route();
-    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.originRunId));
-    await db.update(issues).set({ executionRunId: f.originRunId }).where(eq(issues.id, f.conversationId));
-    const s = creatorRecovery((await f.read()).evidence)!;
-    steering.state.mockResolvedValue({ disposition: "available", turnId: "turn-1", nativeSessionId: "thread-1", bridgeSessionId: "bridge-1" });
-    steering.send.mockImplementationOnce(async () => {
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, s.noticeWakeId)))[0].payload?.bridgeChatSteering).toMatchObject({ status: "sending" });
-      throw new Error("lost ack");
-    });
-    steering.receipt.mockResolvedValue(null);
-    const owner = { wakeup: vi.fn(), cancelRun: vi.fn(), schedulingSuppressed: async () => false };
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null,
+      runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: { role: "main", provider } } },
+    }).where(eq(heartbeatRuns.id, f.originRunId));
+    const owner = { wakeup: vi.fn().mockRejectedValue(new Error("lost response")), cancelRun: vi.fn(), schedulingSuppressed: async () => false };
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
+    const waiting = await f.read();
+    expect(creatorRecovery(waiting.evidence)?.delivery.status).toBe("waiting_main");
+    await workspaceCreatorDelivery(db, owner).check(f.action.id);
+    expect((await f.read()).updatedAt).toEqual(waiting.updatedAt);
+    expect(owner.cancelRun).not.toHaveBeenCalled(); expect(owner.wakeup).not.toHaveBeenCalled(); expect(steering.send).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.originRunId));
+    await workspaceCreatorDelivery(db, owner).check(f.action.id);
+    expect(owner.wakeup).toHaveBeenCalledTimes(1);
     expect(creatorRecovery((await f.read()).evidence)?.delivery.status).toBe("uncertain");
-    steering.receipt.mockResolvedValue({ status: "acknowledged", turnId: "turn-1" });
-    await workspaceCreatorDelivery(db, owner).check(f.action.id);
-    expect(creatorRecovery((await f.read()).evidence)?.delivery.status).toBe("acknowledged");
-    expect(steering.send).toHaveBeenCalledTimes(1); expect(owner.cancelRun).not.toHaveBeenCalled(); expect(owner.wakeup).not.toHaveBeenCalled();
   });
 
   it.each(["valid", "source_cancelled", "forged_wake", "injected_comment"] as const)(
@@ -164,6 +163,134 @@ describe("workspace creator recovery", () => {
       })).toMatchObject({ outcome: fault === "valid" ? "not_stale" : "cancelled" });
     });
 
+  it("admits a real creator notice after a settled Claude interruption", async () => {
+    const f = await fixture(), root = await mkdtemp(join(tmpdir(), "creator-interrupt-"));
+    vi.stubEnv("PAPERCLIP_HOME", join(root, "home"));
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "false");
+    const heartbeat = heartbeatService(db);
+    try {
+      await db.insert(authUsers).values({ id: f.owner, name: "Owner", email: f.owner + "@example.test", createdAt: new Date(), updatedAt: new Date() });
+      await db.update(companies).set({ defaultResponsibleUserId: f.owner }).where(eq(companies.id, f.companyId));
+      await db.update(projectWorkspaces).set({ cwd: root }).where(eq(projectWorkspaces.id, f.workspace.id));
+      await db.insert(companyMemberships).values([f.mainId, f.workerId].map(principalId => ({ companyId: f.companyId, principalType: "agent", principalId, status: "active", membershipRole: "member" })));
+      await db.update(agents).set({ adapterConfig: { cwd: root, role: "main", provider: "claude", projectId: f.projectId } }).where(eq(agents.id, f.mainId));
+      await db.update(issues).set({ workspaceSelection: { version: 1, source: "explicit", selection: { kind: "session_only" } } }).where(eq(issues.id, f.conversationId));
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+      await f.route();
+      const state = creatorRecovery((await f.read()).evidence)!;
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), runtimeMode: "legacy", resultJson: {
+        operatorInterrupted: true, interruptedByActorType: "system", workspaceRecoveryActionId: f.action.id,
+        nativeSessionId: "original-thread", bridgeSessionId: "original-card", executionCancellation: {
+          state: "acknowledged", forced: false, acknowledgedAt: new Date().toISOString() },
+      }, runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: { role: "main", provider: "claude" } } }
+      }).where(eq(heartbeatRuns.id, f.originRunId));
+      await db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, f.conversationId));
+      await db.update(issueRecoveryActions).set({ evidence: { ...(await f.read()).evidence, creatorRecovery: {
+        ...state, delivery: { status: "interrupting", method: "interrupt", targetRunId: f.originRunId, targetIssueId: f.conversationId },
+      } } }).where(eq(issueRecoveryActions.id, f.action.id));
+      let wakeError: unknown;
+      const wakeup = async (...args: Parameters<typeof heartbeat.wakeup>) => {
+        try { return await heartbeat.wakeup(...args); } catch (error) { wakeError = error; throw error; }
+      };
+      await workspaceCreatorDelivery(db, { wakeup, cancelRun: vi.fn(), schedulingSuppressed: async () => false }).check(f.action.id);
+      expect(wakeError).toBeUndefined();
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, state.noticeWakeId));
+      expect(receipt).toBeDefined();
+      expect(receipt.runId).toBeTruthy();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(await heartbeat.getRun(receipt.runId!)).toMatchObject({ status: "succeeded" });
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      await drainHeartbeatRunsToQuiescence(db, heartbeat); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it("rechecks a proved unattempted notice only after the Owner hold clears", async () => {
+    const f = await fixture(); await f.route();
+    const owner = { wakeup: vi.fn(), cancelRun: vi.fn(), schedulingSuppressed: async () => false };
+    const delivery = workspaceCreatorDelivery(db, owner);
+    await db.update(agents).set({ lifecycleHolds: ["manual"] }).where(eq(agents.id, f.mainId));
+    await delivery.check(f.action.id);
+    let current = await f.read();
+    const state = creatorRecovery(current.evidence)!;
+    expect(current.evidence.workspaceDeliveryRejections).toMatchObject({ [state.noticeWakeId]: { stage: "before_preparation" } });
+    const recheck = (requestKey: string) => delivery.recheck({ companyId: f.companyId, issueId: f.taskId, actionId: f.action.id,
+      failedRunId: f.failedRunId, expectedActionUpdatedAt: current.updatedAt.toISOString(), requestKey });
+    await recheck("held"); current = await f.read();
+    expect(current.evidence.workspaceDeliveryRecheck).toMatchObject({ outcome: "admission_blocked" });
+    expect(creatorRecovery(current.evidence)?.delivery.status).toBe("needs_owner");
+    await db.update(agents).set({ lifecycleHolds: [] }).where(eq(agents.id, f.mainId));
+    await recheck("released"); current = await f.read();
+    expect(creatorRecovery(current.evidence)).toMatchObject({ noticeWakeId: state.noticeWakeId, delivery: { status: "pending" } });
+    expect(owner.wakeup).not.toHaveBeenCalled(); expect(owner.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("persists real queue pre-reservation rejection and rechecks once without bypassing Owner decisions", async () => {
+    const f = await fixture();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    await db.insert(authUsers).values({ id: f.owner, name: "Owner", email: f.owner + "@example.test", createdAt: new Date(), updatedAt: new Date() });
+    await db.update(companies).set({ defaultResponsibleUserId: f.owner }).where(eq(companies.id, f.companyId));
+    await db.insert(companyMemberships).values([f.mainId, f.workerId].map(principalId => ({ companyId: f.companyId, principalType: "agent", principalId, status: "active", membershipRole: "member" })));
+    await f.route();
+    const heartbeat = heartbeatService(db), state = creatorRecovery((await f.read()).evidence)!;
+    let questionId: string | undefined;
+    const wakeup = vi.fn(async (...args: Parameters<typeof heartbeat.wakeup>) => {
+      const [question] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.conversationId,
+        kind: "request_confirmation", requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+        payload: { version: 1, prompt: "Authorize external account access" } }).returning();
+      questionId = question.id;
+      return heartbeat.wakeup(...args);
+    });
+    const delivery = workspaceCreatorDelivery(db, { wakeup, cancelRun: vi.fn(), schedulingSuppressed: async () => false });
+    await delivery.check(f.action.id);
+    let current = await f.read();
+    expect(current.evidence.workspaceDeliveryRejections).toMatchObject({ [state.noticeWakeId]: {
+      stage: "before_reservation", reason: "Workspace recovery notice is stale", wakeId: state.noticeWakeId } });
+    expect(creatorRecovery(current.evidence)?.delivery.status).toBe("needs_owner");
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, state.noticeWakeId))).toHaveLength(0);
+    const recheck = (key: string) => delivery.recheck({ companyId: f.companyId, issueId: f.taskId, actionId: f.action.id,
+      failedRunId: f.failedRunId, expectedActionUpdatedAt: current.updatedAt.toISOString(), requestKey: key });
+    await recheck("still-held");
+    current = await f.read(); expect(creatorRecovery(current.evidence)?.delivery.status).toBe("needs_owner");
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, questionId!)))[0].status).toBe("pending");
+    // Simulate the human resolving their own decision, not a recovery bypass.
+    await db.update(issueThreadInteractions).set({ status: "resolved" }).where(eq(issueThreadInteractions.id, questionId!));
+    await recheck("owner-resolved");
+    current = await f.read(); expect(creatorRecovery(current.evidence)?.delivery.status).toBe("pending");
+    expect(creatorRecovery(current.evidence)?.noticeWakeId).toBe(state.noticeWakeId);
+    await recheck("owner-resolved");
+    expect(wakeup).toHaveBeenCalledTimes(1); expect(execute).not.toHaveBeenCalled();
+    wakeup.mockImplementation(async () => { throw new Error("transaction response lost"); });
+    await delivery.check(f.action.id);
+    current = await f.read();
+    await recheck("later-unknown-attempt");
+    expect(creatorRecovery((await f.read()).evidence)?.delivery.status).toBe("uncertain");
+    await delivery.check(f.action.id);
+    expect(wakeup).toHaveBeenCalledTimes(2); // Old rejection is not authority for a new uncertain attempt.
+  });
+
+  it.each(["ambient", "foreign_run", "accepted"])("creator acknowledgement requires exact input proof: %s", async kind => {
+    const f = await fixture(); await f.route();
+    const state = creatorRecovery((await f.read()).evidence)!;
+    const wakeup = vi.fn(async (agentId, opts) => {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId, issueId: f.conversationId,
+        status: "succeeded", finishedAt: new Date(), contextSnapshot: opts.contextSnapshot,
+        resultJson: { nativeSessionId: "resident-thread", bridgeSessionId: "card", nativeTurnId: "old-turn",
+          ...(kind === "ambient" ? {} : { bridgeInputReceipt: { schema: "paperclip.bridge-input.v1",
+            runId: kind === "foreign_run" ? randomUUID() : runId, nativeSessionId: "resident-thread", bridgeSessionId: "card",
+            clientMessageId: runId, acceptedSeq: 1 } }) } });
+      await db.insert(agentWakeupRequests).values({ id: state.noticeWakeId, companyId: f.companyId, agentId,
+        source: "automation", triggerDetail: "system", reason: opts.reason, requestedByActorType: "system",
+        requestedByActorId: f.action.id, status: "completed", runId, payload: opts.payload });
+    });
+    const owner = { wakeup, cancelRun: vi.fn(), schedulingSuppressed: async () => false };
+    await workspaceCreatorDelivery(db, owner).check(f.action.id);
+    expect(creatorRecovery((await f.read()).evidence)?.delivery.status).toBe(kind === "accepted" ? "acknowledged" : "uncertain");
+    await workspaceCreatorDelivery(db, owner).check(f.action.id);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("a lost idle wake response never starts a second wake", async () => {
     const f = await fixture(); await f.route();
     const owner = { wakeup: vi.fn().mockRejectedValue(new Error("unknown")), cancelRun: vi.fn(), schedulingSuppressed: async () => false };
@@ -171,6 +298,12 @@ describe("workspace creator recovery", () => {
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
     expect(owner.wakeup).toHaveBeenCalledTimes(1);
     expect(creatorRecovery((await f.read()).evidence)?.delivery.status).toBe("uncertain");
+    const current = await f.read();
+    await workspaceCreatorDelivery(db, owner).recheck({ companyId: f.companyId, issueId: f.taskId,
+      actionId: f.action.id, failedRunId: f.failedRunId, expectedActionUpdatedAt: current.updatedAt.toISOString(), requestKey: "unknown-recheck" });
+    await workspaceCreatorDelivery(db, owner).check(f.action.id);
+    expect(owner.wakeup).toHaveBeenCalledTimes(1);
+    expect((await f.read()).evidence.workspaceDeliveryRecheck).toMatchObject({ outcome: "delivery_unknown" });
   });
 
   it("resolve persists one recovery admission receipt and rejects stale/reused intent", async () => {
@@ -226,53 +359,36 @@ describe("workspace creator recovery", () => {
     expect(owner.wakeup).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["acknowledged", "requested", "forced", "failed"])("Claude interruption preserves %s stop evidence and never interrupts twice", async stop => {
+  it.each(["acknowledged", "requested", "forced", "failed"])("reconciles legacy %s interruption without issuing another stop", async stop => {
     const f = await fixture(); await f.route();
-    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, runtimeMode: "legacy",
+    const state = creatorRecovery((await f.read()).evidence)!;
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), runtimeMode: "legacy",
+      resultJson: { workspaceRecoveryActionId: f.action.id, interruptedByActorType: "system",
+        nativeSessionId: "original-thread", bridgeSessionId: "original-card", executionCancellation: {
+          state: stop === "requested" || stop === "failed" ? "requested" : "acknowledged",
+          forced: stop === "forced" || stop === "failed", acknowledgedAt: new Date().toISOString() } },
       runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: { role: "main", provider: "claude" } } },
     }).where(eq(heartbeatRuns.id, f.originRunId));
-    const cancelRun = vi.fn(async (_id, _reason, options) => {
-      if (stop === "failed") throw new Error("stop response lost");
-      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), resultJson: { ...options.resultJson,
-        nativeSessionId: "original-thread", bridgeSessionId: "original-card", executionCancellation: {
-          state: stop === "requested" ? "requested" : "acknowledged", forced: stop === "forced", acknowledgedAt: new Date().toISOString() },
-      } }).where(eq(heartbeatRuns.id, f.originRunId));
-    });
-    const owner = { wakeup: vi.fn().mockRejectedValue(new Error("lost wake response")), cancelRun, schedulingSuppressed: async () => false };
+    await db.update(issueRecoveryActions).set({ evidence: { ...(await f.read()).evidence, creatorRecovery: { ...state,
+      delivery: { status: "interrupting", method: "interrupt", targetRunId: f.originRunId, targetIssueId: f.conversationId } } } })
+      .where(eq(issueRecoveryActions.id, f.action.id));
+    const owner = { wakeup: vi.fn().mockRejectedValue(new Error("lost wake response")), cancelRun: vi.fn(), schedulingSuppressed: async () => false };
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
-    expect(cancelRun).toHaveBeenCalledTimes(1);
+    expect(owner.cancelRun).not.toHaveBeenCalled();
     expect(owner.wakeup).toHaveBeenCalledTimes(["acknowledged", "requested"].includes(stop) ? 1 : 0);
-    if (owner.wakeup.mock.calls.length) expect(owner.wakeup.mock.calls[0][1].contextSnapshot.issueId).toBe(f.conversationId);
   });
 
-  it("returns to the original Chat before restoring a preempted task through its own receipt", async () => {
+  it("shared-worktree rule: main working on another task is never preempted by recovery", async () => {
     const f = await fixture(); await f.route();
-    const otherId = randomUUID(), otherRunId = randomUUID();
+    const otherId = randomUUID();
     await db.insert(issues).values({ id: otherId, companyId: f.companyId, projectId: f.projectId, title: "Other work", status: "in_progress", assigneeAgentId: f.mainId });
-    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: f.companyId, issueId: otherId, agentId: f.mainId, status: "running",
-      runtimeMode: "legacy", contextSnapshot: { issueId: otherId }, runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" } } });
-    const cancelRun = vi.fn(async (id, _reason, options) => {
-      expect(id).toBe(otherRunId);
-      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), resultJson: { ...options.resultJson,
-        executionCancellation: { state: "acknowledged", forced: false, acknowledgedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, id));
-    });
-    const wakeup = vi.fn(async (agentId, options) => {
-      const receipt = options.workspaceRecoveryRequest;
-      await verifyWorkspaceRecoveryWake(db, { companyId: f.companyId, issueId: options.payload.issueId, agentId,
-        actorType: options.requestedByActorType, actorId: options.requestedByActorId, reason: options.reason, request: receipt });
-      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, issueId: options.payload.issueId,
-        status: "succeeded", finishedAt: new Date(), resultJson: { nativeSessionId: "original-chat-thread", nativeTurnId: "turn" } }).returning();
-      await db.insert(agentWakeupRequests).values({ id: receipt.id, companyId: f.companyId, agentId, source: "automation",
-        requestedByActorType: "system", requestedByActorId: f.action.id, payload: options.payload, reason: options.reason, status: "completed", runId: run.id });
-    });
-    const owner = { wakeup, cancelRun, schedulingSuppressed: async () => false };
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, issueId: otherId, agentId: f.mainId, status: "running" });
+    const owner = { wakeup: vi.fn(), cancelRun: vi.fn(), schedulingSuppressed: async () => false };
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
-    await Promise.all([workspaceCreatorDelivery(db, owner).check(f.action.id), workspaceCreatorDelivery(db, owner).check(f.action.id)]);
-    await workspaceCreatorDelivery(db, owner).check(f.action.id);
-    expect(cancelRun).toHaveBeenCalledTimes(1);
-    expect(wakeup.mock.calls.map(([,o]) => o.payload.issueId)).toEqual([f.conversationId, otherId]);
-    expect(wakeup.mock.calls[0][1].contextSnapshot.paperclipChatPreemption.preemptedRunId).toBe(otherRunId);
+    const state = creatorRecovery((await f.read()).evidence)!;
+    expect(state.delivery.status).toBe("waiting_main"); expect(state.preemption).toBeUndefined();
+    expect(owner.cancelRun).not.toHaveBeenCalled(); expect(owner.wakeup).not.toHaveBeenCalled();
   });
 
   it("admits at most three distinct failures across actions, counting pending and uncertain receipts", async () => {
@@ -473,7 +589,7 @@ describe("workspace creator recovery", () => {
     await expect(reconcileWorkspaceHolder(db, input, reverify, { observe: boot(3600) })).rejects.toThrow(/holderless/);
   });
 
-  it("runs full failure, creator repair and original worker admission while preserving dirty files", async () => {
+  it("runs full failure, main-created linked worktree repair and original worker admission while preserving dirty files", async () => {
     const f = await fixture(), root = await mkdtemp(join(tmpdir(), "workspace-admission-"));
     vi.stubEnv("PAPERCLIP_HOME", join(root, "home")); vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "false");
     const heartbeat = heartbeatService(db);
@@ -481,11 +597,16 @@ describe("workspace creator recovery", () => {
       const dirty = join(root, "dirty"), clean = join(root, "clean");
       await mkdir(dirty); await mkdir(clean);
       execFileSync("git", ["init", "--initial-branch=main", dirty], { stdio: "ignore" });
+      execFileSync("git", ["-C", dirty, "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "initial"], { stdio: "ignore" });
       await writeFile(join(dirty,"draft.txt"), "another task's unchanged work");
+      const treeParent = join(root, "trees"); await mkdir(treeParent);
+      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true,
+        workspaceStrategy: { type: "git_worktree", worktreeParentDir: treeParent } } }).where(eq(projects.id, f.projectId));
+      const selectedWorkspaceId = randomUUID();
       await db.insert(authUsers).values({ id: f.owner, name: "Owner", email: f.owner + "@example.test", createdAt: new Date(), updatedAt: new Date() });
       await db.update(companies).set({ defaultResponsibleUserId: f.owner }).where(eq(companies.id, f.companyId));
+      await db.update(projectWorkspaces).set({ cwd: root }).where(eq(projectWorkspaces.id, f.workspace.id));
       await db.update(projectWorkspaces).set({ cwd: dirty, isPrimary: true, sourceType: "local_path" }).where(eq(projectWorkspaces.id, f.workspace.id));
-      const [replacement] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Other development source", cwd: clean, sourceType: "local_path" }).returning();
       await db.insert(companyMemberships).values([f.mainId, f.workerId].map(principalId => ({ companyId: f.companyId, principalType: "agent", principalId, status: "active", membershipRole: "member" })));
       await db.update(agents).set({ adapterConfig: { cwd: clean, role: "main", provider: "claude", projectId: f.projectId } }).where(eq(agents.id, f.mainId));
       await db.update(agents).set({ adapterConfig: { cwd: dirty }, runtimeConfig: { requireProjectWorkspace: true } }).where(eq(agents.id, f.workerId));
@@ -509,6 +630,9 @@ describe("workspace creator recovery", () => {
       expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.conversationId))).toHaveLength(0);
       const delivery = workspaceCreatorDelivery(db, { wakeup: heartbeat.wakeup, cancelRun: heartbeat.cancelRun, schedulingSuppressed: async () => false });
       execute.mockImplementation(async input => {
+        await input.onSessionAuthority({ hostId: "fixture-host", provider: "claude",
+          nativeSessionId: "fixture-native-" + input.agent.id, bridgeSessionId: "fixture-bridge-" + input.agent.id,
+          operationId: randomUUID(), expectedGeneration: 0, expectedPreviousRunId: null });
         if (input.agent.id === f.mainId) {
           const current = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0];
           const state = creatorRecovery(current.evidence)!;
@@ -517,16 +641,31 @@ describe("workspace creator recovery", () => {
           const app = express(); app.use(express.json()); app.use((req,_res,next) => {
             req.actor = { type: "agent", source: "agent_jwt", companyId: f.companyId, agentId: f.mainId, runId: input.runId }; next();
           }); app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
+          const worktrees = mainManagedWorktreeService(db);
+          const scope = { companyId: f.companyId, projectId: f.projectId, workspaceId: selectedWorkspaceId,
+            actor: { type: "agent" as const, source: "agent_jwt" as const, companyId: f.companyId,
+              agentId: f.mainId, runId: input.runId, onBehalfOfUserId: f.owner } };
+          const expectedHead = execFileSync("git", ["-C", dirty, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+          await worktrees.operate(scope, { action: "create", operationId: randomUUID(), expectedGeneration: 0,
+            expectedHead, expectedTargetHead: expectedHead,
+            projectWorkspaceId: f.workspace.id, name: "repair", branch: "repair", targetBranch: "main" });
+          const [registered] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, selectedWorkspaceId));
+          await worktrees.operate(scope, { action: "set_default", operationId: randomUUID(),
+            expectedGeneration: Number(registered.metadata?.lifecycleGeneration ?? 0) });
           const response = await request(app).post("/api/issues/" + f.taskId + "/recovery-actions/resolve").send({ actionId: action.id,
             outcome: "restored", sourceIssueStatus: "todo", resolutionNote: "Select another authorized source; preserve existing draft.",
             workspaceRepair: { failedRunId: failed!.id, expectedBindingRevision: 0,
-              selection: { kind: "configured_source", projectWorkspaceId: replacement.id, mode: "shared" } } });
+              selection: { kind: "existing", workspaceId: selectedWorkspaceId } } });
           expect(response.body.error ?? response.status).toBe(200);
         } else {
-          expect(input.context.paperclipWorkspace.cwd).toBe(clean);
+          expect(input.context.managedWorktreeParticipation.workspaceId).toBe(selectedWorkspaceId);
+          expect(input.context.paperclipWorkspace.cwd).toBe(join(treeParent, "repair"));
           await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.taskId));
         }
-        return { exitCode: 0, signal: null, timedOut: false, resultJson: { nativeSessionId: "fixture-native-session", nativeTurnId: input.runId } };
+        return { exitCode: 0, signal: null, timedOut: false, resultJson: { nativeSessionId: "fixture-native-" + input.agent.id, bridgeSessionId: "fixture-bridge-" + input.agent.id,
+          nativeTurnId: input.runId, bridgeInputReceipt: { schema: "paperclip.bridge-input.v1", runId: input.runId,
+            nativeSessionId: "fixture-native-" + input.agent.id, bridgeSessionId: "fixture-bridge-" + input.agent.id,
+            clientMessageId: input.runId, acceptedSeq: 1 } } };
       });
       await delivery.check(action.id);
       if (!creatorRecovery((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].evidence)) await delivery.check(action.id);
@@ -541,7 +680,7 @@ describe("workspace creator recovery", () => {
       const diagnostic = { action: (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0],
         wakes: await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,f.companyId)),
         runs: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.companyId))).map(r => ({ id:r.id, status:r.status, error:r.error, result:r.resultJson })) };
-      expect(task, JSON.stringify(diagnostic)).toMatchObject({ status: "done", assigneeAgentId: f.workerId, projectWorkspaceId: replacement.id });
+      expect(task, JSON.stringify(diagnostic)).toMatchObject({ status: "done", assigneeAgentId: f.workerId, executionWorkspaceId: selectedWorkspaceId });
       expect(execute.mock.calls.map(([input]) => input.agent.id)).toEqual([f.mainId, f.workerId]);
       expect(await readFile(join(dirty,"draft.txt"), "utf8")).toBe("another task's unchanged work");
     } finally {

@@ -4564,18 +4564,23 @@ Evidence includes the configured source, physical path, previous holder, binding
 or cleanup evidence, human approvals and manual holds leave Owner recovery in place.
 
 `workspace-creator-delivery.ts` uses the existing delivery coordinator and durable wake receipts.
-It persists a system-authored `workspace_recovery` comment and delivery intent before I/O. Codex
-steers the exact active Chat turn; other Bridge harnesses use the original stop/handoff contract.
-Another task of that main agent is preempted through Chat priority and restored by its recorded
-receipt. Pauses, termination and maintenance drains remain authoritative. Unknown outcomes inspect
+It persists a system-authored `workspace_recovery` comment and delivery intent before I/O.
+A busy main waits for its completion event; a recovery notice never interrupts that
+main merely to deliver another blocker. Historical interrupt/steer receipts remain
+reconcilable without repeating their operations. Pauses, termination and maintenance drains remain authoritative. Unknown outcomes inspect
 the original receipt without resending or switching delivery paths. No watchdog or polling service
 is added. The recovery card distinguishes pending, acknowledged, uncertain and Owner-required states.
+Acknowledgement requires the original run's matching paperclip.bridge-input.v1
+receipt; native session/turn identity alone does not prove delivery.
 The shared task detail page mounts this card for system-attributed failures in both new Task Chat
 and classic Chat, suppressing the nested duplicate card and generic Retry banner. Sealed candidate
 HTTP/UI acceptance covers the four delivery states and mobile page-level wiring.
 
 `POST /api/issues/:id/recovery-actions/resolve` accepts `workspaceRepair` with `failedRunId`,
-`expectedBindingRevision` and optional `selection` (an existing same-project configured source).
+`expectedBindingRevision` and optional `selection`: `existing` with the ID of an
+open registered linked worktree, or `session_only` for external-resource work.
+The normal selection service validates project/access/lifecycle constraints in
+the same transaction; the repair endpoint cannot bypass them.
 Bind `actionId`, `outcome: restored`, `sourceIssueStatus: todo` and `resolutionNote`. The original
 creator's current Chat run or board may resolve it. The transaction checks ownership, latest failure,
 holds, pending decisions and revision, stores selection intent, and records one worker admission.
@@ -4596,6 +4601,14 @@ Historical failures are not automatically forwarded. The Owner-only
 `expectedActionUpdatedAt` (ISO action revision) and UUID `requestKey`. It may capture bounded
 diagnostics from an unchanged local configured source for the original top-level unsaved-checkout
 error, preserving the failed run. Reconcile the same request if its response is lost.
+With `recheckDelivery: true`, that same Owner-only endpoint rechecks the original
+delivery under the action revision and request identity. It does not grant
+permission to resend uncertain input or dismiss human decisions.
+Each request key retains before/after state. Only a recorded rejection before
+wakeup or queue reservation proves non-delivery and permits reopening the same
+notice. Historical caught errors without that evidence remain unknown.
+The Owner-facing recovery card offers a receipt recheck with a stable request key
+per action revision; it does not offer generic task replay for creator recovery.
 
 `POST /api/issues/:id/workspace/reconcile-holder` accepts `waitingRunId`, `holderRunId` and
 `expectedBindingRevision`. The project's current main agent can reverify a terminal holder named

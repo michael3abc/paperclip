@@ -17,6 +17,7 @@ import { accessService } from "./access.js";
 import { type AuthorizationActor, canActorReadExecutionWorkspace } from "./authorization.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
+import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { mainAgentProjectId } from "./main-agent-workers.js";
 import { unsettledWorkspaceHolders } from "./heartbeat/shared-checkout.js";
 import { logActivity } from "./activity-log.js";
@@ -165,7 +166,8 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           const [project] = await connection.select().from(projects).where(and(eq(projects.id, scope.projectId), eq(projects.companyId, scope.companyId)));
           const [issue] = await connection.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, scope.companyId), eq(issues.projectId, scope.projectId)));
           if (!run || agentRunWritesRevoked(run) || !agent || agent.lifecycleState !== "ready" || agent.lifecycleHolds.length
-            || !["running", "idle"].includes(agent.status) || !project || project.pausedAt || project.archivedAt
+            || agent.pauseReason || !(await evaluateAgentInvokabilityFromDb(connection, agent)).invokable
+            || !project || project.pausedAt || project.archivedAt
             || !issue || ["done", "cancelled"].includes(issue.status)) fail("worktree_run_no_longer_admitted");
           return run;
         };

@@ -10038,6 +10038,13 @@ export function issueRoutes(
       assigneeAgentId: existing.assigneeAgentId, assigneeUserId: existing.assigneeUserId,
     } });
     if (!decision.allowed) throw forbidden(decision.explanation);
+    if (req.body.recheckDelivery === true) {
+      const result = await heartbeat.recheckWorkspaceCreatorDelivery({ companyId: existing.companyId, issueId: existing.id,
+        actionId: req.body.actionId, failedRunId: req.body.failedRunId,
+        expectedActionUpdatedAt: req.body.expectedActionUpdatedAt, requestKey: req.body.requestKey, actorUserId: req.actor.userId });
+      res.json({ recoveryAction: result });
+      return;
+    }
     const result = await db.transaction(async tx => {
       const [task] = await tx.select().from(issueRows).where(and(eq(issueRows.id, existing.id), eq(issueRows.companyId, existing.companyId))).for("update");
       const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.id, req.body.actionId),

@@ -11309,7 +11309,7 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post", path: "/api/issues/{id}/recovery-actions/notify-creator", tags: ["issues"],
-  summary: "Owner forwards one original workspace startup failure to its creator", body: notifyWorkspaceCreatorSchema,
+  summary: "Owner forwards a workspace startup failure or rechecks its original creator delivery receipt", body: notifyWorkspaceCreatorSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 registerCurrentRoute({

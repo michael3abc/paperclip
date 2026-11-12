@@ -155,13 +155,43 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     }
   });
 
+  async function registeredSharedFixture() {
+    const f = await fixture();
+    const parent = join(home, `managed-${f.issue.projectId}`); await mkdir(parent);
+    const cwd = join(parent, "shared");
+    await execFile("git", ["-C", f.source, "worktree", "add", "-b", "shared", cwd]);
+    await db.update(projects).set({ executionWorkspacePolicy: { enabled: true,
+      workspaceStrategy: { type: "git_worktree", worktreeParentDir: parent } } })
+      .where(eq(projects.id, f.issue.projectId!));
+    const workspaceId = randomUUID();
+    await mainManagedWorktreeService(db).operate({ companyId: f.issue.companyId, projectId: f.issue.projectId!, workspaceId,
+      actor: { type: "board", source: "local_implicit", isInstanceAdmin: true } },
+    { action: "register", operationId: randomUUID(), expectedGeneration: 0,
+      projectWorkspaceId: f.issue.projectWorkspaceId!, name: "shared", branch: "shared", targetBranch: "main" });
+    const workspace = (await f.input.services.executionWorkspacesSvc.getStoredById(f.issue.companyId, workspaceId))!;
+    async function select(input: HeartbeatWorkspacePreparationInput) {
+      await input.services.executionWorkspacesSvc.bindTaskWorkspace(f.issue.companyId, input.task.issueId!, workspaceId);
+      input.task.issueRef = await readIssue(input.task.issueId!);
+      input.reuse = { ...input.reuse, requestedShouldReuseExisting: true, existingExecutionWorkspace: workspace,
+        reusableExistingExecutionWorkspace: workspace, workspaceReuseRequest: resolveExecutionWorkspaceReuseRequestForIssue({
+          issueExecutionWorkspaceId: workspaceId, issueExecutionWorkspacePreference: "reuse_existing",
+          existingExecutionWorkspaceStatus: workspace.status }) };
+    }
+    return { ...f, cwd, workspaceId, select };
+  }
+
   it("admits ordinary adapters using one source with independent environment leases", async () => {
-    const { input } = await fixture();
+    // New contract: cooperative code execution selects an open main-registered linked tree.
+    const { input, cwd, workspaceId, select } = await registeredSharedFixture();
     const second = await sibling(input);
-    await prepareHeartbeatWorkspace(db,input);
+    await select(input); await select(second);
+    expect((await prepareHeartbeatWorkspace(db, input)).executionWorkspace.cwd).toBe(cwd);
     const acquire = vi.spyOn(second.services.envOrchestrator,"acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db,second)).resolves.toBeDefined();
+    await expect(prepareHeartbeatWorkspace(db,second)).resolves.toMatchObject({
+      persistedExecutionWorkspace: { id: workspaceId }, executionWorkspace: { cwd } });
     expect(acquire).toHaveBeenCalledTimes(1);
+    expect(await leases(input.run.id)).toMatchObject([{ status: "active" }]);
+    expect(await leases(second.run.id)).toMatchObject([{ status: "active" }]);
   });
 
   it("prepares one main-managed linked tree for multiple tasks without provisioning or changing shared files", async () => {
@@ -2224,18 +2254,18 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it("admits independent sessions at the same fixed path with separate leases", async () => {
-    const { input, source, issue } = await fixture();
+    // New contract: fixed session cwd stays at its source; execution joins a registered linked tree.
+    const { input, source, cwd, workspaceId, select } = await registeredSharedFixture();
     input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
-    const [secondIssue] = await db.insert(issues).values({ companyId: issue.companyId, projectId: issue.projectId,
-      projectWorkspaceId: issue.projectWorkspaceId, title: "Parallel task", assigneeAgentId: input.agent.id }).returning();
-    const [secondRun] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId, agentId: input.agent.id, issueId: secondIssue.id, scopeKind: "issue", status: "running" }).returning();
-    const second: HeartbeatWorkspacePreparationInput = { ...input, run: secondRun, nativeRunnerPreparationSpans: [],
-      task: { ...input.task, issueId: secondIssue.id, issueRef: secondIssue, context: { issueId: secondIssue.id } } };
+    const second = await sibling(input);
+    await select(input); await select(second);
     const first = await prepareHeartbeatWorkspace(db, input);
-    expect(first.executionWorkspace.cwd).toBe(source);
-    await expect(prepareHeartbeatWorkspace(db, second)).resolves.toBeDefined();
+    expect(first.executionWorkspace.cwd).toBe(cwd);
+    await expect(prepareHeartbeatWorkspace(db, second)).resolves.toMatchObject({
+      persistedExecutionWorkspace: { id: workspaceId }, executionWorkspace: { cwd } });
+    expect(input.agent.runtimeConfig).toMatchObject({ workspaceBinding: { cwd: source } });
     expect(await leases(input.run.id)).toMatchObject([{ status: "active" }]);
-    expect(await leases(secondRun.id)).toMatchObject([{ status: "active" }]);
+    expect(await leases(second.run.id)).toMatchObject([{ status: "active" }]);
   });
 
   it.each(["missing", "project", "isolation", "external", "provision"])("rejects fixed workspace %s conflicts before acquiring a lease", async (kind) => {

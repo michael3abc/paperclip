@@ -83,6 +83,14 @@ blockers from the notification turn cannot recursively wake main. If the origina
 main/conversation/access no longer exists, responsibility remains visibly with
 Owner on the source recovery action. When original evidence later proves delivery
 or the blocker is resolved, only the matching pending system question is withdrawn.
+An explicit Owner creator-recovery recheck may also supersede an undelivered
+system question created after that recovery's exact acknowledged system
+interruption. The original Chat, generation, Owner, holds and provenance must
+still match. A sending deadline, durable wake/comment, human-authored/resolved
+card or unknown stop prevents this reconciliation. Withdrawal uses the interaction
+owner in the recheck transaction and retains the prior notice and caller receipt;
+it never answers a question, resends input or independently wakes main. The creator
+receipt retains superseded action IDs so those original blockers remain visible.
 The existing workspace-creator repair lane keeps its own receipts and is excluded
 from this lane to avoid duplicate notices or extra repair authority.
 

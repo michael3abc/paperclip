@@ -702,3 +702,14 @@ the failed c3b8a423d candidate receipt alongside the corrective validation.
   `artifacts/shared-worktree-20261112/recovery-failure-classification.json`.
   Follow-up validation selects affected cases with `-t`; do not rerun the entire
   recovery suite. This feature branch is not a production acceptance receipt.
+
+Recovery notification follow-up (2026-11-12): busy original mains receive workspace
+repair notices after completion without another system interruption. Durable
+pre-admission rejection receipts distinguish a verified unsent notice from an
+unknown delivery; Owner rechecks preserve the original identity and human gates.
+An obsolete, never-sent system blocker question may be withdrawn only with the
+exact acknowledged recovery interruption and Owner recheck. Withdrawal does not
+authorize replay. Repairs select a same-project registered open linked worktree
+or explicit session-only resources through the ordinary selection transaction.
+The prior deployed check's 11 fixture failures remain in their original receipt;
+focused replacements retain authority, cancellation and separate-lease assertions.

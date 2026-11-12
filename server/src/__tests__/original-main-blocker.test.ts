@@ -6,6 +6,7 @@ import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, 
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { MAIN_BLOCKER_REASON, mainBlockerKey, originalMainBlockerService, readMainBlockerNotice,
   registerOriginalMainBlockers, verifyMainBlockerWake, verifyMainBlockerRun } from "../services/recovery/main-blocker.js";
+import { reconcileMainBlockerQuestionsAfterCreatorInterruption } from "../services/recovery/main-blocker.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
@@ -56,6 +57,75 @@ describe("original main blocker delivery", () => {
     const cards = () => db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId));
     return { ...input, mainId, ownerId, conversationId, originRunId, taskId, failedRunId, action, read, owner, service, wakeup, cards };
   }
+  async function interruptedQuestion() {
+    const f = await fixture(), creatorActionId = randomUUID(), interruptedRunId = randomUUID();
+    const stoppedAt = new Date(Date.now() - 1000);
+    await db.insert(heartbeatRuns).values({ id: interruptedRunId, companyId: f.companyId, agentId: f.mainId,
+      issueId: f.conversationId, runtimeMode: "legacy", status: "cancelled", finishedAt: stoppedAt,
+      errorCode: "operator_interrupted", resultJson: { interruptionSource: "workspace_creator_recovery",
+        interruptedByActorType: "system", interruptedByActorId: creatorActionId,
+        workspaceRecoveryActionId: creatorActionId, interruptedIssueId: f.conversationId,
+        executionCancellation: { state: "acknowledged", forced: false, acknowledgedAt: stoppedAt.toISOString() } } });
+    await db.insert(issueRecoveryActions).values({ id: creatorActionId, companyId: f.companyId,
+      sourceIssueId: f.conversationId, kind: "workspace_validation", cause: "creator_fixture", fingerprint: randomUUID(),
+      nextAction: "Recheck", evidence: { creatorRecovery: { version: 1, responsibleUserId: f.ownerId,
+        creatorAgentId: f.mainId, conversationIssueId: f.conversationId, conversationGeneration: 0,
+        delivery: { status: "uncertain", targetRunId: interruptedRunId } } } });
+    const key = mainBlockerKey(f.action), notice = { key, mainAgentId: f.mainId, conversationIssueId: f.conversationId,
+      conversationGeneration: 0, wakeId: randomUUID(), commentId: randomUUID(), requestedAt: new Date().toISOString(),
+      sourceRunId: f.failedRunId, status: "needs_owner", reason: "original_main_session_blocked" };
+    await db.update(issueRecoveryActions).set({ status: "escalated", evidence: {
+      ...f.action.evidence, mainBlockerNotices: { [key]: notice } } }).where(eq(issueRecoveryActions.id, f.action.id));
+    await f.service.check(f.action.id);
+    const card = (await f.cards())[0];
+    const input = { companyId: f.companyId, creatorActionId, interruptedRunId, actorUserId: f.ownerId, requestKey: randomUUID() };
+    const recheck = () => db.transaction(tx => reconcileMainBlockerQuestionsAfterCreatorInterruption(tx as unknown as typeof db, input));
+    return { ...f, input, notice, card, recheck };
+  }
+  it("explicit Owner recheck supersedes only unsent platform-interruption cards, without waking main", async () => {
+    const f = await interruptedQuestion();
+    const results = await Promise.allSettled([f.recheck(), f.recheck()]);
+    expect(results.flatMap(r => r.status === "fulfilled" ? r.value.withdrawnInteractionIds : [])).toEqual([f.card.id]);
+    for (const r of results) if (r.status === "rejected") expect(r.reason.cause?.code ?? r.reason.code).toBe("55P03");
+    expect(await f.recheck()).toEqual({ withdrawnInteractionIds: [], supersededActionIds: [] });
+    expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "superseded",
+      recheck: { creatorActionId: f.input.creatorActionId, interruptedRunId: f.input.interruptedRunId,
+        previousNotice: { status: "needs_owner" } } });
+    expect((await f.cards())[0]).toMatchObject({ status: "cancelled", result: { outcome: "withdrawn" } });
+    await f.service.check(f.action.id); expect(f.wakeup).not.toHaveBeenCalled();
+    const [creator] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.input.creatorActionId));
+    expect((creator.evidence.creatorRecovery as any).delivery.status).toBe("uncertain");
+  });
+  it("explicit Owner recheck rolls question withdrawal back with the owning transaction", async () => {
+    const f = await interruptedQuestion();
+    await expect(db.transaction(async tx => {
+      expect((await reconcileMainBlockerQuestionsAfterCreatorInterruption(tx as unknown as typeof db, f.input)).withdrawnInteractionIds).toEqual([f.card.id]);
+      throw new Error("recheck rolled back");
+    })).rejects.toThrow("recheck rolled back");
+    expect((await f.cards())[0].status).toBe("pending");
+    expect(readMainBlockerNotice(await f.read())?.status).toBe("needs_owner");
+  });
+  it.each(["sending", "wake", "comment", "human", "answered", "hold", "generation", "unknown_stop", "older_card", "wrong_owner", "active"] as const)(
+    "explicit Owner recheck preserves original authority and uncertainty: %s", async fault => {
+      const f = await interruptedQuestion();
+      if (fault === "sending") await db.update(issueRecoveryActions).set({ evidence: { ...f.action.evidence,
+        mainBlockerNotices: { [f.notice.key]: { ...f.notice, receiptDeadlineAt: new Date().toISOString() } } } }).where(eq(issueRecoveryActions.id, f.action.id));
+      if (fault === "wake") await db.insert(agentWakeupRequests).values({ id: f.notice.wakeId, companyId: f.companyId,
+        agentId: f.mainId, source: "automation", status: "queued" });
+      if (fault === "comment") await db.insert(issueComments).values({ id: f.notice.commentId, companyId: f.companyId,
+        issueId: f.conversationId, authorType: "system", body: "Potential delivery" });
+      if (fault === "human") await db.update(issueThreadInteractions).set({ createdByUserId: f.ownerId }).where(eq(issueThreadInteractions.id, f.card.id));
+      if (fault === "answered") await db.update(issueThreadInteractions).set({ status: "answered" }).where(eq(issueThreadInteractions.id, f.card.id));
+      if (fault === "hold") await db.update(agents).set({ pauseReason: "manual", lifecycleHolds: ["manual"] }).where(eq(agents.id, f.mainId));
+      if (fault === "generation") await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, f.conversationId));
+      if (fault === "unknown_stop") await db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, f.input.interruptedRunId));
+      if (fault === "older_card") await db.update(issueThreadInteractions).set({ createdAt: new Date(0) }).where(eq(issueThreadInteractions.id, f.card.id));
+      if (fault === "wrong_owner") f.input.actorUserId = randomUUID();
+      if (fault === "active") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.originRunId));
+      expect(await f.recheck()).toEqual({ withdrawnInteractionIds: [], supersededActionIds: [] });
+      expect((await f.cards())[0].status).toBe(fault === "answered" ? "answered" : "pending");
+      expect(f.wakeup).not.toHaveBeenCalled();
+    });
   it("concurrent notifications produce one durable original-conversation wake", async () => {
     const f = await fixture();
     await Promise.all([f.service.check(f.action.id), originalMainBlockerService(db, f.owner).check(f.action.id)]);

@@ -1,16 +1,16 @@
-import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
-import { agentWakeupRequests, heartbeatRuns, issueComments, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
-import { bridgeChatSteeringService, bridgeSteeringAttempt, isCodexBridgeChatDispatch } from "../bridge-chat-steering.js";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { bridgeChatSteeringService, bridgeSteeringAttempt } from "../bridge-chat-steering.js";
 import { bridgeSessionHandoffFor, bridgeSessionStopAcknowledged } from "../explicit-native-continuation.js";
-import { queuedCommentQueueRevision } from "../issue-queued-comment-queue.js";
-import { findPreemptibleTaskRun, CHAT_PREEMPTION_CONTEXT_KEY } from "../chat-task-preemption.js";
+import { CHAT_PREEMPTION_CONTEXT_KEY } from "../chat-task-preemption.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import type { WakeupOptions } from "../heartbeat/run-preparation.js";
 import type { CancelRunOptions } from "../heartbeat/run-control.js";
-import { creatorRecovery, routeWorkspaceToCreator, inspectWorkspaceCreator, record, WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON,
+import { creatorRecovery, routeWorkspaceToCreator, inspectWorkspaceCreator, verifyWorkspaceRecoveryWake, record, WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON,
   WORKSPACE_RESUME_REASON, type CreatorRecovery, type WorkspaceRecoveryWake } from "./workspace-creator.js";
+import { reconcileMainBlockerQuestionsAfterCreatorInterruption } from "./main-blocker.js";
+import { conflict, HttpError } from "../../errors.js";
 
 type Action = typeof issueRecoveryActions.$inferSelect;
 type Owner = { wakeup(agentId: string, opts: WakeupOptions): Promise<unknown>;
@@ -48,13 +48,43 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
     const issueId = notice ? state.conversationIssueId : repair ? action.sourceIssueId : state.preemption!.issueId;
     const reason = notice ? WORKSPACE_CREATOR_REASON : repair ? WORKSPACE_REPAIR_REASON : WORKSPACE_RESUME_REASON;
     const agentId = repair ? state.workerAgentId : state.creatorAgentId;
-    const claimed = await update(action.id, s => notice ? { ...s, delivery: { ...s.delivery, status: "sending", wakeKey: id, wakeStartedAt: new Date().toISOString() } }
+    const attemptStartedAt = new Date().toISOString();
+    const claimed = await update(action.id, s => notice ? { ...s, delivery: { ...s.delivery, status: "sending", wakeKey: id, wakeStartedAt: attemptStartedAt } }
       : repair ? { ...s, repair: { ...s.repair!, status: "uncertain" } }
       : { ...s, preemption: { ...s.preemption!, status: "uncertain" } }, undefined,
       s => notice ? !s.delivery.wakeStartedAt && (["sending", "interrupting"].includes(s.delivery.status) ||
           (s.delivery.status === "uncertain" && s.delivery.method === "interrupt"))
         : repair ? s.repair?.status === "pending" : s.preemption?.status === "pending");
     if (!claimed) return;
+    async function rejectBeforeAdmission(error: HttpError, stage: "before_wakeup" | "before_reservation") {
+      await db.transaction(async tx => {
+        const [current] = await tx.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)).for("update");
+        const currentState = creatorRecovery(current?.evidence);
+        if (!currentState || (notice && (currentState.delivery.wakeStartedAt !== attemptStartedAt ||
+            currentState.delivery.status !== "sending" || !["active", "escalated"].includes(current.status)))) return;
+        const rejection = { schema: "paperclip.workspace-delivery-rejection/v1", phase, wakeId: id,
+          requestKey: currentState.requestKey, failedRunId: currentState.failedRunId, conversationGeneration: currentState.conversationGeneration,
+          rejectedAt: new Date().toISOString(), wakeStartedAt: currentState.delivery.wakeStartedAt, stage, status: error.status, reason: error.message };
+        await tx.update(issueRecoveryActions).set({ evidence: { ...current.evidence,
+          workspaceDeliveryRejections: { ...record(current.evidence.workspaceDeliveryRejections), [id]: rejection },
+          creatorRecovery: { ...currentState, ...(notice ? { delivery: { ...currentState.delivery,
+            status: "needs_owner", detail: error.message } } : repair ? { repair: { ...currentState.repair!, status: "needs_owner" } }
+            : { preemption: { ...currentState.preemption!, status: "needs_owner" } }) } },
+          ...(notice ? { status: "escalated", ownerType: "board", ownerAgentId: null } : {}),
+          nextAction: "送達前驗證拒絕；原輸入未送出，請重新檢查原收據。", updatedAt: new Date() }).where(eq(issueRecoveryActions.id, action.id));
+      });
+    }
+    // Only a failure before calling wakeup proves non-delivery. A missing
+    // receipt after an attempted admission remains an unknown transaction.
+    try {
+      await verifyWorkspaceRecoveryWake(db, { companyId: action.companyId, issueId, agentId,
+        actorType: "system", actorId: action.id, reason,
+        request: { id, actionId: action.id, phase, requestedAt: action.createdAt } });
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      await rejectBeforeAdmission(error, "before_wakeup");
+      return;
+    }
     try {
       await owner.wakeup(agentId, { source: "automation", triggerDetail: "system", reason,
         requestedByActorType: "system", requestedByActorId: action.id, allowRunCoalescing: false,
@@ -69,7 +99,14 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
           } } : {}),
         },
       });
-    } catch { /* Inspect the same receipt even when an admission response was lost. */ }
+    } catch (error) {
+      if (error instanceof HttpError && record(error.details).workspaceRecoveryAdmission === "rejected_before_reservation" &&
+          record(error.details).wakeId === id) {
+        await rejectBeforeAdmission(error, "before_reservation");
+        return;
+      }
+      // All other failures may follow a committed reservation. Reconcile only.
+    }
     return reconcileWake(action, state, phase);
   }
 
@@ -80,7 +117,18 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
       eq(agentWakeupRequests.requestedByActorId, action.id)));
     const [run] = receipt?.runId ? await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId)) : [];
     if (phase === "notice") {
-      const dispatched = run?.resultJson?.nativeSessionId && (run.status === "succeeded" || run.resultJson.nativeTurnId) ? [run.id] : [];
+      // A resident native session ID is ambient identity, not input acceptance.
+      // Use the same run-bound Bridge input receipt contract as main blockers.
+      const proof = record(run?.resultJson?.bridgeInputReceipt);
+      const accepted = run && receipt?.agentId === state.creatorAgentId && run.agentId === state.creatorAgentId
+        && receipt.reason === WORKSPACE_CREATOR_REASON && receipt.payload?.issueId === state.conversationIssueId
+        && receipt.payload?.commentId === state.commentId && run.contextSnapshot?.recoveryActionId === action.id
+        && run.contextSnapshot?.issueId === state.conversationIssueId && proof.schema === "paperclip.bridge-input.v1"
+        && proof.runId === run.id && typeof proof.clientMessageId === "string" && proof.clientMessageId.length > 0
+        && typeof proof.nativeSessionId === "string" && typeof proof.bridgeSessionId === "string"
+        && proof.nativeSessionId === run.resultJson?.nativeSessionId && proof.bridgeSessionId === run.resultJson?.bridgeSessionId
+        && Number.isSafeInteger(proof.acceptedSeq) && Number(proof.acceptedSeq) >= 0;
+      const dispatched = accepted ? [run.id] : [];
       const admitted = run && ["queued", "running"].includes(run.status);
       await update(action.id, s => ({ ...s, delivery: { ...s.delivery,
         status: dispatched.length ? "acknowledged" : admitted ? "queued" : "uncertain",
@@ -135,68 +183,96 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
       else await escalate(id, "原停止 receipt 未確認；不會再次 interrupt。", true);
       return;
     }
-    if (state.delivery.status !== "pending") return;
+    if (!["pending", "waiting_main"].includes(state.delivery.status)) return;
     const prepared = await db.transaction(async tx => {
       await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, initial.sourceIssueId)).for("update");
       const [action] = await tx.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)).for("update");
       const s = creatorRecovery(action?.evidence);
-      if (!s || s.delivery.status !== "pending" || action.status !== "active") return null;
+      if (!s || !["pending", "waiting_main"].includes(s.delivery.status) || action.status !== "active") return null;
       const source = await inspectWorkspaceCreator(tx as unknown as Db, action.companyId, action.sourceIssueId, s.failedRunId);
-      if (!source) return { invalid: true as const };
-      const running = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, action.companyId),
-        eq(heartbeatRuns.agentId, s.creatorAgentId), eq(heartbeatRuns.status, "running"))).for("update");
-      if (running.length > 1) return { invalid: true as const };
-      const run = running[0];
-      const targetIssueId = run ? String(run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId) : null;
-      if (run && targetIssueId !== s.conversationIssueId) {
-        const task = await findPreemptibleTaskRun(tx, { companyId: action.companyId, conversationIssueId: s.conversationIssueId,
-          agentId: s.creatorAgentId, runId: run.id });
-        const [target] = task ? await tx.select().from(issues).where(eq(issues.id, task.issueId)) : [];
-        if (!task || target?.projectId !== source.task.projectId) return { invalid: true as const };
-        s.preemption = { runId: run.id, issueId: task.issueId, resumeWakeId: randomUUID(), status: "pending" };
+      if (!source) {
+        // No wake has been attempted in pending/waiting_main. Persist that
+        // positive fact so an Owner recheck can recover after the hold clears.
+        const rejectedAt = new Date().toISOString();
+        await tx.update(issueRecoveryActions).set({ status: "escalated", ownerType: "board", ownerAgentId: null,
+          evidence: { ...action.evidence, creatorRecovery: { ...s, delivery: { ...s.delivery,
+            status: "needs_owner", detail: "原主 agent、任務或人工 hold 已變更" } },
+            workspaceDeliveryRejections: { ...record(action.evidence.workspaceDeliveryRejections), [s.noticeWakeId]: {
+              schema: "paperclip.workspace-delivery-rejection/v1", phase: "notice", wakeId: s.noticeWakeId,
+              requestKey: s.requestKey, failedRunId: s.failedRunId, conversationGeneration: s.conversationGeneration,
+              rejectedAt, stage: "before_preparation", reason: "source_or_authority_changed" } } },
+          nextAction: "通知尚未送出；原主 agent、任務或人工 hold 已變更，請重新檢查。", updatedAt: new Date(),
+        }).where(eq(issueRecoveryActions.id, id));
+        return null;
       }
-      const steer = Boolean(run && targetIssueId === s.conversationIssueId && isCodexBridgeChatDispatch(run));
-      s.delivery = { status: steer ? "sending" : run ? "interrupting" : "sending",
-        method: steer ? "steer" : run ? "interrupt" : "wake",
-        ...(run ? { targetRunId: run.id, targetIssueId: targetIssueId! } : { wakeKey: s.noticeWakeId }) };
-      await tx.update(issueRecoveryActions).set({ evidence: { ...action.evidence, creatorRecovery: s }, updatedAt: new Date() }).where(eq(issueRecoveryActions.id, id));
-      if (steer) await tx.insert(agentWakeupRequests).values({ id: s.noticeWakeId, companyId: action.companyId,
-        agentId: s.creatorAgentId, source: "automation", triggerDetail: "system", reason: WORKSPACE_CREATOR_REASON,
-        requestedByActorType: "system", requestedByActorId: action.id, status: "deferred_issue_execution",
-        idempotencyKey: "workspace-recovery:" + s.noticeWakeId,
-        payload: { issueId: s.conversationIssueId, commentId: s.commentId, _paperclipWakeContext: { wakeCommentIds: [s.commentId] } } });
-      return { invalid: false as const, action, state: s, run, steer };
+      const [busy] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, action.companyId), eq(heartbeatRuns.agentId, s.creatorAgentId),
+        inArray(heartbeatRuns.status, ["running", "queued"]))).limit(1);
+      // Recovery is a notification, not a user interrupt. Completion events
+      // reconsider this durable wait without stopping the main or polling.
+      if (busy) {
+        if (s.delivery.status !== "waiting_main") await tx.update(issueRecoveryActions).set({
+          evidence: { ...action.evidence, creatorRecovery: { ...s, delivery: { status: "waiting_main" } } },
+          nextAction: "等待原 main 完成本回合後處理", updatedAt: new Date(),
+        }).where(eq(issueRecoveryActions.id, id));
+        return null;
+      }
+      s.delivery = { status: "sending", method: "wake", wakeKey: s.noticeWakeId };
+      await tx.update(issueRecoveryActions).set({ evidence: { ...action.evidence, creatorRecovery: s }, updatedAt: new Date() })
+        .where(eq(issueRecoveryActions.id, id));
+      return { invalid: false as const, action, state: s };
     });
     if (!prepared) return;
-    if (prepared.invalid) { await escalate(id, "原主 agent、任務、人工 hold 或停止證據已變更，需要你處理。"); return; }
     state = prepared.state;
-    if (prepared.steer) {
-      const [comment] = await db.select().from(issueComments).where(eq(issueComments.id, state.commentId));
-      try {
-        await bridgeChatSteeringService(db).deliver({ companyId: initial.companyId, issueId: state.conversationIssueId,
-          actorId: id, recoveryActionId: id, queueId: state.noticeWakeId, commentId: state.commentId,
-          targetRunId: prepared.run!.id, revision: queuedCommentQueueRevision({ queueId: state.noticeWakeId, comments: [comment] }) });
-        await update(id, s => ({ ...s, delivery: { ...s.delivery, status: "acknowledged", acknowledgedAt: new Date().toISOString() } }), "主 agent 處理中");
-      } catch { await escalate(id, "送達未確認；只核對原 receipt，不會重送或改用 interrupt。", true); }
-      return;
-    }
-    if (prepared.run) {
-      try {
-        await owner.cancelRun(prepared.run.id, "Workspace recovery returned to the original main-agent conversation", {
-          errorCode: "operator_interrupted", suppressImmediateRecovery: true,
-          resultJson: { operatorInterrupted: true, interruptionSource: "workspace_creator_recovery",
-            interruptedByActorType: "system", interruptedByActorId: id, workspaceRecoveryActionId: id,
-            interruptedIssueId: state.delivery.targetIssueId },
-        });
-      } catch { await escalate(id, "停止結果未確認；不會再次 interrupt。", true); return; }
-      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, prepared.run.id));
-      if (!stopped || !(bridgeSessionStopAcknowledged(stopped) || (!state.preemption && bridgeSessionHandoffFor(stopped)))) {
-        await escalate(id, "原 run 尚無足夠停止證據，需要你處理。"); return;
-      }
-    }
     await wake(initial, state, "notice");
   }
-  return { check };
+  async function recheck(input: { companyId: string; issueId: string; actionId: string; failedRunId: string;
+    expectedActionUpdatedAt: string; requestKey: string; actorUserId?: string | null }) {
+    if (await owner.schedulingSuppressed()) throw conflict("Recovery delivery is temporarily suppressed");
+    return db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+      const [action] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.id, input.actionId),
+        eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId))).for("update");
+      const state = creatorRecovery(action?.evidence);
+      if (!action || !state || state.failedRunId !== input.failedRunId) throw conflict("The original recovery changed");
+      const rechecks = record(action.evidence.workspaceDeliveryRechecks);
+      if (record(rechecks[input.requestKey]).requestKey === input.requestKey) return action;
+      if (action.updatedAt.toISOString() !== input.expectedActionUpdatedAt || !["active", "escalated"].includes(action.status))
+        throw conflict("The recovery revision changed");
+      const interruptedRunId = state.delivery.targetRunId ?? state.preemption?.runId;
+      const reconciledQuestions = input.actorUserId && interruptedRunId
+        ? await reconcileMainBlockerQuestionsAfterCreatorInterruption(tx as unknown as Db, {
+          companyId: input.companyId, creatorActionId: action.id, interruptedRunId,
+          actorUserId: input.actorUserId, requestKey: input.requestKey })
+        : { withdrawnInteractionIds: [], supersededActionIds: [] };
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, state.noticeWakeId));
+      const rejected = record(record(action.evidence.workspaceDeliveryRejections)[state.noticeWakeId]);
+      const sameAttempt = rejected.stage === "before_preparation"
+        ? !state.delivery.wakeStartedAt && !state.delivery.wakeKey
+        : rejected.wakeStartedAt === state.delivery.wakeStartedAt && typeof rejected.wakeStartedAt === "string"
+          && ["before_wakeup", "before_reservation"].includes(String(rejected.stage));
+      const verifiedUnsent = !receipt && state.delivery.status === "needs_owner" && sameAttempt
+        && rejected.schema === "paperclip.workspace-delivery-rejection/v1"
+        && rejected.phase === "notice" && rejected.wakeId === state.noticeWakeId
+        && rejected.requestKey === state.requestKey && rejected.failedRunId === state.failedRunId
+        && rejected.conversationGeneration === state.conversationGeneration;
+      // Empty rows do not prove that an older uncertain transaction rolled back.
+      const canRetry = verifiedUnsent && await inspectWorkspaceCreator(tx as unknown as Db,
+        action.companyId, action.sourceIssueId, state.failedRunId);
+      const next = canRetry ? { ...state, delivery: { status: "pending" as const } } : state;
+      const recheckReceipt = { requestKey: input.requestKey, checkedAt: new Date().toISOString(), wakeId: state.noticeWakeId,
+        ...reconciledQuestions, before: state.delivery, after: next.delivery,
+        outcome: canRetry ? "verified_unsent" : verifiedUnsent ? "admission_blocked" : receipt ? "original_receipt" : "delivery_unknown" };
+      const [updated] = await tx.update(issueRecoveryActions).set({
+        evidence: { ...action.evidence, creatorRecovery: next, workspaceDeliveryRecheck: recheckReceipt,
+          workspaceDeliveryRechecks: { ...rechecks, [input.requestKey]: recheckReceipt } }, ...(canRetry ? { status: "active", ownerType: "agent", ownerAgentId: state.creatorAgentId,
+          nextAction: "已確認通知未送出；等待原 main 處理" } : {}), updatedAt: new Date(),
+      }).where(eq(issueRecoveryActions.id, action.id)).returning();
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, action.id);
+      return updated;
+    });
+  }
+  return { check, recheck };
 }
 
 export function registerWorkspaceCreatorRecovery(db: Db, coordinator: Parameters<typeof registerScopedDeadlineWork>[0], owner: Owner, canRun: () => boolean) {
@@ -210,7 +286,7 @@ export function registerWorkspaceCreatorRecovery(db: Db, coordinator: Parameters
       const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId }).from(issueRecoveryActions).where(and(
         scope ? eq(issueRecoveryActions.id, scope) : cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
         sql.raw("(evidence ? 'creatorRecovery' or (status = 'active' and evidence->>'workspaceCreatorCandidate' = 'true'))"),
-        sql.raw("(evidence->>'workspaceCreatorCandidate' = 'true' or evidence#>>'{creatorRecovery,delivery,status}' in ('pending','sending','interrupting','queued','uncertain') or evidence#>>'{creatorRecovery,repair,status}' in ('pending','uncertain') or evidence#>>'{creatorRecovery,preemption,status}' in ('pending','uncertain'))"),
+        sql.raw("(evidence->>'workspaceCreatorCandidate' = 'true' or evidence#>>'{creatorRecovery,delivery,status}' in ('pending','waiting_main','sending','interrupting','queued','uncertain') or evidence#>>'{creatorRecovery,repair,status}' in ('pending','uncertain') or evidence#>>'{creatorRecovery,preemption,status}' in ('pending','uncertain'))"),
       )).orderBy(asc(issueRecoveryActions.id)).limit(100);
       const complete = Boolean(scope) || rows.length < 100;
       if (!scope) cursor = complete ? undefined : rows.at(-1)!.id;

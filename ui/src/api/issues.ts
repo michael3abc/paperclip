@@ -439,6 +439,9 @@ export const issuesApi = {
     return api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[];
       sourceInspection?: WorkspaceSourceInspection }>(`/issues/${id}/recovery-actions${query ? `?${query}` : ""}`);
   },
+  recheckCreatorDelivery: (id: string, data: { actionId: string; failedRunId: string; expectedActionUpdatedAt: string; requestKey: string }) =>
+    api.post<{ recoveryAction: IssueRecoveryAction }>(
+      "/issues/" + id + "/recovery-actions/notify-creator", { ...data, recheckDelivery: true }),
   resolveRecoveryAction: (
     id: string,
     data: {

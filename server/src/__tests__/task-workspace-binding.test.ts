@@ -3,6 +3,9 @@ import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { assertGitSensitiveAdapterWorkspaceValid, createHeartbeatWorkspaceResolver } from "../services/heartbeat/workspaces.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import fs from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
+import { mainManagedWorktreeService } from "../services/main-managed-worktrees.js";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -23,15 +26,20 @@ import { issueService } from "../services/issues.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
+const execFile = promisify(execFileCallback);
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("task-owned workspace bindings", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  const managedFixtureRoots: string[] = [];
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-task-workspace-");
     db = createDb(temporary.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => { await temporary?.cleanup(); });
+  afterAll(async () => {
+    await temporary?.cleanup();
+    for (const root of managedFixtureRoots) await fs.rm(root, { recursive: true, force: true });
+  });
 
   async function fixture() {
     const companyId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
@@ -360,7 +368,7 @@ const support = await getEmbeddedPostgresTestSupport();
       await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     });
     afterAll(async () => { await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: isolatedWorkspacesEnabled }); });
-    async function settledNativeTask(failureCode = "native_retry_cancelled", acceptedResult = false) {
+    async function settledNativeTask(failureCode = "native_retry_cancelled", acceptedResult = false, registeredSelection = false) {
       const f = await fixture(), svc = executionWorkspaceService(db);
       await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
       const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Stopped worker" }).returning();
@@ -382,11 +390,34 @@ const support = await getEmbeddedPostgresTestSupport();
         phase: "terminal_failure", failureCode, resultId });
       const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
         heartbeatRunId: run.id, executionWorkspaceId: f.workspaceId, status: "released", cleanupStatus: "success", releasedAt: new Date() }).returning();
-      if (entryPoint === "pending selection") await svc.selectTaskWorkspace({ ...f, selection: { kind: "task_directory" }, expectedBindingRevision: 1, requestKey: "after-stop" });
+      let selectedWorkspace: { id: string } | null = null;
+      if (entryPoint === "pending selection" && registeredSelection) {
+        // New contract: select a main-registered open linked tree, not a legacy task_directory.
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "native-selection-managed-"));
+        managedFixtureRoots.push(root);
+        const source = path.join(root, "source"), parent = path.join(root, "trees");
+        await fs.mkdir(parent);
+        await execFile("git", ["init", "--initial-branch=main", source]);
+        await execFile("git", ["-C", source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "source"]);
+        await execFile("git", ["-C", source, "worktree", "add", "-b", "selected", path.join(parent, "selected")]);
+        const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Selection project",
+          executionWorkspacePolicy: { enabled: true, workspaceStrategy: { type: "git_worktree", worktreeParentDir: parent } } }).returning();
+        const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId,
+          projectId: project.id, name: "Source", cwd: source, isPrimary: true }).returning();
+        await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issueId));
+        const workspaceId = randomUUID();
+        await mainManagedWorktreeService(db).operate({ companyId: f.companyId, projectId: project.id, workspaceId, actor: f.actor },
+          { action: "register", operationId: randomUUID(), expectedGeneration: 0, projectWorkspaceId: projectWorkspace.id,
+            name: "selected", branch: "selected", targetBranch: "main" });
+        selectedWorkspace = { id: workspaceId };
+      }
+      if (entryPoint === "pending selection") await svc.selectTaskWorkspace({ ...f,
+        selection: selectedWorkspace ? { kind: "existing", workspaceId: selectedWorkspace.id } : { kind: "task_directory" },
+        expectedBindingRevision: 1, requestKey: "after-stop" });
       const change = () => entryPoint === "pending selection"
         ? svc.applyPendingTaskWorkspaceSelection({ ...f, runId: randomUUID() })
         : issueService(db).update(f.issueId, { executionWorkspaceId: null });
-      return { ...f, run, lease, svc, change };
+      return { ...f, run, lease, svc, change, selectedWorkspace };
     }
 
     it.each(["native_retry_cancelled", "native_permission_declined"])("allows a settled %s without deleting its historical failure", async (failureCode) => {
@@ -398,7 +429,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
 
     it.each(["running native owner", "coordinator owner", "applied result", "pending cleanup", "failed cleanup", "export marker", "active lease", "failed output", "accepted output"] as const)("keeps active execution authority but separates historical %s from selection", async (obligation) => {
-      const f = await settledNativeTask("native_retry_cancelled", obligation === "accepted output");
+      const f = await settledNativeTask("native_retry_cancelled", obligation === "accepted output", true);
       if (obligation === "running native owner") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.run.id));
       if (obligation === "coordinator owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "controller" }).where(eq(nativeRunFinalizations.runId, f.run.id));
       if (obligation === "applied result") await db.update(nativeRunFinalizations).set({ phase: "applied" }).where(eq(nativeRunFinalizations.runId, f.run.id));
@@ -413,13 +444,13 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.run.id));
       }
       await f.change();
-      expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: null, bindingRevision: entryPoint === "pending selection" ? 3 : 2 });
+      expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: f.selectedWorkspace, bindingRevision: entryPoint === "pending selection" ? 3 : 2 });
       if (obligation === "failed output" || obligation === "accepted output") {
         await db.update(workspaceOperations).set({ createdAt: new Date(0) }).where(eq(workspaceOperations.heartbeatRunId, f.run.id));
         await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
           heartbeatRunId: f.run.id, executionWorkspaceId: f.workspaceId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date() });
         await f.change();
-        expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: null, bindingRevision: entryPoint === "pending selection" ? 3 : 2 });
+        expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: f.selectedWorkspace, bindingRevision: entryPoint === "pending selection" ? 3 : 2 });
       }
     });
 

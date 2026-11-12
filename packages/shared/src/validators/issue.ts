@@ -629,6 +629,7 @@ export const reconcileWorkspaceHolderSchema = z.object({
 export const notifyWorkspaceCreatorSchema = z.object({
   actionId: z.string().guid(), failedRunId: z.string().guid(),
   expectedActionUpdatedAt: z.string().datetime(), requestKey: z.string().guid(),
+  recheckDelivery: z.boolean().optional(),
 }).strict();
 
 export const resolveIssueRecoveryActionSchema = z

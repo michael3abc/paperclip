@@ -81,6 +81,8 @@ export interface IssueRecoveryActionCardProps {
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
+  onRecheckCreator?: () => void;
+  creatorRecheckPending?: boolean;
   /**
    * Optional handler for the workspace_validation "Re-issue on isolated workspace" action.
    * Rendered only for a git-worktree branch-incoherence divergence with a resolvable live ref.
@@ -989,6 +991,8 @@ export function IssueRecoveryActionCard({
   scheduledRetry = null,
   forcedState,
   onResolve,
+  onRecheckCreator,
+  creatorRecheckPending = false,
   onReissueIsolated,
   reissuePending = false,
   onReconcileForward,
@@ -1013,7 +1017,7 @@ export function IssueRecoveryActionCard({
     const creator = action.evidence.creatorRecovery as { delivery?: { status?: string } } | undefined;
     if (creator && action.status !== "resolved" && action.status !== "cancelled") {
       const status = creator.delivery?.status;
-      return status === "acknowledged" ? "主 agent 處理中" : status === "uncertain" ? "送達未確認"
+      return status === "waiting_main" ? "等待原 main 完成本回合" : status === "acknowledged" ? "主 agent 處理中" : status === "uncertain" ? "送達未確認"
         : status === "needs_owner" || action.status === "escalated" ? "需要你處理" : "等待送達";
     }
     if (cardState === "resolved" && action.outcome) {
@@ -1073,6 +1077,7 @@ export function IssueRecoveryActionCard({
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+    if (action.evidence.creatorRecovery && option.outcome === "todo") return false;
     if (action.cause === "native_workspace_finalization_owner_unverified") return false;
     if (isNativeWorkspaceExportRepairCause(action.cause) && ["todo", "done", "in_review"].includes(option.outcome)) return false;
     if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
@@ -1120,6 +1125,7 @@ export function IssueRecoveryActionCard({
   // "Recommended" hint while the repair button is disabled.
   const reissueRecommended = showRepairAction && repairContention !== null;
   const showFooter =
+    (onRecheckCreator !== undefined && cardState !== "resolved") ||
     showResolveActions ||
     showReissueAction ||
     showReconcileForward ||
@@ -1347,6 +1353,11 @@ export function IssueRecoveryActionCard({
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
         <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
+          {onRecheckCreator && cardState !== "resolved" ? (
+            <Button type="button" size="sm" variant="outline" onClick={onRecheckCreator} disabled={creatorRecheckPending}>
+              重新檢查送達
+            </Button>
+          ) : null}
           {showResolveActions ? (
             <Popover>
               <PopoverTrigger asChild>

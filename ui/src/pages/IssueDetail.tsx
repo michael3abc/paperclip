@@ -4561,6 +4561,25 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     isPending: updateIssueMutation.isPending,
     variables: updateIssueMutation.variables?.data,
   }), [issueId, updateIssueMutation]);
+  const creatorRecheckRequests = useRef(new Map<string, string>());
+  const recheckCreatorDelivery = useMutation({
+    mutationFn: (action: IssueRecoveryAction) => {
+      const state = action.evidence.creatorRecovery as { failedRunId?: string } | undefined;
+      if (!state?.failedRunId) throw new Error("The original recovery receipt is unavailable");
+      const key = action.id + ":" + action.updatedAt;
+      let requestKey = creatorRecheckRequests.current.get(key);
+      if (!requestKey) { requestKey = crypto.randomUUID(); creatorRecheckRequests.current.set(key, requestKey); }
+      return issuesApi.recheckCreatorDelivery(issueId!, { actionId: action.id, failedRunId: state.failedRunId,
+        expectedActionUpdatedAt: action.updatedAt, requestKey });
+    },
+    onError: (err) => pushToast({ title: "送達重新檢查失敗", body: err instanceof Error ? err.message : "Unable to recheck delivery", tone: "error" }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+    },
+  });
+  const canRecheckCreatorDelivery = Boolean(boardAccess && (boardAccess.isInstanceAdmin || boardAccess.source === "local_implicit"
+    || boardAccess.memberships?.some(member => member.companyId === selectedCompanyId && member.status === "active" && member.membershipRole === "owner")));
   const resolveRecoveryAction = useMutation({
     mutationFn: (data: {
       actionId?: string;
@@ -8209,6 +8228,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             <IssueRecoveryActionCard className={shellSectionClass}
               action={issue.activeRecoveryAction} agentMap={agentMap}
               scheduledRetry={issue.scheduledRetry}
+              onRecheckCreator={canRecheckCreatorDelivery ? () => recheckCreatorDelivery.mutate(issue.activeRecoveryAction!) : undefined}
+              creatorRecheckPending={recheckCreatorDelivery.isPending}
               onResolve={handleResolveRecoveryAction} />
           )}
           {resolvedDetailTab === "chat" && !hasWorkspaceCreatorRecovery && (

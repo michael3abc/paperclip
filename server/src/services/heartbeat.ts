@@ -1,5 +1,5 @@
 import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
-import { registerWorkspaceCreatorRecovery } from "./recovery/workspace-creator-delivery.js";
+import { registerWorkspaceCreatorRecovery, workspaceCreatorDelivery } from "./recovery/workspace-creator-delivery.js";
 import { registerOriginalMainBlockers } from "./recovery/main-blocker.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
@@ -4369,6 +4369,10 @@ export function heartbeatService(
     },
     registerRunStopSettlementWork: (coordinator: Parameters<typeof stopSettlement.register>[0], canRun: () => boolean) =>
       stopSettlement.register(coordinator, () => canRun() && readTaskDrain(new Date()) === null),
+    recheckWorkspaceCreatorDelivery: (input: Parameters<ReturnType<typeof workspaceCreatorDelivery>["recheck"]>[0]) =>
+      workspaceCreatorDelivery(db, { wakeup: trackWakeup, cancelRun: cancelRunInternal,
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }).recheck(input),
     registerWorkspaceCreatorRecovery: (coordinator: Parameters<typeof registerWorkspaceCreatorRecovery>[1], canRun: () => boolean) =>
       registerWorkspaceCreatorRecovery(db, coordinator, {
         wakeup: trackWakeup, cancelRun: cancelRunInternal,

@@ -347,6 +347,7 @@ describe("IssueRecoveryActionCard", () => {
 
   it.each([
     ["pending", "等待送達"], ["queued", "等待送達"],
+    ["waiting_main", "等待原 main 完成本回合"],
     ["acknowledged", "主 agent 處理中"], ["uncertain", "送達未確認"], ["needs_owner", "需要你處理"],
   ])("shows creator delivery %s without claiming the workspace was repaired", (status, label) => {
     const node = render(<IssueRecoveryActionCard action={buildAction({
@@ -355,6 +356,25 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain(label);
     expect(node.textContent).not.toContain("RECOVERY RESOLVED");
     expect(node.textContent).not.toContain("Recovery resolved as restored");
+  });
+
+  it("rechecks creator delivery without offering task replay", () => {
+    const recheck = vi.fn(), resolve = vi.fn();
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      evidence: { creatorRecovery: { delivery: { status: "uncertain" } } },
+    })} onRecheckCreator={recheck} onResolve={resolve} />);
+    const button = Array.from(node.querySelectorAll("button")).find(item => item.textContent === "重新檢查送達")!;
+    act(() => button.click());
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(node.textContent).not.toContain("Try again");
+  });
+
+  it("does not expose creator recheck without its authorized handler", () => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      evidence: { creatorRecovery: { delivery: { status: "uncertain" } } },
+    })} />);
+    expect(node.textContent).not.toContain("重新檢查送達");
   });
 
   it("renders the resolved state and outcome when resolved", () => {
