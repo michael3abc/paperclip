@@ -1,5 +1,10 @@
 # Paperclip fork
 
+2026-11-12 Antigravity worker-card proof: a provider-specific persisted Bridge
+turn receipt binds the separately accepted input, native session and saved-answer
+hash without inventing native input/turn IDs. Current authority and activity gates
+remain required; no historical success backfill, replay or resource mutation.
+
 2026-11-12 registered-workspace adapter boundary: heartbeat supplies authoritative
 kind/sourceCwd along with lifecycle participation. The paired adapter admits
 repository roots and nested registered paths for plain shared workers while
