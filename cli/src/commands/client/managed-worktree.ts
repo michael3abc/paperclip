@@ -4,8 +4,8 @@ import { addCommonClientOptions, handleCommandError, printOutput, resolveCommand
 /** Thin transport: authorization, generations and idempotency are server-owned.
  * Never issue Git commands or turn a failed operation into a fresh attempt. */
 export function registerManagedWorktreeCommands(workspace: Command) {
-  const tree = workspace.command("tree").description("Main-managed linked Git worktree lifecycle");
-  for (const action of ["inspect", "create", "register", "join", "leave", "set_default", "converge", "merge", "reopen", "retire", "recheck"] as const) {
+  const tree = workspace.command("tree").description("Main-managed Git execution workspace lifecycle");
+  for (const action of ["inspect", "create", "register", "initialize", "join", "leave", "set_default", "converge", "merge", "reopen", "retire", "recheck"] as const) {
     const command = tree.command(action).argument("<projectId>", "Project ID").argument("<workspaceId>", "Stable execution workspace ID");
     if (action !== "inspect") command.requiredOption("--payload-json <json>", "Original operation ID, expected generation and action parameters");
     addCommonClientOptions(command.action(async (projectId: string, workspaceId: string, opts: BaseClientOptions & { payloadJson?: string }) => {

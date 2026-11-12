@@ -67,6 +67,80 @@ describe("managed linked Git worktree host operations", () => {
     await expect(operation(g.request("inspect", { sourceCwd: f.source }))).rejects.toMatchObject({ code: "worktree_repository_mismatch" });
   });
 
+  it("registers a repository root without touching dirty ignored or training artifacts", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.source, ".git/info/exclude"), ".lmas/\n");
+    await fs.mkdir(path.join(f.source, ".lmas"));
+    await fs.writeFile(path.join(f.source, ".lmas/checkpoint"), "retained");
+    await fs.writeFile(path.join(f.source, "base.txt"), "dirty");
+    const result = await operation(f.request("inspect", { kind: "repository_root", cwd: f.source, branch: "michael/main" }));
+    expect(result).toMatchObject({ head: f.created.head, targetHead: null, merged: false, dirty: true });
+    expect(await fs.readFile(path.join(f.source, ".lmas/checkpoint"), "utf8")).toBe("retained");
+    expect(await git(f.source, "diff", "--name-only")).toBe("base.txt");
+    await expect(operation(f.request("retire", { kind: "repository_root", cwd: f.source })))
+      .rejects.toMatchObject({ code: "repository_root_metadata_lifecycle_only" });
+  });
+
+  it("explicitly initializes an unborn nested repository with metadata only and rechecks the original receipt", async () => {
+    const f = await fixture(), cwd = path.join(f.parent, "paperclip/task-id/original");
+    await fs.mkdir(path.join(cwd, ".git/info"), { recursive: true });
+    await fs.mkdir(path.join(cwd, ".lmas"));
+    await fs.writeFile(path.join(cwd, ".git/info/exclude"), ".lmas/\n");
+    await fs.writeFile(path.join(cwd, ".lmas/checkpoint"), "private");
+    await fs.writeFile(path.join(cwd, "work.txt"), "uncommitted");
+    const request = f.request("initialize", { kind: "repository_root", sourceCwd: cwd, cwd, branch: "main", targetBranch: "main",
+      expectedHead: undefined, expectedTargetHead: undefined });
+    expect(await operation(request)).toMatchObject({ cwd, head: null, dirty: true, targetHead: null });
+    expect(await git(cwd, "ls-files")).toBe("");
+    expect(await git(cwd, "remote")).toBe("");
+    expect(await fs.readFile(path.join(cwd, ".git/info/exclude"), "utf8")).toBe(".lmas/\n");
+    expect(await fs.readFile(path.join(cwd, ".lmas/checkpoint"), "utf8")).toBe("private");
+    expect(await operation({ ...request, recheckOnly: true })).toMatchObject({ cwd, head: null });
+    expect(await operation({ ...request, action: "inspect" })).toMatchObject({ cwd, head: null });
+    await expect(operation({ ...request, operationId: randomUUID() })).rejects.toMatchObject({ code: "repository_initialization_metadata_exists" });
+  });
+
+  it("initializes repository roots through the remote host script without staging existing content", async () => {
+    const f = await fixture(), cwd = path.join(f.parent, "existing-root"); await fs.mkdir(cwd);
+    // New contract: ancestor exclude-only metadata is not a repository and must
+    // not force a copy/move or an implicit initialization of that ancestor.
+    await fs.mkdir(path.join(f.parent, ".git/info"), { recursive: true });
+    await fs.writeFile(path.join(f.parent, ".git/info/exclude"), "private/\n");
+    await fs.writeFile(path.join(cwd, "result.txt"), "keep");
+    const request = f.request("initialize", { kind: "repository_root", cwd, branch: "main", targetBranch: "main" });
+    const child = spawn(process.execPath, ["--input-type=module", "-e", managedWorktreeHostScript()], { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "", err = "";
+    child.stdout.on("data", chunk => { out += chunk; }); child.stderr.on("data", chunk => { err += chunk; });
+    const ended = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    child.stdin.end(JSON.stringify(request));
+    expect(await ended, err + out).toBe(0);
+    expect(JSON.parse(out)).toMatchObject({ ok: true, result: { cwd, head: null, dirty: true } });
+    expect(await git(cwd, "ls-files")).toBe("");
+    expect(await fs.readFile(path.join(cwd, "result.txt"), "utf8")).toBe("keep");
+    expect(await fs.readdir(path.join(f.parent, ".git"))).toEqual(["info"]);
+  });
+
+  it("refuses creation through a symlinked nested parent and never initializes Git administrative paths", async () => {
+    const f = await fixture(), alias = path.join(f.parent, "alias"); await fs.symlink(f.source, alias);
+    await expect(operation(f.request("create", { cwd: path.join(alias, "new"), branch: "michael/alias" })))
+      .rejects.toMatchObject({ code: "worktree_path_not_canonical" });
+    expect(await fs.readdir(f.source)).not.toContain("new");
+    await expect(operation(f.request("initialize", { kind: "repository_root", cwd: path.join(f.source, ".git/info"), branch: "main" })))
+      .rejects.toMatchObject({ code: "worktree_path_outside_parent" });
+  });
+
+  it("preserves full nested linked cwd and rejects foreign roots and aliases", async () => {
+    const f = await fixture(), cwd = path.join(f.parent, "paperclip/task-id/original");
+    await fs.mkdir(path.dirname(cwd), { recursive: true });
+    const created = await operation(f.request("create", { cwd, branch: "michael/nested" }));
+    expect(created.cwd).toBe(cwd);
+    await expect(operation(f.request("inspect", { cwd, branch: "michael/nested", excludedRoots: [path.dirname(cwd)] })))
+      .rejects.toMatchObject({ code: "worktree_foreign_project_path" });
+    const alias = path.join(f.parent, "alias-source"); await fs.symlink(f.source, alias);
+    await expect(operation(f.request("inspect", { kind: "repository_root", cwd: alias, branch: "michael/main" })))
+      .rejects.toMatchObject({ code: "worktree_path_not_canonical" });
+  });
+
   it("fast-forwards a checked-out target while retaining unrelated local changes", async () => {
     const f = await fixture();
     await fs.writeFile(path.join(f.input.cwd, "feature.txt"), "feature\n");

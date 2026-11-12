@@ -11,6 +11,14 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Git workspace registration (2026-11-12 follow-up): explicit repository roots
+  and linked worktrees share the lifecycle API. Preserve complete canonical
+  nested cwd, existing IDs, dirty/ignored files and .lmas. Explicit initialization
+  changes Git metadata only, accepts unborn repositories, and keeps operation
+  receipts/CAS/current-main authorization. Root retirement is metadata-only;
+  linked-tree merge/deletion guards remain. Retained failed Retry receipts no
+  longer imply background waiting or turn generic recovery into unknown delivery.
+
 - Legacy resident authority index recovery (2026-11-12): an admitted new run may
   reconstruct a missing task-session row from the exact host current-run pointer
   and original server invocation/result identity receipts. Preserve generation

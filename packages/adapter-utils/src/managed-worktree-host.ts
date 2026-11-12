@@ -8,7 +8,10 @@ import { createHash } from "node:crypto";
  * lifecycle/generation. This function is self-contained so the exact same code
  * can execute on a registered remote host without accessing its files locally. */
 export interface ManagedWorktreeHostInput {
-  action: "inspect" | "create" | "merge" | "retire";
+  action: "inspect" | "create" | "initialize" | "merge" | "retire";
+  kind?: "repository_root" | "linked_worktree";
+  /** Server-scoped foreign roots on this same host; never caller grants. */
+  excludedRoots?: string[];
   sourceCwd: string;
   cwd: string;
   parentDir: string;
@@ -28,9 +31,9 @@ export interface ManagedWorktreeHostResult {
   operationId: string;
   cwd: string;
   commonDir: string;
-  head: string;
+  head: string | null;
   branch: string;
-  targetHead: string;
+  targetHead: string | null;
   dirty: boolean;
   merged: boolean;
   retired?: boolean;
@@ -52,7 +55,7 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
     const relative = path.relative(root, value);
     return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative));
   };
-  if (!["inspect", "create", "merge", "retire"].includes(input.action) ||
+  if (!["inspect", "create", "initialize", "merge", "retire"].includes(input.action) ||
       !/^[a-zA-Z0-9_-]{8,128}$/.test(input.operationId)) fail("worktree_operation_invalid");
   if (["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]
     .some(key => process.env[key])) fail("worktree_git_override");
@@ -67,14 +70,28 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
     if (!path.isAbsolute(value) || path.normalize(value) !== value || await fs.realpath(value) !== value) fail("worktree_path_not_canonical");
     return value;
   };
-  const source = await canonical(input.sourceCwd), parent = await canonical(input.parentDir);
-  if (!path.isAbsolute(input.cwd) || path.dirname(input.cwd) !== parent || input.cwd === source) fail("worktree_path_outside_parent");
-  const sourceRoot = (await git(source, ["rev-parse", "--show-toplevel"])).trim();
-  if (await fs.realpath(sourceRoot) !== source) fail("worktree_source_not_root");
-  const common = await fs.realpath((await git(source, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
+  const repositoryRoot = input.kind === "repository_root";
+  if (input.kind !== undefined && !["repository_root", "linked_worktree"].includes(input.kind)) fail("worktree_kind_invalid");
+  if (input.action === "initialize" && !repositoryRoot) fail("worktree_initialize_requires_repository_root");
+  if (repositoryRoot && ["create", "merge", "retire"].includes(input.action)) fail("repository_root_metadata_lifecycle_only");
+  const source = await canonical(input.sourceCwd);
+  const parent = inside(source, input.cwd) ? source : await canonical(input.parentDir);
+  if (!path.isAbsolute(input.cwd) || path.normalize(input.cwd) !== input.cwd ||
+      input.cwd.split(path.sep).includes(".git") ||
+      (!inside(parent, input.cwd) && !inside(source, input.cwd)) || (!repositoryRoot && input.cwd === source)) fail("worktree_path_outside_parent");
+  for (const excluded of input.excludedRoots ?? []) {
+    const resolved = await fs.realpath(excluded).catch(error => { if (error.code === "ENOENT") return excluded; throw error; });
+    if (inside(resolved, input.cwd) || inside(input.cwd, resolved)) fail("worktree_foreign_project_path");
+  }
+  if (!repositoryRoot) {
+    const sourceRoot = (await git(source, ["rev-parse", "--show-toplevel"])).trim();
+    if (await fs.realpath(sourceRoot) !== source) fail("worktree_source_not_root");
+  }
+  const common = repositoryRoot ? path.join(input.cwd, ".git")
+    : await fs.realpath((await git(source, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
   await git(source, ["check-ref-format", "refs/heads/" + input.branch]);
   await git(source, ["check-ref-format", "refs/heads/" + input.targetBranch]);
-  if (input.branch === input.targetBranch) fail("worktree_target_is_candidate");
+  if (!repositoryRoot && input.branch === input.targetBranch) fail("worktree_target_is_candidate");
   const targetRef = "refs/heads/" + input.targetBranch;
   const targetHead = async () => (await git(source, ["rev-parse", "--verify", targetRef + "^{commit}"])).trim();
   const ancestor = async (head: string, target: string) => {
@@ -87,6 +104,26 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
     })));
   const inspect = async (): Promise<ManagedWorktreeHostResult> => {
     await canonical(input.cwd);
+    if (repositoryRoot) {
+      if (!(await fs.lstat(common)).isDirectory() || await fs.realpath(common) !== common) fail("execution_workspace_requires_repository_root");
+      const ownCommon = (await git(input.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+      if (ownCommon !== common || (await git(input.cwd, ["rev-parse", "--absolute-git-dir"])).trim() !== common
+        || (await git(input.cwd, ["rev-parse", "--show-toplevel"])).trim() !== input.cwd) fail("worktree_repository_mismatch");
+      if ((await git(input.cwd, ["symbolic-ref", "HEAD"])).trim() !== "refs/heads/" + input.branch) fail("workspace_branch_mismatch");
+      let head: string | null;
+      try { head = (await git(input.cwd, ["rev-parse", "--verify", "HEAD^{commit}"])).trim(); }
+      catch (error) {
+        // A missing branch ref with a valid symbolic HEAD is an unborn repo, not
+        // permission to ignore a corrupt or inaccessible existing commit.
+        if ((error as { code?: unknown }).code !== 128) throw error;
+        try { await git(input.cwd, ["show-ref", "--verify", "--quiet", "refs/heads/" + input.branch]); throw error; }
+        catch (missing) { if ((missing as { code?: unknown }).code !== 1) throw missing; }
+        head = null;
+      }
+      return { schema: "paperclip.managed-worktree-host.v1", action: input.action, operationId: input.operationId,
+        cwd: input.cwd, commonDir: common, head, branch: input.branch, targetHead: null, merged: false,
+        dirty: (await git(input.cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).length > 0 };
+    }
     if (!(await fs.lstat(path.join(input.cwd, ".git"))).isFile()) fail("execution_workspace_requires_linked_worktree");
     const ownCommon = await fs.realpath((await git(input.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
     const gitDir = await fs.realpath((await git(input.cwd, ["rev-parse", "--absolute-git-dir"])).trim());
@@ -102,7 +139,7 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
       merged: await ancestor(head, target) };
   };
   if (input.action === "inspect") return inspect();
-  if (!input.expectedHead?.match(/^[0-9a-f]{40,64}$/) || !input.expectedTargetHead?.match(/^[0-9a-f]{40,64}$/)) fail("worktree_expected_heads_required");
+  if (input.action !== "initialize" && (!input.expectedHead?.match(/^[0-9a-f]{40,64}$/) || !input.expectedTargetHead?.match(/^[0-9a-f]{40,64}$/))) fail("worktree_expected_heads_required");
   // A host receipt is written before any Git mutation. Lost replies consult only
   // this operation; a partial operation is never submitted to Git a second time.
   const root = await canonical(input.receiptRoot);
@@ -145,17 +182,37 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
   const receiptDirectory = await fs.open(root, "r");
   try { await receiptDirectory.sync(); } finally { await receiptDirectory.close(); }
   try {
+    if (input.action === "initialize") {
+      await canonical(input.cwd);
+      if (await exists(common)) {
+        // Preserve a legacy ignore-only .git/info/exclude in place. All other
+        // metadata (including symlinks) requires explicit investigation.
+        if (!(await fs.lstat(common)).isDirectory() || await fs.realpath(common) !== common
+          || JSON.stringify((await fs.readdir(common)).sort()) !== JSON.stringify(["info"])) fail("repository_initialization_metadata_exists");
+        const info = path.join(common, "info"), exclude = path.join(info, "exclude");
+        if (!(await fs.lstat(info)).isDirectory() || await fs.realpath(info) !== info
+          || JSON.stringify(await fs.readdir(info)) !== JSON.stringify(["exclude"])
+          || !(await fs.lstat(exclude)).isFile()) fail("repository_initialization_metadata_exists");
+      }
+      await markEffect();
+      await git(input.cwd, ["init", "--template=", "--initial-branch=" + input.branch, "."]);
+      const result = await inspect();
+      await receipt({ state: "complete", result });
+      return result;
+    }
     if (await targetHead() !== input.expectedTargetHead) fail("worktree_target_moved");
     if (input.action === "create") {
       if (await exists(input.cwd)) fail("worktree_path_exists");
+      await canonical(path.dirname(input.cwd));
       await markEffect();
       await git(source, ["worktree", "add", "-b", input.branch, "--", input.cwd, input.expectedHead!]);
     } else {
       const before = await inspect();
+      if (!before.head || !before.targetHead) fail("worktree_expected_heads_required");
       if (before.head !== input.expectedHead) fail("worktree_candidate_moved");
       if (input.action === "merge") {
         if (before.dirty) fail("worktree_candidate_dirty");
-        let candidate = before.head;
+        let candidate = before.head!;
         if (!before.merged && !await ancestor(input.expectedTargetHead!, candidate)) {
           // Preserve collaborator state: construct the merge in a private detached
           // worktree, never checkout/reset/stash in either shared checkout.

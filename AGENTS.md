@@ -219,7 +219,7 @@ home with the PM's own model. A shared Claude or Codex worker may serve multiple
 projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
 hold when changing this topology or reuse another task's session/worktree.
-Shared workers select a main-registered linked Git worktree for code work. Multiple
+Shared workers select a main-registered Git repository root or linked worktree for code work. Multiple
 tasks/runs may join an open tree; canonical paths, aliases and parent/child overlap
 are not exclusive writer locks. Session cwd and external data/model/service paths
 remain separate and are never initialized as Git for dispatch. New tasks require an
@@ -254,7 +254,7 @@ source, workspace and review before waking that worker. Preserve source Owner ga
 Keep these dispatch fields in the live `protocol-actions/create-task.ts` schema
 as well as the documentation catalog. Test the exported provider catalog; a field
 present only in the documentation catalog is rejected before server authorization.
-New code dispatch requires the project's registered open linked worktree.
+New code dispatch requires the project's registered open Git execution workspace.
 Shared participants retain independent task/session authority and per-run copies.
 Cancelled runs leave admission immediately; provider stop and cleanup receipts
 remain truthful and govern only cleanup/reuse of their own resources and retirement.
@@ -731,12 +731,23 @@ backup and ancestry evidence; no force removal or invented stop proof.
 An exact .git/info/exclude-only directory is ignore metadata even at the selected
 workspace root. It must remain an ordinary canonical directory without requiring
 Git. Empty, partial, symlinked or additional local Git metadata still requires Git
-validation. Execution workspaces require a registered linked Git worktree;
+validation. Execution workspaces require a registered repository root or linked Git worktree;
 external non-Git directories remain session-only resources without path claims.
 
 Workspace selection uses existing registered open trees or explicit session_only.
+Registration records repository_root or linked_worktree kind and full canonical
+cwd, including existing nested task directories. Source/project/host scope,
+generation CAS and operation receipts remain mandatory. Explicit initialize
+creates only Git metadata (no add/commit/remote); unborn roots may execute. Keep
+dirty/ignored files and .lmas. Root retirement is metadata-only, never directory
+removal or linked-tree merge. Never infer initialization authority from dispatch.
 The task card, properties and Chat defaults share this contract; historical source
 selections remain readable, not available as new choices. Input receipt validation
+is independent of Retry presentation: retained failed receipts are not background
+progress. Only queued/running work, valid preparation/deadline or active recovery
+may display waiting. Show the concrete cause otherwise; delivery_unknown and
+decision_pending do not offer Retry. Generic execution_reconciliation_required
+is not proof of unknown delivery. Input receipt validation
 is independent of cleanup admission: never drop continuation authorization or
 skip merged-user receipt checks merely because getExecutionBlocker returns null.
 Ordinary agent comments retain their verified agent-author/receipt namespace;

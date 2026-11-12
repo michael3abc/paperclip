@@ -3785,11 +3785,12 @@ workspace waits are reconciled under the cooperative contract below.
 ### Physical workspace admission
 
 Session cwd, execution worktree and external resources are separate. New code
-execution selects a registered linked Git worktree; the project main chooses its
+execution selects a registered Git repository root or linked worktree; the project main chooses its
 batch lifetime and optional default through the lifecycle service. Multiple tasks
 and runs may join the same open tree. Origin-task completion and idle time do not
-authorize deletion. Primary checkouts, main session homes, data, models and services
-stay external; the platform never initializes Git merely to dispatch them.
+authorize deletion. Primary checkouts may be explicitly registered in place. Main
+session homes, data, models and services remain external unless explicitly selected;
+the platform never initializes Git merely to dispatch them.
 
 Issue executionWorkspaceSettings.sessionOnly=true explicitly selects external
 resource or existing-script work without an execution workspace. Resident Chats
@@ -3811,7 +3812,7 @@ seconds, even when execution timeout is unlimited; unknown delivery is never sen
 again automatically. Cross-project diagnostics retain existing read boundaries.
 
 The workspace tree CLI is a thin client of /projects/:projectId/worktrees/:id.
-Its operations are create/register, join/leave, set_default, converge, merge,
+Its operations are create/register/initialize, join/leave, set_default, converge, merge,
 reopen and retire, with expectedGeneration and a durable operationId. Recheck
 reads the original receipt. Only an authorized human or the project's running,
 current main may manage the lifecycle. Participants are a roster, not writer locks.
@@ -3823,6 +3824,36 @@ tree with a concrete reason. Merge and deletion are separate operations.
 Checked-out target preflight includes ignored untracked files because Git may
 otherwise overwrite them. A known refusal before shared mutation records
 effectStarted=false, permitting an explicit repair/reopen with a new operation ID.
+
+The same lifecycle API accepts kind=repository_root or linked_worktree. register
+takes an explicit complete canonical cwd, including existing paperclip/task-id
+nesting, within the selected source or its approved worktree parent. Existing
+same-scope workspace IDs can be adopted without moving files or replacing their
+metadata. Cross-company/host scope and foreign nested project roots remain
+excluded; a broad same-company session/source ancestor does not occupy explicitly
+granted project sources beneath it. Aliases and Git administrative paths fail.
+
+initialize is a separate explicit operation for repository_root: it runs only
+git init with an empty template and the requested initial branch. It never stages
+files, creates commits, changes remotes or removes dirty/ignored content (.lmas
+included). An exact ignore-only .git/info/exclude is retained; other existing
+metadata must be registered or investigated. Unborn HEAD is represented by null
+in the original host receipt and is executable without a synthetic first commit.
+Initialization preserves the operation intent and recheck reads its original
+receipt; an uncertain partial effect is not automatically replayed.
+
+For repository_root, converge closes admission and retire archives only the
+workspace record; no merge prerequisite or host deletion is performed. The
+repository and participant history remain. Linked-worktree create/merge/retire
+retain their existing pinned-head, liveness, backup and non-force deletion rules.
+CLI workspace tree initialize/register accepts these fields in --payload-json,
+using the same route, current-main/human authorization and generation CAS.
+
+A retained failed Retry receipt does not mean a retry is running. Only queued or
+running work, a valid preparation/deadline, or active recovery may display waiting.
+Other states display their concrete cause; delivery_unknown and decision_pending
+do not offer Retry. Generic execution_reconciliation_required alone must not be
+classified as unknown delivery.
 
 Warm sandbox reuse requires equal exported-source and final
 host digests; a host-only collaborator file must never become a remote deletion
@@ -3876,7 +3907,7 @@ revision-checked workspace API and preserves its original native session.
 Selection is persistent and applies at the next normal admission; it does not
 Retry or start a task. Inspect the original receipt after uncertain delivery.
 New selections are `{ kind: "existing", workspaceId }` for an open main-managed
-linked worktree, or `{ kind: "session_only" }` for conversation/external resources.
+repository root or linked worktree, or `{ kind: "session_only" }` for conversation/external resources.
 Session-only clears both source/workspace bindings. Historical configured_source
 and task_directory selections remain readable for their persisted runs; new UI
 choices and new admissions cannot create those unmanaged workspaces. The task

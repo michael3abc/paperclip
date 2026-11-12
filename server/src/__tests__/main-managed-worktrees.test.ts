@@ -64,6 +64,75 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(readMainManagedWorktree((await f.row()).metadata)?.phase).toBe("open");
   });
 
+  it("registers a repository root and retires metadata without merging or deleting its directory", async () => {
+    const f = await fixture();
+    const registration = { ...f.registration, kind: "repository_root" as const, cwd: f.sourceCwd,
+      branch: "michael/main", targetBranch: "michael/main" };
+    f.host.mockImplementationOnce(async (_host, input) => ({ ...f.response(input), head: null, targetHead: null, merged: false, dirty: true }));
+    expect(await f.service.operate(f.scope, registration)).toMatchObject({ phase: "open", generation: 1 });
+    expect(readMainManagedWorktree((await f.row()).metadata)).toMatchObject({ kind: "repository_root", lastReceipt: { head: null } });
+    await f.service.operate(f.scope, f.command("converge", 1));
+    await expect(f.service.operate(f.scope, f.command("merge", 2))).rejects.toThrow("repository_root_metadata_lifecycle_only");
+    expect(await f.service.operate(f.scope, { action: "retire", expectedGeneration: 2, operationId: randomUUID() }))
+      .toMatchObject({ phase: "retired", generation: 3, filesystemEffect: "none" });
+    expect(f.host).toHaveBeenCalledTimes(1);
+    expect(await f.row()).toMatchObject({ cwd: f.sourceCwd, status: "archived" });
+  });
+
+  it("adopts an existing nested workspace ID and transports explicit initialization to its registered host", async () => {
+    const f = await fixture(true), cwd = f.parentDir + "/paperclip/task-id/original";
+    await db.insert(executionWorkspaces).values({ id: f.workspaceId, companyId: f.companyId, projectId: f.projectId,
+      projectWorkspaceId: f.sourceId, name: "Legacy", cwd, branchName: null, mode: "isolated_workspace",
+      strategyType: "git_worktree", providerType: "remote_managed", metadata: { legacyEvidence: "keep" } });
+    const command = { ...f.registration, action: "initialize" as const, kind: "repository_root" as const, cwd,
+      branch: "main", targetBranch: "main" };
+    await f.service.operate(f.scope, command);
+    expect(f.host).toHaveBeenCalledWith("fixture-remote", expect.objectContaining({ action: "initialize", kind: "repository_root", cwd }));
+    expect(await f.row()).toMatchObject({ id: f.workspaceId, cwd, branchName: "main", metadata: { legacyEvidence: "keep" } });
+    expect(await f.service.operate(f.scope, command)).toMatchObject({ workspaceId: f.workspaceId, generation: 1 });
+    expect(f.host).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects foreign nested source scope and out-of-parent coordinates before host operations", async () => {
+    const f = await fixture(), foreignProject = randomUUID();
+    await db.insert(projects).values({ id: foreignProject, companyId: f.companyId, name: "Foreign" });
+    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: foreignProject, name: "Foreign source",
+      cwd: f.sourceCwd + "/private-project", sourceType: "local_path" });
+    await expect(f.service.operate(f.scope, { ...f.registration, kind: "repository_root", cwd: f.sourceCwd + "/private-project/nested" }))
+      .rejects.toThrow("worktree_foreign_project_path");
+    await expect(f.service.operate(f.scope, { ...f.registration, kind: "repository_root", cwd: "/unapproved/source" }))
+      .rejects.toThrow("worktree_path_outside_parent");
+    expect(f.host).not.toHaveBeenCalled();
+  });
+
+  it("adopts a local legacy git_worktree row without broad same-company source exclusion", async () => {
+    const f = await fixture(), broadProject = randomUUID(), cwd = f.sourceCwd + "/paperclip/task-id";
+    await db.insert(projects).values({ id: broadProject, companyId: f.companyId, name: "Broad session cwd" });
+    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: broadProject, name: "Broad",
+      cwd: "/fixture/" + f.projectId, sourceType: "local_path" });
+    await db.insert(executionWorkspaces).values({ id: f.workspaceId, companyId: f.companyId, projectId: f.projectId,
+      projectWorkspaceId: f.sourceId, name: "Legacy", cwd, branchName: "michael/batch", mode: "isolated_workspace",
+      strategyType: "git_worktree", providerType: "git_worktree", metadata: { trainingReceipt: "retain" } });
+    await f.service.operate(f.scope, { ...f.registration, cwd });
+    expect(await f.row()).toMatchObject({ id: f.workspaceId, providerType: "git_worktree", metadata: { trainingReceipt: "retain" } });
+    expect(f.host).toHaveBeenCalledWith(null, expect.objectContaining({ cwd }));
+    expect(f.host.mock.calls[0]![1].excludedRoots).not.toContain("/fixture/" + f.projectId);
+  });
+
+  it("admits an unborn registered root without a first commit while retaining current-run authorization", async () => {
+    const f = await fixture();
+    f.host.mockImplementation(async (_host, input) => ({ ...f.response(input), head: null, targetHead: null, merged: false, dirty: true }));
+    await f.service.operate(f.scope, { ...f.registration, kind: "repository_root", cwd: f.sourceCwd });
+    await db.update(issues).set({ executionWorkspaceId: f.workspaceId,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "existing", workspaceId: f.workspaceId } },
+    }).where(eq(issues.id, f.issueId));
+    expect(await f.service.prepareRun(f.scope, f.issueId, 1)).toMatchObject({ generation: 1, observed: { head: null } });
+    expect(f.host).toHaveBeenLastCalledWith(null, expect.objectContaining({ action: "inspect", kind: "repository_root" }));
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(f.service.prepareRun(f.scope, f.issueId, 1)).rejects.toThrow();
+    expect(f.host).toHaveBeenCalledTimes(2);
+  });
+
   it("allows multiple task participants without a writer lock, closes join at converge and reopens explicitly", async () => {
     const f = await fixture(); await f.service.operate(f.scope, f.registration);
     const board = { ...f.scope, actor: { type: "board" as const, source: "local_implicit" as const, isInstanceAdmin: true } };

@@ -182,8 +182,10 @@ export type ReconcileExecutionWorkspaceBranch = z.infer<typeof reconcileExecutio
 export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;
 
 export const managedWorktreeOperationSchema = z.object({
-  action: z.enum(["create", "register", "join", "leave", "set_default", "converge", "merge", "reopen", "retire"]),
+  action: z.enum(["create", "register", "initialize", "join", "leave", "set_default", "converge", "merge", "reopen", "retire"]),
   operationId: z.string().uuid(), expectedGeneration: z.number().int().nonnegative(),
+  kind: z.enum(["repository_root", "linked_worktree"]).optional(),
+  cwd: z.string().min(1).max(4096).optional(),
   projectWorkspaceId: z.string().uuid().optional(), name: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/).optional(),
   branch: z.string().min(1).max(200).optional(), targetBranch: z.string().min(1).max(200).optional(),
   expectedHead: z.string().regex(/^[a-f0-9]{40,64}$/).optional(), expectedTargetHead: z.string().regex(/^[a-f0-9]{40,64}$/).optional(),

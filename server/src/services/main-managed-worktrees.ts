@@ -30,6 +30,10 @@ type Scope = { companyId: string; projectId: string; workspaceId: string; actor:
 type Host = (hostId: string | null, input: ManagedWorktreeHostInput) => Promise<ManagedWorktreeHostResult>;
 const generation = (row: Workspace) => Number.isSafeInteger(row.metadata?.lifecycleGeneration) ? Number(row.metadata!.lifecycleGeneration) : 0;
 const fail = (code: string): never => { throw conflict(code, { code }); };
+const inside = (root: string, cwd: string) => {
+  const relative = path.posix.relative(root, cwd);
+  return relative === "" || (relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative));
+};
 
 export function mainManagedWorktreeService(db: Db, options: { host?: Host; receiptRoot?: string } = {}) {
   const receiptRoot = options.receiptRoot ?? path.join(path.dirname(resolvePaperclipConfigPath()), "worktree-operations");
@@ -178,6 +182,7 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           issueId, workspaceId: scope.workspaceId, cwd: row.cwd!, agentId: admittedRun.agentId, runId: admittedRun.id,
           responsibleUserId: admittedRun.responsibleUserId });
         const observed = await host(managed!.hostId, { action: "inspect", operationId: scope.actor.runId!,
+          kind: managed!.kind,
           cwd: row!.cwd!, sourceCwd: managed!.sourceCwd, parentDir: managed!.parentDir,
           branch: managed!.branch, targetBranch: managed!.targetBranch, receiptRoot });
         if (observed.schema !== "paperclip.managed-worktree-host.v1" || observed.action !== "inspect"
@@ -201,7 +206,14 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
       const operations = await db.select().from(workspaceOperations).where(and(
         eq(workspaceOperations.companyId, scope.companyId), eq(workspaceOperations.executionWorkspaceId, row.id), eq(workspaceOperations.phase, "main_managed_worktree"),
       ));
-      return { workspace: row, generation: generation(row), managed, operations };
+      // Host exclusion coordinates may belong to unreadable foreign projects.
+      const visibleOperations = operations.map(operation => {
+        const input = operation.metadata?.hostInput as Record<string, unknown> | undefined;
+        if (!input) return operation;
+        const { excludedRoots: _excludedRoots, ...visibleInput } = input;
+        return { ...operation, metadata: { ...operation.metadata, hostInput: visibleInput } };
+      });
+      return { workspace: row, generation: generation(row), managed, operations: visibleOperations };
     },
     recheck: async (scope: Scope, operationId: string, expectedGeneration: number) =>
       withExecutionWorkspaceLifecycleLock(db, scope.workspaceId, async () => {
@@ -229,7 +241,7 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
       }, { lockTimeoutMs: 30_000 }),
     operate: async (scope: Scope, raw: Operation) => {
       const operation = managedWorktreeOperationSchema.parse(raw);
-      if (["create", "merge", "retire"].includes(operation.action) && (!operation.expectedHead || !operation.expectedTargetHead))
+      if (["create", "merge"].includes(operation.action) && (!operation.expectedHead || !operation.expectedTargetHead))
         fail("worktree_expected_heads_required");
       return withExecutionWorkspaceLifecycleLock(db, scope.workspaceId, async lockTransaction => {
         const digest = createHash("sha256").update(JSON.stringify({ companyId: scope.companyId, projectId: scope.projectId,
@@ -250,19 +262,40 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           let row = await load(tx, scope);
           if (row && generation(row) !== operation.expectedGeneration) fail("worktree_generation_conflict");
           let managed = readMainManagedWorktree(row?.metadata);
+          let excludedRoots: string[] | undefined;
           if (row && isMainManagedExecutionWorkspace(row) && !managed) fail("worktree_marker_unrecognized");
           if (managed?.pendingOperationId) fail("worktree_operation_reconciliation_required");
-          if (operation.action === "create" || operation.action === "register") {
+          if (["create", "register", "initialize"].includes(operation.action)) {
             if (managed?.lastReceipt || Object.keys(managed?.participants ?? {}).length || (!row && operation.expectedGeneration !== 0)) fail("worktree_already_registered");
             if (!operation.projectWorkspaceId || !operation.name || !operation.branch || !operation.targetBranch) fail("worktree_registration_required");
             const [source] = await tx.select().from(projectWorkspaces).where(and(eq(projectWorkspaces.id, operation.projectWorkspaceId!),
               eq(projectWorkspaces.projectId, scope.projectId), eq(projectWorkspaces.companyId, scope.companyId)));
             const policy = parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy);
-            const parent = policy?.workspaceStrategy?.worktreeParentDir;
-            if (!source?.cwd || !parent || !path.posix.isAbsolute(parent)) fail("worktree_parent_configuration_required");
+            const configuredParent = policy?.workspaceStrategy?.worktreeParentDir;
+            if (!source?.cwd || !path.posix.isAbsolute(source.cwd)) fail("worktree_source_configuration_required");
+            const kind = operation.kind ?? "linked_worktree";
+            if (operation.action === "create" && kind !== "linked_worktree") fail("repository_root_use_register_or_initialize");
+            if (operation.action === "initialize" && kind !== "repository_root") fail("worktree_initialize_requires_repository_root");
+            const parent = configuredParent ?? source!.cwd!;
+            if (!path.posix.isAbsolute(parent) || path.posix.normalize(parent) !== parent) fail("worktree_parent_configuration_required");
             const sourceHost = source!.sourceType === "remote_managed" ? source!.metadata?.hostId : null;
-            if (!["local_path", "remote_managed"].includes(source!.sourceType) || (source!.sourceType === "remote_managed" && typeof sourceHost !== "string")) fail("worktree_host_capability_unavailable");
-            const cwd = path.posix.join(parent!, operation.name!);
+            if (!["local_path", "remote_managed"].includes(source!.sourceType) || (source!.sourceType === "remote_managed" && (typeof sourceHost !== "string" || !sourceHost))) fail("worktree_host_capability_unavailable");
+            const cwd = operation.cwd ?? (configuredParent ? path.posix.join(parent, operation.name!) : "");
+            if (!cwd || !path.posix.isAbsolute(cwd) || path.posix.normalize(cwd) !== cwd
+              || cwd.split("/").includes(".git")
+              || (!inside(source!.cwd!, cwd) && !(configuredParent && inside(parent, cwd)))) fail("worktree_path_outside_parent");
+            // A source grant never includes another project's registered nested
+            // root. Host checks canonical aliases before touching Git.
+            const sources = await tx.select({ cwd: projectWorkspaces.cwd, companyId: projectWorkspaces.companyId,
+              projectId: projectWorkspaces.projectId, sourceType: projectWorkspaces.sourceType, metadata: projectWorkspaces.metadata }).from(projectWorkspaces);
+            excludedRoots = sources.filter(other => other.cwd &&
+              (other.companyId !== scope.companyId || other.projectId !== scope.projectId) &&
+              (other.sourceType === "remote_managed" ? other.metadata?.hostId : null) === sourceHost &&
+              // A broad same-company session/source parent does not own the
+              // explicitly granted source below it. Foreign descendants do.
+              !(other.companyId === scope.companyId && inside(other.cwd!, source!.cwd!)))
+              .map(other => other.cwd!);
+            if (excludedRoots.some(root => inside(root, cwd) || inside(cwd, root))) fail("worktree_foreign_project_path");
             const physicalKey = "managed-worktree-path:" + (sourceHost ?? hostname()) + ":" + cwd;
             await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${physicalKey}, 0))`);
             const duplicates = await tx.select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata })
@@ -270,8 +303,11 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
                 sql`${executionWorkspaces.metadata} ? ${MAIN_MANAGED_WORKTREE_KEY}`));
             if (duplicates.some(other => other.id !== scope.workspaceId
               && (!readMainManagedWorktree(other.metadata) || readMainManagedWorktree(other.metadata)?.hostId === sourceHost))) fail("worktree_already_registered");
-            if (row && (row.cwd !== cwd || row.projectWorkspaceId !== source!.id || row.branchName !== operation.branch)) fail("worktree_registration_coordinates_conflict");
-            managed = { schema: MAIN_MANAGED_WORKTREE_SCHEMA, phase: "converging", sourceCwd: source!.cwd!, parentDir: parent!,
+            if (row && (row.cwd !== cwd || row.projectWorkspaceId !== source!.id
+              || (row.branchName !== null && row.branchName !== operation.branch)
+              || (sourceHost ? row.providerType !== "remote_managed" : !["local_fs", "git_worktree"].includes(row.providerType))
+              || row.closedAt || ["archived", "cleanup_failed"].includes(row.status))) fail("worktree_registration_coordinates_conflict");
+            managed = { schema: MAIN_MANAGED_WORKTREE_SCHEMA, kind, phase: "converging", sourceCwd: source!.cwd!, parentDir: parent,
               branch: operation.branch!, targetBranch: operation.targetBranch!, hostId: sourceHost as string | null, participants: {}, pendingOperationId: null };
             if (!row) {
               [row] = await tx.insert(executionWorkspaces).values({ id: scope.workspaceId, companyId: scope.companyId,
@@ -287,6 +323,7 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           switch (operation.action) {
             case "create": hostAction = "create"; break;
             case "register": hostAction = "inspect"; break;
+            case "initialize": hostAction = "initialize"; break;
             case "join": {
               if (next.phase !== "open") fail("workspace_converging");
               const [issue] = await tx.select().from(issues).where(and(eq(issues.id, operation.issueId!), eq(issues.companyId, scope.companyId), eq(issues.projectId, scope.projectId)));
@@ -307,17 +344,33 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
             }
             case "converge": if (next.phase !== "open") fail("worktree_phase_conflict"); next.phase = "converging"; break;
             case "reopen": if (next.phase === "open") fail("worktree_phase_conflict"); next.phase = "open"; break;
-            case "merge": if (!["converging", "merged"].includes(next.phase)) fail("worktree_must_converge"); hostAction = "merge"; break;
-            case "retire": if (next.phase !== "merged") fail("worktree_not_merged"); hostAction = "retire"; break;
+            case "merge":
+              if (next.kind === "repository_root") fail("repository_root_metadata_lifecycle_only");
+              if (!["converging", "merged"].includes(next.phase)) fail("worktree_must_converge"); hostAction = "merge"; break;
+            case "retire":
+              if (next.kind === "repository_root") {
+                if (next.phase !== "converging") fail("worktree_must_converge");
+                // Deregistration only: no Git merge, process kill, backup or
+                // filesystem deletion is needed for an existing repository.
+                next.phase = "retired";
+              } else {
+                if (next.phase !== "merged") fail("worktree_not_merged");
+                if (!operation.expectedHead || !operation.expectedTargetHead) fail("worktree_expected_heads_required");
+                hostAction = "retire";
+              }
+              break;
           }
           const nextGeneration = generation(row!) + (participant ? 0 : 1);
           if (hostAction) next.pendingOperationId = operation.operationId;
-          const hostInput: ManagedWorktreeHostInput | null = hostAction ? { action: hostAction, sourceCwd: next.sourceCwd,
+          const hostInput: ManagedWorktreeHostInput | null = hostAction ? { action: hostAction, kind: next.kind, excludedRoots, sourceCwd: next.sourceCwd,
             cwd: row!.cwd!, parentDir: next.parentDir, branch: next.branch, targetBranch: next.targetBranch, operationId: operation.operationId,
             receiptRoot, expectedHead: operation.expectedHead, expectedTargetHead: operation.expectedTargetHead } : null;
-          const receipt = { workspaceId: row!.id, operationId: operation.operationId, phase: next.phase, generation: nextGeneration };
+          const receipt = { workspaceId: row!.id, operationId: operation.operationId, phase: next.phase, generation: nextGeneration,
+            ...(operation.action === "retire" && next.kind === "repository_root" ? { filesystemEffect: "none" } : {}) };
           const [saved] = await tx.update(executionWorkspaces).set({ metadata: { ...row!.metadata, lifecycleGeneration: nextGeneration,
-            [MAIN_MANAGED_WORKTREE_KEY]: next }, cleanupEligibleAt: null, cleanupReason: null, updatedAt: new Date() }).where(eq(executionWorkspaces.id, row!.id)).returning();
+            [MAIN_MANAGED_WORKTREE_KEY]: next }, branchName: next.branch, cleanupEligibleAt: null, cleanupReason: null,
+            ...(next.phase === "retired" ? { status: "archived" as const, closedAt: new Date() } : {}),
+            updatedAt: new Date() }).where(eq(executionWorkspaces.id, row!.id)).returning();
           await tx.insert(workspaceOperations).values({ id: operation.operationId, companyId: scope.companyId, executionWorkspaceId: row!.id,
             heartbeatRunId: scope.actor.runId, issueId: operation.issueId, phase: "main_managed_worktree", status: hostAction ? "running" : "succeeded",
             finishedAt: hostAction ? null : new Date(), metadata: { digest, action: operation.action, generation: nextGeneration, hostInput, receipt } });
