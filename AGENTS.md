@@ -2,6 +2,17 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Shared-worktree rollout safety baseline (Owner 2026-11-12): metadata key
+`mainManagedWorktree` is server-owned, including unknown versions. Legacy
+terminal/idle retention, compaction, rehome, branch repair and archive must never
+modify or destroy a marked tree. Recheck its marker under the existing workspace
+lifecycle lock; a candidate snapshot is not authority. Generic PATCH preserves
+this marker and lifecycle generation and cannot alter its coordinates or phase.
+This baseline rejects execution on marked trees as `shared_worktree_unsupported`;
+only the subsequent feature release may admit cooperative participants. It does
+not synthesize stop evidence or settle outstanding cleanup. See
+`doc/execution-semantics.md` for the staged contract.
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.

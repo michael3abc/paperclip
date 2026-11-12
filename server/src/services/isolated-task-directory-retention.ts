@@ -1,3 +1,4 @@
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -212,6 +213,7 @@ export async function expireIsolatedTaskDirectory(db: Db, snapshot: Workspace, o
 }): Promise<TaskDirectoryRetentionResult> {
   const result: TaskDirectoryRetentionResult = { candidate: false, expired: false, restorePoint: false, candidateBytes: 0, reclaimedBytes: 0, skipReason: null };
   let pending: string | null = null;
+  if (isMainManagedExecutionWorkspace(snapshot)) return { ...result, skipReason: "main_managed_worktree" };
   if (!await isIsolatedTaskDirectoryWorkspace(snapshot)) return { ...result, skipReason: "not_task_directory" };
   const closed = ["archived", "cleanup_failed"].includes(snapshot.status);
   const existing = readTaskDirectoryRetention(snapshot);
@@ -485,6 +487,7 @@ async function inspectTaskDirectoryFolder(db: Db, companyId: string, name: strin
     if (!stat) return null;
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("unsafe_task_directory");
     const rows = await folderRows(db, folder);
+    if (rows.some(row => isMainManagedExecutionWorkspace(row))) return null;
     if (rows.some(row => !["archived", "cleanup_failed"].includes(row.status) || row.closedAt === null)) return null;
     if (rows.some(row => hasPendingTaskDirectoryRetention(row))) throw new Error("retention_pending");
     const [issue] = await db.select({ id: issues.id, executionWorkspaceId: issues.executionWorkspaceId }).from(issues)

@@ -1,3 +1,4 @@
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
@@ -631,6 +632,8 @@ async function inspectBinding(
 async function withRetainedWorkspace<T>(db: Db, workers: WorkspaceWorkers | undefined,
   workspace: Workspace, operation: (workspace: Workspace) => Promise<T>) {
   return withExecutionWorkspaceLifecycleLock(db, workspace.id, async () => {
+    const [current] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspace.id), eq(executionWorkspaces.companyId, workspace.companyId)));
+    if (isMainManagedExecutionWorkspace(current)) throw conflict("main_managed_worktree_requires_lifecycle_operation");
     workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRestoration)
       workspace = await finishPendingRestoration(db, workers, workspace);
@@ -811,6 +814,7 @@ export async function removePluginWorkspace(
   recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest,
   beforeRemove?: () => Promise<void>,
 ) {
+  if (isMainManagedExecutionWorkspace(workspace)) throw conflict("main_managed_worktree_requires_retire");
   workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
   if (workspace.metadata?.workspaceProviderRestoration)
     throw conflict("Workspace restoration must be reconciled before removal");
@@ -924,6 +928,7 @@ export async function restorePluginWorkspace(
   workers: WorkspaceWorkers | undefined,
   workspace: Workspace,
 ) {
+  if (isMainManagedExecutionWorkspace(workspace)) throw conflict("main_managed_worktree_requires_retire");
   workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
   if (workspace.metadata?.workspaceProviderRetired === true)
     throw conflict("Workspace storage was retired");

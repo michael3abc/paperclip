@@ -53,6 +53,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
+import { acquireExecutionWorkspaceLifecycleLock } from "../services/execution-workspace-lifecycle-lock.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -533,6 +534,71 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     }
     return { companyId, projectId, executionWorkspaceId, sourceIssueId, identifier, repoRoot, worktreePath, headSha };
   }
+
+  it("preserves main-managed trees after their origin task completes without scheduling scans", async () => {
+    const f = await seedTerminalWorkspace({ mergedPr: true });
+    await db.update(executionWorkspaces).set({ metadata: { mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open" } } })
+      .where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+    const service = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0, workspaceCompactionDelayMs: 0 });
+    const scan = vi.spyOn(workspaceGitOperationScheduler, "run");
+    try {
+      expect(await service.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, compacted: 0 });
+      expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+      expect(scan).not.toHaveBeenCalled();
+      expect(await fs.readFile(path.join(f.worktreePath, "delivered.txt"), "utf8")).toBe("delivered\n");
+    } finally { scan.mockRestore(); }
+  });
+
+  it("protects main-managed authority from generic PATCH and archive", async () => {
+    const f = await seedTerminalWorkspace();
+    const marker = { schema: "paperclip.main-managed-worktree.v1", phase: "converging" };
+    await db.update(executionWorkspaces).set({ metadata: { mainManagedWorktree: marker, lifecycleGeneration: 7 } })
+      .where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+    await svc.update(f.executionWorkspaceId, { metadata: { lifecycleGeneration: 0, arbitrary: true } });
+    const [saved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+    expect(saved.metadata).toMatchObject({ mainManagedWorktree: marker, lifecycleGeneration: 7, arbitrary: true });
+    await expect(svc.update(f.executionWorkspaceId, { status: "archived" })).rejects.toThrow("requires_lifecycle_operation");
+    await expect(svc.update(f.executionWorkspaceId, { cwd: "/different" })).rejects.toThrow("requires_lifecycle_operation");
+    await expect(svc.archiveWorkspaceUnderLifecycleLock({ id: f.executionWorkspaceId, patch: {}, closedAt: new Date() }))
+      .rejects.toThrow("requires_retire");
+  });
+
+  it("fences stale main-managed destruction even for an unknown marker version", async () => {
+    const f = await seedTerminalWorkspace();
+    const archived = await svc.archiveWorkspaceUnderLifecycleLock({ id: f.executionWorkspaceId, patch: {}, closedAt: new Date() });
+    if (archived?.outcome !== "archived") throw new Error("fixture did not archive");
+    // Enrollment won after the old reaper captured its candidate.
+    await db.update(executionWorkspaces).set({ metadata: { ...archived.workspace.metadata, mainManagedWorktree: { schema: "future" } } })
+      .where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+    const destroy = vi.fn(async () => "removed");
+    await svc.fenceClosedWorkspaceDestruction({ workspaceId: f.executionWorkspaceId, capturedGeneration: archived.capturedGeneration, destroy });
+    expect(destroy).not.toHaveBeenCalled();
+    expect(await fs.stat(f.worktreePath)).toBeDefined();
+  });
+
+  it("serializes main-managed enrollment against an already captured destruction candidate", async () => {
+    const f = await seedTerminalWorkspace();
+    const archived = await svc.archiveWorkspaceUnderLifecycleLock({ id: f.executionWorkspaceId, patch: {}, closedAt: new Date() });
+    if (archived?.outcome !== "archived") throw new Error("fixture did not archive");
+    const registered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const enrollment = db.transaction(async tx => {
+      await acquireExecutionWorkspaceLifecycleLock(tx, f.executionWorkspaceId);
+      await tx.update(executionWorkspaces).set({ metadata: { ...archived.workspace.metadata,
+        mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open" } } })
+        .where(eq(executionWorkspaces.id, f.executionWorkspaceId));
+      registered.resolve();
+      await release.promise;
+    });
+    await registered.promise;
+    const destroy = vi.fn(async () => "removed");
+    const cleanup = svc.fenceClosedWorkspaceDestruction({ workspaceId: f.executionWorkspaceId,
+      capturedGeneration: archived.capturedGeneration, destroy });
+    release.resolve();
+    await enrollment;
+    expect(await cleanup).toEqual({ skippedReopened: true });
+    expect(destroy).not.toHaveBeenCalled();
+  });
 
   it("skips nonterminal trees, cooldowns, and active runs without a Git scan", async () => {
     await seedTerminalWorkspace({ childStatus: "todo" });
@@ -4081,7 +4147,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
             expect.objectContaining({
               id: startedServices[0]?.id,
               serviceName: "web",
-              status: "starting",
+              // The shared lifecycle lock may let startup finish before the
+              // reconciliation reads it; both live states must still reject.
+              status: expect.stringMatching(/^(starting|running)$/),
             }),
           ],
         },

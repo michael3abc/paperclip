@@ -1,3 +1,4 @@
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, executionWorkspaces, executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLease } from "@paperclipai/shared";
@@ -66,6 +67,7 @@ export async function cleanupRemoteWorkspaceAllocation(input: {
   const [workspace] = await input.db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, input.workspace.companyId), eq(executionWorkspaces.id, input.workspace.id),
   ));
+  if (isMainManagedExecutionWorkspace(workspace)) throw new Error("main_managed_worktree_requires_retire");
   if (!workspace || !["archived", "cleanup_failed"].includes(workspace.status)) throw new Error("remote_workspace_cleanup_binding_changed");
   const persistence = await inspectRemoteWorkspacePersistence(input.db, workspace);
   if (!persistence.ready || !persistence.authority) throw new Error(persistence.reason ?? "remote_workspace_saved_state_required");

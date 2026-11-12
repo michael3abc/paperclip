@@ -1,3 +1,4 @@
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -62,7 +63,7 @@ export type IsolatedRepositoryRehomeResult = {
 };
 
 export function isIsolatedRepositoryRehomeCandidate(workspace: Workspace) {
-  return workspace.providerType !== "plugin" && workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree"
+  return !isMainManagedExecutionWorkspace(workspace) && workspace.providerType !== "plugin" && workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree"
     && OPEN_STATUSES.includes(workspace.status) && !workspace.closedAt && workspace.metadata?.isolatedRemoteSource !== undefined;
 }
 
@@ -73,7 +74,7 @@ function readRehome(workspace: Pick<Workspace, "metadata">) {
 
 export function hasPendingIsolatedRepositoryRehomeCleanup(workspace: Workspace) {
   const rehome = readRehome(workspace);
-  return Boolean(rehome && !rehome.cleanedAt && workspace.providerType !== "plugin");
+  return Boolean(!isMainManagedExecutionWorkspace(workspace) && rehome && !rehome.cleanedAt && workspace.providerType !== "plugin");
 }
 
 async function git(cwd: string, args: string[], options: { signal?: AbortSignal; input?: string; timeout?: number } = {}) {
@@ -117,6 +118,7 @@ function rehomeLockLocations(clone: string, admins: string[], branch: string | n
 }
 
 export async function workspaceMoveEligible(tx: Db | Tx, workspace: Workspace) {
+  if (isMainManagedExecutionWorkspace(workspace)) return false;
   if (workspace.metadata?.reopenPendingConsumption === true) return false;
   const rows = await tx.execute<{ allowed: boolean }>(sql`${expirationScope(workspace)}
     SELECT (
@@ -389,6 +391,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
     return await withWorkspaceMoveLocks(db, snapshot, async tx => {
       const [row] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, snapshot.id), eq(executionWorkspaces.companyId, snapshot.companyId)));
       if (!row || row.updatedAt.getTime() !== snapshot.updatedAt.getTime()) throw new Error("workspace_changed");
+      if (isMainManagedExecutionWorkspace(row)) return { ...result, reason: "main_managed_worktree" };
       if (!candidate) return await cleanupRehomedSource(db, tx, row, result, options);
       if (!await workspaceMoveEligible(tx, row)) throw new Error("live_or_unresolved_consumer");
       let recipe: GitCacheRestoration | null = null;
@@ -675,6 +678,7 @@ async function markCleaned(db: Db, workspaceId: string, now?: Date, retained?: s
 }
 
 export async function rehomeExpiredIsolatedRestoration(db: Db, snapshot: Workspace): Promise<Workspace> {
+  if (isMainManagedExecutionWorkspace(snapshot)) return snapshot;
   if (!CLOSED_STATUSES.includes(snapshot.status) || snapshot.metadata?.isolatedRemoteSource === undefined || !snapshot.branchName) return snapshot;
   try {
     const recipe = readGitCacheRestoration(snapshot);
@@ -690,10 +694,11 @@ export async function rehomeExpiredIsolatedRestoration(db: Db, snapshot: Workspa
       const present = await presentCommits(base, manifest.prerequisites);
       if (manifest.prerequisites.some(sha => !present.has(sha))) return snapshot;
     }
-    await finishGitCacheTrash(snapshot);
     return await withExecutionWorkspaceLifecycleLock(db, snapshot.id, async tx => {
       const [row] = await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id)).for("update");
       if (!row || row.updatedAt.getTime() !== snapshot.updatedAt.getTime()) return row ?? snapshot;
+      if (isMainManagedExecutionWorkspace(row)) return row;
+      await finishGitCacheTrash(row);
       const metadata: Record<string, unknown> = { ...row.metadata };
       delete metadata.isolatedRemoteSource;
       delete metadata.gitCacheExpiration;

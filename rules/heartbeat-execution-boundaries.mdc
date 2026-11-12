@@ -73,6 +73,12 @@ ownership changes.
 
 ## Design principles
 
+- **Shared-worktree rollout is staged.** A `mainManagedWorktree` marker belongs to
+  the project main's lifecycle service. Legacy cleanup cannot consume it, even
+  after the origin task ends. Recheck under the workspace lifecycle lock before
+  destructive work. The safety baseline rejects unsupported execution explicitly;
+  it must never convert cooperative participation into an old exclusive holder.
+
 - **Execution requires current authority.** Queue acceptance is not permission
   to execute indefinitely. Admission and dispatch must respect company scope,
   responsible-user authority, budgets, pause/Stop, and task eligibility, including

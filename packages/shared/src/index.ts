@@ -1817,6 +1817,9 @@ export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from ".
 export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isMainManagedExecutionWorkspace,
+  MAIN_MANAGED_WORKTREE_KEY,
+  MAIN_MANAGED_WORKTREE_SCHEMA,
 } from "./execution-workspace-guards.js";
 
 export {

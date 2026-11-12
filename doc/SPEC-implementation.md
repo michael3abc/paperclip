@@ -81,6 +81,10 @@ Telemetry and infrastructure tracing.
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
 - Heartbeat invocation, status tracking, and cancellation
+- Main-managed linked-worktree rollout starts with a cleanup-safe baseline:
+  protected metadata fences legacy archive, compaction, expiration and rehome,
+  including stale candidates. Baseline execution rejects marked workspaces
+  explicitly until cooperative admission is available (see `doc/execution-semantics.md`).
 - Automatic bounded stop settlement separates termination from resource cleanup,
   preserves original receipts and same-row workspace waits, and exposes terminal
   Recheck without provider replay (see `doc/execution-semantics.md`).

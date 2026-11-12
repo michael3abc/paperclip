@@ -4,6 +4,7 @@ import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -118,6 +119,9 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   let existingExecutionWorkspace = requestedExecutionWorkspaceId
     ? await executionWorkspacesSvc.getStoredById(agent.companyId, requestedExecutionWorkspaceId)
     : null;
+  if (isMainManagedExecutionWorkspace(existingExecutionWorkspace)) {
+    throw new WorkspaceValidationFailure("This release preserves shared worktrees but does not support cooperative execution.", { reason: "shared_worktree_unsupported" });
+  }
   if (existingExecutionWorkspace && issueId && !controllerOnly && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")

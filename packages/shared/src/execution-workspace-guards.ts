@@ -1,5 +1,15 @@
 import type { ExecutionWorkspace } from "./types/workspace-runtime.js";
 
+/** Server-owned marker. Even an unknown version must fence legacy cleanup. */
+export const MAIN_MANAGED_WORKTREE_KEY = "mainManagedWorktree";
+export const MAIN_MANAGED_WORKTREE_SCHEMA = "paperclip.main-managed-worktree.v1";
+
+export function isMainManagedExecutionWorkspace(
+  workspace: { metadata?: Record<string, unknown> | null } | null | undefined,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(workspace?.metadata ?? {}, MAIN_MANAGED_WORKTREE_KEY);
+}
+
 type ExecutionWorkspaceGuardTarget = Pick<ExecutionWorkspace, "closedAt" | "mode" | "name" | "status">;
 
 const CLOSED_EXECUTION_WORKSPACE_STATUSES = new Set<ExecutionWorkspace["status"]>(["archived", "cleanup_failed"]);

@@ -16,21 +16,32 @@ import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { cleanupExecutionWorkspaceArtifacts, ensureRuntimeServicesForRun, restartDesiredRuntimeServicesOnStartup, startRuntimeServicesForWorkspaceControl } from "./workspace-runtime.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { workspaceOperationService } from "./workspace-operations.js";
+import { startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { cleanupRemoteWorkspaceAllocation } from "./remote-workspace-lifecycle.js";
 import { inventoryRemoteWorkspaceMigration } from "./remote-workspace-migration.js";
 import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, listNestedCloneMigrationNames,
   migrateNestedRepositoryClone, pendingNestedCloneMigrationNames } from "./nested-clone-migration.js";
 
 const url = resolveExternalTestDatabaseUrl("PAPERCLIP_REMOTE_WORKSPACE_LIFECYCLE_TEST_DATABASE_URL");
-describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
+describe("remote workspace close and allocation cleanup", () => {
   let db: Db;
+  let owned: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let databaseUrl: string;
   const directories: string[] = [];
-  beforeAll(async () => { await applyPendingMigrations(url!); db = createDb(url!); }, 120_000);
+  beforeAll(async () => {
+    if (!url) owned = await startEmbeddedPostgresTestDatabase("paperclip-remote-workspace-lifecycle-");
+    databaseUrl = url ?? owned!.connectionString;
+    await applyPendingMigrations(databaseUrl); db = createDb(databaseUrl);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   beforeEach(async () => {
     await db.execute(sql`set client_min_messages = warning`);
     await db.execute(sql`truncate table companies, execution_workspace_snapshots, environments restart identity cascade`);
   });
   afterEach(async () => { vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-  afterAll(async () => { await closeRegisteredClients(url!, { scope: "database" }); });
+  afterAll(async () => {
+    await closeRegisteredClients(databaseUrl, { scope: "database" });
+    await owned?.cleanup();
+  });
 
   async function fixture(receiptState: "destroyed" | "stopped" | "invalid" = "destroyed") {
     const [company] = await db.insert(companies).values({ name: "Remote close", issuePrefix: "RC" }).returning();
@@ -72,6 +83,18 @@ describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
     return { company, issue, run, workspace, snapshotId, authority, service, destroyProvider, inspectLocal, cwd, environmentsSvc, leaseId };
   }
   const current = async (id: string) => (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!;
+
+  it("refuses legacy remote cleanup after the workspace becomes main-managed", async () => {
+    const f = await fixture();
+    await db.update(executionWorkspaces).set({ status: "archived",
+      metadata: { ...f.workspace.metadata, mainManagedWorktree: { schema: "future" } } })
+      .where(eq(executionWorkspaces.id, f.workspace.id));
+    const destroyLease = vi.fn();
+    await expect(withExecutionWorkspaceLifecycleLock(db, f.workspace.id, () =>
+      cleanupRemoteWorkspaceAllocation({ db, workspace: f.workspace, destroyLease })))
+      .rejects.toThrow("main_managed_worktree_requires_retire");
+    expect(destroyLease).not.toHaveBeenCalled();
+  });
 
   it.each([true, false])("rejects automatic Core services before controller access (skip provision: %s)", async skipHostProvision => {
     const f = await fixture();

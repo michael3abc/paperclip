@@ -1,3 +1,4 @@
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -83,17 +84,17 @@ function hasRemoteStorageFence(workspace: Pick<Workspace, "metadata">) {
 }
 
 export function isNestedCloneMigrationCandidate(workspace: Workspace) {
-  return !hasRemoteStorageFence(workspace) && workspace.providerType !== "plugin" && OPEN_STATUSES.includes(workspace.status) && !workspace.closedAt
+  return !isMainManagedExecutionWorkspace(workspace) && !hasRemoteStorageFence(workspace) && workspace.providerType !== "plugin" && OPEN_STATUSES.includes(workspace.status) && !workspace.closedAt
     && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId);
 }
 
 function canRecover(workspace: Workspace, name: string) {
-  return !hasRemoteStorageFence(workspace) && workspace.providerType !== "plugin" && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId)
+  return !isMainManagedExecutionWorkspace(workspace) && !hasRemoteStorageFence(workspace) && workspace.providerType !== "plugin" && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId)
     && pendingRecords(workspace)[name] !== undefined;
 }
 
 function pendingRecords(workspace: Pick<Workspace, "metadata">) {
-  if (hasRemoteStorageFence(workspace)) return {};
+  if (isMainManagedExecutionWorkspace(workspace) || hasRemoteStorageFence(workspace)) return {};
   const value = workspace.metadata?.[NESTED_CLONE_MIGRATION_PENDING_KEY];
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }

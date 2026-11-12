@@ -86,7 +86,7 @@ import type {
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
 } from "@paperclipai/shared";
-import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
+import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT, isMainManagedExecutionWorkspace, MAIN_MANAGED_WORKTREE_KEY } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -270,6 +270,14 @@ function preserveWorkspaceMetadataForPatch(
   current: typeof executionWorkspaces.$inferSelect, patch: Partial<typeof executionWorkspaces.$inferInsert>,
 ) {
   const nextPatch = { ...patch };
+  const managed = isMainManagedExecutionWorkspace(current);
+  if (managed) {
+    for (const key of [...workspaceSourceKeys, "status", "closedAt"] as const) {
+      if (patch[key] !== undefined && !isDeepStrictEqual(patch[key], current[key])) {
+        throw conflict("main_managed_worktree_requires_lifecycle_operation");
+      }
+    }
+  }
   if (readRemoteWorkspaceAuthority(current.metadata)) {
     for (const key of workspaceSourceKeys) {
       if (patch[key] !== undefined && patch[key] !== current[key]) throw conflict("Remote workspace coordinates belong to its sandbox storage");
@@ -318,6 +326,14 @@ function preserveWorkspaceMetadataForPatch(
   }
   if (current.metadata?.[CONTROLLER_PROVISION_COPY_ONLY] === true) {
     nextPatch.metadata = { ...(nextPatch.metadata ?? current.metadata), [CONTROLLER_PROVISION_COPY_ONLY]: true };
+  }
+  if (patch.metadata !== undefined) {
+    nextPatch.metadata = { ...nextPatch.metadata };
+    // Generic PATCH cannot enroll, remove or rewrite lifecycle authority.
+    if (managed) {
+      nextPatch.metadata[MAIN_MANAGED_WORKTREE_KEY] = current.metadata![MAIN_MANAGED_WORKTREE_KEY];
+      nextPatch.metadata.lifecycleGeneration = current.metadata?.lifecycleGeneration;
+    } else delete nextPatch.metadata[MAIN_MANAGED_WORKTREE_KEY];
   }
   return nextPatch;
 }
@@ -2187,6 +2203,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const currentGeneration = fresh ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata) : null;
       if (
         !fresh
+        || isMainManagedExecutionWorkspace(fresh)
         || currentGeneration !== input.expectedGeneration
         || !input.isWriteTarget(fresh)
       ) {
@@ -2374,6 +2391,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function purgeCompactionTrashIfDue(workspace: ExecutionWorkspaceRow) {
+    if (isMainManagedExecutionWorkspace(workspace)) return;
     const worktreePath = workspace.providerRef ?? workspace.cwd;
     if (workspace.providerType !== "git_worktree" || !worktreePath) return;
     const parentDir = path.dirname(path.resolve(worktreePath));
@@ -2400,7 +2418,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   ): Promise<"compacted" | "nothing_to_compact" | "not_compactable" | "busy"> {
     const worktreePath = workspace.providerRef ?? workspace.cwd;
     if (
-      workspace.providerType !== "git_worktree"
+      isMainManagedExecutionWorkspace(workspace)
+      || workspace.providerType !== "git_worktree"
       || workspace.mode === "shared_workspace"
       || !workspace.sourceIssueId
       || !worktreePath
@@ -2445,6 +2464,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const freshMetadata = (fresh?.metadata as Record<string, unknown> | null) ?? null;
       if (
         !fresh
+        || isMainManagedExecutionWorkspace(fresh)
         || isClosedExecutionWorkspaceStatus(fresh.status)
         || fresh.closedAt
         || metadataHasReopenPendingConsumption(freshMetadata)
@@ -3446,6 +3466,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (options.compact !== false) await purgeDeferredCompactionTrash(signal);
       if (opts.taskDirectoryRetention) await runTaskDirectoryFolderWork(signal);
       const baseCandidateFilter = and(
+        sql`NOT (coalesce(${executionWorkspaces.metadata}, '{}'::jsonb) ? ${MAIN_MANAGED_WORKTREE_KEY})`,
         sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
         or(and(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]), isNull(executionWorkspaces.closedAt)),
           and(eq(executionWorkspaces.providerType, "plugin"), inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
@@ -4036,6 +4057,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // status, the terminal predicates, and the reopen-pending flag under the
         // lock, so it never archives a workspace that a reopen just restored.
         const archived = await withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
+          const [fresh] = await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+          if (!fresh || isMainManagedExecutionWorkspace(fresh)) return null;
           return tx
             .update(executionWorkspaces)
             .set({
@@ -4224,6 +4247,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     create: async (data: typeof executionWorkspaces.$inferInsert) => {
+      if (isMainManagedExecutionWorkspace(data)) throw conflict("main_managed_worktree_requires_registration");
       const row = await measureRunTransaction(db, "workspace", async tx => {
         await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, data.id ? `workspace:${data.id}`
           : data.sourceIssueId ? `issue:${data.sourceIssueId}` : undefined));
@@ -4233,18 +4257,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
-      if (patch.metadata === undefined && !workspaceSourceKeys.some(key => patch[key] !== undefined)) {
-        const row = await measureRunTransaction(db, "workspace", async tx => {
-          await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${id}`));
-          return measureRunPhase("workspace.write", () => tx.update(executionWorkspaces).set({ ...patch, updatedAt: new Date() })
-            .where(eq(executionWorkspaces.id, id)).returning().then(rows => rows[0] ?? null));
-        });
-        return row ? toExecutionWorkspace(row) : null;
-      }
       const [identity] = await measureRunPhase("workspace.identity_read", () => db.select({ companyId: executionWorkspaces.companyId }).from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, id)));
       if (!identity) return null;
-      return measureRunTransaction(db, "workspace", async tx => {
+      return withExecutionWorkspaceLifecycleLock(db, id, async tx => {
         const [current] = await measureRunPhase("workspace.row_lock", () => tx.select().from(executionWorkspaces).where(and(
           eq(executionWorkspaces.id, id), eq(executionWorkspaces.companyId, identity.companyId),
         )).for("no key update"));
@@ -4285,6 +4301,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       )).then(rows => rows[0] ?? null);
       if (!freshSnapshot || freshSnapshot.sourceIssueId !== sourceIssueId) {
         return { ok: false, code: "not_reopenable", message: "Execution workspace source changed during reopen" };
+      }
+      if (isMainManagedExecutionWorkspace(freshSnapshot)) {
+        return { ok: false, code: "not_reopenable", message: "main_managed_worktree_requires_lifecycle_operation" };
       }
       if (readRemoteWorkspaceAuthority(freshSnapshot.metadata)) {
         return withExecutionWorkspaceLifecycleLock(db, freshSnapshot.id, async tx => {
@@ -4433,6 +4452,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // disclose no workspace detail.
           return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
         }
+        if (isMainManagedExecutionWorkspace(row)) return { ok: false, code: "not_reopenable", message: "main_managed_worktree_requires_lifecycle_operation" };
         await assertTaskWorkspaceExecutionAccess(tx, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: row.id });
         if (!isClosedExecutionWorkspaceStatus(row.status)) {
           // A concurrent reopen already restored the row. Report success without a
@@ -4869,6 +4889,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // archive again.
           return null;
         }
+        if (isMainManagedExecutionWorkspace(fresh)) throw conflict("main_managed_worktree_requires_retire");
         if (metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
           // A reopen published this row as active while its source issue is still
           // terminal. A caller will consume the rebuilt worktree. Refuse the
@@ -5000,12 +5021,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         alternateRecoveryFingerprints?: string[] | null;
       },
     ): Promise<ExecutionWorkspaceBranchReconcileResult> => {
+      return withExecutionWorkspaceLifecycleLock(db, id, async () => {
       const existingRow = await db
         .select()
         .from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingRow) throw notFound("Execution workspace not found");
+      if (isMainManagedExecutionWorkspace(existingRow)) throw conflict("main_managed_worktree_requires_lifecycle_operation");
       if (existingRow.providerType === "plugin") throw conflict("Branch repair belongs to the workspace storage plugin");
 
       const existing = toExecutionWorkspace(existingRow);
@@ -5322,6 +5345,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           restoredSourceIssue,
           sourceIssueStatusChanged,
         };
+      });
       });
     },
 

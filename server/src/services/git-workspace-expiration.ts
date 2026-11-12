@@ -1,3 +1,4 @@
+import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
 import { captureGitWorkspaceContents, assertGitWorkspaceContentsUnchanged, readManagedCheckoutContents, selectRestoredProjectRepositories, type ManagedCheckoutContents } from "./git-workspace-contents.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -164,6 +165,7 @@ export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspa
 
 export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date,
   options: { closedSiblingsAllowed?: boolean } = {}) {
+  if (isMainManagedExecutionWorkspace(workspace)) return false;
   if (workspace.metadata?.reopenPendingConsumption === true) return false;
   const siblingBlocks = options.closedSiblingsAllowed
     ? sql`AND (other.status NOT IN ('archived', 'cleanup_failed') OR other.closed_at IS NULL
@@ -215,6 +217,7 @@ export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Worksp
 }
 
 export function hasPendingGitExpiration(workspace: Workspace) {
+  if (isMainManagedExecutionWorkspace(workspace)) return false;
   const state = workspace.metadata?.[EXPIRATION_KEY] as Expiration | undefined;
   return state?.schema === "paperclip.git-cache-expiration.v1" && !state.completed;
 }

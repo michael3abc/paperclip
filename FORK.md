@@ -633,6 +633,15 @@ event-driven wait had no deadline. Header and composer now retain the waiting
 status and exact-run cancellation control with scheduledRetryAt=null. Preserve
 the failed c3b8a423d candidate receipt alongside the corrective validation.
 
+### 2026-11-12 — Shared-worktree rollback safety baseline
+
+- Recognize protected main-managed metadata even when its schema is unknown.
+- Exclude it from automatic terminal cleanup and compaction; generation-fenced
+  destruction rechecks the marker under the registration lifecycle lock.
+- Generic updates cannot erase management or archive/change managed coordinates.
+- Marked execution fails explicitly until the feature release supplies cooperative
+  admission. Stop evidence and historical failures are retained unchanged.
+
 ### 2026-11-12 — Fixed-directory Chat Retry
 
 - Ordinary Retry retains the agent's configured fixed directory through normal

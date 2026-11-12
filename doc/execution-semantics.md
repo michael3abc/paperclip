@@ -10,6 +10,28 @@ This document explains how Paperclip interprets issue assignment, issue status, 
 
 ## 1. Core Model
 
+### Shared-worktree safety baseline (2026-11-12)
+
+The Owner-selected successor contract separates session cwd, linked Git execution
+worktrees and external resources. Its rollout starts with a rollback-safe baseline.
+`execution_workspaces.metadata.mainManagedWorktree` is a server-owned marker; the
+first format is `paperclip.main-managed-worktree.v1`. Unknown marker versions are
+also protected from legacy cleanup. No new table or schema migration is needed.
+
+Marked rows never become terminal/idle reaper candidates. Compaction, expiration,
+rehome and archive recheck the marker under the same lifecycle lock used for
+registration. Generic metadata updates preserve the marker and generation, and
+cannot change managed coordinates or archive status. Origin-task completion does
+not authorize cleanup. A stale destruction callback cannot remove a newly
+registered tree. Retention and stop receipts remain unchanged.
+
+The baseline deliberately reports `shared_worktree_unsupported` at admission for
+marked rows. Cooperative admission, current-session authority, safe copyback and
+main-controlled lifecycle arrive together in the feature release. Rollback after
+enrollment may target this baseline only, with dispatch drained first; never select
+a pre-baseline binary that treats a shared row as an old disposable task tree.
+No new dispatch or registration is enabled by this baseline alone.
+
 Paperclip separates four concepts that are easy to blur together:
 
 1. structure: parent/sub-issue relationships
