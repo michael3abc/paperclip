@@ -3832,6 +3832,13 @@ conversation, and only the recorded system comment. Missing receipts, changed
 input or appended comments fail closed; these are not general system bypasses.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
+A CC Pocket agent's adapter session cwd is a fixed placement: the agent
+configuration must register the same directory as runtimeConfig.workspaceBinding,
+and create/PATCH reject a missing or different binding. Retry evaluates that fixed
+binding before reusing a failed preparation's task directory; an unbound session
+cwd fails with `fixed_workspace_placement_required` before any directory is
+allocated. The fixed policy checks only strategies that apply to the run: a
+project's worker worktree default does not apply to a shared fixed run.
 For an agent with a configured fixed directory, ordinary Retry retains the fixed
 placement instead of choosing a new isolated directory implicitly. Record the
 decision on the original retry intent; normal preparation still enforces task

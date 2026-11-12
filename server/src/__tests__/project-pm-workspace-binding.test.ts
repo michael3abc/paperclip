@@ -406,6 +406,30 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     expect(await storedBinding()).toMatchObject({ allowCrossProject: true });
   });
 
+  it("requires a CC Pocket session cwd to keep the same fixed binding on PATCH", async () => {
+    const s = await seed(), app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: "local-board", source: "local_implicit" }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { cwd: s.root }, runtimeConfig: {} })
+      .where(eq(agents.id, s.agent.id));
+    const stored = async () => (await db.select().from(agents).where(eq(agents.id, s.agent.id)))[0]!.runtimeConfig;
+    const missing = await request(app).patch(`/api/agents/${s.agent.id}`).send({ runtimeConfig: { heartbeat: { enabled: false } } });
+    expect(missing.status).toBe(422);
+    expect(missing.body.details).toMatchObject({ code: "workspace_binding_required", reason: "missing", cwd: s.root });
+    const other = path.join(tmpRoot, `other-${s.companyId.slice(0, 8)}`);
+    await mkdir(other, { recursive: true });
+    const mismatch = await request(app).patch(`/api/agents/${s.agent.id}`)
+      .send({ runtimeConfig: { workspaceBinding: { mode: "fixed", cwd: other } } });
+    expect(mismatch.status).toBe(422);
+    expect(mismatch.body.details).toMatchObject({ code: "workspace_binding_required", reason: "cwd_mismatch" });
+    expect(await stored()).toEqual({});
+    const ok = await request(app).patch(`/api/agents/${s.agent.id}`)
+      .send({ runtimeConfig: { workspaceBinding: { mode: "fixed", cwd: s.root } } });
+    expect(ok.status).toBe(200);
+    expect((await stored()).workspaceBinding).toEqual({ mode: "fixed", cwd: s.root });
+  });
+
   it("rejects changing the adapter while a remote worker binding is retained", async () => {
     const s = await seed(), app = express();
     app.use(express.json());

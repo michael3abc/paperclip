@@ -121,6 +121,7 @@ import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { auditBridgeFixedBindings } from "./services/agent-workspace-binding.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
   StartupRefusalError,
@@ -932,6 +933,11 @@ async function startServerWithDatabaseTeardown(
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
   const managedPluginAutoInstall = managedConfig?.plugins.autoInstall ?? null;
+  // Report, never repair: a CC Pocket session cwd without its fixed binding
+  // makes Retry fail closed until an operator registers the binding.
+  void auditBridgeFixedBindings(db as any).then((conflicts) => {
+    if (conflicts.length) logger.warn({ conflicts }, "CC Pocket agents have a session cwd without the matching fixed workspace binding");
+  }, (err) => logger.warn({ err }, "CC Pocket fixed workspace binding audit failed"));
   const cloudQualification = await qualifyCloudConfigurationForCurrentImage(db as any);
   if (cloudQualification && !cloudQualification.configurationPackagesEligible) {
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");

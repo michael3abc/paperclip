@@ -92,7 +92,7 @@ import type {
   resolveExecutionWorkspaceReuseRequestForIssue,
 } from "./workspaces.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
-import { readPaperclipPmWorkspaceContext, readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask, isFixedMainReview } from "../agent-workspace-binding.js";
+import { readPaperclipPmWorkspaceContext, readWorkspaceBinding, assertFixedWorkspacePolicy, isExternalWorkspaceTask, isFixedMainReview, appliedFixedWorkspaceStrategies } from "../agent-workspace-binding.js";
 import type {
   ParsedExecutionWorkspaceMode,
   ExecutionWorkspaceEnvironmentResolution,
@@ -412,7 +412,9 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           binding: fixedBinding, environment: selectedEnvironmentForConfig,
           trustPreset: trustPreset.kind, mode: requestedExecutionWorkspaceMode, isDot: controllerOnly,
           external: await isExternalWorkspaceTask(db, agent.companyId, issueId),
-          strategies: [mergedConfig, mergedConfig.workspaceStrategy, configSnapshot, projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy, environmentExecutionWorkspaceSettings?.workspaceStrategy],
+          strategies: appliedFixedWorkspaceStrategies({ mode: requestedExecutionWorkspaceMode, mergedConfig, configSnapshot,
+            projectPolicy: projectExecutionWorkspacePolicy, issueStrategy: issueExecutionWorkspaceSettings?.workspaceStrategy,
+            environmentStrategy: environmentExecutionWorkspaceSettings?.workspaceStrategy }),
         });
         return resolveWorkspaceForRun(agent, context, previousSessionParams, {
           executionEnvironmentDriver: selectedEnvironmentForConfig?.driver,

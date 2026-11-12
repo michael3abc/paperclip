@@ -702,3 +702,17 @@ the failed c3b8a423d candidate receipt alongside the corrective validation.
   `artifacts/shared-worktree-20261112/recovery-failure-classification.json`.
   Follow-up validation selects affected cases with `-t`; do not rerun the entire
   recovery suite. This feature branch is not a production acceptance receipt.
+
+### 2026-11-12 — Rule-based placement for CC Pocket session directories
+
+- A CC Pocket agent with an adapter session cwd must register the same directory
+  as its fixed runtimeConfig.workspaceBinding; agent create/PATCH reject a missing
+  or different binding (422 `workspace_binding_required`). Startup only logs
+  inconsistent agents; it never repairs them.
+- Ordinary Retry decides the fixed placement before reusing a failed preparation's
+  task directory. An unbound session cwd fails before allocation with
+  `fixed_workspace_placement_required` instead of an implicit fresh isolated
+  directory the adapter would reject. Other agents keep the existing fallback.
+- The fixed-directory policy rejects only strategies that would apply. A project's
+  unused worker worktree default no longer blocks a main agent's shared fixed run;
+  explicit task, environment, storage-provider and merged strategies still do.

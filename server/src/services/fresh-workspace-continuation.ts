@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
-import { readWorkspaceBinding } from "./agent-workspace-binding.js";
+import { bridgeFixedBindingConflict, readWorkspaceBinding, workspaceBindingConflict } from "./agent-workspace-binding.js";
 import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -198,29 +198,15 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
           if (receipt) return { mode: "resume_preserved_workspace", preservationReceiptId: receipt };
         }
       }
-      const workspace = run.contextSnapshot?.previousRunId === source.id
-        ? await reusableDirectoryAfterPreparationFailure(db, source, issueId) : null;
-      if (workspace?.cwd) {
-        const readiness: ContinuationReadiness = { mode: "reuse_current_workspace", retryIntentId: wake.id,
-          sourceRunId: source.id, workspaceId: workspace.id, cwd: workspace.cwd };
-        await db.transaction(async tx => {
-          const changed = await tx.update(agentWakeupRequests).set({
-            payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"continue"'::jsonb)`,
-          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.runId, run.id),
-            sql`${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' = 'evaluate'`)).returning({ id: agentWakeupRequests.id });
-          if (changed.length) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
-            actorType: "system", actorId: "task-recovery", action: "issue.retry_workspace_reused",
-            entityType: "issue", entityId: issueId, runId: run.id, details: readiness });
-        });
-        return readiness;
-      }
-    }
-    // A fixed directory is an execution contract, not a failed task directory
-    // that Retry can replace. Normal preparation still checks current policy,
-    // trust, source selection, provider stop and every resource owner. This
-    // chooses placement only; it neither settles the source nor admits a writer.
-    if (intent.strategy !== "fresh_isolated_workspace") {
-      const [agent] = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents).where(and(
+      // A fixed directory is an execution contract, not a failed task directory
+      // that Retry can replace. It is decided before reusing a failed
+      // preparation's directory: that directory was never this agent's
+      // placement, and the fixed adapter session cannot run there. Normal
+      // preparation still checks current policy, trust, source selection,
+      // provider stop and every resource owner. This chooses placement only; it
+      // neither settles the source nor admits a writer.
+      const [agent] = await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig,
+        runtimeConfig: agents.runtimeConfig }).from(agents).where(and(
         eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
       ));
       const configured = agent?.runtimeConfig?.workspaceBinding as Record<string, unknown> | undefined;
@@ -238,6 +224,27 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
             details: { retryIntentId: wake.id, sourceRunId: source.id, cwd: binding.cwd, hostId: binding.hostId ?? null } });
         });
         return null;
+      }
+      // A CC Pocket session cwd without the server binding is a configuration
+      // error, not a reason to invent an isolated directory the adapter rejects.
+      // Fail before allocating anything and name the missing registration.
+      const bridgeConflict = agent ? bridgeFixedBindingConflict(agent) : null;
+      if (bridgeConflict) workspaceBindingConflict("placement_required", bridgeConflict.message);
+      const workspace = run.contextSnapshot?.previousRunId === source.id
+        ? await reusableDirectoryAfterPreparationFailure(db, source, issueId) : null;
+      if (workspace?.cwd) {
+        const readiness: ContinuationReadiness = { mode: "reuse_current_workspace", retryIntentId: wake.id,
+          sourceRunId: source.id, workspaceId: workspace.id, cwd: workspace.cwd };
+        await db.transaction(async tx => {
+          const changed = await tx.update(agentWakeupRequests).set({
+            payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"continue"'::jsonb)`,
+          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.runId, run.id),
+            sql`${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' = 'evaluate'`)).returning({ id: agentWakeupRequests.id });
+          if (changed.length) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
+            actorType: "system", actorId: "task-recovery", action: "issue.retry_workspace_reused",
+            entityType: "issue", entityId: issueId, runId: run.id, details: readiness });
+        });
+        return readiness;
       }
     }
     const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
