@@ -535,6 +535,18 @@ export type AdapterStopReverificationResult =
   | { verified: true; proof: Record<string, unknown> }
   | { verified: false; reason: string };
 
+/** Input for a read-only check that a cancelled run with no recorded session identity never delivered input. */
+export interface AdapterUndispatchedStopInput {
+  /** Cancels inspection I/O; must never be interpreted as provider Stop. */
+  signal?: AbortSignal;
+  runId: string;
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  /** When the cancelled run finished; the adapter requires its dispatcher to have been quiet since. */
+  finishedAt: string;
+}
+
 export interface ServerAdapterModule {
   /** Same-run Chat guidance. A send is attempted once, bound to an exact native turn.
    * receipt is read-only and must survive adapter reload; unknown delivery never authorizes replay. */
@@ -645,6 +657,13 @@ export interface ServerAdapterModule {
    * proof only from provider evidence; never synthesize it.
    */
   reverifyCancelledRunStop?: (input: AdapterStopReverificationInput) => Promise<AdapterStopReverificationResult>;
+
+  /**
+   * Optional: read-only proof that a cancelled run which recorded no session identity never sent input to its
+   * resident session (the adapter persists a dispatch before it sends one). The card must also be idle with known,
+   * empty background work. Never sends input, interrupts or stops anything, and never rewrites adapter state.
+   */
+  reverifyUndispatchedRunStop?: (input: AdapterUndispatchedStopInput) => Promise<AdapterStopReverificationResult>;
 
   /**
    * Optional: read-only observation of a non-shared execution host's current

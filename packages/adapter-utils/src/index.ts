@@ -36,6 +36,7 @@ export type {
   AcpTargetDescriptor,
   ServerAdapterModule,
   AdapterStopReverificationInput,
+  AdapterUndispatchedStopInput,
   AdapterStopReverificationResult,
   AdapterRemoteHostBootObservation,
   QuotaWindow,

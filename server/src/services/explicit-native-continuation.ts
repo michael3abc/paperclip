@@ -18,6 +18,7 @@ import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
+import { hasVerifiedBridgeUndispatchedStop } from "./heartbeat/bridge-undispatched-stop.js";
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
@@ -89,8 +90,10 @@ function acceptsExplicitUserTurn(adapterType: string): boolean {
 /** The bridge has no host PID. Its stop proof is the adapter's own receipt,
  * written only after the bridge confirmed the owned turn settled. A forced or
  * unconfirmed stop, or any other terminal state, retains the hold. */
-export function bridgeSessionStopAcknowledged(run: Pick<Run, "status" | "runtimeMode" | "resultJson">): boolean {
+export function bridgeSessionStopAcknowledged(run: Pick<Run, "id" | "status" | "runtimeMode" | "resultJson" | "nativeSessionId">): boolean {
   if (run.runtimeMode !== "legacy" || !["cancelled", "timed_out"].includes(run.status)) return false;
+  // A cancelled run that never recorded a session is stopped only by the adapter's own never-delivered proof.
+  if (hasVerifiedBridgeUndispatchedStop(run)) return true;
   const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
   return cancellation?.state === "acknowledged" && cancellation.forced === false &&
     typeof cancellation.acknowledgedAt === "string";

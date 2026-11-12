@@ -11,6 +11,7 @@ import { sharedCheckoutHolderSettled } from "./shared-checkout.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
+import { bridgeSessionStopAcknowledged } from "../explicit-native-continuation.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { seedSuppressedDisposition } from "../../__tests__/helpers/suppressed-disposition.js";
@@ -347,6 +348,31 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     await make().reconcile(f.run.id, f.company.id, { manual: true });
     expect(hook).toHaveBeenCalledTimes(5);
     expect((await receipt(f.run.id)).nextCheckAt).toBeNull();
+  });
+
+  it("settles a cancelled Bridge run that never recorded a session, after its exhausted checks, only from never-delivered proof", async () => {
+    const f = await seed();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "cancelled", runtimeMode: "legacy",
+      issueId: f.issue.id, startedAt: new Date(Date.now() - 600_000), finishedAt: new Date(Date.now() - 590_000), errorCode: "operator_interrupted",
+      contextSnapshot: { issueId: f.issue.id }, runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: {} } },
+      resultJson: { stopReason: "cancelled", cancellation: { source: "queued_message", expected: true } } }).returning();
+    let clock = Date.now(); let verified = false;
+    const hook = vi.fn(async (input: { runId: string }) => verified ? { verified: true as const, proof: { schema: "ccpocket.bridge-undispatched-stop.v1",
+      runId: input.runId, bridgeSessionId: "bridge", nativeSessionId: "native", recordedInputs: 3, lastRecordedRunId: f.run.id,
+      checkedAt: new Date().toISOString(), background: { known: true as const, active: [] } } } : { verified: false as const, reason: "history_incomplete" });
+    const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyUndispatchedRunStop: hook }), isRunActive: () => false, now: () => clock });
+    for (let n = 1; n <= 4; n++) { await service.reconcile(run.id, f.company.id, { manual: true }); clock += 400_000; }
+    expect(await receipt(run.id)).toMatchObject({ state: "needs_attention", reason: "history_incomplete", attempts: 4, stopVerified: false });
+    expect(bridgeSessionStopAcknowledged(await read(run.id))).toBe(false);
+    verified = true;
+    await service.reconcile(run.id, f.company.id, { manual: true });
+    const settled = await read(run.id);
+    expect(await receipt(run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(settled.resultJson?.executionCancellation).toBeUndefined();
+    expect(settled.resultJson?.executionStopVerification).toMatchObject({ schema: "paperclip.bridge-undispatched-stop.v1", proof: "bridge_undispatched_reverified" });
+    expect(settled).toMatchObject({ status: "cancelled", errorCode: "operator_interrupted" });
+    expect(bridgeSessionStopAcknowledged(settled)).toBe(true);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]?.status).toBe("blocked");
   });
 
   it("serializes concurrent automatic/manual checks and settles a late Bridge stop without task replay", async () => {
