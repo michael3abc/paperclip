@@ -29,6 +29,19 @@ function asDatabaseDate(value: string | Date | null) {
   return typeof value === "string" ? new Date(value) : value;
 }
 
+function withoutMainBlockerState(evidence: Record<string, unknown>) {
+  const { mainBlockerPolicy: _policy, mainBlockerNotices: _notices, ...rest } = evidence;
+  return rest;
+}
+
+// Merge protected fields from the current locked database value, not the stale
+// upsert snapshot. Recovery refreshes must never erase an in-flight wake receipt.
+function preserveMainBlockerState(evidence: Record<string, unknown>) {
+  return sql`${JSON.stringify(withoutMainBlockerState(evidence))}::jsonb ||
+    jsonb_strip_nulls(jsonb_build_object('mainBlockerPolicy', ${issueRecoveryActions.evidence}->'mainBlockerPolicy',
+      'mainBlockerNotices', ${issueRecoveryActions.evidence}->'mainBlockerNotices'))`;
+}
+
 function isRecoveryBudgetExhausted(evidence: Record<string, unknown>) {
   const budget = evidence.recoveryBudget;
   return Boolean(
@@ -306,8 +319,8 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       cause: input.cause,
       fingerprint: input.fingerprint,
       evidence: {
-        ...(input.evidence ?? {}),
-        ...(input.evidenceOnCreate ?? {}),
+        ...withoutMainBlockerState({ ...(input.evidence ?? {}), ...(input.evidenceOnCreate ?? {}) }),
+        mainBlockerPolicy: 1,
       },
       nextAction: input.nextAction,
       wakePolicy: input.wakePolicy ?? null,
@@ -444,7 +457,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
                 input.returnOwnerAgentId ??
                 existing.returnOwnerAgentId ??
                 existing.ownerAgentId,
-              evidence: {
+              evidence: preserveMainBlockerState({
                 ...(existing.evidence ?? {}),
                 ...(input.evidence ?? {}),
                 recoveryBudget: {
@@ -455,7 +468,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
                   cause: existing.cause,
                   fingerprint: existing.fingerprint,
                 },
-              },
+              }),
               nextAction: existing.cause === "native_workspace_finalization_owner_unverified"
                 ? input.nextAction
                 : `Automatic recovery exhausted after ${attemptsUsed}/${effectiveMaxAttempts} attempts. ` +
@@ -516,12 +529,12 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
               : input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
             cause: input.preserveExistingOwner ? existing.cause : input.cause,
             fingerprint: input.preserveExistingOwner ? existing.fingerprint : input.fingerprint,
-            evidence: input.preserveExistingOwner
+            evidence: preserveMainBlockerState(input.preserveExistingOwner
               ? {
                 ...(existing.evidence ?? {}),
                 ...(input.evidence ?? {}),
               }
-              : input.evidence ?? existing.evidence,
+              : input.evidence ?? existing.evidence),
             nextAction: input.preserveExistingOwner ? existing.nextAction : input.nextAction,
             wakePolicy: input.preserveExistingOwner
               ? existing.wakePolicy

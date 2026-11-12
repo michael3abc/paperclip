@@ -39,7 +39,8 @@ export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runI
  * repair note cannot substitute for this exact copyback receipt. Stop/authority
  * are checked separately at every continuation admission. */
 export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">) {
+  "id" | "companyId" | "nativeIssueId" | "issueId" | "contextSnapshot" | "runnerProfileJson">,
+  { allowActiveWriter = false }: { allowActiveWriter?: boolean } = {}) {
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   const reference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
@@ -92,7 +93,7 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
       eq(executionWorkspaces.companyId, run.companyId), eq(executionWorkspaces.id, remote.workspaceId),
     ));
     const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
-    if (!authority || authority.dirty || authority.writerRunId || authority.epoch !== remote.epoch
+    if (!authority || authority.dirty || (!allowActiveWriter && authority.writerRunId) || authority.epoch !== remote.epoch
       || authority.snapshotId !== remote.snapshotId || proof.storage !== "remote_workspace"
       || proof.leaseId !== remote.leaseId || proof.providerLeaseId !== remote.providerLeaseId || proof.epoch !== remote.epoch) return null;
     const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(and(

@@ -25,6 +25,7 @@ import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery, type WorkspaceRecove
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
+import { getWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 
 import { adoptSystemRecovery, loadSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { SYSTEM_RECOVERY_MAX_RETRIES, createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -67,7 +68,7 @@ async function recheckStoppedWorkspaceRecovery(db: Db, source: StopEvidenceSourc
     const actions = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, source.companyId),
       eq(issueRecoveryActions.sourceIssueId, source.issueId), or(inArray(issueRecoveryActions.status, ["active", "escalated"]), and(
         eq(issueRecoveryActions.status, "resolved"), sql`${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'`,
-        sql`${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'`,
+        sql`${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' in ('blocked', 'explicit_user_continuation')`,
         sql`${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${source.runId}`)),
       sql`${issueRecoveryActions.evidence}->>'runId' = ${source.runId}`,
       source.actionId ? eq(issueRecoveryActions.id, source.actionId) : undefined)).for("update");
@@ -368,6 +369,23 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       await ownership.assertHeld();
       if (current!.state === "complete") {
         logger.warn({ runId: input.runId }, "Preserved workspace activity delivery deferred");
+        return;
+      }
+      const diagnostic = getWorkspaceRestoreDiagnostic(error);
+      if (diagnostic?.workspaceRescueId && ["WORKSPACE_EXPORT_ONLY", "DIRECTORY_MERGE_CONFLICT"].includes(diagnostic.errorCode)) {
+        const failure = new SystemRecoveryFailure(diagnostic.errorCode === "WORKSPACE_EXPORT_ONLY"
+          ? "cancelled_export_preserved" : "copyback_conflict", "service_required");
+        await db.transaction(async tx => {
+          const [receipt] = await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
+            heartbeatRunId: input.runId, phase: "workspace_rescue", status: "succeeded", finishedAt: new Date(),
+            metadata: { recoveryActionId: input.actionId, workspaceRescueId: diagnostic.workspaceRescueId,
+              outputDisposition: "rescue_only", copybackErrorCode: diagnostic.errorCode } }).returning({ id: workspaceOperations.id });
+          const next = failSystemRecovery({ ...current!, preservationOperationIds: [...current!.preservationOperationIds, receipt!.id] }, failure);
+          if (!await updateSystemRecovery(tx as unknown as Db, input, current!, next)) throw new Error("workspace_recovery_generation_changed");
+          current = next;
+        });
+        // The saved export is durable. Replaying its obsolete baseline cannot
+        // fix a conflict or restore cancelled-run authority; wait for main.
         return;
       }
       const classification = classifyNativeWorkspaceFailure(error);

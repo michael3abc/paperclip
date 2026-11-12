@@ -5,10 +5,8 @@ import { promisify } from "node:util";
 import { hostname } from "node:os";
 import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { WorkspaceBusyDeferral } from "./retries.js";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { WorkspaceValidationFailure } from "./workspaces.js";
-import { workspaceProcessConsumers } from "../workspace-process-consumers.js";
 import { suppressedDispositionRepairPredicate } from "../pre-dispatch-execution-wait.js";
 
 const execFile = promisify(execFileCallback);
@@ -273,8 +271,8 @@ export async function claimSharedCheckout(db: Db, input: {
   requireGit?: boolean;
   /** Only the runtime's worktree creation callback may reserve a missing path. */
   preparingWorktree?: boolean;
-  /** Shared-source handoff additionally checks unmanaged processes and dirtiness.
-   * Task-owned copies and resident sessions retain their runtime's own checks. */
+  /** Legacy caller hint retained in input until workspace preparation is migrated.
+   * It cannot establish exclusive ownership or reject collaborator changes. */
   checkSourceHandoff?: boolean;
   /** Server-owned durable provider namespace and storage reference, never cwd. */
   storageIdentity?: { namespace: string; workspaceRef: string };
@@ -301,51 +299,13 @@ export async function claimSharedCheckout(db: Db, input: {
     : source ? { host: hostname(), ...source } : { host: `ccpocket:${remote}`, path: input.cwd }),
     issueId: input.issueId, executionCwd: input.cwd, acquiredAt: new Date().toISOString() };
   await db.transaction(async tx => {
-    // Serialize only the admission transaction per host, so parent and child
-    // directory claims cannot race. Independent admitted providers run in parallel.
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`shared-checkout:${claim.host}`}, 0))`);
+    // Participation records serialize only this run's publication. Other runs,
+    // aliases, parent/child paths and historical cleanup are not directory locks.
     claim.acquiredAt = new Date().toISOString();
     const [current] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
         eq(heartbeatRuns.agentId, input.agentId))).for("update");
     if (current?.status !== "running") throw new Error("shared_checkout_run_not_running");
-    const services = remote || storage ? [] : await tx.execute(sql`select 1 from workspace_runtime_services
-      where status <> 'stopped' and (cwd = ${claim.path} or starts_with(cwd, rtrim(${claim.path}, '/') || '/')
-        or starts_with(${claim.path}, rtrim(cwd, '/') || '/')) limit 1`);
-    if (services.length) throw new WorkspaceValidationFailure(
-      "This checkout serves a running service. Configure a separate fixed development checkout before dispatch.",
-      { workspaceValidation: { reason: "project_checkout_serves_running_service" } });
-    const [owner] = await unsettledWorkspaceHolders(tx, { host: claim.host, path: claim.path,
-      remote: Boolean(remote), storage: Boolean(storage), excludeRunId: input.runId, first: true });
-    if (owner) {
-      throw new WorkspaceBusyDeferral({ holder: { runId: owner.id, agentId: owner.agent_id,
-        issueId: owner.issue_id, issueIdentifier: null }, projectWorkspaceId: input.projectWorkspaceId,
-        discloseHolder: owner.company_id === input.companyId && owner.issue_id === input.issueId,
-        deferralAttempt: input.deferralAttempt, wasIssueAssignee: input.wasIssueAssignee ?? true });
-    }
-    if (input.checkSourceHandoff !== false && !remote && !storage && (await workspaceProcessConsumers(claim.path)).length) throw new WorkspaceValidationFailure(
-      "Another local process still uses this checkout. Release that writer or service; production needs a separate fixed development checkout.",
-      { workspaceValidation: { reason: "shared_checkout_process_active" } });
-    const dirty = input.checkSourceHandoff !== false && source?.kind === "git" ? (await execFile("git", ["-C", claim.path, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-      { timeout: 10_000, maxBuffer: 1024 * 1024 })).stdout : "";
-    const prior = await tx.execute<{ issue_id: string; run_id: string }>(sql`select r.id as run_id, r.context_snapshot->'sharedCheckoutClaim'->>'issueId' as issue_id from heartbeat_runs r
-      where r.company_id = ${input.companyId}
-        and r.context_snapshot->'sharedCheckoutClaim'->>'host' = ${claim.host}
-        and r.context_snapshot->'sharedCheckoutClaim'->>'path' = ${claim.path}
-      order by r.context_snapshot->'sharedCheckoutClaim'->>'acquiredAt' desc, r.created_at desc limit 1`);
-    if (dirty && prior[0]?.issue_id !== input.issueId) {
-      const [task] = await tx.select({ revision: issues.workspaceBindingRevision }).from(issues).where(and(
-        eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
-      throw new WorkspaceValidationFailure(
-      "This checkout contains unsaved work from another owner. Preserve and settle those changes before a new writing task takes ownership.",
-      { workspaceValidation: { reason: "shared_checkout_unsaved_changes", projectWorkspaceId: input.projectWorkspaceId,
-        cwd: claim.path, host: claim.host, previousIssueId: prior[0]?.issue_id ?? null,
-        previousRunId: prior[0]?.run_id ?? null, bindingRevision: task?.revision ?? null,
-        dirtyFiles: sharedCheckoutDirtyPaths(dirty),
-        fingerprint: createHash("sha256").update(JSON.stringify([claim.host, claim.path,
-          prior[0]?.issue_id ?? null, dirty])).digest("hex"),
-      } });
-    }
     await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
       || jsonb_build_object('sharedCheckoutClaim', ${JSON.stringify(claim)}::jsonb)`, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, input.runId));

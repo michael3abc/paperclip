@@ -15,6 +15,7 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
+import { executionObligationScope, executionObligationScopeSql } from "./execution-obligations.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -97,6 +98,11 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
 
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
 export function executionBlockerPredicate() {
+  return and(sql`${executionObligationScopeSql()} not in ('cleanup', 'none')`, executionReconciliationPredicate());
+}
+
+/** Receipt provenance survives removal of workspace admission holds. */
+export function executionReconciliationPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
@@ -169,6 +175,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
+  const obligationScope = executionObligationScope(action.cause, action.evidence);
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
   const runId = parsedRunId.success ? parsedRunId.data : null;
   const [run] = runId ? await db.select(blockerRunFields).from(heartbeatRuns).where(and(
@@ -262,6 +269,8 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
+    obligationScope,
+    reason: obligationScope === "session" ? "session_busy" : obligationScope === "input" ? "delivery_unknown" : "reconciliation_required",
     nextAction: workspaceRecovery?.message ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
     ...(workspaceRecovery ? { workspaceRecovery } : {}),
     runStatus: run?.status ?? null,

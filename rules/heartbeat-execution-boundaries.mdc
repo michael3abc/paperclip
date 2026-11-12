@@ -78,6 +78,11 @@ ownership changes.
   after the origin task ends. Recheck under the workspace lifecycle lock before
   destructive work. The safety baseline rejects unsupported execution explicitly;
   it must never convert cooperative participation into an old exclusive holder.
+  The feature contract admits multiple tasks/runs to an open registered linked
+  tree. Cancellation immediately removes workspace admission participation;
+  historical Stop, lease, finalizer, export and instruction cleanup remain
+  obligations of their own source, not locks on the tree. This describes the
+  feature branch, not a claim that the feature is deployed.
 
 - **Execution requires current authority.** Queue acceptance is not permission
   to execute indefinitely. Admission and dispatch must respect company scope,
@@ -90,8 +95,10 @@ ownership changes.
   Process-local coordination cannot establish authority over another process.
 - **Completion has several independent obligations.** A result being accepted,
   a provider stopping, a workspace being saved, and cleanup finishing are distinct
-  facts. Keep enough state to represent them honestly. Do not infer that resources
-  are safe to destroy or that successor work may start from a terminal status alone.
+  facts. Keep enough state to represent them honestly. Terminal status alone
+  never proves safe destruction or authorizes replay. Independently authorized
+  new input may pass while historical cleanup remains pending; retain task
+  authority, native-session ordering and unknown input/operation gates.
 - **Recovery preserves intent and completed work.** Resume the admitted work
   under its recorded execution contract. New configuration belongs to a new
   admission decision, not a silent reinterpretation of an existing run. Repair
@@ -102,7 +109,8 @@ ownership changes.
   the winning outcome. Persist authoritative state before publishing notifications;
   notification failures must not change the execution result or duplicate effects.
 - **Uncertainty stays visible.** Missing ownership or termination evidence must
-  remain pending, held, or explicitly failed until reconciled. Preserve recoverable
+  remain pending, held, or explicitly failed for its original session/resource.
+  It must not become a recursive workspace occupancy claim. Preserve recoverable
   work through failures. Keep security and sandbox requirements intact rather than
   silently choosing a weaker execution path. Optional diagnostics must not prevent
   essential settlement.

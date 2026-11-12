@@ -56,7 +56,7 @@ vi.mock("@/api/chatEndpoints", () => ({
   },
 }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: mocks.projects } }));
-vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: mocks.workspaces } }));
+vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { list: mocks.workspaces } }));
 vi.mock("@/api/access", () => ({ accessApi: { listMembers: mocks.members } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { get: vi.fn() } }));
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -295,7 +295,9 @@ describe("GitHub bot management", () => {
   it("saves repository task defaults with explicit, cleared, and inherited values without changing access", async () => {
     let executionDefaults: ChatExecutionDefaults | null = null;
     mocks.projects.mockResolvedValue([{ id: "project", name: "Website", workspaces: [] }]);
-    mocks.workspaces.mockResolvedValue([{ id: "workspace", name: "Shared website" }]);
+    mocks.workspaces.mockResolvedValue([{ id: "workspace", projectId: "project", name: "Shared website", status: "active", closedAt: null, metadata: { mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open",
+      sourceCwd: "/source", parentDir: "/trees", branch: "michael/feature", targetBranch: "main",
+      hostId: null, pendingOperationId: null, participants: {} } } }]);
     mocks.resources.mockImplementation(async () => [{
       id: "repo", label: "acme/web", type: "repository", enabled: false,
       availability: "available", executionDefaults,
@@ -353,10 +355,10 @@ describe("GitHub bot management", () => {
     const editor = container.querySelector('[role="region"] form')!;
     const workspace = editor.querySelectorAll("select")[1];
     await vi.waitFor(() => expect(workspace.disabled).toBe(false));
-    await input(workspace, "task");
+    await input(workspace, "session");
     await click("Save defaults");
     await vi.waitFor(() => expect(editor.querySelector('[role="alert"]')?.textContent).toBe("Workspace access denied"));
-    expect(workspace.value).toBe("task");
+    expect(workspace.value).toBe("session");
     expect(container.querySelector('[role="region"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     await click("Cancel");
     expect(workspace.value).toBe("inherit");

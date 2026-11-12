@@ -44,6 +44,7 @@ import {
   disposeDirectorySnapshot,
   selectDirectorySnapshot,
   mergeDirectoryWithBaseline,
+  createWorkspaceRestoreDirectory,
   type DirectorySnapshot,
 } from "./workspace-restore-merge.js";
 import {
@@ -626,9 +627,11 @@ export interface PreparedSandboxManagedRuntime {
     baseline: DirectorySnapshot;
     gitSnapshot: GitWorkspaceSnapshot | null;
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
+    /** Export digest after restore; absent when no complete root export exists. */
+    restoredSourceSha256?: string;
   } | null;
   cleanupWorkspaceSnapshot(): Promise<void>;
-  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink, assertWriteAuthority?: () => Promise<void>): Promise<void>;
 }
 
 export type WorkspaceInboundMode =
@@ -840,12 +843,15 @@ export function sandboxExecutionSessionMatches(saved: unknown, current: SandboxR
   );
 }
 
-async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>, retainFailure = false): Promise<T> {
+  const dir = retainFailure ? await createWorkspaceRestoreDirectory() : await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  let succeeded = false;
   try {
-    return await fn(dir);
+    const result = await fn(dir);
+    succeeded = true;
+    return result;
   } finally {
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    if (succeeded || !retainFailure) await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -1965,6 +1971,10 @@ export async function prepareSandboxManagedRuntime(input: {
     (input.assets ?? []).map((asset) => [asset.key, path.posix.join(runtimeRootDir, asset.key)]),
   );
 
+  const workspaceSyncSnapshot: PreparedSandboxManagedRuntime["workspaceSyncSnapshot"] =
+    syncWorkspace && baselineSnapshot
+      ? { baseline: baselineSnapshot, gitSnapshot, ...(!gitSnapshot && repositories.length ? { repositories } : {}) }
+      : null;
   return {
     spec: input.spec,
     workspaceLocalDir: input.workspaceLocalDir,
@@ -1973,12 +1983,9 @@ export async function prepareSandboxManagedRuntime(input: {
     assetDirs,
     additionalSourceDirs,
     additionalSourceFailures,
-    workspaceSyncSnapshot:
-      syncWorkspace && baselineSnapshot
-        ? { baseline: baselineSnapshot, gitSnapshot, ...(!gitSnapshot && repositories.length ? { repositories } : {}) }
-        : null,
+    workspaceSyncSnapshot,
     cleanupWorkspaceSnapshot,
-    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink, assertWriteAuthority?: () => Promise<void>) => {
       try {
       const restoreSink = onProgress ?? input.onProgress;
 
@@ -2039,7 +2046,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 onRuntimeProgress: input.onRuntimeProgress,
                 workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
               });
-              await nested.restoreWorkspace(restoreSink);
+              await nested.restoreWorkspace(restoreSink, assertWriteAuthority);
             }
             await retryWorkspaceRestoreBeforeHostWrite(
               input.workspaceRestoreRetryDelaysMs ?? WORKSPACE_RESTORE_RETRY_DELAYS_MS,
@@ -2048,6 +2055,7 @@ export async function prepareSandboxManagedRuntime(input: {
               let importedHead: string | null = null;
               let remoteWorkspaceStatus = "dirty";
               let checkpointSnapshot: DirectorySnapshot | undefined;
+              let applied = false;
               try {
                 if (gitSnapshot) {
                   await emitRuntimeStatus(input.onRuntimeProgress, "export", "Exporting git changes from environment");
@@ -2287,14 +2295,17 @@ export async function prepareSandboxManagedRuntime(input: {
                     omit: repositories.map((repo) => repo.path), exclude: workspaceRestoreExclude, ignoredPaths,
                   });
                   try {
-                    await mergeDirectoryWithBaseline({
+                    const merged = await mergeDirectoryWithBaseline({
                       workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
                       baseline: mergeBaseline,
                       sourceDir: extractedDir,
                       ...(checkpointSnapshot ? { snapshots: { source: checkpointSnapshot } } : {}),
                       targetDir: input.workspaceLocalDir,
+                      conflictPolicy: "reject",
+                      rescueDirectory: tempDir,
                       // Runs under the merge lock, before the first host write.
                       beforeApply: async () => {
+                        await assertWriteAuthority?.();
                         markHostWriteStarted();
                         if (!gitHeadToIntegrate) return;
                         await withWorkspaceRestoreStep("git_integration", () => integrateImportedGitHead({
@@ -2312,16 +2323,21 @@ export async function prepareSandboxManagedRuntime(input: {
                           }
                         : undefined,
                     });
+                    // Child repositories export independently. Without a complete
+                    // root digest, finalization must not certify warm reuse.
+                    if (workspaceSyncSnapshot && repositories.length === 0)
+                      workspaceSyncSnapshot.restoredSourceSha256 = merged.sourceSha256;
+                    applied = true;
                   } finally { if (mergeBaseline !== baselineSnapshot) await disposeDirectorySnapshot(mergeBaseline); }
                 });
               } finally {
                 await disposeDirectorySnapshot(checkpointSnapshot ?? null);
                 await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing workspace");
-                if (importedRef) {
+                if (applied && importedRef) {
                   await withWorkspaceRestoreStep("git_ref_cleanup", () => deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef! }));
                 }
               }
-            }));
+            }, true));
           }), restoreSink, (diagnostic) => { outboundDiagnostics[0] = diagnostic; }),
         );
       }

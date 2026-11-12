@@ -20,6 +20,7 @@ import { prepareHeartbeatRunScratch, cleanupHeartbeatRunScratch } from "../servi
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { createAgentIdentityRedactor } from "../services/agent-identity-redaction.js";
 import { createHeartbeatRunOutput } from "../services/heartbeat/run-output.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 
 describe("durable case handoff queue admission", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -175,7 +176,7 @@ describe("durable case handoff queue admission", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(0);
     await expect(assertNoCaseHandoffMutation(db, sourceRunId, f.issueId)).rejects.toThrow("handed off");
   });
-  it.each(["after_removal", "before_removal"] as const)("recovers a clean local legacy handoff across a %s crash before the release marker", async crash => {
+  it.each(["after_removal", "before_removal"] as const)("keeps task authority independent of cleanup evidence across a %s crash", async crash => {
     const f = await fixture(), sourceRunId = randomUUID(), controllerBootId = randomUUID();
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
     await once(child, "spawn");
@@ -207,7 +208,7 @@ describe("durable case handoff queue admission", () => {
       await handlers.onAdapterEvent({ eventType: "adapter.progress", stream: "system", payload: { stage: "finished" } });
       expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, sourceRunId),
         eq(heartbeatRunEvents.eventType, "adapter.progress")))).toHaveLength(1);
-      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(false);
+      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
       const groupAlive = (group: number | null | undefined) => { try { process.kill(-group!, 0); return true; } catch { return false; } };
       const cleanup = cleanupHeartbeatRunScratch({ scratch, processGroupId: processId, isProcessGroupAlive: groupAlive,
         beforeRemove: async () => {
@@ -220,13 +221,13 @@ describe("durable case handoff queue admission", () => {
         eq(heartbeatRunEvents.eventType, "legacy.case_handoff_cleanup_verified")));
       expect(receipt).toMatchObject({ sourceEventId: null, payload: { issueId: f.issueId, processPid: processId, processGroupId: processId } });
 
-      // Provider-authored evidence and a different process/controller generation
-      // cannot grant release, even if their payload copies the exact receipt.
+      // Cleanup evidence never grants task authority or a cleanup-complete marker.
+      // The independently accepted business handoff remains authoritative.
       await db.update(heartbeatRunEvents).set({ sourceEventId: "provider-forged-stop" }).where(eq(heartbeatRunEvents.id, receipt.id));
-      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(false);
+      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
       await db.update(heartbeatRunEvents).set({ sourceEventId: null }).where(eq(heartbeatRunEvents.id, receipt.id));
       await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, sourceRunId));
-      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(false);
+      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
       await db.update(heartbeatRuns).set({ controllerBootId }).where(eq(heartbeatRuns.id, sourceRunId));
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson ?? {}).not.toHaveProperty("caseHandoffExecutionReleased");
 
@@ -236,15 +237,15 @@ describe("durable case handoff queue admission", () => {
       const [afterRestart] = await restartedDb.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId));
       expect(afterRestart?.state, afterRestart?.lastError ?? undefined).toBe("delivered");
       expect(await restartedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(1);
-      expect((await restartedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson)
-        .toHaveProperty("caseHandoffExecutionReleased");
+      expect((await restartedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson ?? {})
+        .not.toHaveProperty("caseHandoffExecutionReleased");
     } finally {
       try { process.kill(-processId, "SIGTERM"); } catch { /* already stopped */ }
       await rm(scratch.dir, { recursive: true, force: true });
       await restartedDb?.$client.end();
     }
   });
-  it.each([true, false])("recovers a legacy crash before cleanup begins with scratch=%s, only after real stop and workspace settlement", async withScratch => {
+  it.each([true, false])("transfers a yielded task with scratch=%s while retaining independent execution-reconciliation holds", async withScratch => {
     const f = await fixture(), sourceRunId = randomUUID(), controllerBootId = randomUUID(), startedAt = new Date();
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
     await once(child, "spawn");
@@ -263,7 +264,7 @@ describe("durable case handoff queue admission", () => {
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, sourceRunId));
       const at = new Date(Date.now() + 61_000);
       restartedDb = createDb(temporary.connectionString);
-      await caseHandoffDeliveryService(restartedDb, { heartbeat: heartbeatService(restartedDb), now: () => at }).sweepPending();
+      expect(await isCaseHandoffSourceReleased(restartedDb, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
       expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId)))[0]?.state).toBe("awaiting_release");
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeupRequestId))).toHaveLength(0);
       const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
@@ -274,7 +275,7 @@ describe("durable case handoff queue admission", () => {
       expect(await isCaseHandoffSourceReleased(restartedDb, { runId: sourceRunId, issueId: f.issueId })).toBe(false);
       await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date() }).where(eq(issueRecoveryActions.id, hold.id));
       await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, sourceRunId));
-      expect(await isCaseHandoffSourceReleased(restartedDb, { runId: sourceRunId, issueId: f.issueId })).toBe(false);
+      expect(await isCaseHandoffSourceReleased(restartedDb, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
       await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: null }).where(eq(heartbeatRuns.id, sourceRunId));
       expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, sourceRunId),
         eq(heartbeatRunEvents.eventType, "legacy.case_handoff_cleanup_verified")))).toHaveLength(0);
@@ -284,8 +285,8 @@ describe("durable case handoff queue admission", () => {
       const [afterRestart] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId));
       expect(afterRestart?.state, afterRestart?.lastError ?? undefined).toBe("delivered");
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(1);
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson)
-        .toHaveProperty("caseHandoffExecutionReleased");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson ?? {})
+        .not.toHaveProperty("caseHandoffExecutionReleased");
     } finally {
       try { process.kill(-processId, "SIGTERM"); } catch { /* already stopped */ }
       if (scratch) await rm(scratch.dir, { recursive: true, force: true });
@@ -298,7 +299,7 @@ describe("durable case handoff queue admission", () => {
       status: "succeeded", startedAt: new Date(Date.now() - age - 5_000), finishedAt: new Date(Date.now() - age),
       responsibleUserId: f.userId, contextSnapshot: { issueId: f.issueId } });
     const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
-      authorAgentId: f.agentId, body: "Proceed to the next explicitly requested case phase" }).returning();
+      authorType: "agent", authorAgentId: f.agentId, body: "Proceed to the next explicitly requested case phase" }).returning();
     await db.update(caseHandoffs).set({ actorType: "agent", actorId: f.agentId, fromAgentId: f.agentId, commentId: comment.id })
       .where(eq(caseHandoffs.id, f.handoffId));
     const run = await heartbeatService(db).wakeup(f.agentId, { ...f.options, requestedByActorType: "agent", requestedByActorId: f.agentId,
@@ -306,6 +307,11 @@ describe("durable case handoff queue admission", () => {
     expect(run).toMatchObject({ status: "queued", wakeupRequestId: f.wakeupRequestId });
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeupRequestId)))[0])
       .toMatchObject({ reason: "case_handoff", status: "queued" });
+    // Cooperative admission preserves independently authorized case input.
+    // Queue acceptance alone must not hide a human-only receipt gate at claim.
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+      companyId: f.companyId, runId: run!.id, expectedStatus: "queued", now: new Date(),
+    })).toMatchObject({ outcome: "not_stale" });
   });
   it("holds an accepted queued receipt while Cases is disabled, then cancels it if the ledger was cancelled", async () => {
     const f = await fixture(), heartbeat = heartbeatService(db);
@@ -343,8 +349,8 @@ describe("durable case handoff queue admission", () => {
     await heartbeatService(db).requestCaseHandoffYield({ runId: sourceRunId, issueId: f.issueId, handoffId: f.handoffId });
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId));
     expect(source).toMatchObject({ status: "cancelled", startedAt: null, runtimeModeResolvedAt: null,
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-        caseHandoffExecutionReleased: { runId: sourceRunId, issueId: f.issueId } } });
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(source.resultJson).not.toHaveProperty("caseHandoffExecutionReleased");
     expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
     const [handoff] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId));
     expect(handoff.state).toBe("awaiting_release");

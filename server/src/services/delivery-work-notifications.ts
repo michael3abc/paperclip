@@ -5,6 +5,7 @@ export const DELIVERY_QUEUES = {
   runStopSettlement: "run-stop-settlement",
   workspaceWaitSettlement: "workspace-wait-settlement",
   workspaceCreatorRecovery: "workspace-creator-recovery",
+  originalMainBlockers: "original-main-blockers",
   delegatedDecisions: "delegated-decisions",
   webPush: "web-push",
   nativeRuntimeResponses: "native-runtime-responses",

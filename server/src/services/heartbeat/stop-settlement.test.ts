@@ -15,6 +15,7 @@ import { getExecutionBlocker } from "../execution-blocker.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { seedSuppressedDisposition } from "../../__tests__/helpers/suppressed-disposition.js";
 import { hasCurrentStopVerification } from "./stop-settlement-evidence.js";
+import { reconcileWorkspaceWaits, nextWorkspaceWaitLeaseExpiry } from "./workspace-wait-settlement.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("durable run stop settlement", () => {
@@ -41,7 +42,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     runId, bridgeSessionId: "bridge", nativeSessionId: "native", acceptedSeq: 1, resultSeq: 2,
     checkedAt: new Date().toISOString(), background: { known: true as const, active: [] } } });
 
-  it("automatically waits for cleanup, releases the same waiting row once, and stops all scheduled scans", async () => {
+  it("settles cleanup independently, reconsiders the same waiting row once, and stops all scheduled scans", async () => {
     const f = await seed();
     await db.insert(agentInstructionWorkingCopies).values({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
       responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test",
@@ -57,7 +58,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     try {
       await worker.ready;
       await vi.waitFor(async () => expect(await receipt(f.run.id)).toMatchObject({ state: "cleaning", stopVerified: true }));
-      expect((await read(waiter.id)).scheduledRetryAt).toBeNull();
+      await vi.waitFor(async () => expect((await read(waiter.id)).scheduledRetryAt).toBeInstanceOf(Date));
       expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
       await db.transaction(async tx => {
         // Upstream producers pass richer inputs, including a circular DB handle.
@@ -84,6 +85,66 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       selects.mockRestore(); executions.mockRestore();
       expect(onError).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); await worker.stop(); await coordinator.stop(); }
+  });
+
+  it.each(["reconsider", "superseded", "needs_reconciliation"] as const)("migrates a historical workspace wait as %s after its actual controller lease expires", async disposition => {
+    const f = await seed();
+    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Saved pending input", status: "todo",
+      assigneeAgentId: f.agent.id }).returning();
+    const leaseUntil = new Date(Date.now() + 60_000);
+    const [waiter] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, issueId: issue.id,
+      status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: null,
+      controllerLeaseExpiresAt: leaseUntil, nativeSessionId: disposition === "needs_reconciliation" ? randomUUID() : null,
+      contextSnapshot: { issueId: issue.id }, resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        workspaceBusy: { holderKey: createHash("sha256").update(f.run.id).digest("hex") } } }).returning();
+    await db.update(issues).set({ executionRunId: disposition === "superseded" ? f.run.id : waiter.id }).where(eq(issues.id, issue.id));
+    await reconcileWorkspaceWaits(db);
+    expect((await read(waiter.id)).resultJson).not.toHaveProperty("workspaceWaitMigration");
+    expect(await nextWorkspaceWaitLeaseExpiry(db)).toBe(leaseUntil.getTime());
+    await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() - 1) }).where(eq(heartbeatRuns.id, waiter.id));
+    await reconcileWorkspaceWaits(db);
+    const after = await read(waiter.id);
+    expect(after.resultJson).toMatchObject({ workspaceWaitMigration: { disposition } });
+    expect(after.scheduledRetryAt instanceof Date).toBe(disposition === "reconsider");
+    if (disposition === "superseded") expect(after.status).toBe("cancelled");
+    if (disposition === "needs_reconciliation") {
+      expect(after.errorCode).toBe("delivery_unknown");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id)))
+        .toMatchObject([{ cause: "delivery_unknown", evidence: { sourceRunId: waiter.id, mainBlockerPolicy: 1 } }]);
+    }
+    await reconcileWorkspaceWaits(db);
+    expect(await read(waiter.id)).toEqual(after);
+    expect(await nextWorkspaceWaitLeaseExpiry(db)).toBeNull();
+    expect((await read(f.run.id)).resultJson).toEqual(f.run.resultJson);
+    expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, waiter.id),
+      eq(heartbeatRunEvents.eventType, "workspace.wait_migrated")))).toHaveLength(1);
+  });
+
+  it.each(["provider_event", "native_input", "bridge_input"] as const)("does not migrate unverified old workspace input into dispatch: %s", async retained => {
+    const f = await seed();
+    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Saved input with conflicting proof",
+      status: "todo", assigneeAgentId: f.agent.id }).returning();
+    const [waiter] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, issueId: issue.id,
+      status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: null,
+      controllerLeaseExpiresAt: new Date(Date.now() - 1), contextSnapshot: { issueId: issue.id },
+      runnerProfileJson: retained === "native_input" ? { nativeExecutionInput: { schema: "retained-input" } } : null,
+      resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        ...(retained === "bridge_input" ? { bridgeInputReceipt: { schema: "paperclip.bridge-input.v1", acceptedSeq: 1 } } : {}) },
+    }).returning();
+    await db.update(issues).set({ executionRunId: waiter.id }).where(eq(issues.id, issue.id));
+    if (retained === "provider_event") await appendHeartbeatRunEvent(db, { companyId: f.company.id, agentId: f.agent.id,
+      runId: waiter.id, eventType: "provider.event", stream: "system", payload: { type: "turn.started" } });
+    await reconcileWorkspaceWaits(db);
+    const after = await read(waiter.id);
+    // Shared worktrees remove cleanup exclusion, never proof of non-delivery.
+    expect(after.scheduledRetryAt).toBeNull();
+    expect(after.errorCode).toBe("delivery_unknown");
+    expect(after.resultJson).toMatchObject({ workspaceWaitMigration: { disposition: "needs_reconciliation" } });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id)))
+      .toMatchObject([{ cause: "delivery_unknown", evidence: { sourceRunId: waiter.id } }]);
+    await reconcileWorkspaceWaits(db);
+    expect(await read(waiter.id)).toEqual(after);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, issue.id))).toHaveLength(1);
   });
 
   it("settles a failed Bridge holder without manufacturing cancellation or losing its failure", async () => {

@@ -1,20 +1,16 @@
-import { lstat } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
-import path from "node:path";
+import { hostname } from "node:os";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { caseEvents, caseHandoffs, cases, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { persistActivity, type ActivityPublication } from "../activity-log.js";
 import { conflict } from "../../errors.js";
-import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
 import { isNativeRunnerOwnershipHeld } from "../native-runtime/native-runner-ownership.js";
-import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
-import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { assertActorCanReadCase, assertCaseTrustedForExecution } from "../case-access.js";
 import { assertCaseHandoffSourceAuthority, lockCaseHandoffAuthorityRun } from "../case-handoff-authority.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { cleanupHeartbeatRunScratch, type HeartbeatRunScratch } from "../run-scratch.js";
+import { type HeartbeatRunScratch } from "../run-scratch.js";
 
 const LEGACY_HANDOFF_CLEANUP_VERIFIED = "legacy.case_handoff_cleanup_verified";
 const LEGACY_HANDOFF_CLEANUP_SCHEMA = "paperclip.legacy-case-handoff-cleanup.v1";
@@ -73,44 +69,6 @@ export async function recordLegacyCaseHandoffCleanupVerified(db: Db, input: {
         processStartedAt: run.processStartedAt?.toISOString() ?? null, scratch: input.scratch,
       } });
   });
-}
-
-async function recoverLegacyCaseHandoffCleanup(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string) {
-  if (run.runtimeMode !== "legacy" || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date())) return false;
-  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
-    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    eq(heartbeatRunEvents.agentId, run.agentId), inArray(heartbeatRunEvents.eventType, [LEGACY_HANDOFF_CLEANUP_VERIFIED, LEGACY_HANDOFF_CLEANUP_INTENT]),
-    eq(heartbeatRunEvents.stream, "system"), isNull(heartbeatRunEvents.sourceEventId),
-  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  const receipt = event?.payload;
-  const intent = event?.eventType === LEGACY_HANDOFF_CLEANUP_INTENT;
-  const scratch = receipt?.scratch as HeartbeatRunScratch | null | undefined;
-  if (receipt?.schema !== (intent ? "paperclip.legacy-case-handoff-cleanup-intent.v1" : LEGACY_HANDOFF_CLEANUP_SCHEMA) ||
-      receipt.host !== hostname() || receipt.issueId !== issueId ||
-      !run.controllerBootId || receipt.controllerBootId !== run.controllerBootId ||
-      !run.processPid || !Number.isSafeInteger(run.processPid) || run.processPid <= 1 ||
-      !run.processGroupId || !Number.isSafeInteger(run.processGroupId) || run.processGroupId <= 1 ||
-      receipt.processPid !== run.processPid || receipt.processGroupId !== run.processGroupId ||
-      receipt.processStartedAt !== (run.processStartedAt?.toISOString() ?? null)) return false;
-  if (intent) {
-    if (receipt.runStartedAt !== (run.startedAt?.toISOString() ?? null) ||
-        !localProcessAbsent(run.processPid) || !localProcessAbsent(-run.processGroupId)) return false;
-    const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases)
-      .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
-    if (leases.some(lease => lease.provider !== "local")) return false;
-    if (scratch === null) return true;
-  }
-  if (typeof scratch?.dir !== "string" || scratch.metadata?.companyId !== run.companyId ||
-      scratch.metadata.agentId !== run.agentId || scratch.metadata.runId !== run.id || scratch.metadata.issueId !== issueId) return false;
-  const relative = path.relative(path.resolve(tmpdir()), path.resolve(scratch.dir));
-  if (relative.startsWith("..") || path.isAbsolute(relative) || !path.basename(scratch.dir).startsWith("paperclip-run-")) return false;
-  try { await lstat(scratch.dir); }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-  // A crash immediately before removal can safely retry the same marked
-  // directory. A live/reused process group or changed ownership stays held.
-  const result = await cleanupHeartbeatRunScratch({ scratch, processGroupId: run.processGroupId,
-    isProcessGroupAlive: group => !localProcessAbsent(-group!) });
-  return result.removed;
 }
 
 /** Kept independent of the handoff application service to avoid an issues/service cycle. */
@@ -250,27 +208,24 @@ export async function isCaseHandoffSourceReleased(db: Db, input: { runId: string
   const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)).then(rows => rows[0]);
   if (!run || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status) ||
       isNativeRunnerOwnershipHeld(run)) return false;
-  const marker = run.resultJson?.caseHandoffExecutionReleased as Record<string, unknown> | undefined;
-  if (await hasPendingRunCleanup(db, run.companyId, run.id)) return false;
   if (await getExecutionBlocker(db, run.companyId, input.issueId)) return false;
-  if (marker?.schema === "paperclip.case-handoff-release.v1" && marker.runId === run.id && marker.issueId === input.issueId) return true;
-  // A controller may die after cleanup but before writing its marker. Recover
-  // only from host/provider-owned stop evidence, never a terminal status or an
-  // expired controller lease. Workspace recovery remains an independent gate.
-  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
-  // setRunStatusFromLive records bootstrap evidence when cancelling an
-  // unclaimed queue entry. Its persisted absence of a first start and runtime
-  // selection proves no provider or workspace executor was ever admitted.
-  const neverStarted = run.status === "cancelled" && run.runtimeMode === "legacy" && !run.startedAt &&
-    !run.runtimeModeResolvedAt && !run.processPid && !run.processGroupId && !run.runnerInstanceId && !run.nativeSessionId &&
-    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
-  const stopped = await remoteExecutionHasStopped(db, run.companyId, run.id) ||
-    (run.runtimeMode === "native" && await hasNativeLocalProcessStop(db, run.companyId, run.id)) ||
-    neverStarted ||
-    await recoverLegacyCaseHandoffCleanup(db, run, input.issueId) ||
-    (run.runtimeMode === "legacy" && recovery?.providerStopped === true && recovery?.sessionPreserved === true &&
-      recovery?.actionOutcomes === "settled" && run.executionStage === "settled");
-  if (!stopped) return false;
-  await recordCaseHandoffExecutionReleased(db, run.id, input.issueId);
-  return true;
+  // The durable business yield transfers task authority. It does not certify
+  // provider termination or file cleanup; the destination adapter sequences any
+  // shared native session and rejects unknown delivery within its own deadline.
+  const handoff = await pendingCaseHandoffForRun(db, run.id);
+  return Boolean(handoff && handoff.companyId === run.companyId && handoff.issueId === input.issueId);
+
+}
+
+/** Queue-only cancellation has no executor finally; wake without a cleanup receipt. */
+export async function wakeReleasedCaseHandoff(db: Db, input: { runId: string; issueId: string }) {
+  if (!await isCaseHandoffSourceReleased(db, input)) return;
+  await db.transaction(async tx => {
+    const at = new Date();
+    const rows = await tx.update(caseHandoffs).set({ nextAttemptAt: at, updatedAt: at }).where(and(
+      eq(caseHandoffs.sourceRunId, input.runId), eq(caseHandoffs.issueId, input.issueId),
+      eq(caseHandoffs.state, "awaiting_release"),
+    )).returning({ companyId: caseHandoffs.companyId });
+    for (const row of rows) await notifyDeliveryWork(tx, DELIVERY_QUEUES.caseHandoffs, row.companyId);
+  });
 }

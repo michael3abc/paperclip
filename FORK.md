@@ -5,6 +5,25 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Cooperative worktree selection (2026-11-12, feature): task creation, task card,
+  properties and Chat defaults select a registered open linked Git worktree or
+  explicit session-only resources. Cleanup admission is separate from original
+  input authorization; merged user receipts are checked independently of old
+  workspace recovery. Conflict/cancelled exports remain rescue-only, and ignored
+  target files cannot be overwritten during main-managed merge.
+
+- Original-main blocker delivery (2026-11-12): new recovery identities use durable
+  original-conversation wakes, exact input receipts and event-driven reconciliation.
+  Busy main waits for completion; recursive or uncertain delivery asks Owner once.
+  Preserve permissions, holds, recovery budgets and historical actions. This is
+  part of the staged shared-worktree feature, not a standalone rollout.
+
+- Resident Bridge authority (feature prerequisite, 2026-11-12): server CAS before
+  host binding and input; current run/generation/native identity in existing JSON.
+  Preserve cancellation, terminal helper boundaries, operation receipts and
+  cross-task native identity. Stale helper writes and late session publication
+  cannot replace the successor. Cooperative workspace admission remains staged.
+
 - Remote boot cleanup handoff (2026-11-12): consume original Owner-observed
   Bridge host reboot receipts through durable stop settlement and file collection.
   Preserve exact host/finish/launch binding, failed outcomes and bounded checks;
@@ -650,3 +669,21 @@ the failed c3b8a423d candidate receipt alongside the corrective validation.
   and physical ownership keep their existing gates. No historical run is rewritten.
 - Bridge main-agent rollout config must bind the same cwd on both platform and
   adapter sides. Historical selection repairs use the revision-checked API.
+
+### 2026-11-12 — Shared-worktree admission and recovery
+
+- Open, main-managed linked worktrees admit independent authorized participants.
+  Cancellation releases admission immediately; Stop and cleanup remain truthful
+  obligations. Main owns converge, merge, reopen and safe retirement.
+- Retry and queued-comment admission validate original input and every author's
+  durable receipt before coalescing or dispatch, independently of cleanup.
+  Accepted results, delivery uncertainty, permissions and Owner holds remain gates.
+- Cancelled exports are rescue-only. Recovery receipts and late Stop evidence
+  remain eligible after successor admission; ordinary Retry retains its selected
+  tree and read-only repository access checks. Blockers return to the original main.
+- Warm reuse requires matching actual export and final-host digests. A merged
+  host hash cannot certify remote contents or authorize deleting collaborator files.
+- The original 120 recovery failures are classified in the private
+  `artifacts/shared-worktree-20261112/recovery-failure-classification.json`.
+  Follow-up validation selects affected cases with `-t`; do not rerun the entire
+  recovery suite. This feature branch is not a production acceptance receipt.

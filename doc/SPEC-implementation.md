@@ -42,7 +42,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Experimental voice transport | Speko browser voice can create or resume a task through the existing chat-connection delivery/publication pipeline. The selected Paperclip agent retains execution authority. Phone support remains gated on live continuation qualification. |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
-| Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; preserve verified stop evidence and reconsider saved post-stop user messages after cleanup; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
+| Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; preserve verified stop evidence as a separate cleanup/resource obligation and reconsider independently authorized saved user messages without historical workspace-cleanup exclusion; unknown delivery and native-session ownership remain scoped gates; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
@@ -2764,7 +2764,7 @@ and required Git or folder settings do not become empty-source fallbacks.
 
 Chat connection and destination settings may supply project/workspace defaults. Destination fields override connection fields; omitted values inherit and null clears the inherited choice. Resolve and authorize these defaults once for a new conversation, then retain the resulting task intent. Existing conversations do not change when settings change. Trust confinement still takes precedence.
 
-Agents inspect/select workspaces and request contained repository preparation through ordinary authorized APIs. Repository preparation is idempotent and may require the next admission; it never claims a host-only clone is available in an already-running remote session. Tasks may select the same physical local/SSH folder, but writing admissions serialize by canonical path, including aliases and parent/child overlaps. Independent worktree roots and provider storage identities can execute concurrently. Remote sharing requires actual placement and coherent persistence capability.
+Agents inspect/select workspaces and request contained repository preparation through ordinary authorized APIs. Repository preparation is idempotent and may require the next admission; it never claims a host-only clone is available in an already-running remote session. Under the shared-worktree feature contract, tasks/runs may select the same open registered linked Git tree; canonical paths, aliases and parent/child overlaps do not serialize admission. Session cwd and external resources are separate from execution worktrees. Remote placement and persistence capabilities must be explicit; an exact legacy snapshot allocation retains its resource-specific save owner without claiming a host path or another linked tree.
 
 See [the layer architecture](plans/2026-10-09-task-workspaces.md) for resolution rules, module ownership, persistence versions, rollout, and verification.
 
@@ -2783,8 +2783,10 @@ scratch instead of a durable task checkout. New workspaces without these
 prerequisites retain the legacy path. The local, SSH, and plugin environment
 drivers, legacy adapters, and Dot retain their existing behavior.
 
-One writer owns a logical workspace. Preparation establishes a saved baseline;
-finalization saves supported changes before settling persistence. A webserver
+This legacy remote-snapshot path retains one `writerRunId` for the exact
+allocation and snapshot publication. That resource reservation is not cooperative
+linked-worktree admission. Preparation establishes a saved baseline; finalization
+saves supported changes before settling persistence. A webserver
 replacement reconnects to the existing allocation. A committed saved version can
 restore elsewhere without the old sandbox or Git remote, including supported
 dirty Git state and unpushed commits. Changes after the last save still depend
@@ -2807,7 +2809,7 @@ the next committed archive. Snapshot coverage is separate from the requested
 source recipe. New copies honor `repoRef`, then `defaultRef`, then the remote's
 default branch; an invalid ref cannot publish a partial secondary checkout.
 It rejects explicitly read-only sources,
-explicit concurrent shared writers, and custom cleanup/teardown commands on
+competing owners of the same snapshot allocation, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also
 unsupported in V1 and must fail before local filesystem work. Agent tasks remain
 the supported command path. Disabling new enrollment preserves existing authority

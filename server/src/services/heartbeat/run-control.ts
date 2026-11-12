@@ -10,7 +10,7 @@ import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js"
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
-import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
+import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, wakeReleasedCaseHandoff } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { publishLiveEvent } from "../live-events.js";
@@ -958,9 +958,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const issueId = readNonEmptyString(completed?.contextIssueId)
         ?? readNonEmptyString(completed?.contextTaskId) ?? completed?.nativeIssueId;
       if (sourceHandoff && completed?.status === "cancelled" && !completed.startedAt && issueId) {
-        // A cancelled queue entry has no executeRun.finally. The canonical
-        // bootstrap proof still needs to release and wake its durable handoff.
-        await isCaseHandoffSourceReleased(db, { runId: completed.id, issueId });
+        await wakeReleasedCaseHandoff(db, { runId: completed.id, issueId });
       }
       if (completed?.status === "succeeded" && issueId) {
         await settleSlackConversation(db, run.companyId, issueId).catch((err) => {
@@ -1135,6 +1133,25 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     options: CancelRunOptions = {},
   ) {
     return cancelRun(runId, reason, options);
+  }
+
+  async function cancelTerminalRunHandoffs(runId: string, reason: string, options: CancelRunOptions = {}) {
+    if (options.resultJson?.cancelledByActorType !== "user" || options.resultJson?.caseHandoffYieldStop === true) return;
+    const run = await getRun(runId);
+    const issueId = run?.nativeIssueId ?? run?.issueId ?? readNonEmptyString(run?.contextSnapshot?.issueId);
+    if (!run || !issueId) return;
+    const publications: ActivityPublication[] = [];
+    await db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))).for("update");
+      const [current] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))).for("update");
+      if (!current || !isHeartbeatRunTerminalStatus(current.status)) return;
+      // Revoke only this source's undelivered business intent. Recheck must
+      // never send provider Stop, cancel a successor, or invent cleanup proof.
+      await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run.companyId, issueId,
+        sourceRunId: run.id, reason, publications });
+    });
+    publications.forEach(publishActivity);
   }
 
   async function acknowledgeBudgetCancellation(run: typeof heartbeatRuns.$inferSelect, terminationProof?: string) {
@@ -1820,6 +1837,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     acknowledgeRemoteStop,
     resumeRemoteStopComments,
     cancelRunInternal,
+    cancelTerminalRunHandoffs,
     resumeExecutionWaitComments,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments: resumeSavedComments,

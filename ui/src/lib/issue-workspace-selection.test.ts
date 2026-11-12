@@ -5,6 +5,12 @@ import {
 } from "./issue-workspace-selection";
 
 describe("issue workspace selection", () => {
+  it("clears workspace binding for explicit session-only work", () => {
+    const update = buildWorkspaceSelectionUpdate("session_only", "workspace-1", "isolated_workspace");
+    expect(update).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null,
+      executionWorkspacePreference: null, executionWorkspaceSettings: { sessionOnly: true } });
+    expect(currentWorkspaceSelection({ ...update!, currentExecutionWorkspace: null } as Parameters<typeof currentWorkspaceSelection>[0], null)).toBe("session_only");
+  });
   it("builds the true project-default update", () => {
     expect(buildWorkspaceSelectionUpdate(null, null, null)).toEqual({
       executionWorkspacePreference: null,

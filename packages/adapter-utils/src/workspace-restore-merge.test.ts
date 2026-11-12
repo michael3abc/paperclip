@@ -129,11 +129,18 @@ describe("workspace restore merge", () => {
       sourceDir: sourceADir,
       targetDir,
     });
-    await mergeDirectoryWithBaseline({
-      baseline,
-      sourceDir: sourceBDir,
-      targetDir,
-    });
+    const receipt = await mergeDirectoryWithBaseline({ baseline, sourceDir: sourceBDir, targetDir });
+    // New contract: warm reuse needs the actual exported source digest. The
+    // merged host also contains the first writer's file and is not that source.
+    const sourceSnapshot = await captureDirectorySnapshot(sourceBDir, { exclude: [], diskBacked: true });
+    const hostSnapshot = await captureDirectorySnapshot(targetDir, { exclude: [], diskBacked: true });
+    try {
+      expect(receipt.sourceSha256).toBe(directorySnapshotSha256(sourceSnapshot));
+      expect(receipt.sourceSha256).not.toBe(directorySnapshotSha256(hostSnapshot));
+    } finally {
+      await disposeDirectorySnapshot(sourceSnapshot);
+      await disposeDirectorySnapshot(hostSnapshot);
+    }
 
     await expect(
       readFile(path.join(targetDir, "manual-qa", "environment-matrix", "ssh", "claude_local.md"), "utf8"),
@@ -884,7 +891,14 @@ describe("conflict-preserving directory restore", () => {
       await writeFile(path.join(source, "conflict"), "incoming");
       await writeFile(path.join(source, "independent"), "also incoming");
       await writeFile(path.join(target, "conflict"), "board");
-      await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject" })).rejects.toMatchObject({ code: "DIRECTORY_MERGE_CONFLICT", paths: ["conflict"] });
+      const beforeApply = vi.fn();
+      const rescue = path.join(root, "rescue");
+      await mkdir(rescue);
+      await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject",
+        beforeApply, rescueDirectory: rescue })).rejects.toMatchObject({ code: "DIRECTORY_MERGE_CONFLICT", paths: ["conflict"] });
+      expect(beforeApply).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(path.join(rescue, "restore.json"), "utf8"))).toMatchObject({ status: "not_committed" });
+      expect(await readFile(path.join(rescue, "incoming.jsonl"), "utf8")).toContain("independent");
       await expect(stat(path.join(target, "independent"))).rejects.toMatchObject({ code: "ENOENT" });
       await writeFile(path.join(target, "conflict"), "baseline");
       await expect(mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: target, conflictPolicy: "reject", afterApply: async () => { throw new Error("receipt interrupted"); } })).rejects.toThrow("receipt interrupted");
@@ -905,6 +919,28 @@ describe("conflict-preserving directory restore", () => {
       expect(await readFile(path.join(target, "folder", "new"), "utf8")).toBe("concurrent");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+});
+
+it("serializes platform copybacks and rejects the losing writer without a partial apply", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "directory-writers-"));
+  const target = path.join(root, "target"), first = path.join(root, "first"), second = path.join(root, "second");
+  try {
+    await mkdir(target);
+    await writeFile(path.join(target, "shared"), "before");
+    const baseline = await captureDirectorySnapshot(target);
+    await fsPromises.cp(target, first, { recursive: true });
+    await fsPromises.cp(target, second, { recursive: true });
+    await writeFile(path.join(first, "shared"), "one");
+    await writeFile(path.join(second, "shared"), "two");
+    await writeFile(path.join(first, "one-only"), "one");
+    await writeFile(path.join(second, "two-only"), "two");
+    const results = await Promise.allSettled([first, second].map(sourceDir =>
+      mergeDirectoryWithBaseline({ baseline, sourceDir, targetDir: target, conflictPolicy: "reject" })));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected")).toMatchObject([{ reason: { code: "DIRECTORY_MERGE_CONFLICT" } }]);
+    const winner = await readFile(path.join(target, "shared"), "utf8");
+    expect((await readdir(target)).sort()).toEqual([`${winner}-only`, "shared"].sort());
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 

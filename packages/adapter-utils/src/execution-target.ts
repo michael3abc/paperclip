@@ -275,9 +275,10 @@ export interface PreparedAdapterExecutionTargetRuntime {
     baseline: DirectorySnapshot;
     gitSnapshot: GitWorkspaceSnapshot | null;
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
+    restoredSourceSha256?: string;
   } | null;
   cleanupWorkspaceSnapshot?(): Promise<void>;
-  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink, assertWriteAuthority?: () => Promise<void>): Promise<void>;
 }
 
 export interface AdapterExecutionTargetProcessOptions {

@@ -17,6 +17,7 @@ export const recoveryFailureCodes = [
   "agent_stop_unconfirmed", "copyback_stop_unconfirmed", "workspace_writer_active",
   "provider_unavailable", "export_interrupted", "archive_unsafe", "snapshot_verification_failed",
   "source_unavailable", "effect_unresolved",
+  "copyback_conflict", "cancelled_export_preserved",
 ] as const;
 export type RecoveryFailureCode = typeof recoveryFailureCodes[number];
 export const recoveryRetryClasses = [

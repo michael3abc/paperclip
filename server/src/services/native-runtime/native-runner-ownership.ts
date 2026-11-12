@@ -2,12 +2,20 @@ import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db"
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
+import { executionObligationScope } from "../execution-obligations.js";
 
 export const nativeManualAdmissionOwnerColumns = {
   runId: nativeRunFinalizations.runId, companyId: nativeRunFinalizations.companyId,
   issueId: nativeRunFinalizations.issueId, phase: nativeRunFinalizations.phase,
   resultId: nativeRunFinalizations.resultId, failureCode: nativeRunFinalizations.failureCode,
-  failureDetail: sql<Record<string, unknown>>`jsonb_build_object('systemRecovery', ${nativeRunFinalizations.failureDetail}->'systemRecovery')`,
+  failureDetail: sql<Record<string, unknown>>`jsonb_build_object(
+    'systemRecovery', ${nativeRunFinalizations.failureDetail}->'systemRecovery',
+    'sourceFailureCode', ${nativeRunFinalizations.failureDetail}->'originalFailureCode',
+    'recoveryMode', ${nativeRunFinalizations.failureDetail}->'recoveryMode',
+    'providerSessionEstablished', ${nativeRunFinalizations.failureDetail}->'providerSessionEstablished',
+    'providerEventsExist', ${nativeRunFinalizations.failureDetail}->'providerEventsExist',
+    'providerWorkStarted', ${nativeRunFinalizations.failureDetail}->'providerWorkStarted',
+    'workspaceRepairRequired', ${nativeRunFinalizations.failureDetail}->'workspaceRepairRequired')`,
 };
 type ManualAdmissionOwner = Pick<typeof nativeRunFinalizations.$inferSelect,
   "runId" | "companyId" | "issueId" | "phase" | "resultId" | "failureCode" | "failureDetail">;
@@ -15,6 +23,8 @@ type ManualAdmissionOwner = Pick<typeof nativeRunFinalizations.$inferSelect,
 export function nativeManualAdmissionHoldMatches(scope: { companyId: string; runId: string; issueId?: string },
   owner: Partial<ManualAdmissionOwner> | null | undefined): boolean {
   const policy = readSystemRecovery(owner?.failureDetail);
+  const obligation = executionObligationScope(owner?.failureCode ?? "", owner?.failureDetail ?? {});
+  if (obligation === "cleanup" || obligation === "none") return false;
   return Boolean(owner?.runId === scope.runId && owner.companyId === scope.companyId &&
     (!scope.issueId || owner.issueId === scope.issueId) && owner.phase === "terminal_failure" && owner.resultId === null &&
     ["native_restart_recovery_blocked", "native_retry_cancelled"].includes(owner.failureCode ?? "") &&

@@ -4,6 +4,7 @@ import os from "node:os";
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import * as nativeExecutor from "./native-runtime/native-session-executor.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -66,7 +67,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
-  async function readAdmission(f: Fixture, full: boolean) {
+  async function readAdmission(f: Fixture, full: boolean, afterRead?: (statement: string) => Promise<void>) {
     const reads: Array<Array<Record<string, unknown>>> = [];
     const recorded = new Proxy(db, { get(target, key) {
       if (key !== "select") return Reflect.get(target, key);
@@ -79,6 +80,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
           if (args[0] === heartbeatRuns) query.execute = async (...executeArgs: Parameters<typeof execute>) => {
             const rows = await execute(...executeArgs), statement = query.toSQL().sql;
             if (statement.includes('"id"::text') || statement.endsWith("for update")) reads.push(rows);
+            await afterRead?.(statement);
             return rows;
           };
           return query;
@@ -111,6 +113,20 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     expect(stored.contextSnapshot).toEqual({ issueId: f.issueId, prompt: payload });
     expect(stored.runnerProfileJson).toEqual(profile);
+  });
+  it.each(["status", "finishedAt"] as const)("rejects a continuation source changed before its admission lock: %s", async fault => {
+    const f = await seed(); let changed = false;
+    const admission = await readAdmission(f, false, async statement => {
+      if (changed || !statement.includes('"id"::text')) return;
+      changed = true;
+      await db.update(heartbeatRuns).set(fault === "status" ? { status: "running" } : { finishedAt: null })
+        .where(eq(heartbeatRuns.id, f.sourceRunId));
+    });
+    expect(changed).toBe(true);
+    expect(admission.result).toBeNull();
+    // Null alone means ordinary admission; a changed source must retain an
+    // explicit refusal after workspace cleanup stops being an admission gate.
+    expect(admission.blocked).toEqual(["source_unavailable"]);
   });
   it.each([null, [], "scalar", 42, {}, { issueId: 42, wakeCommentId: false, wakeCommentIds: [null, 42],
     source: null, adapterDispatch: { adapterType: 42 }, nativeWorkspaceSync: [] }].map(value => ({ value })))(
@@ -1108,6 +1124,35 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await heartbeat.scheduleBoundedRetry(second.run.id, { now: nextNow })).toMatchObject({ outcome: "retry_exhausted" });
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(3);
   });
+
+  it.each(["valid", "receipt_removed", "comment_changed", "different_wake", "injected_comment"] as const)(
+    "validates bounded explicit retry input at claim: %s", async fault => {
+      const f = await seedTimedOutExplicitTurn();
+      const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") return;
+      const dispatch = createPostgresRunDispatchAdapter(db);
+      expect(await dispatch.promoteOrCancelDueRetry({ companyId: f.companyId, runId: scheduled.run.id,
+        now: scheduled.run.scheduledRetryAt! })).toMatchObject({ outcome: "promoted" });
+      if (fault === "receipt_removed") await db.delete(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.sourceIssueId, f.issueId), eq(issueRecoveryActions.cause, "explicit_user_continuation_retry")));
+      if (fault === "comment_changed") await db.update(issueComments).set({ body: "Changed after renewal" })
+        .where(eq(issueComments.id, f.commentId));
+      if (fault === "different_wake") await db.update(agentWakeupRequests).set({
+        payload: { issueId: f.issueId, retryOfRunId: f.sourceRunId, retryReason: "transient_failure" },
+      }).where(eq(agentWakeupRequests.id, scheduled.run.wakeupRequestId!));
+      if (fault === "injected_comment") {
+        const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+          authorType: "user", authorUserId: "board", body: "Not part of this renewal" }).returning();
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...scheduled.run.contextSnapshot,
+          wakeCommentIds: [f.commentId, comment.id] } }).where(eq(heartbeatRuns.id, scheduled.run.id));
+      }
+      // A system scheduler carries the exact renewed human receipt; it cannot
+      // lend that receipt to another wake or append unadmitted input.
+      expect(await dispatch.cancelStaleQueuedRun({ companyId: f.companyId, runId: scheduled.run.id,
+        expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: fault === "valid" ? "not_stale" : "cancelled" });
+    },
+  );
 
   it("keeps sub-millisecond source ordering when authorizing a timeout retry", async () => {
     const f = await seedTimedOutExplicitTurn();

@@ -19,7 +19,6 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { deferredChatInputPredicate, resumeDeferredChatWake } from "./durable-chat-wakeup.js";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
-import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { PersistedExecutionWaitRefusal } from "./deferred-execution-wait.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { isExternalChatWaitAuthorizationContention } from "./native-runtime/chat-attachment-reuse.js";
@@ -430,8 +429,6 @@ export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?
           actorId: intent.actorId, actorSource: intent.actorSource })) return "denied";
         if (issue.conversationAgentId && (issue.conversationUserId !== intent.actorId ||
             !(await instanceSettingsService(tx as unknown as Db).getExperimental()).enableAgentChat)) return "denied";
-        if (adapterExecutionControls.has(intent.sourceRunId) ||
-            await hasPendingRunCleanup(tx as unknown as Db, wake.companyId, intent.sourceRunId)) return "waiting";
         return "ready";
       });
       inputDenied = admission === "denied" || !chat || !receipt;

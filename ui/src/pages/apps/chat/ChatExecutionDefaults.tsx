@@ -6,10 +6,12 @@ import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/select";
 import { queryKeys } from "@/lib/queryKeys";
+import { isOpenManagedWorktree } from "@/lib/issue-workspace-selection";
 
 function selectionKey(value: TaskWorkspaceSelection | null | undefined): string {
   if (value === undefined) return "inherit";
   if (value === null) return "clear";
+  if (value.kind === "session_only") return "session";
   if (value.kind === "task_directory") return "task";
   if (value.kind === "existing") return `existing:${value.workspaceId}`;
   return `source:${value.projectWorkspaceId}:${value.mode}`;
@@ -29,7 +31,7 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
   const workspaces = useQuery({
     queryKey: ["channel-workspace-choices", companyId],
-    queryFn: () => executionWorkspacesApi.listSummaries(companyId, { selectableForTask: true }),
+    queryFn: () => executionWorkspacesApi.list(companyId, { selectableForTask: true }),
   });
   const current = draft ?? value ?? {};
   const valueKey = JSON.stringify(value ?? {});
@@ -41,15 +43,10 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
   const projectValue = current.projectId === undefined ? "inherit" : current.projectId ?? "none";
   const workspaceValue = selectionKey(current.workspace);
   const choices = new Map<string, TaskWorkspaceSelection>();
-  choices.set("task", { kind: "task_directory" });
-  for (const project of projects.data ?? []) {
-    for (const source of project.workspaces ?? []) {
-      for (const mode of ["managed_isolated", "shared"] as const) {
-        choices.set(`source:${source.id}:${mode}`, { kind: "configured_source", projectWorkspaceId: source.id, mode });
-      }
-    }
-  }
-  for (const workspace of workspaces.data ?? []) {
+  choices.set("session", { kind: "session_only" });
+  const availableWorktrees = (workspaces.data ?? []).filter(isOpenManagedWorktree)
+    .filter(workspace => !current.projectId || workspace.projectId === current.projectId);
+  for (const workspace of availableWorktrees) {
     choices.set(`existing:${workspace.id}`, { kind: "existing", workspaceId: workspace.id });
   }
   const dirty = !saved && JSON.stringify(current) !== valueKey;
@@ -91,17 +88,11 @@ export function ChatExecutionDefaults({ companyId, value, resource = false, onSa
         <option value="inherit">{resource ? "Use connection defaults" : "Use project or task defaults"}</option>
         {resource && <option value="clear">Use project or task defaults</option>}
         {!resource && workspaceValue === "clear" && <option value="clear">Use project or task defaults</option>}
-        <option value="task">Task files — separate folder</option>
+        <option value="session">Session only · external resources</option>
         {current.workspace && !choices.has(workspaceValue) && <option value={workspaceValue}>Saved workspace (unavailable)</option>}
-        {(projects.data ?? []).filter((project) => project.workspaces?.length).map((project) => <optgroup key={project.id} label={project.name}>
-          {project.workspaces.flatMap((source) => [
-            <option key={`${source.id}:isolated`} value={`source:${source.id}:managed_isolated`}>{source.name} — isolated checkout</option>,
-            <option key={`${source.id}:shared`} value={`source:${source.id}:shared`}>{source.name} — shared folder</option>,
-          ])}
-        </optgroup>)}
-        {(workspaces.data?.length ?? 0) > 0 && <optgroup label="Existing workspaces">{workspaces.data!.map((workspace) => <option key={workspace.id} value={`existing:${workspace.id}`}>{workspace.name}</option>)}</optgroup>}
+        {availableWorktrees.length > 0 && <optgroup label="Registered Git worktrees">{availableWorktrees.map((workspace) => <option key={workspace.id} value={`existing:${workspace.id}`}>{workspace.name}</option>)}</optgroup>}
       </NativeSelect>
-      <p className="text-xs text-muted-foreground">Project and workspace access is checked for each task. A shared folder must also be allowed by the agent’s execution policy.</p>
+      <p className="text-xs text-muted-foreground">Code work uses an open Git worktree registered by the project main. Session-only work keeps external resources in place.</p>
     </div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <div className="flex items-center justify-between gap-3">

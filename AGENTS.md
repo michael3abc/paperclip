@@ -2,6 +2,22 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Resident Bridge session authority is server-owned. Use the awaited heartbeat
+callback before saving host ownership or sending input. Never grant authority from
+`lastRunId`, a terminal status, adapter-returned JSON or a late finalizer. Preserve
+`adapterSessionAuthority` during task-session publication; stale publishers are
+suppressed. Business mutations use the current receipt as well as cancellation
+and existing scope checks. Native-session identity can span task rows; supersede
+all matching rows in the same transaction. See `doc/execution-semantics.md`.
+
+Original-main blocker delivery uses the recovery action's protected evidence and
+the existing delivery coordinator. Preserve exact creator/conversation/generation,
+read permissions, holds and durable wake identity. Never recursively wake a blocked
+native session, equate a session ID with input acceptance, or resend uncertain
+input. Main repairs within existing authority; inability goes to an Owner question
+in the original conversation. No automatic historical enrollment or extra retry
+budget. See `doc/execution-semantics.md`.
+
 Shared-worktree rollout safety baseline (Owner 2026-11-12): metadata key
 `mainManagedWorktree` is server-owned, including unknown versions. Legacy
 terminal/idle retention, compaction, rehome, branch repair and archive must never
@@ -193,23 +209,15 @@ home with the PM's own model. A shared Claude or Codex worker may serve multiple
 projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
 hold when changing this topology or reuse another task's session/worktree.
-Shared native workers set `runtimeConfig.requireProjectWorkspace=true`; reject missing
-project tasks or unconfigured sources. A configured development directory is the default:
-one writer owns its canonical path through provider stop and workspace settlement;
-additional writers queue. Explicit parallel work or independent versions may select
-`managed_isolated`. `requireTaskWorktree=true` remains an explicit isolated-only worker
-restriction; only the Owner may change either flag. Existing runs keep their contract.
-Fixed document/data directories do not require Git or automatic `git init`.
-Ignore-only ancestor directories such as `~/.git/info/exclude` are not repositories;
-local or ancestor repository metadata still requires authoritative Git validation.
-Git metadata, explicit repository/ref settings and isolated worktrees still require
-valid Git sources; damaged metadata must fail visibly. Shared claims use real paths
-and reject overlapping parent/child directories as well as aliases. Serialize the
-bounded admission transaction per host; independent admitted writers remain parallel.
-Read-only PM source tools share files; fixed-version reads take a full commit SHA and
-never switch the checkout. A provider with write capabilities always counts as a writer.
-A production source (`metadata.usage=production`) needs a separate fixed development
-checkout. Never silently fall back to a PM home or reuse another task's worktree.
+Shared workers select a main-registered linked Git worktree for code work. Multiple
+tasks/runs may join an open tree; canonical paths, aliases and parent/child overlap
+are not exclusive writer locks. Session cwd and external data/model/service paths
+remain separate and are never initialized as Git for dispatch. New tasks require an
+explicit worktree or the project's open default; external-resource tasks may select
+sessionOnly. Main chooses reuse/create, converge, merge, reopen and retire through
+the generation/operation-receipt API. Missing configuration fails before dispatch.
+Read-only source tools share files; fixed-version reads never switch branch. Keep
+production sources, Owner holds, permissions and genuine provider capacity intact.
 
 Zero-slot project PMs use the server-owned coordination capability policy in every
 chat, task and review run. The qualified local Claude ACP and isolated Codex
@@ -236,14 +244,12 @@ source, workspace and review before waking that worker. Preserve source Owner ga
 Keep these dispatch fields in the live `protocol-actions/create-task.ts` schema
 as well as the documentation catalog. Test the exported provider catalog; a field
 present only in the documentation catalog is rejected before server authorization.
-New PM dispatch requires a same-project configured development source; default to
-`shared`, serialize writers, and reject conflicting settings or existing-task worktrees
-before task creation. Claims cover aliases and subdirectories of one physical checkout.
-Silent/terminal runs are not release proof; retain unresolved provider/finalizer/lease
-ownership. New owners cannot inherit unsaved files. Merged worktrees use the existing
-terminal reaper: preserve results and history, verify clean files, stopped processes,
-released leases/services and branch ancestry, then remove the directory and merged
-branch without force. Keep the existing cooldown and failed-cleanup receipts. PM
+New code dispatch requires the project's registered open linked worktree.
+Shared participants retain independent task/session authority and per-run copies.
+Cancelled runs leave admission immediately; provider stop and cleanup receipts
+remain truthful and govern only cleanup/reuse of their own resources and retirement.
+Main controls worktree lifecycle; terminal/idle reapers never delete managed trees.
+PM
 `list_agents.dispatchReadiness` reports current policy/document/selection metadata;
 it is not provider acceptance. PMs may read their own project's tasks, recent/single comments, document revisions,
 sessions, diagnostics and issue-bound run metadata/events/logs. Preserve company,
@@ -264,8 +270,9 @@ are readable for the same project, including another task/worker's output; unbou
 assets and foreign project captures remain denied. PM
 review homes are run-scoped and must never replace a worker task workspace binding.
 Fixed project main agents also retain their registered home during a currently
-assigned formal review. Resolve that home on the configured host, claim its actual
-path, and preserve the worker's selection, workspace row and binding revision.
+assigned formal review. Resolve that home on the configured host without a
+recursive path claim, and preserve the worker's selection, workspace row and
+binding revision.
 Non-review execution and stale/foreign review participants keep the fixed-source
 conflict guard; never infer reviewer authority from wake context alone.
 Workspace-only issue PATCHes preserve status, assignment and pending review state;
@@ -349,7 +356,7 @@ If you change schema/API behavior, update all impacted layers:
   before read-only verification; use four completion-relative checks (0/30/120/300s),
   preserving budget across restart. Terminal Recheck never sends Stop or input.
   Provider stop and file/finalizer/lease cleanup are independent; stale launch
-  evidence cannot release a writer. Workspace waits park the same run until a
+  evidence cannot certify cleanup or retirement. Workspace waits park the same run until a
   holder event, then recheck existing admission authority. Preserve historical
   failures and holds. See `doc/execution-semantics.md`.
   Header and composer workspace-wait surfaces must remain visible and cancellable
@@ -568,9 +575,10 @@ PM Retry may reuse its task-owned home only after a settled pre-provider setup f
 Ordinary Retry for a configured fixed directory retains that placement through
 normal admission; do not replace it with an implicit isolated directory. Explicit
 fresh attempts remain explicit and may conflict with fixed policy. Placement
-selection never proves stop or cleanup, overrides a task's isolation requirement,
-or bypasses physical ownership. Bridge main-agent configuration must register the
-same cwd in both adapter settings and runtimeConfig.workspaceBinding.
+selection never proves stop or cleanup or bypasses task, input or native-session
+authority. A shared tree has no exclusive physical writer claim. Bridge main-agent
+configuration records the same session cwd in adapter settings and
+runtimeConfig.workspaceBinding; a selected linked execution tree is separate.
 
 PM worker options may pin an existing explicit AI connection alongside their model.
 Worker catalogs use that connection's routed models, not a global official-provider
@@ -690,32 +698,48 @@ Run cancellation remains available during scheduled workspace waits, including t
 current task header and composer monitor surfaces. The GUI cancels
 only the selected run and verifies its stop receipt. A cancelled Bridge run with a
 requested stop offers 重新檢查, which rechecks the original receipt without
-replaying input or stopping a successor. Shared workspace release accepts acknowledged,
-unforced Bridge stop evidence only after controller, finalizer, operation and lease
-settlement. Unknown outcomes retain the claim and show an explicit error.
+replaying input or stopping a successor. Cancellation immediately leaves workspace
+admission. Stop, controller, finalizer and lease receipts remain cleanup and
+retirement obligations; unknown input or session ownership stays explicitly scoped.
 
-Workspace admission is platform-wide: formally select registered sources or managed
-isolation; prose paths never select cwd. Claims identify the actual canonical
-working directory/worktree root or provider storage namespace, not project or
-Git common directory. Equal/alias/overlapping directories serialize; independent
-worktrees and storage identities may run concurrently. Retain provider-stop,
-lease and cleanup evidence; reject unrealized isolation before launch. Preserve
-project defaults and existing runs until their next normal admission. UI/MCP
-selection uses expectedBindingRevision/requestKey and never starts a run. See
-doc/execution-semantics.md (Physical workspace admission).
-An exhausted terminal finalizer releases physical ownership only with independent
-stop and fully settled file cleanup, without rewriting its failed outcome. Keep
-retry/recovery/export, retained-copy, operation and lease fences. Historical-owner
-inspection retains canonical directory/metadata-root scope even for damaged Git;
-new source admission still validates Git and fails explicitly.
-Holderless remote-managed waits settle only through Owner reconciliation with a
-server-observed host boot after the owner finished (`workspace.remote_host_rebooted`);
-never infer stop from idle/terminal status, fabricate claims or wake the task.
-Role-capacity tests use independently registered directories; workerSlots never
-permits simultaneous writers in one checkout. Adapter doubles returning session
-identity must model completed stop receipts before testing same-worktree reuse,
-and assert that terminal status without those receipts still retains ownership.
+Workspace admission is cooperative. Main-managed linked trees allow concurrent
+runs/tasks without physical-path, writer, historical cleanup or lease exclusion.
+Cancel revokes run writes immediately; task authority, native-session order,
+unknown input/operation outcomes, permissions and Owner holds remain independent.
+Session cwd, including /home/michael, never creates a recursive occupancy scope.
+Use revision-checked selection and lifecycle generation/operation receipts. Recheck
+never resends Stop/input. Cleanup and retirement still require actual liveness,
+backup and ancestry evidence; no force removal or invented stop proof.
 An exact .git/info/exclude-only directory is ignore metadata even at the selected
 workspace root. It must remain an ordinary canonical directory without requiring
 Git. Empty, partial, symlinked or additional local Git metadata still requires Git
-validation; explicit Git source requirements and overlapping-path claims remain.
+validation. Execution workspaces require a registered linked Git worktree;
+external non-Git directories remain session-only resources without path claims.
+
+Workspace selection uses existing registered open trees or explicit session_only.
+The task card, properties and Chat defaults share this contract; historical source
+selections remain readable, not available as new choices. Input receipt validation
+is independent of cleanup admission: never drop continuation authorization or
+skip merged-user receipt checks merely because getExecutionBlocker returns null.
+Ordinary agent comments retain their verified agent-author/receipt namespace;
+saved-user recovery remains human-only. Case handoffs also require their ledger.
+System-owned wakes require their exact protected receipt at claim: bounded
+explicit retries renew the original human authorization for that successor,
+and main/recovery notices revalidate their source and original conversation.
+Neither lane may append other comments or inherit a generic system exemption.
+Task Retry and deferred-input admission must validate before queue/coalescing
+shortcuts as well as before dispatch. A cleanup-only recovery action cannot prove
+non-delivery: retain provider event, preparation settlement, source snapshot and
+principal checks. Single and merged comments each require original receipts;
+adopted Retry receipts without comments are not a comment batch. A new queued
+input must have no prior execution evidence. Keep saved-file continuation
+receipts even when cleanup no longer blocks admission.
+An admitted successor does not retire the predecessor's cleanup eligibility or
+pending Stop-evidence notification. Cancelled exports remain rescue-only even
+while a successor uses the tree. Ordinary Retry retains the selected managed
+tree; skipping provisioning must retain read-only repository access validation.
+Ignored target files are included in merge overlap checks before any shared effect.
+Warm sandbox adoption requires the actual exported source digest to equal the
+final host digest. A merged host may contain collaborator-only files; its hash
+alone never certifies the remote baseline. Missing or partial export proof makes
+a new turn seed the current host; same-run recovery retains its original baseline.

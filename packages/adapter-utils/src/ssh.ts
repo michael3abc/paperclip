@@ -15,7 +15,7 @@ import {
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
-import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import { createWorkspaceRestoreDirectory, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,
@@ -1760,7 +1760,10 @@ async function restoreWorkspaceRootFromSsh(input: {
 }): Promise<void> {
   const remoteDir = input.remoteDir;
   if (input.baselineSnapshot) {
-    const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    const rescueDir = await createWorkspaceRestoreDirectory();
+    const stagingDir = path.join(rescueDir, "payload");
+    await fs.mkdir(stagingDir);
+    let applied = false;
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;
@@ -1787,6 +1790,8 @@ async function restoreWorkspaceRootFromSsh(input: {
         baseline: input.baselineSnapshot,
         sourceDir: stagingDir,
         targetDir: input.localDir,
+        conflictPolicy: "reject",
+        rescueDirectory: rescueDir,
         // Git history advances via integrateImportedGitHead; the working tree
         // still comes from the remote file snapshot so dirty remote edits win.
         beforeApply: importedHead
@@ -1798,14 +1803,15 @@ async function restoreWorkspaceRootFromSsh(input: {
           }
           : undefined,
       });
+      applied = true;
     } finally {
-      if (importedRef) {
+      if (applied && importedRef) {
         await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
           timeout: 10_000,
           maxBuffer: 16 * 1024,
         }).catch(() => undefined);
       }
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      if (applied) await fs.rm(rescueDir, { recursive: true, force: true });
     }
     return;
   }

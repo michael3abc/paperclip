@@ -1,3 +1,5 @@
+import { claimAdapterSessionAuthority } from "../adapter-session-authority.js";
+import { verifyMainBlockerRun } from "../recovery/main-blocker.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { readDecisionDelegation } from "../delegated-decision-policy.js";
 import { requestLegacyRuntimeDecision } from "../native-runtime/legacy-runtime-decision-bridge.js";
@@ -899,6 +901,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               ...(decisionDelegation && issueRef ? { onRuntimeDecision: (decision: Parameters<NonNullable<AdapterExecutionContext["onRuntimeDecision"]>>[0]) =>
                 requestLegacyRuntimeDecision(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: issueRef.id }, decision) } : {}),
               onProviderStopped: collectStoppedInstructions,
+              ...(agent.adapterType === "ccpocket_bridge" && taskKey ? {
+                onSessionAuthority: async (claim: Parameters<NonNullable<AdapterExecutionContext["onSessionAuthority"]>>[0]) => {
+                  await verifyMainBlockerRun(db, run);
+                  return claimAdapterSessionAuthority(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, taskKey }, claim);
+                },
+              } : {}),
               onDispatch: markDispatchStarted,
               signal: executionControl.controller.signal,
               ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {

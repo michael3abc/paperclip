@@ -1,3 +1,4 @@
+import { MAIN_BLOCKER_REASON, verifyMainBlockerWake } from "../recovery/main-blocker.js";
 import { verifyWorkspaceRecoveryWake, WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON, WORKSPACE_RESUME_REASON } from "../recovery/workspace-creator.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { assertIssueContinuationWake } from "../issue-continuations.js";
@@ -54,7 +55,7 @@ import {
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
-import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
+import { getExecutionBlocker } from "../execution-blocker.js";
 import { nativeManualAdmissionHoldsExecution } from "../native-runtime/native-runner-ownership.js";
 import { validateNativeWorkspaceReconstruction } from "../native-runtime/native-workspace-reconstruction.js";
 import { isConversationAdapter } from "../conversation-continuation.js";
@@ -933,16 +934,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     const issueId = readNonEmptyString(context.issueId);
     if (issueId && activeRunExecutions.size > 0) {
-      // Native finalization publishes success before workspace synchronization,
-      // provider suspension, and lease release finish. A queued comment must
-      // not acquire a fresh sandbox while its predecessor still owns that work.
-      // The executor's finally block retries this agent after removing its owner.
+      // Active turns retain task ordering. A terminal run's cleanup no longer
+      // owns the shared workspace; native session ownership is checked separately.
       const [settlingOwner] = await db.select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, run.companyId),
           eq(heartbeatRuns.agentId, run.agentId),
           eq(heartbeatRuns.runtimeMode, "native"),
+          eq(heartbeatRuns.status, "running"),
           inArray(heartbeatRuns.id, [...activeRunExecutions]),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
         ))
@@ -1105,13 +1105,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             eq(heartbeatRuns.id, previousRunId),
             eq(heartbeatRuns.companyId, run.companyId),
           ));
-        // A terminal result can precede workspace/lease cleanup on this or
-        // another controller. Local absence alone is not a release receipt.
-        if (!isHeartbeatRunTerminalStatus(previous?.status) ||
-            liveRunExecutions.has(previousRunId)) {
-          return { ownsIssue, blocked: true };
-        }
-        if (await hasPendingRunCleanup(tx, run.companyId, previousRunId)) {
+        // The adapter owns session sequencing. A terminal predecessor's cleanup
+        // does not own the next run's workspace or its independent resources.
+        if (!isHeartbeatRunTerminalStatus(previous?.status)) {
           return { ownsIssue, blocked: true };
         }
       }
@@ -2151,6 +2147,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Paperclip assigns a project PM run's role at claim; never adopt a caller's.
     delete contextSnapshot.paperclipPmWorkspace;
     const reason = opts.reason ?? null;
+    if (reason === MAIN_BLOCKER_REASON && !opts.mainBlockerRequest)
+      throw conflict("Original-main blocker wake requires its server receipt");
     if ([WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON, WORKSPACE_RESUME_REASON].includes(reason ?? "") && !opts.workspaceRecoveryRequest)
       throw conflict("Workspace recovery requires its original server receipt");
     let payload = opts.payload ? { ...opts.payload } : null;
@@ -2362,7 +2360,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       await verifyWorkspaceRequest(db);
       opts = { ...opts, allowRunCoalescing: false, idempotencyKey: "workspace-recovery:" + workspaceRequest.id };
     }
-    const receiptRequest = durableRequest ?? dotRequest ?? museRequest ?? caseReceipt ?? workspaceRequest;
+    const mainBlockerRequest = opts.mainBlockerRequest;
+    const verifyMainRequest = (reader: Db) => mainBlockerRequest && issueId
+      ? verifyMainBlockerWake(reader, { companyId: agent.companyId, issueId, agentId,
+        actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, reason, request: mainBlockerRequest }) : null;
+    if (mainBlockerRequest) {
+      if (!issueId || durableRequest || dotRequest || museRequest || caseReceipt || workspaceRequest || opts.taskRetryRequestId)
+        throw conflict("Invalid original-main blocker wake scope");
+      await verifyMainRequest(db);
+      opts = { ...opts, allowRunCoalescing: false, idempotencyKey: "main-blocker:" + mainBlockerRequest.id };
+    }
+    const receiptRequest = durableRequest ?? dotRequest ?? museRequest ?? caseReceipt ?? workspaceRequest ?? mainBlockerRequest;
     const durableReceiptFields = receiptRequest
       ? { id: receiptRequest.id, requestedAt: receiptRequest.requestedAt }
       : {};
@@ -2383,6 +2391,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (receipt && durableRequest) assertDurableChatWakeupReceipt(durableRequest, receipt);
+      if (receipt && mainBlockerRequest) await verifyMainRequest(queryDb);
       if (receipt && caseRequest && (receipt.companyId !== agent.companyId || receipt.agentId !== agentId ||
           receipt.payload?.issueId !== caseRequest.issueId || receipt.idempotencyKey !== `case-handoff:${caseRequest.handoffId}`))
         throw conflict("Case handoff wake receipt identity changed");
@@ -2854,6 +2863,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
           if (workspaceRequest) await verifyWorkspaceRequest(tx as unknown as Db);
+          if (mainBlockerRequest) await verifyMainRequest(tx as unknown as Db);
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
@@ -3423,7 +3433,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           const continuationHold = () => executionBlocker ?? {
             recoveryActionId: null, cause: "native_continuation_requires_reconciliation" as const, nextAction: continuationWait.message,
           };
-          if ((executionBlocker || opts.queuedCommentInterruptId) && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
+          if ((executionBlocker || opts.queuedCommentInterruptId || opts.taskRetryRequestId || opts.queuedCommentRequestId)
+            && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
             reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
@@ -3435,7 +3446,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
             dryRun: true,
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
-          })) && (executionBlocker || (continuationBlocked && !verifiedConversationReset))) return deferBlockedExecution(continuationHold());
+          })) && (executionBlocker || continuationBlocked)) return deferBlockedExecution(continuationHold());
 
 
           if (
@@ -4283,7 +4294,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
             onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
           });
-          if (!explicitContinuation && (executionBlocker || (continuationBlocked && !verifiedConversationReset)) && !ownsReconstructionContinuation)
+          if (!explicitContinuation && (executionBlocker || continuationBlocked) && !ownsReconstructionContinuation)
             return deferBlockedExecution(continuationHold());
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;

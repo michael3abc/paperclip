@@ -225,7 +225,7 @@ export async function workspaceRecoveryContinuation(db: Db, input: { companyId: 
 
 /** Only the recorded server intent may use this durable admission lane. */
 export async function verifyWorkspaceRecoveryWake(db: Db, input: { companyId: string; issueId: string; agentId: string;
-  actorType?: string; actorId?: string | null; reason?: string | null; request: WorkspaceRecoveryWake }) {
+  actorType?: string; actorId?: string | null; reason?: string | null; request: WorkspaceRecoveryWake; revalidateTarget?: boolean }) {
   const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.id, input.request.actionId),
     eq(issueRecoveryActions.companyId, input.companyId)));
   const state = creatorRecovery(action?.evidence);
@@ -239,7 +239,7 @@ export async function verifyWorkspaceRecoveryWake(db: Db, input: { companyId: st
   const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.request.id));
   if (receipt && (receipt.companyId !== input.companyId || receipt.agentId !== input.agentId || receipt.requestedByActorType !== "system" ||
       receipt.requestedByActorId !== action.id || receipt.payload?.issueId !== input.issueId)) throw forbidden("Workspace recovery receipt was reused");
-  if (receipt?.runId) return { action, state, sourceRunId: null, receipt };
+  if (receipt?.runId && !input.revalidateTarget) return { action, state, sourceRunId: null, receipt };
   const [task] = await db.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
   if (!task || task.assigneeAgentId !== input.agentId || ["done", "cancelled"].includes(task.status) ||
       await issueTreeControlService(db).getActivePauseHoldGate(input.companyId, task.id)) throw conflict("Workspace recovery target is held or changed");

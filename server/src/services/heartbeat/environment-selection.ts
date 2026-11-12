@@ -4,7 +4,8 @@ import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
-import { isMainManagedExecutionWorkspace } from "@paperclipai/shared";
+import { isMainManagedExecutionWorkspace, readMainManagedWorktree } from "@paperclipai/shared";
+import { isMainAgent } from "../main-agent-workers.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -48,7 +49,7 @@ export interface HeartbeatEnvironmentSelectionInput {
   task: {
     freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
     issueRef: Pick<Issue, "id" | "projectId" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
-    issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> | null;
+    issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> & Partial<Pick<Issue, "conversationAgentId">> | null;
     issueId: string | null;
     context: Record<string, unknown>;
     executionProjectId: string | null;
@@ -113,16 +114,22 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const persistedNativeExecutionWorkspaceId =
     providerApiPlacement ? null : persistedNativeExecutionInput?.binding.executionWorkspaceId ?? null;
   const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";
-  const requestedExecutionWorkspaceId = controllerOnly ? null :
+  const explicitSessionOnly = issueExecutionWorkspaceSettings?.sessionOnly === true && !persistedNativeExecutionInput;
+  const requestedExecutionWorkspaceId = controllerOnly || explicitSessionOnly ? null :
     persistedNativeExecutionWorkspaceId ??
     readNonEmptyString(issueRef?.executionWorkspaceId);
   let existingExecutionWorkspace = requestedExecutionWorkspaceId
     ? await executionWorkspacesSvc.getStoredById(agent.companyId, requestedExecutionWorkspaceId)
     : null;
+  if (isMainAgent(agent) && !persistedNativeExecutionInput && (!issueRef || issueContext?.conversationAgentId === agent.id)
+    && !isMainManagedExecutionWorkspace(existingExecutionWorkspace)) existingExecutionWorkspace = null;
   if (isMainManagedExecutionWorkspace(existingExecutionWorkspace)) {
-    throw new WorkspaceValidationFailure("This release preserves shared worktrees but does not support cooperative execution.", { reason: "shared_worktree_unsupported" });
+    const managed = readMainManagedWorktree(existingExecutionWorkspace?.metadata);
+    if (!managed) throw new WorkspaceValidationFailure("The worktree marker requires reconciliation.", { reason: "worktree_marker_unrecognized" });
+    if (managed.phase !== "open") throw new WorkspaceValidationFailure("The project main has closed this worktree to new participation.", { reason: "workspace_converging" });
+    if (managed.pendingOperationId) throw new WorkspaceValidationFailure("Reconcile the original worktree operation before admitting work.", { reason: "worktree_operation_reconciliation_required" });
   }
-  if (existingExecutionWorkspace && issueId && !controllerOnly && !fresh
+  if (existingExecutionWorkspace && !isMainManagedExecutionWorkspace(existingExecutionWorkspace) && issueId && !controllerOnly && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
     && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
@@ -374,7 +381,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   }
   // A reused durable workspace keeps its runtime lease gate. Presentation
   // preferences and holder silence cannot authorize another writer.
-  if (!nativeRecoveryExecutionWorkspaceId && reusableExistingExecutionWorkspace &&
+  if (!nativeRecoveryExecutionWorkspaceId && reusableExistingExecutionWorkspace && !isMainManagedExecutionWorkspace(reusableExistingExecutionWorkspace) &&
       effectiveExecutionWorkspaceMode === "shared_workspace" &&
       selectedEnvironmentForConfig?.driver !== "local" && selectedEnvironmentForConfig?.driver !== "ssh") {
     const executionWorkspaceHolder = await findExecutionWorkspaceHolder({
@@ -398,7 +405,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   // Source/project identity is a recipe, not ownership of a physical directory.
   // Workspace preparation claims the realized host path; managed runtimes retain
   // their workspace/lease gates. Independent copies of one source may overlap.
-  if (!controllerOnly && taskWorkspaceIntent && !boundSourceWorkspace && !nativeRecoveryExecutionWorkspaceId) {
+  if (!explicitSessionOnly && !controllerOnly && taskWorkspaceIntent && !boundSourceWorkspace && !nativeRecoveryExecutionWorkspaceId) {
     await executionWorkspacesSvc.validateStoredSelectionForRun({ companyId: agent.companyId,
       actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },
       selection: taskWorkspaceIntent.selection, issueId,

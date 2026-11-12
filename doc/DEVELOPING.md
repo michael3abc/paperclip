@@ -9,8 +9,13 @@ and handles cancellation, process, lease and instruction-cleanup notifications.
 No recurring scan remains after settlement or evidence exhaustion. New evidence
 permits one inspection without resetting the budget. Terminal cancellation API
 requests are read-only toward the provider and audit `heartbeat.stop_rechecked`.
-`workspace-wait-settlement.ts` makes a parked original row eligible only after
-its holder settles; dispatch retains current permissions and holds.
+`workspace-wait-settlement.ts` reconciles historical parked `workspace_busy`
+rows under cooperative admission, preserving the original row and before/after
+receipt. It waits only for an unexpired controller lease before classifying
+unstarted, superseded or delivery-unknown intent. Historical cleanup is not a
+workspace admission gate; dispatch retains current permissions, Owner holds,
+input provenance and native-session ordering. Its actual lease deadlines replace
+idle scanning once migration is complete.
 
 Run the focused stop-settlement, Bridge stop-reverification, shared-checkout,
 heartbeat workspace-busy (local/remote), agent-directory-working-copies and
@@ -2128,8 +2133,10 @@ default. A configured remote branch is resolved before its checkout is published
 Configured local folders use the legacy path until imported. V1 rejects explicitly read-only sources
 and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
 and runtime commands are also rejected before any local directory access; run
-those commands through an agent task. One writer owns each logical
-workspace; separate workspaces can run concurrently. The Files panel identifies
+those commands through an agent task. This legacy remote-snapshot path retains
+one `writerRunId` for its physical allocation and snapshot publication; separate
+allocations can run concurrently. It does not establish exclusive admission for
+a main-managed linked worktree. The Files panel identifies
 **Live workspace** and **Saved copy** with its save time. An unavailable dirty
 allocation is not silently replaced with an older saved copy.
 
@@ -2152,14 +2159,14 @@ Reservation checks current task/run access and all retained workspace sources.
 The original `sourceIssueId` remains provenance; it does not prevent authorized
 bound tasks from continuing saved work. Explicitly selected roots follow the
 same binding contract and the filesystem access boundary below. Task-assignment
-grants are not filesystem permissions. The single-writer fence still applies.
-If reservation finds a current running writer, the bound task uses the existing
-workspace wait and scheduled retry path, including for isolated workspaces and
-operator branches. Reservation does not acquire another allocation or change
-the writer's saved files. A stale writer or a stopped writer with unfinished
-saves still requires reconciliation; contention retries cannot clear that fence.
-The wait retains the run's admitted assignment role so reassignment during
-preparation cannot resume the former assignee through the guest-run path.
+grants are not filesystem permissions. The legacy remote-snapshot reservation
+still rejects competing `writerRunId` owners of that exact allocation or an
+unfinished save. Its existing resource wait retains the admitted assignment role,
+so reassignment cannot resume the former assignee through the guest-run path.
+Reservation neither acquires another allocation nor changes the owner's saved
+files, and retries cannot certify an uncertain save. These resource-specific
+checks are separate from cooperative admission to a registered linked worktree;
+historical snapshot cleanup does not claim a host path or another execution tree.
 
 Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
 for storage, import, retention, and lifecycle regression checks. These checks do
@@ -4300,7 +4307,8 @@ establish external wake-alarm coverage or whole-instance sleep safety. The local
 sleep inventory blocks host suspension until bounded recovery succeeds. Cooldown
 eligibility is an earliest allowed cleanup time; passive retained directories can
 wait for the next wake, when startup restores their rows. Existing idle-sleep
-blockers and cleanup admission holds remain authoritative.
+blockers and resource-cleanup obligations remain authoritative for suspension
+and destructive lifecycle work, not cooperative linked-worktree admission.
 
 The connection-health sweep selects only due IDs in SQL before applying its
 limit. Legacy `paperclip_plugin` placeholder connections are excluded: their
@@ -4592,7 +4600,10 @@ error, preserving the failed run. Reconcile the same request if its response is 
 `POST /api/issues/:id/workspace/reconcile-holder` accepts `waitingRunId`, `holderRunId` and
 `expectedBindingRevision`. The project's current main agent can reverify a terminal holder named
 by that task's `workspaceBusy` evidence. It never cancels active work, erases claims or modifies files.
-Only verified stop/resource settlement releases admission; `unverified` retains the blocker.
+Verified stop/resource settlement updates only that historical source's receipt;
+`unverified` retains its cleanup obligation. Cooperative admission does not wait
+for historical holder cleanup; saved intent still needs current task, input and
+native-session authority.
 Omitting `holderRunId` is an Owner-only mode for a holderless `workspaceBusy` wait on a
 remote-managed project workspace. It discovers unsettled owners with the admission query and, through
 the Bridge adapter's read-only `observeRemoteHostBoot` (boot id, `/proc/uptime`, `ssh -G` endpoint),
@@ -4921,34 +4932,30 @@ action documentation catalog and test the actual exported provider catalog. Thes
 fields still pass the server's issue validators, PM worker selection, project/workspace
 scope and review enforcement; advertising them does not grant additional authority.
 
-New PM tasks require `workspaceSelection.kind=configured_source` for their own
-project. Omitted `mode` means `shared`: use the project's fixed development directory
-with one writer. Additional writers wait through the existing workspace-busy queue;
-only explicit parallelism or an independent version selects `managed_isolated`.
-The same native/HTTP admission rejects missing sources, production sources in shared
-mode, existing-task worktrees and conflicting settings before creating the task.
-Owner-managed `requireProjectWorkspace` admits these two modes; an explicit
-`requireTaskWorktree` worker remains isolated-only until its Owner changes that policy.
-Existing task continuation keeps its recorded contract.
+Under the 2026-11-12 feature contract, new project code tasks select an open,
+main-registered linked Git execution workspace, explicitly or through the project's
+`defaultExecutionWorkspaceId`. Main chooses an existing shared tree or creates
+another tree; a legacy configured source alone is not a new execution selection.
+Missing or closed selections fail before assignment. External-resource tasks may
+explicitly choose `sessionOnly`; resident Chat cwd remains separate. Worker policy,
+project permissions and revision-checked task selection still apply. Historical
+task intent remains readable and is never silently replayed.
 
-Local shared checkout admission records a durable claim on the run under a
-transaction advisory lock per host during bounded admission only. Git sources use
-their canonical checkout; ordinary document/data folders use their real directory
-without invoking Git or initializing a repository. An ancestor ignore-only directory
-such as `~/.git/info/exclude` is not repository metadata. A local `.git` entry,
-ancestor repository metadata and explicit
-repository/ref settings still require a valid checkout. Damaged Git sources fail;
-`managed_isolated` continues to require Git. Aliases and overlapping parent/child
-paths cannot create a second writer; independent admitted providers remain parallel.
-Git dirty-state checks remain unchanged. Ordinary files remain in place across settled
-task ownership transfers. Acquisition precedes provisioning;
-there is no idle scan. A waiting run has not started its provider. Silence or a
-terminal status cannot free a provider's claim: require process-stop evidence and
-settled finalization/environment leases. New tasks cannot adopt another owner's
-unsaved files, a live local process or a running service's checkout. Mark configured
-production sources with `metadata.usage=production` and use a separate fixed
-checkout for development. Unsupported shared-host environments fail explicitly;
-managed remote storage keeps its own existing writer reservation.
+Shared checkout admission allows multiple authorized tasks/runs on the same open
+tree. Canonical paths, aliases, parent/child overlap and another participant do not
+establish exclusive writer claims. Cancellation immediately revokes the original
+run's business writes and admission participation; Stop, file preservation,
+finalizers and leases remain source-scoped obligations. Unknown native-session
+ownership or input/operation outcomes retain their own explicit gates. Historical
+workspace cleanup does not delay independently authorized admission.
+Git registration still verifies a real linked tree; an ignore-only
+`~/.git/info/exclude` is not repository metadata. Data, documents, models and
+services remain external resources without automatic Git initialization. Production
+sources remain external; versioned code changes use a selected development tree.
+Unsupported host/storage capabilities fail explicitly. The legacy remote snapshot
+allocation keeps its actual `writerRunId` and save reservation; that exact resource
+constraint does not reserve a shared host path. Platform copyback rejects conflicts
+and preserves private rescue instead of replacing collaborators' files.
 
 Read-only source tools share the source without writer ownership. For fixed-version
 review, `read_project_file` accepts a full `commit` SHA and reads a bounded regular
@@ -4966,13 +4973,15 @@ inode. Definite HTTP 403 and filesystem permission failures settle as
 `runner_bridge_read_forbidden` with source-selection guidance, without private paths.
 Native provider readers cover instruction
 bundles only; project content uses the server-owned tools so a broad home root cannot
-bypass project ownership. A provider that has write tools
-still counts as a writer even when its prompt calls the task read-only.
-Merged task worktrees use the existing terminal reaper/cooldown. It verifies delivery
-ancestry, retained results, clean files, closed task trees and released execution
-resources; local processes using the directory also block removal. Removal and
-branch deletion are non-forced and leave task/run history intact. Uncertain ownership
-or unsaved results remain explicit cleanup blockers, never permission to delete.
+bypass project ownership. A prompt that calls a task read-only cannot reduce its
+actual tool permissions or grant additional filesystem access.
+Main-managed trees never enter the terminal/idle reaper. Main explicitly converges,
+merges, reopens or retires them through generation-bound operation receipts; merge
+and removal are separate. Before removal verify current HEAD ancestry, private
+backups of irreplaceable dirty/ignored files and actual process/service release.
+Legacy disposable task trees retain their terminal reaper/cooldown and delivery
+checks. Both paths use non-force removal, preserve task/run history and retain
+uncertain liveness or unsaved results as deletion blockers only.
 
 PM `list_agents` includes `dispatchReadiness`: policy revision/version, current
 default, managed document synchronization and bounded per-selection readiness.

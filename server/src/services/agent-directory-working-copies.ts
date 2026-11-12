@@ -6,7 +6,7 @@ import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, environmentLeases, environments, agentInstructionWorkingCopies as copies, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { syncDirectoryToSsh, restoreWorkspaceFromSshExecution } from "@paperclipai/adapter-utils/ssh";
 import { prepareAdapterExecutionTargetRuntime, runAdapterExecutionTargetShellCommand, type AdapterExecutionTarget, type PreparedAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
-import { withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { DirectoryMergeConflict, withDirectoryMergeLock, directorySnapshotSha256, parseDirectorySnapshot, serializeDirectorySnapshot, type DirectoryMergeLockOperation } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { AGENT_FILES_CONTRACT, AgentFileLimitError, agentFileStore, agentStorageWarning, inspectAgentDirectory } from "./agent-file-store.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import { instructionGitExcludeProgram, readInstructionBytes, materializeInstructionBytes } from "./agent-instruction-files.js";
@@ -435,12 +435,18 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       } catch (error) {
         failure = error;
         logger.warn({ err: error, runId: row.runId, attempt: attempt + 1, stopped }, "Agent file checkpoint failed");
-        if (error instanceof HttpError && error.status < 500) break;
+        if (error instanceof DirectoryMergeConflict || (error instanceof HttpError && error.status < 500)) break;
       }
       finally {
         await captured?.cleanup().catch(error => logger.warn({ err: error, runId: row.runId }, "Agent checkpoint scratch cleanup deferred to session retirement"));
       }
     }
+    if (failure instanceof DirectoryMergeConflict) return patch(row, {
+      ...(stopped ? { state: "unavailable", processStoppedAt: new Date() } : {}),
+      errorCode: "AGENT_FILES_CONFLICT", errorMessage: "Concurrent changes were retained; the rejected export is saved in private rescue storage.",
+      nextAttemptAt: null, receipt: { ...row.receipt, checkpointState: "conflict",
+        workspaceRescueId: (failure as DirectoryMergeConflict & { workspaceRescueId?: string }).workspaceRescueId },
+    });
     const rejection = failure instanceof HttpError && failure.status === 403 ? failure.message : null;
     if (!stopped) return patch(row, { errorCode: "AGENT_FILES_CHECKPOINT_UNSTABLE",
       errorMessage: rejection ? `Agent-file save rejected: ${rejection} Changes were not saved.` : "Incremental checkpoint could not be validated; collecting after provider stop.", nextAttemptAt: null });
@@ -486,12 +492,14 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         row = await patch(row, { receipt: { ...row.receipt, storageWarning } });
         break;
       } catch (error) {
-        const retryable = !(error instanceof HttpError) || error.status >= 500;
+        const retryable = !(error instanceof DirectoryMergeConflict) && (!(error instanceof HttpError) || error.status >= 500);
         if (retryable && row.attempts < 3) continue;
         row = await patch(row, { state: "unavailable", nextAttemptAt: null,
-          receipt: { ...row.receipt, storageWarning: error instanceof AgentFileLimitError ? agentStorageWarning(error.message) : row.receipt?.storageWarning ?? null },
-          errorCode: error instanceof AgentFileLimitError ? "AGENT_FILES_LIMIT_EXCEEDED" : "AGENT_FILES_SAVE_FAILED",
-          errorMessage: error instanceof HttpError && (error.status === 403 || error.status === 422)
+          receipt: { ...row.receipt,
+            ...(error instanceof DirectoryMergeConflict ? { workspaceRescueId: (error as DirectoryMergeConflict & { workspaceRescueId?: string }).workspaceRescueId } : {}),
+            storageWarning: error instanceof AgentFileLimitError ? agentStorageWarning(error.message) : row.receipt?.storageWarning ?? null },
+          errorCode: error instanceof DirectoryMergeConflict ? "AGENT_FILES_CONFLICT" : error instanceof AgentFileLimitError ? "AGENT_FILES_LIMIT_EXCEEDED" : "AGENT_FILES_SAVE_FAILED",
+          errorMessage: error instanceof DirectoryMergeConflict ? "Concurrent changes were retained. This run's rejected export is saved in private rescue storage." : error instanceof HttpError && (error.status === 403 || error.status === 422)
             ? `${error.message}. This run's agent-folder changes were not saved; the temporary copy is discarded.`
             : "Agent-file synchronization failed. No successful save is claimed; the temporary copy is discarded.",
         });
@@ -555,6 +563,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         return;
       }
       await patch(row, { receipt: { schema: AGENT_FILES_CONTRACT, state: row.state, appliedCandidateHash: row.candidateHash, storageWarning: row.receipt?.storageWarning ?? null, cleanupPending,
+        ...(row.receipt?.workspaceRescueId ? { workspaceRescueId: row.receipt.workspaceRescueId } : {}),
         materializationRunId: row.receipt?.materializationRunId ?? row.runId,
         ...(row.receipt?.directoryRunId ? { directoryRunId: row.receipt.directoryRunId } : {}),
         ...(cleanupPending ? { cleanup: row.receipt?.cleanup, ...(destroyedOnly ? { cleanupDestroyedOnly: true } : {}) } : {}) },

@@ -1688,6 +1688,10 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
       server.on("close", workspaceCreatorWork.stop);
       await workspaceCreatorWork.ready;
+      const mainBlockerWork = heartbeat.registerOriginalMainBlockers(deliveryWork,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+      server.on("close", mainBlockerWork.stop);
+      await mainBlockerWork.ready;
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerIssueStateRecoveryWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;

@@ -36,8 +36,6 @@ import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import type { SQL } from "drizzle-orm";
-import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
 import {
   deleteWorkspaceCompactionTrash,
@@ -58,8 +56,6 @@ import {
   executionWorkspaces,
   agents,
   heartbeatRuns,
-  nativeRunFinalizations,
-  environmentLeases,
   workspaceOperations,
   issueComments,
   issueWorkProducts,
@@ -86,7 +82,7 @@ import type {
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
 } from "@paperclipai/shared";
-import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT, isMainManagedExecutionWorkspace, MAIN_MANAGED_WORKTREE_KEY } from "@paperclipai/shared";
+import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT, isMainManagedExecutionWorkspace, readMainManagedWorktree, MAIN_MANAGED_WORKTREE_KEY } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -1403,58 +1399,6 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
-async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
-  companyId: string; issueId: string; excludeRunId?: string;
-}) {
-  const rows = await tx.select({ finalization: nativeRunFinalizations, run: heartbeatRuns })
-    .from(nativeRunFinalizations).innerJoin(heartbeatRuns, and(
-      eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.id, nativeRunFinalizations.runId),
-    )).where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
-      input.excludeRunId ? ne(nativeRunFinalizations.runId, input.excludeRunId) : undefined));
-  if (rows.length === 0) return false;
-  if (rows.some(({ finalization, run }) => finalization.leaseOwner ||
-      !["committed", "terminal_failure"].includes(finalization.phase) ||
-      !["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(run.status))) return true;
-  const runIds = rows.map(({ run }) => run.id);
-  const [pendingLease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-    eq(environmentLeases.companyId, input.companyId), inArray(environmentLeases.heartbeatRunId, runIds),
-    or(and(isNull(environmentLeases.releasedAt),
-        sql`not coalesce(${environmentLeases.status} = 'retained'
-          and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
-          and ${environmentLeases.cleanupStatus} = 'success', false)`),
-      eq(environmentLeases.status, "pending_cleanup"), eq(environmentLeases.cleanupStatus, "failed"),
-      sql`${environmentLeases.metadata} ? 'nativeWorkspaceExportResume'`),
-  )).limit(1);
-  if (pendingLease) return true;
-  const operations = await tx.select({ runId: workspaceOperations.heartbeatRunId, status: workspaceOperations.status })
-    .from(workspaceOperations).where(and(eq(workspaceOperations.companyId, input.companyId),
-      inArray(workspaceOperations.heartbeatRunId, runIds), eq(workspaceOperations.phase, "workspace_finalize")))
-    .orderBy(desc(workspaceOperations.createdAt),
-      asc(sql`case when ${workspaceOperations.status} = 'succeeded' then 1 else 0 end`));
-  const latest = new Map<string, string>();
-  for (const operation of operations) {
-    if (operation.runId && !latest.has(operation.runId)) latest.set(operation.runId, operation.status);
-  }
-  const bootstrapRunIds = rows.filter(({ finalization, run }) => {
-    const recovery = parseObject(run.resultJson?.executionRecovery);
-    return run.runtimeMode === "native" && run.status === "failed" && run.finishedAt !== null
-      && finalization.phase === "terminal_failure" && finalization.resultId === null
-      && run.processPid === null && run.processGroupId === null
-      && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
-      && !hasWorkspaceRestoreFailure(run.resultJson)
-      && run.runnerProfileJson?.nativeWorkspaceSync == null
-      && run.runnerProfileJson?.nativeWorkspaceFinalizationOwner == null
-      && latest.get(run.id) === "failed";
-  }).map(({ run }) => run.id);
-  const providerEvidence = await nativeSessionProviderEvidence(tx, bootstrapRunIds);
-  const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)));
-  return rows.some(({ finalization, run }) => {
-    const status = latest.get(run.id);
-    if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
-    return finalization.phase === "terminal_failure" && finalization.resultId !== null;
-  });
-}
-
 // Compaction trash older than this belongs to no compaction in progress: the
 // move and the guard finish in one short transaction.
 const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
@@ -1535,6 +1479,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function validateSelection(input: { taskCreation?: TaskWorkspaceCreationTrustContext; companyId: string; actor: AuthorizationActor; selection: TaskWorkspaceSelection; issueId?: string | null; parentIssueId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; assigneeAdapterOverrides?: unknown; projectId?: string | null; executionPolicy?: unknown; preserveImplicitDefaultSettings?: boolean }, reader: Db | DbTransaction = db, storedForRun = false) {
     const selection = taskWorkspaceSelectionSchema.parse(input.selection);
+    if (selection.kind === "session_only") return { executionWorkspaceId: null, projectWorkspaceId: null,
+      executionWorkspacePreference: null, executionWorkspaceSettings: { sessionOnly: true, mode: "shared_workspace" } };
     if (selection.kind === "existing") {
       const [workspace] = await reader.select().from(executionWorkspaces).where(and(
         eq(executionWorkspaces.id, selection.workspaceId), eq(executionWorkspaces.companyId, input.companyId),
@@ -1543,6 +1489,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ));
       if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
       if (!storedForRun) {
+        const managed = readMainManagedWorktree(workspace.metadata);
+        if (!managed) throw conflict("Register this linked worktree through the project main before selecting it.", { code: "configuration_required" });
+        if (managed.phase !== "open") throw conflict("The selected worktree is closed to new work.", { code: "workspace_converging" });
+        if (managed.pendingOperationId) throw conflict("Reconcile the original worktree operation before joining.", { code: "worktree_operation_reconciliation_required" });
+      }
+      if (!storedForRun) {
         await assertExecutionWorkspaceRecordAccess(reader, input.actor, input.companyId, workspace.id);
       }
       await assertSelectedWorkspaceTrust(reader, {
@@ -1550,8 +1502,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         actor: input.actor, issueId: input.issueId, assigneeAgentId: input.assigneeAgentId, taskCreation: input.taskCreation,
       });
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
-        executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode } };
+        executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode, sessionOnly: false } };
     }
+    if (!storedForRun) throw conflict("Select an existing main-managed linked worktree, or choose session-only for external-resource work.",
+      { code: "configuration_required", reason: "execution_worktree_required" });
     if (selection.kind === "configured_source") {
       const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, metadata: projectWorkspaces.metadata, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
         .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId)).where(and(
@@ -1672,10 +1626,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         or(eq(heartbeatRuns.nativeIssueId, input.issueId),
           sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
         eq(heartbeatRuns.status, "running"),
+        sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'state', '') <> 'requested'`,
       )).limit(1);
-      if (holder) throw conflict("Previous task run must finish persistence before changing its workspace");
-      const unsettled = await hasPendingTaskWorkspaceRecovery(tx, { ...input, excludeRunId: input.runId });
-      if (unsettled) throw conflict("Previous task run still owns workspace recovery; finish recovery before changing its workspace");
+      if (holder) throw conflict("Previous task run must finish or be cancelled before changing its workspace");
+      // Historical cleanup retains its original run/workspace binding.
+      // Delivery and operation checks still apply at admission.
       const patch = await validateStoredSelectionForRun({ ...input, selection: pending.intent.selection }, tx);
       let assigneeAdapterOverrides = task.assigneeAdapterOverrides;
       if (pending.intent.source === "recovery") {
@@ -1774,12 +1729,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
     const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "running"),
+      sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'state', '') <> 'requested'`,
       or(eq(heartbeatRuns.nativeIssueId, input.issueId),
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`,
         task.executionRunId ? eq(heartbeatRuns.id, task.executionRunId) : undefined),
     )).limit(1);
-    const unsettled = await hasPendingTaskWorkspaceRecovery(tx, input);
-    if (holder || unsettled) throw conflict("Task run still owns its workspace; schedule a workspace selection for the next admission");
+    if (holder) throw conflict("Task run still owns its workspace; schedule a workspace selection for the next admission");
     const [selectedWorkspace] = input.patch.executionWorkspaceId
       ? await tx.select({ projectWorkspaceId: executionWorkspaces.projectWorkspaceId }).from(executionWorkspaces).where(and(
         eq(executionWorkspaces.id, input.patch.executionWorkspaceId), eq(executionWorkspaces.companyId, input.companyId),

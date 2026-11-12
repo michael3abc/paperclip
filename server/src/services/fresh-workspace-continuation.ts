@@ -7,10 +7,9 @@ import { readSystemRecovery } from "./system-recovery-state.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 import { z } from "zod";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
-import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
-import { agentProjectPmWorkspaceBindingSchema, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { agentProjectPmWorkspaceBindingSchema, isMainManagedExecutionWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 
 export type ContinuationReadiness =
@@ -116,10 +115,6 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
       task.projectWorkspaceId !== validation.issueProjectWorkspaceId ||
       workspace.cwd !== validation.resolvedWorkspaceCwd || !await isBoundIsolatedTaskDirectory({
     companyId: source.companyId, issueId, workspaceId: task.executionWorkspaceId, workspace: toExecutionWorkspace(workspace) })) return null;
-  const prior = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(
-    eq(environmentLeases.companyId, source.companyId), eq(environmentLeases.executionWorkspaceId, workspace.id),
-  ));
-  for (const { runId } of prior) if (runId && await hasPendingRunCleanup(db, source.companyId, runId)) return null;
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, source.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.status, "running"),
@@ -172,10 +167,14 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     if (intent.strategy !== "fresh_isolated_workspace") {
       const preservationReceiptId = await verifiedWorkspaceRepairReceipt(db, source);
       if (preservationReceiptId) return { mode: "resume_preserved_workspace", preservationReceiptId };
-      const [bound] = await db.select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata }).from(issues)
+      const [bound] = await db.select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd, metadata: executionWorkspaces.metadata }).from(issues)
         .innerJoin(executionWorkspaces, and(eq(executionWorkspaces.companyId, issues.companyId),
           eq(executionWorkspaces.id, issues.executionWorkspaceId)))
         .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+      // Ordinary Retry keeps the explicitly selected shared tree. Input proof
+      // belongs to admission; preparation rechecks tree generation and access.
+      if (bound?.cwd && isMainManagedExecutionWorkspace(bound)) return { mode: "reuse_current_workspace",
+        retryIntentId: wake.id, sourceRunId: source.id, workspaceId: bound.id, cwd: bound.cwd };
       const authority = readRemoteWorkspaceAuthority(bound?.metadata);
       if (bound && authority && !authority.dirty && !authority.writerRunId && authority.snapshotId) {
         const recovered = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,

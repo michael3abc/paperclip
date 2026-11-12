@@ -235,6 +235,14 @@ export interface AgentRuntimeIdentity {
 }
 
 export interface AdapterExecutionContext {
+  /** Awaited server CAS before handing a resident session to this run.
+   * The adapter supplies observed host identity, never company or actor authority.
+   * Persist the returned receipt in the host binding before provider input. */
+  onSessionAuthority?: (input: {
+    hostId: string; provider: string; nativeSessionId: string | null; bridgeSessionId: string;
+    operationId: string; expectedPreviousRunId: string | null; expectedGeneration: number;
+  }) => Promise<{ schema: "paperclip.adapter-session-authority.v1";
+    runId: string; generation: number; operationId: string; bindingKey: string }>;
   /** Company-owned exporter credentials. Transient; never persist or merge into config. */
   observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
   /** Server-owned credentials. Never persist this object or merge it into config. */
@@ -646,6 +654,12 @@ export interface ServerAdapterModule {
    * never stops, sends input or writes anything.
    */
   observeRemoteHostBoot?: (input: { hostId: string }) => Promise<AdapterRemoteHostBootObservation>;
+  /** Server-authorized linked-worktree mechanics on a configured execution host.
+   * No provider input; lifecycle, actor and generation remain server-owned. */
+  managedWorktreeOperation?: (input: {
+    hostId: string;
+    operation: import("./managed-worktree-host.js").ManagedWorktreeHostInput;
+  }) => Promise<import("./managed-worktree-host.js").ManagedWorktreeHostResult>;
 }
 
 export interface AdapterRemoteHostBootObservation {

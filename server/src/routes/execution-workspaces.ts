@@ -67,6 +67,7 @@ import {
   workspaceLoginHandoffFailureStatus,
 } from "../services/workspace-login-handoff-issuer.js";
 import { conflict, unprocessable } from "../errors.js";
+import { mainManagedWorktreeRoutes } from "./main-managed-worktrees.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
@@ -91,6 +92,7 @@ function resolveFallbackSeedSourceConfigPath(baseWorkspaceCwd: string): string |
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
+  router.use(mainManagedWorktreeRoutes(db));
   const environmentRuntime = environmentRuntimeService(db, { pluginWorkerManager: opts.pluginWorkerManager });
   const svc = executionWorkspaceService(db, { pluginWorkerManager: opts.pluginWorkerManager,
     destroyRemoteWorkspaceLease: input => environmentRuntime.destroyRemoteWorkspaceLease(input) });

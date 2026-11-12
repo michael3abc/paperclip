@@ -12,13 +12,10 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
-  defaultExecutionWorkspaceModeForProject,
-} from "../lib/project-workspace-defaults";
-import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
+  isOpenManagedWorktree,
 } from "../lib/issue-workspace-selection";
-import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, FileSearch, FolderOpen, FolderSearch, GitBranch, Pencil, X } from "lucide-react";
@@ -30,9 +27,8 @@ import { Badge } from "@/components/ui/badge";
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Selected source directory" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "reuse_existing", label: "Registered Git worktree" },
+  { value: "session_only", label: "Session only · external resources" },
 ] as const;
 
 /* -------------------------------------------------------------------------- */
@@ -98,6 +94,8 @@ function configuredWorkspaceLabel(
   reusableWorkspace: ExecutionWorkspace | null,
 ) {
   switch (selection) {
+    case "session_only":
+      return "Session only";
     case "isolated_workspace":
       return "New isolated workspace";
     case "reuse_existing":
@@ -173,6 +171,7 @@ interface IssueWorkspaceCardProps {
       enabled?: boolean;
       defaultMode?: string | null;
       defaultProjectWorkspaceId?: string | null;
+      defaultExecutionWorkspaceId?: string | null;
       environmentId?: string | null;
     } | null;
     workspaces?: Array<{ id: string; isPrimary: boolean; name?: string; cwd?: string | null }>;
@@ -208,10 +207,6 @@ export function IssueWorkspaceCard({
   const [uncertain, setUncertain] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const selectionRequest = useRef<{ fingerprint: string; expectedBindingRevision: number; requestKey: string } | null>(null);
-  const [draftSourceId, setDraftSourceId] = useState(issue.projectWorkspaceId
-    ?? project?.executionWorkspacePolicy?.defaultProjectWorkspaceId
-    ?? project?.workspaces?.find(source => source.isPrimary)?.id ?? project?.workspaces?.[0]?.id ?? "");
-
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -241,30 +236,29 @@ export function IssueWorkspaceCard({
   } = useQuery({
     queryKey: queryKeys.executionWorkspaces.list(companyId!, {
       projectId: issue.projectId ?? undefined,
-      projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
       reuseEligible: true,
     }),
     queryFn: () =>
       executionWorkspacesApi.list(companyId!, {
         projectId: issue.projectId ?? undefined,
-        projectWorkspaceId: issue.projectWorkspaceId ?? undefined,
         reuseEligible: true,
       }),
     enabled: Boolean(companyId) && Boolean(issue.projectId) && editing && workspaceIsolationControlsVisible,
   });
 
-  const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
+  const selectableReusableWorkspaces = (reusableExecutionWorkspaces ?? []).filter(isOpenManagedWorktree);
 
   const selectedReusableExecutionWorkspace =
     selectableReusableWorkspaces.find((w) => w.id === issue.executionWorkspaceId)
     ?? workspace
     ?? null;
 
-  const currentSelection = currentWorkspaceSelection(issue, project)
-    ?? defaultExecutionWorkspaceModeForProject(project);
+  const currentSelection = currentWorkspaceSelection(issue, project);
+  const initialSelection = currentSelection === "session_only" ? "session_only" : "reuse_existing";
+  const initialWorkspaceId = issue.executionWorkspaceId ?? project?.executionWorkspacePolicy?.defaultExecutionWorkspaceId ?? "";
 
-  const [draftSelection, setDraftSelection] = useState(currentSelection);
-  const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(issue.executionWorkspaceId ?? "");
+  const [draftSelection, setDraftSelection] = useState<"reuse_existing" | "session_only">(initialSelection);
+  const [draftExecutionWorkspaceId, setDraftExecutionWorkspaceId] = useState(initialWorkspaceId);
   const projectEnvironmentId = environmentsEnabled
     ? project?.executionWorkspacePolicy?.environmentId ?? null
     : null;
@@ -283,13 +277,9 @@ export function IssueWorkspaceCard({
   useEffect(() => {
     if (editing) return;
     const pending = inspection.data?.pendingSelection?.intent.selection;
-    setDraftSelection(pending?.kind === "configured_source" ? pending.mode === "managed_isolated" ? "isolated_workspace" : "shared_workspace"
-      : pending?.kind === "existing" ? "reuse_existing" : currentSelection);
-    setDraftExecutionWorkspaceId(pending?.kind === "existing" ? pending.workspaceId : issue.executionWorkspaceId ?? "");
-    setDraftSourceId(pending?.kind === "configured_source" ? pending.projectWorkspaceId : issue.projectWorkspaceId
-      ?? project?.executionWorkspacePolicy?.defaultProjectWorkspaceId
-      ?? project?.workspaces?.find(source => source.isPrimary)?.id ?? project?.workspaces?.[0]?.id ?? "");
-  }, [currentSelection, editing, inspection.data?.pendingSelection, issue.executionWorkspaceId, issue.projectWorkspaceId, project?.executionWorkspacePolicy?.defaultProjectWorkspaceId, project?.workspaces]);
+    setDraftSelection(pending?.kind === "session_only" ? "session_only" : pending?.kind === "existing" ? "reuse_existing" : initialSelection);
+    setDraftExecutionWorkspaceId(pending?.kind === "existing" ? pending.workspaceId : initialWorkspaceId);
+  }, [initialSelection, initialWorkspaceId, editing, inspection.data?.pendingSelection]);
 
   const activeNonDefaultWorkspace = Boolean(workspace && workspace.mode !== "shared_workspace");
 
@@ -308,13 +298,11 @@ export function IssueWorkspaceCard({
     workspace,
   });
 
-  const canSaveWorkspaceConfig = !uncertain && (draftSelection === "reuse_existing"
-    ? draftExecutionWorkspaceId.length > 0 : !project || draftSourceId.length > 0);
+  const canSaveWorkspaceConfig = !uncertain && (draftSelection === "session_only"
+    || selectableReusableWorkspaces.some(workspace => workspace.id === draftExecutionWorkspaceId));
   const formalSelection = useMemo<TaskWorkspaceSelection>(() => draftSelection === "reuse_existing"
     ? { kind: "existing", workspaceId: draftExecutionWorkspaceId }
-    : draftSourceId ? { kind: "configured_source", projectWorkspaceId: draftSourceId,
-      mode: draftSelection === "isolated_workspace" ? "managed_isolated" : "shared" }
-    : { kind: "task_directory" }, [draftSelection, draftExecutionWorkspaceId, draftSourceId]);
+    : { kind: "session_only" }, [draftSelection, draftExecutionWorkspaceId]);
   const draftWorkspaceBranchName =
     draftSelection === "reuse_existing" && configuredReusableWorkspace?.mode !== "shared_workspace"
       ? configuredReusableWorkspace?.branchName ?? null
@@ -368,10 +356,10 @@ export function IssueWorkspaceCard({
   };
 
   const handleCancel = useCallback(() => {
-    setDraftSelection(currentSelection);
-    setDraftExecutionWorkspaceId(issue.executionWorkspaceId ?? "");
+    setDraftSelection(initialSelection);
+    setDraftExecutionWorkspaceId(initialWorkspaceId);
     setEditing(false);
-  }, [currentSelection, issue.executionWorkspaceId]);
+  }, [initialSelection, initialWorkspaceId]);
 
   if (!project && !issue.id) return null;
 
@@ -474,8 +462,8 @@ export function IssueWorkspaceCard({
           )}
           {!workspace && (
             <div className="text-muted-foreground">
-              {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this task runs."
+              {currentSelection === "session_only"
+                ? "Uses the original session for conversation or external-resource work. Code changes require a registered worktree."
                 : currentSelection === "reuse_existing"
                   ? "This task will reuse an existing workspace when it runs."
                   : "This task will use the project default workspace configuration when it runs."}
@@ -527,19 +515,11 @@ export function IssueWorkspaceCard({
           >
             {EXECUTION_WORKSPACE_OPTIONS.map((option) => (
               <option key={option.value} value={option.value}>
-                {option.value === "reuse_existing" && configuredReusableWorkspace?.mode === "isolated_workspace"
-                  ? "Existing isolated workspace"
-                  : option.label}
+                {option.label}
               </option>
             ))}
           </select>
 
-          {draftSelection !== "reuse_existing" && Boolean(project?.workspaces?.length) && (
-            <select aria-label="Workspace source" className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs"
-              value={draftSourceId} onChange={event => setDraftSourceId(event.target.value)}>
-              {project!.workspaces!.map(source => <option key={source.id} value={source.id}>{source.name ?? (!hideHostPaths ? source.cwd : null) ?? source.id}</option>)}
-            </select>
-          )}
           {draftSelection === "reuse_existing" && (
             <ReusableExecutionWorkspaceSelect
               value={draftExecutionWorkspaceId}

@@ -1,10 +1,10 @@
-import type { ExecutionWorkspaceMode, Issue } from "@paperclipai/shared";
+import { readMainManagedWorktree, type ExecutionWorkspace, type ExecutionWorkspaceMode, type Issue } from "@paperclipai/shared";
 import {
   defaultExecutionWorkspaceModeForProject,
   issueExecutionWorkspaceModeForExistingWorkspace,
 } from "./project-workspace-defaults";
 
-export type IssueWorkspaceSelection = ExecutionWorkspaceMode | "reuse_existing" | null;
+export type IssueWorkspaceSelection = ExecutionWorkspaceMode | "reuse_existing" | "session_only" | null;
 
 type IssueWorkspaceSelectionSource = Pick<
   Issue,
@@ -16,12 +16,19 @@ type IssueWorkspaceSelectionSource = Pick<
 
 type ProjectWorkspaceSelectionSource = Parameters<typeof defaultExecutionWorkspaceModeForProject>[0];
 
+export function isOpenManagedWorktree(workspace: ExecutionWorkspace): boolean {
+  const managed = readMainManagedWorktree(workspace.metadata);
+  return managed?.phase === "open" && !managed.pendingOperationId && !workspace.closedAt
+    && ["active", "idle"].includes(workspace.status);
+}
+
 export interface WorkspaceSelectionUpdate extends Record<string, unknown> {
-  executionWorkspacePreference: IssueWorkspaceSelection;
+  executionWorkspacePreference: Exclude<IssueWorkspaceSelection, "session_only">;
   executionWorkspaceId: string | null;
   executionWorkspaceSettings: {
     mode: ExecutionWorkspaceMode;
     environmentId: null;
+    sessionOnly?: boolean;
   } | null;
 }
 
@@ -34,6 +41,7 @@ export function currentWorkspaceSelection(
   issue: IssueWorkspaceSelectionSource,
   project: ProjectWorkspaceSelectionSource,
 ): IssueWorkspaceSelection {
+  if (issue.executionWorkspaceSettings?.sessionOnly === true) return "session_only";
   const persistedMode =
     issue.currentExecutionWorkspace?.mode
     ?? issue.executionWorkspaceSettings?.mode
@@ -41,7 +49,8 @@ export function currentWorkspaceSelection(
 
   if (
     issue.executionWorkspaceId
-    && (persistedMode === "isolated_workspace" || persistedMode === "operator_branch")
+    && (readMainManagedWorktree(issue.currentExecutionWorkspace?.metadata)
+      || persistedMode === "isolated_workspace" || persistedMode === "operator_branch")
   ) {
     return "reuse_existing";
   }
@@ -60,6 +69,10 @@ export function buildWorkspaceSelectionUpdate(
   reusedWorkspaceMode: string | null | undefined,
 ): WorkspaceSelectionUpdate | null {
   if (selection === "reuse_existing" && !workspaceId) return null;
+  if (selection === "session_only") return {
+    projectWorkspaceId: null, executionWorkspacePreference: null, executionWorkspaceId: null,
+    executionWorkspaceSettings: { mode: "shared_workspace", environmentId: null, sessionOnly: true },
+  };
 
   if (selection === null) {
     return {

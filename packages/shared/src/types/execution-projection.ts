@@ -4,6 +4,9 @@ export interface ExecutionBlocker {
   runId: string | null;
   agentId: string | null;
   cause: string;
+  /** Resource cleanup is not execution admission. These describe the original obligation. */
+  obligationScope?: "cleanup" | "session" | "input" | "operation" | "none";
+  reason?: "session_busy" | "delivery_unknown" | "reconciliation_required";
   nextAction: string;
   runStatus?: string | null;
   runError?: string | null;

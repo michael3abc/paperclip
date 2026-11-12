@@ -19,6 +19,7 @@ import { reconcileWorkspaceHolder } from "../services/recovery/workspace-holder.
 import { unsettledWorkspaceHolders } from "../services/heartbeat/shared-checkout.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any): Promise<any> => ({ exitCode: 0, signal: null, timedOut: false })));
 const steering = vi.hoisted(() => ({ state: vi.fn(), send: vi.fn(), receipt: vi.fn() }));
@@ -126,6 +127,42 @@ describe("workspace creator recovery", () => {
     expect(creatorRecovery((await f.read()).evidence)?.delivery.status).toBe("acknowledged");
     expect(steering.send).toHaveBeenCalledTimes(1); expect(owner.cancelRun).not.toHaveBeenCalled(); expect(owner.wakeup).not.toHaveBeenCalled();
   });
+
+  it.each(["valid", "source_cancelled", "forged_wake", "injected_comment"] as const)(
+    "revalidates protected workspace-creator notice authority at claim: %s", async fault => {
+      const f = await fixture(); await f.route();
+      const wakeup = vi.fn(async (agentId: string, opts: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1]) => {
+        const request = opts!.workspaceRecoveryRequest!;
+        await verifyWorkspaceRecoveryWake(db, { companyId: f.companyId, issueId: f.conversationId, agentId,
+          actorType: opts!.requestedByActorType, actorId: opts!.requestedByActorId, reason: opts!.reason, request });
+        const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, issueId: f.conversationId,
+          status: "queued", contextSnapshot: opts!.contextSnapshot }).returning();
+        await db.insert(agentWakeupRequests).values({ id: request.id, companyId: f.companyId, agentId, source: "automation",
+          reason: opts!.reason, requestedByActorType: "system", requestedByActorId: f.action.id, status: "queued",
+          runId: run.id, payload: opts!.payload });
+        await db.update(heartbeatRuns).set({ wakeupRequestId: request.id }).where(eq(heartbeatRuns.id, run.id));
+        await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, f.conversationId));
+        return run;
+      });
+      await workspaceCreatorDelivery(db, { wakeup, cancelRun: vi.fn(), schedulingSuppressed: async () => false }).check(f.action.id);
+      const state = creatorRecovery((await f.read()).evidence)!;
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, state.delivery.wakeRunId!));
+      expect(run).toBeDefined();
+      if (fault === "source_cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.taskId));
+      if (fault === "forged_wake") await db.update(agentWakeupRequests).set({ requestedByActorId: randomUUID() })
+        .where(eq(agentWakeupRequests.id, state.noticeWakeId));
+      if (fault === "injected_comment") {
+        const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.conversationId,
+          authorType: "system", body: "Not part of the notice" }).returning();
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot,
+          wakeCommentIds: [state.commentId, comment.id] } }).where(eq(heartbeatRuns.id, run.id));
+      }
+      // A protected server notice authorizes only its original comment and
+      // current main/source binding; system namespaces are never a bypass.
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        companyId: f.companyId, runId: run.id, expectedStatus: "queued", now: new Date(),
+      })).toMatchObject({ outcome: fault === "valid" ? "not_stale" : "cancelled" });
+    });
 
   it("a lost idle wake response never starts a second wake", async () => {
     const f = await fixture(); await f.route();

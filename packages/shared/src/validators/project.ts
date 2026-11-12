@@ -28,6 +28,8 @@ const executionWorkspaceStrategySchema = z
 export const projectExecutionWorkspacePolicySchema = z
   .object({
     enabled: z.boolean(),
+    executionMode: z.enum(["worktree", "session_only"]).optional(),
+    defaultExecutionWorkspaceId: z.string().uuid().optional().nullable(),
     sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
     defaultMode: z.enum(["shared_workspace", "isolated_workspace", "operator_branch", "adapter_default"]).optional(),
     allowIssueOverride: z.boolean().optional(),

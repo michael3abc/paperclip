@@ -926,7 +926,7 @@ describe("persistent agent directories", () => {
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
   });
 
-  it("merges independent changes and uses the last synchronization for same-file edits", async () => {
+  it("merges independent changes and preserves rejected same-file exports", async () => {
     const a = await run(), b = await run();
     await fs.writeFile(path.join(a.localRoot, "a.txt"), "A");
     await fs.writeFile(path.join(b.localRoot, "b.txt"), "B");
@@ -938,15 +938,18 @@ describe("persistent agent directories", () => {
     await fs.writeFile(path.join(d.localRoot, "a.txt"), "D");
     await fs.writeFile(path.join(c.localRoot, "b.txt"), "new B");
     expect((await copies.collectStopped({ companyId, runId: c.runId }))?.state).toBe("saved");
-    expect((await copies.collectStopped({ companyId, runId: d.runId }))?.state).toBe("saved");
-    expect(await fs.readFile(path.join(root, "a.txt"), "utf8")).toBe("D");
+    expect(await copies.collectStopped({ companyId, runId: d.runId })).toMatchObject({ state: "unavailable", errorCode: "AGENT_FILES_CONFLICT",
+      receipt: { workspaceRescueId: expect.stringMatching(/^restore-/) } });
+    expect(await fs.readFile(path.join(root, "a.txt"), "utf8")).toBe("C");
     expect(await fs.readFile(path.join(root, "b.txt"), "utf8")).toBe("new B");
-    expect(await copies.list(companyId, agentId, board())).toEqual([]);
+    expect(await copies.list(companyId, agentId, board())).toEqual([expect.objectContaining({
+      runId: d.runId, state: "unavailable", errorCode: "AGENT_FILES_CONFLICT",
+    })]);
     for (const copy of [a, b, c, d]) await expect(fs.stat(path.dirname(copy.localRoot))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await fs.readdir(path.join(path.dirname(root), "file-sync", "runs"))).toEqual([]);
   });
 
-  it("makes concurrent edit/delete races last-sync-wins and preserves unrelated new files", async () => {
+  it("rejects concurrent edit/delete races and preserves unrelated new files", async () => {
     await fs.mkdir(path.join(root, "notes"));
     await fs.writeFile(path.join(root, "notes", "old.txt"), "old");
     const deleting = await run(), editing = await run();
@@ -954,18 +957,18 @@ describe("persistent agent directories", () => {
     await fs.writeFile(path.join(editing.localRoot, "notes", "old.txt"), "edited");
     await fs.writeFile(path.join(editing.localRoot, "notes", "new.txt"), "unrelated");
     await copies.collectStopped({ companyId, runId: editing.runId });
-    expect((await copies.collectStopped({ companyId, runId: deleting.runId }))?.state).toBe("saved");
-    await expect(fs.stat(path.join(root, "notes", "old.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await copies.collectStopped({ companyId, runId: deleting.runId }))?.errorCode).toBe("AGENT_FILES_CONFLICT");
+    expect(await fs.readFile(path.join(root, "notes", "old.txt"), "utf8")).toBe("edited");
     expect(await fs.readFile(path.join(root, "notes", "new.txt"), "utf8")).toBe("unrelated");
     const remove = await run(), change = await run();
     await fs.unlink(path.join(remove.localRoot, "notes", "new.txt"));
     await fs.writeFile(path.join(change.localRoot, "notes", "new.txt"), "restored by later edit");
     await copies.collectStopped({ companyId, runId: remove.runId });
-    await copies.collectStopped({ companyId, runId: change.runId });
-    expect(await fs.readFile(path.join(root, "notes", "new.txt"), "utf8")).toBe("restored by later edit");
+    expect((await copies.collectStopped({ companyId, runId: change.runId }))?.errorCode).toBe("AGENT_FILES_CONFLICT");
+    await expect(fs.stat(path.join(root, "notes", "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("handles a concurrently replaced parent and keeps the later file change", async () => {
+  it("rejects a stale edit under a concurrently replaced parent", async () => {
     await fs.mkdir(path.join(root, "notes"));
     await fs.writeFile(path.join(root, "notes", "fact.txt"), "old");
     const replacing = await run(), editing = await run();
@@ -974,8 +977,8 @@ describe("persistent agent directories", () => {
     await fs.writeFile(path.join(editing.localRoot, "notes", "fact.txt"), "new fact");
     await copies.collectStopped({ companyId, runId: replacing.runId });
     expect(await fs.readFile(path.join(root, "notes"), "utf8")).toBe("now a file");
-    expect((await copies.collectStopped({ companyId, runId: editing.runId }))?.state).toBe("saved");
-    expect(await fs.readFile(path.join(root, "notes", "fact.txt"), "utf8")).toBe("new fact");
+    expect((await copies.collectStopped({ companyId, runId: editing.runId }))?.errorCode).toBe("AGENT_FILES_CONFLICT");
+    expect(await fs.readFile(path.join(root, "notes"), "utf8")).toBe("now a file");
   });
 
   it("cleans stopped copies after a crash during cleanup without touching active copies", async () => {

@@ -38,13 +38,15 @@ export interface WorkspaceRestoreDiagnostic {
   transferStep?: TransferStep;
   transferFailureKind?: TransferFailureKind;
   rpcCode?: number;
+  workspaceRescueId?: string;
 }
 const ERROR_CODES = new Set([
+  "DIRECTORY_MERGE_CONFLICT", "WORKSPACE_EXPORT_ONLY",
   "ENOENT", "EACCES", "EPERM", "ENOSPC", "EIO", "EXDEV", "ENOTDIR", "EISDIR",
   "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN",
   "ABORT_ERR", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
 ]);
-type ErrorDiagnostic = Pick<WorkspaceRestoreDiagnostic, "errorCode" | "httpStatus" | "exitCode" | "transferStep" | "transferFailureKind" | "rpcCode">;
+type ErrorDiagnostic = Pick<WorkspaceRestoreDiagnostic, "errorCode" | "httpStatus" | "exitCode" | "transferStep" | "transferFailureKind" | "rpcCode" | "workspaceRescueId">;
 interface DiagnosticScope {
   active: boolean;
   sequence: number;
@@ -130,6 +132,8 @@ function diagnostic(error: unknown): ErrorDiagnostic {
     result.transferStep ??= saved?.transferStep;
     result.transferFailureKind ??= saved?.transferFailureKind;
     result.rpcCode ??= saved?.rpcCode;
+    const rescue = saved?.workspaceRescueId ?? readField(value, "workspaceRescueId");
+    if (typeof rescue === "string" && /^restore-[a-zA-Z0-9]{6}$/.test(rescue)) result.workspaceRescueId ??= rescue;
     const code = saved?.errorCode !== "unknown" && saved?.errorCode !== undefined
       ? saved.errorCode : readField(value, "code");
     if (result.errorCode === "unknown" && typeof code === "string" && ERROR_CODES.has(code)) {
@@ -183,10 +187,12 @@ export function sanitizeWorkspaceRestoreDiagnostic(value: unknown): WorkspaceRes
   const exitCode = boundedInteger(readField(record, "exitCode"), 1, 255);
   const gitCommand = readField(record, "gitCommand");
   const gitFailureKind = readField(record, "gitFailureKind");
+  const rescue = readField(record, "workspaceRescueId");
   const hasGitCommand = phase === "workspace" && step === "git_integration"
     && typeof gitCommand === "string" && GIT_COMMANDS.has(gitCommand as WorkspaceRestoreGitCommand);
   return {
     phase,
+    ...(typeof rescue === "string" && /^restore-[a-zA-Z0-9]{6}$/.test(rescue) ? { workspaceRescueId: rescue } : {}),
     ...(step === "workspace_transfer" || step === "asset_restore" ? sanitizeTransferEvidence(record) : {}),
     ...(typeof step === "string" && RESTORE_STEPS.has(step as WorkspaceRestoreStep)
       ? { step: step as WorkspaceRestoreStep } : {}),

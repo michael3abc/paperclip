@@ -80,7 +80,9 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
       workspaceRuntime: null,
       desiredState: null,
     },
-    metadata: null,
+    metadata: { mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open",
+      sourceCwd: "/tmp/source", parentDir: "/tmp", branch: "paperclip/papa-81", targetBranch: "main",
+      hostId: null, pendingOperationId: null, participants: {} } },
     runtimeServices: [],
     createdAt: new Date("2026-04-16T04:59:00.000Z"),
     updatedAt: new Date("2026-04-16T05:00:00.000Z"),
@@ -320,5 +322,29 @@ describe("IssueWorkspaceCard", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("rejects legacy or converging trees and saves an explicit session-only selection", async () => {
+    const select = vi.spyOn(issuesApi, "selectWorkspace").mockResolvedValue({ kind: "scheduled", bindingRevision: 4 });
+    select.mockClear();
+    const closed = createExecutionWorkspace();
+    (closed.metadata!.mainManagedWorktree as Record<string, unknown>).phase = "converging";
+    useQueryMock.mockImplementation((options: { queryKey: unknown[] }) => ({
+      data: options.queryKey[0] === "instance" ? { enableIsolatedWorkspaces: true }
+        : [createExecutionWorkspace({ metadata: null }), closed],
+    }));
+    const root = createRoot(container);
+    await reactAct(() => root.render(<IssueWorkspaceCard issue={createIssue()} project={{ id: "project-1" }}
+      initialEditing onUpdate={vi.fn()} />));
+    const save = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Save")!;
+    expect(save.disabled).toBe(true);
+    const choice = container.querySelector("select")!;
+    expect(Array.from(choice.options).map(option => option.value)).toEqual(["reuse_existing", "session_only"]);
+    await reactAct(() => { choice.value = "session_only"; choice.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(save.disabled).toBe(false);
+    await reactAct(async () => { save.click(); await Promise.resolve(); });
+    expect(select).toHaveBeenCalledWith("issue-1", { selection: { kind: "session_only" },
+      expectedBindingRevision: 3, requestKey: expect.any(String) });
+    await reactAct(() => root.unmount());
   });
 });

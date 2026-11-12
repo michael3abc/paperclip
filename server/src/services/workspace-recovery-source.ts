@@ -32,7 +32,7 @@ export function workspaceRecoverySourceEligible(includeCompleted = false) {
       and ${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}' <> '[]'::jsonb) or
     (${issueRecoveryActions.status} = 'resolved' and (
       (${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
-        and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+        and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' in ('blocked', 'explicit_user_continuation')
         and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${heartbeatRuns.id}::text) or
       (${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,schema}' = 'paperclip.historical-workspace-source.v1'
         and ${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,runId}' = ${heartbeatRuns.id}::text))))`;
@@ -195,9 +195,9 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
           priorDescriptor.workspaceId !== descriptor!.workspaceId || priorDescriptor.remoteCwd !== remoteCwd)
         throw new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required");
     }
-    // Snapshot export writes only a new staging directory. A native baseline
-    // merge additionally needs exclusive ownership of its host destination.
-    if (descriptor) {
+    // A cancelled run is export-only: it cannot write the host, so a successor
+    // must not prevent rescue. Source allocation/stop checks still apply above.
+    if (descriptor && run.status !== "cancelled") {
       const [writer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.status, ["queued", "running"]),
         sql`not exists (select 1 from ${issueRecoveryActions} a

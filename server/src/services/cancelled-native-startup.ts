@@ -19,7 +19,8 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "controllerBootId" | "controllerLeaseExpiresAt">;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 
-export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
+export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined,
+  purpose: "settlement" | "admission" = "settlement") {
   if (run.status === "interrupted") return !coordinator && isInterruptedNativePreparation(db, run);
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
@@ -37,8 +38,18 @@ export async function isFailedNativePreparation(db: Db, run: Run, coordinator: C
     eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
   )).limit(1);
   if (result || await nativeStartupHasExecutionEvidence(db, run)) return false;
-  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return true;
+  // An empty allocation list is not a non-delivery receipt. Explicit Retry
+  // still needs the recorded preparation error/accounting settlement.
+  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null)
+    return purpose !== "admission" || await hasSettledFailedPreparationEvidence(db, run);
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  // Shared-worktree admission needs independent non-delivery evidence, not
+  // completed resource cleanup. Preserve allocation scope and immutable saved
+  // snapshot integrity; a local/foreign lease is contradictory source evidence.
+  if (purpose === "admission") return typeof issueId === "string" && leases.length > 0
+    && leases.every(lease => lease.issueId === issueId && lease.provider !== "local" && Boolean(lease.providerLeaseId))
+    && await hasSettledFailedPreparationEvidence(db, run)
+    && await hasVerifiedWorkspaceRepair(db, run, { allowActiveWriter: true });
   return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
     && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
     && await hasSettledFailedPreparationEvidence(db, run)

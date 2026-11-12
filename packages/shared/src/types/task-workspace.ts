@@ -1,4 +1,5 @@
 export type TaskWorkspaceSelection =
+  | { kind: "session_only" }
   | { kind: "task_directory" }
   | { kind: "existing"; workspaceId: string }
   | { kind: "configured_source"; projectWorkspaceId: string; mode: "shared" | "managed_isolated" };

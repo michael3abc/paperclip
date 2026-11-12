@@ -10749,6 +10749,7 @@ async function executePaperclipNativeSessionWithinScope(
             recoveryMode: recoveryEvidence.recoveryMode,
             providerSessionEstablished:
               recoveryEvidence.providerSessionEstablished,
+            providerEventsExist: recoveryEvidence.providerEventsExist,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
           },
           nextAction:

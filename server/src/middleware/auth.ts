@@ -23,6 +23,7 @@ import {
 } from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
+import { adapterSessionWriteAllowed } from "../services/adapter-session-authority.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -406,6 +407,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         const conversation = identityRun?.contextSnapshot?.conversationMode === true;
         _res.status(403).json({ error: conversation ? "This conversation turn was cancelled" : "This run was cancelled",
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
+        return;
+      }
+      if (!["GET", "HEAD", "OPTIONS"].includes(req.method) && !await adapterSessionWriteAllowed(db, {
+        companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
+      })) {
+        next(forbidden("This run no longer owns the native session", { code: "agent_run_superseded" }));
         return;
       }
       if (identityRun?.activeIdentityContextId && identityRun.status === "running") {

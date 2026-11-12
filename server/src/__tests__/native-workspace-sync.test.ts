@@ -273,7 +273,7 @@ describe("native workspace sync durable metadata", () => {
     ).resolves.toMatchObject({ descriptor });
   });
 
-  it("repairs finalized remote and lease stamps after an interrupted commit", async () => {
+  it.each(["missing", "matching", "different"] as const)("repairs finalized stamps without inventing remote equality: %s", async proof => {
     const paperclipHome = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-native-workspace-sync-repair-"),
     );
@@ -309,6 +309,7 @@ describe("native workspace sync durable metadata", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       finalizedAt: "2026-01-01T00:01:00.000Z",
       finalHostSha256,
+      ...(proof !== "missing" ? { finalSourceSha256: proof === "matching" ? finalHostSha256 : digest } : {}),
       resourceDisposition: "keep_running" as const,
     };
     const reference =
@@ -369,11 +370,12 @@ describe("native workspace sync durable metadata", () => {
     expect(persistedLeaseMetadata).toMatchObject({
       retained: true,
       nativeWorkspaceSync: {
-        schema: "paperclip.native-workspace-stamp/v1",
+        schema: "paperclip.native-workspace-stamp/v2",
         workspaceId: descriptor.binding.workspaceId,
         providerLeaseId: descriptor.binding.providerLeaseId,
         remoteCwd: descriptor.binding.remoteCwd,
         hostSha256: finalHostSha256,
+        sourceSha256: proof === "missing" ? null : proof === "matching" ? finalHostSha256 : digest,
         finalizedRunId: descriptor.binding.runId,
       },
     });

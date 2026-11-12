@@ -397,7 +397,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .toMatchObject({ phase: "terminal_failure", failureCode });
     });
 
-    it.each(["running native owner", "coordinator owner", "applied result", "pending cleanup", "failed cleanup", "export marker", "active lease", "failed output", "accepted output"] as const)("keeps %s fenced until its durable obligation settles", async (obligation) => {
+    it.each(["running native owner", "coordinator owner", "applied result", "pending cleanup", "failed cleanup", "export marker", "active lease", "failed output", "accepted output"] as const)("keeps active execution authority but separates historical %s from selection", async (obligation) => {
       const f = await settledNativeTask("native_retry_cancelled", obligation === "accepted output");
       if (obligation === "running native owner") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.run.id));
       if (obligation === "coordinator owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "controller" }).where(eq(nativeRunFinalizations.runId, f.run.id));
@@ -408,8 +408,12 @@ const support = await getEmbeddedPostgresTestSupport();
       if (obligation === "active lease") await db.update(environmentLeases).set({ status: "active", releasedAt: null }).where(eq(environmentLeases.id, f.lease.id));
       if (obligation === "failed output") await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
         heartbeatRunId: f.run.id, executionWorkspaceId: f.workspaceId, phase: "workspace_finalize", status: "failed" });
-      await expect(f.change()).rejects.toThrow(/workspace|Previous task run/);
-      expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: { id: f.workspaceId }, bindingRevision: entryPoint === "pending selection" ? 2 : 1 });
+      if (obligation === "running native owner") {
+        await expect(f.change()).rejects.toThrow(/workspace|Previous task run/);
+        await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.run.id));
+      }
+      await f.change();
+      expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: null, bindingRevision: entryPoint === "pending selection" ? 3 : 2 });
       if (obligation === "failed output" || obligation === "accepted output") {
         await db.update(workspaceOperations).set({ createdAt: new Date(0) }).where(eq(workspaceOperations.heartbeatRunId, f.run.id));
         await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
@@ -438,7 +442,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
     it.each(["unknown startup", "provider started", "provider event", "process identity", "sync descriptor",
       "copyback owner", "restore failure", "pending cleanup", "accepted result", "unfinished operation"] as const)(
-      "keeps a bootstrap failure with %s fenced", async (obligation) => {
+      "retains bootstrap %s evidence independently of workspace selection", async (obligation) => {
         const f = await settledNativeTask("native_continuation_requires_reconciliation", obligation === "accepted result");
         const recovery = { kind: "bootstrap", ...(obligation === "unknown startup" ? {} : { providerWorkStarted: obligation === "provider started" }) };
         await db.update(heartbeatRuns).set({ status: "failed", resultJson: { executionRecovery: recovery,
@@ -454,7 +458,10 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
           heartbeatRunId: f.run.id, executionWorkspaceId: f.workspaceId, phase: "workspace_finalize",
           status: obligation === "unfinished operation" ? "running" : "failed" });
-        await expect(f.change()).rejects.toThrow(/workspace|Previous task run/);
+        await f.change();
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toMatchObject({
+          status: "failed", resultJson: { executionRecovery: recovery },
+        });
       });
 
     it.each(["warm release", "unsafe export omission"] as const)("accepts a settled %s receipt", async (receipt) => {

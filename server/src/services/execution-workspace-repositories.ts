@@ -216,6 +216,20 @@ export function executionWorkspaceRepositoryService(db: Db) {
   async function assertPublicationAllowed(input: PublicationInput) {
     await publicationBinding(db, input);
   }
+  async function assertRegisteredRepositoryAccess(input: PublicationInput) {
+    const { acquisitionRestricted } = await publicationBinding(db, input, false);
+    const rows = await list(input.companyId, input.workspaceId);
+    if (!rows.length) return;
+    const available = acquisitionRestricted ? [] : await catalog(input.companyId, input.responsibleUserId ?? null, input.responsibleUserId === "local-board");
+    for (const row of rows) {
+      assertAcquisitionReceipt(row, acquisitionRestricted);
+      const source = resolveAcquisitionSource(row.catalogRepositoryId ? { kind: "catalog", id: row.catalogRepositoryId }
+        : { kind: "url", url: row.repoUrl }, available, acquisitionRestricted);
+      if (source.repositoryIdentity !== row.repositoryIdentity || row.relativePath !== taskRepositoryRelativePath(row.repositoryIdentity))
+        throw conflict("Repository preparation receipt does not match its source");
+      if (row.state !== "ready" || !row.pinnedCommit) throw conflict("Registered worktree repository requires main-agent repair");
+    }
+  }
   async function prepareConfiguredRepositoryCopy(input: PublicationInput & { sourceCwd: string; projectWorkspaceId?: string | null }): Promise<() => Promise<void>> {
     const sourceRoot = await fs.realpath(input.sourceCwd);
     const destinationRoot = await canonicalRepositoryRoot(input.cwd);
@@ -528,5 +542,5 @@ export function executionWorkspaceRepositoryService(db: Db) {
     }
     return prepared;
   }
-  return { request, list, prepareForAdmission, assertRecoveryBinding, assertPublicationAllowed, prepareConfiguredRepositoryCopy };
+  return { request, list, prepareForAdmission, assertRecoveryBinding, assertPublicationAllowed, assertRegisteredRepositoryAccess, prepareConfiguredRepositoryCopy };
 }

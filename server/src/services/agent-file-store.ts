@@ -282,11 +282,8 @@ export function agentFileStore(db: Db) {
         // over quota. Enforce limits on the incoming and resulting tree so a
         // run can delete files to recover instead of being locked out forever.
         const current = input.checkpoint ? checkpointSnapshot(await cachedAgentFileManifest(root)) : await snapshotAgentFiles(root, false);
-        // Rebase only the run's changed paths onto the current tree. This makes
-        // same-file edits/deletions last-sync-wins while untouched files retain
-        // changes from other runs. Ancestors may need recreating after a writer
-        // replaced a directory with a file.
-        const entries = new Map(input.baseline.entries);
+        // Apply the original baseline delta. A later writer's edit is a
+        // conflict, never a new baseline that authorizes overwriting it.
         const changed = [...new Set([...input.baseline.entries, ...incoming.entries].map(([name]) => name))]
           .filter(name => JSON.stringify(input.baseline.entries.get(name)) !== JSON.stringify(incoming.entries.get(name)));
         // PM persistence is API-owned. A crash between projection and baseline
@@ -295,18 +292,6 @@ export function agentFileStore(db: Db) {
           JSON.stringify(incoming.entries.get(name)) !== JSON.stringify(current.entries.get(name)))) {
           throw conflict("PM bundle changes must be saved through the controlled bundle tools", { code: "PM_UNSAVED_FILE_CHANGE" });
         }
-        for (const name of changed) {
-          const present = current.entries.get(name);
-          if (present) entries.set(name, present); else entries.delete(name);
-          if (incoming.entries.has(name)) {
-            for (let parent = path.posix.dirname(name); parent !== "."; parent = path.posix.dirname(parent)) {
-              if (current.entries.get(parent)?.kind === "dir") continue;
-              const before = current.entries.get(parent);
-              if (before) entries.set(parent, before); else entries.delete(parent);
-            }
-          }
-        }
-        const applyBaseline = { ...input.baseline, entries };
         const finalEntries = new Map([...current.entries].map(([name, value]) => [name, { value, root }]));
         for (const name of changed) if (!incoming.entries.has(name)) finalEntries.delete(name);
         for (const [name, value] of incoming.entries) {
@@ -333,8 +318,8 @@ export function agentFileStore(db: Db) {
           total += size;
         }
         assertDirectorySize(total, finalEntries.size);
-        await mergeDirectoryWithBaseline({ ...input, baseline: applyBaseline, targetDir: root,
-          ...(input.checkpoint ? { snapshots: { source: incoming, current } } : {}) });
+        await mergeDirectoryWithBaseline({ ...input, targetDir: root, conflictPolicy: "reject", rescueOnFailure: true,
+          snapshots: { source: incoming, current } });
         await audit(tx, agent, bound, { sourceRunId: actor.runId, contract: AGENT_FILES_CONTRACT });
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
       }),

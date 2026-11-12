@@ -21,8 +21,8 @@ export function noRetainedExecutionPredicate() {
 
 /** Preparation can claim a controller before workspace admission, but cannot
  * acquire provider identity, resources or execution events. */
-export function noRetainedProviderExecutionPredicate() {
-  return and(noRetainedProviderIdentityPredicate(),
+export function noRetainedProviderExecutionPredicate(options: { allowExpiredControllerLease?: boolean } = {}) {
+  return and(noRetainedProviderIdentityPredicate(options),
     sql`not exists (select 1 from ${environmentLeases}
       where ${environmentLeases.companyId} = ${heartbeatRuns.companyId} and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`,
   );
@@ -30,11 +30,15 @@ export function noRetainedProviderExecutionPredicate() {
 
 /** Preparation can materialize files and a local lease before dispatch. Callers
  * allowing those resources must prove their own admission trace and cleanup. */
-export function noRetainedProviderIdentityPredicate() {
+export function noRetainedProviderIdentityPredicate(options: { allowExpiredControllerLease?: boolean } = {}) {
   return and(
     isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
     isNull(heartbeatRuns.nativeIssueId), isNull(heartbeatRuns.nativeSessionId), isNull(heartbeatRuns.sessionIdAfter),
-    isNull(heartbeatRuns.controllerLeaseExpiresAt),
+    // Historical workspace-wait migration may observe its expired preparation
+    // owner. This is not a waiver of provider identity, events or delivery proof.
+    options.allowExpiredControllerLease
+      ? or(isNull(heartbeatRuns.controllerLeaseExpiresAt), sql`${heartbeatRuns.controllerLeaseExpiresAt} <= now()`)
+      : isNull(heartbeatRuns.controllerLeaseExpiresAt),
     sql`coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
     sql`coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
     sql`not (coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) ?| array[

@@ -37,6 +37,7 @@ import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, hum
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
+import { resolveCooperativeTaskWorkspace } from "./cooperative-task-workspace.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
@@ -10524,6 +10525,15 @@ export function issueService(db: Db) {
           executionWorkspaceSettings = projection.executionWorkspaceSettings;
           workspaceIntent = { version: 1, selection: workspaceSelection, source: workspaceSelectionSource };
         }
+        const cooperativeWorkspace = await resolveCooperativeTaskWorkspace(tx as unknown as Db, {
+          companyId, projectId: issueData.projectId, conversationAgentId: issueData.conversationAgentId,
+          executionWorkspaceId, executionWorkspaceSettings,
+        });
+        executionWorkspaceId = cooperativeWorkspace.executionWorkspaceId;
+        projectWorkspaceId = cooperativeWorkspace.projectWorkspaceId;
+        executionWorkspacePreference = cooperativeWorkspace.executionWorkspacePreference;
+        executionWorkspaceSettings = cooperativeWorkspace.executionWorkspaceSettings;
+        workspaceIntent ??= cooperativeWorkspace.workspaceSelection;
         if (executionWorkspaceId) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
           projectWorkspaceId = workspace.projectWorkspaceId;
@@ -10574,7 +10584,7 @@ export function issueService(db: Db) {
               ),
             ) as Record<string, unknown> | null;
         }
-        if (!executionWorkspaceId && !projectWorkspaceId && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
+        if (!executionWorkspaceId && !projectWorkspaceId && executionWorkspaceSettings?.sessionOnly !== true && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
           const project = await tx
             .select({
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
@@ -11587,7 +11597,16 @@ export function issueService(db: Db) {
           }
           Object.assign(patch, transition.patch);
         }
-        if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
+        if ((issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== null) || issueData.projectId !== undefined ||
+          issueData.executionWorkspaceSettings?.sessionOnly !== undefined) {
+          Object.assign(patch, await resolveCooperativeTaskWorkspace(tx as unknown as Db, {
+            companyId: receiptExisting.companyId, projectId: patch.projectId ?? receiptExisting.projectId,
+            conversationAgentId: receiptExisting.conversationAgentId,
+            executionWorkspaceId: patch.executionWorkspaceId !== undefined ? patch.executionWorkspaceId : receiptExisting.executionWorkspaceId,
+            executionWorkspaceSettings: patch.executionWorkspaceSettings !== undefined ? patch.executionWorkspaceSettings : receiptExisting.executionWorkspaceSettings,
+          }));
+        }
+        if (patch.executionWorkspaceId !== undefined || patch.projectWorkspaceId !== undefined ||
             issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
           Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
             companyId: receiptExisting.companyId, issueId: receiptExisting.id, patch,

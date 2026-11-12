@@ -1,3 +1,4 @@
+import { hasQueuedRunInputAuthority, readQueuedCommentRunAuthority } from "../../../services/issue-queued-comment-authority.js";
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
@@ -960,54 +961,9 @@ export function createPostgresRunDispatchAdapter(
     const baseline = readNativeWorkspaceSyncReference(source?.runnerProfileJson?.nativeWorkspaceSync);
     if (!preservation || !source || !hasRequiredWorkspaceRecovery(source.resultJson) || !baseline || baseline.state === "finalized" ||
         preservation.fingerprint !== `native-workspace:${source.id}`) return null;
-    const context = parseObject(run.contextSnapshot), commentId = deriveCommentId(context);
-    const commentIds = queuedCommentIdsFromRunContext(context);
-    if (!commentId || !commentIds.includes(commentId) || !isUserCommentContinuationReason(readNonEmptyString(context.wakeReason))) return null;
-    const [wake] = await tx.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-      eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.runId, run.id),
-      inArray(agentWakeupRequests.status, ["queued", "claimed"]),
-      eq(agentWakeupRequests.requestedByActorType, "user"),
-    )).for("update");
-    const payload = parseObject(wake?.payload);
-    const originalCommentId = readNonEmptyString(payload.commentId);
-    if (!wake?.requestedByActorId || payload.issueId !== issueId ||
-        !originalCommentId || !commentIds.includes(originalCommentId)) return null;
-    const comments = await tx.select().from(issueComments).where(and(
-      eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
-      inArray(issueComments.id, commentIds), eq(issueComments.authorType, "user"),
-      sql`${issueComments.deletedAt} is null`, sql`${issueComments.createdByRunId} is null`,
-    ));
-    if (comments.length !== commentIds.length || comments.some(comment =>
-      !comment.body.trim() || !comment.authorUserId) ||
-      comments.find(comment => comment.id === originalCommentId)?.authorUserId !== wake.requestedByActorId) return null;
-    const sourceIds = context.queuedCommentSourceWakeIds;
-    if (sourceIds !== undefined && (!Array.isArray(sourceIds) || sourceIds.some(id => typeof id !== "string" || !isUuidLike(id)))) return null;
-    const sourceWakeIds = Array.isArray(sourceIds) ? [...new Set(sourceIds as string[])] : [];
-    const adopted = sourceWakeIds.length ? await tx.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-      eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.status, "coalesced"),
-      inArray(agentWakeupRequests.id, sourceWakeIds),
-      sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-    )).for("update") : [];
-    if (adopted.length !== sourceWakeIds.length) return null;
-    const mergeTargets = [wake.id, ...adopted.map(receipt => receipt.id)];
-    const coalesced = await tx.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-      eq(agentWakeupRequests.status, "coalesced"), eq(agentWakeupRequests.requestedByActorType, "user"),
-      sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-      or(and(eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.reason, "issue_execution_same_name")),
-        and(or(isNull(agentWakeupRequests.runId), eq(agentWakeupRequests.runId, run.id)),
-          inArray(sql<string>`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId'`, mergeTargets))),
-    )).for("update");
-    const authors = new Map(comments.map(comment => [comment.id, comment.authorUserId]));
-    const recordedCommentIds = new Set([wake, ...adopted, ...coalesced].flatMap(receipt => {
-      const recordedPayload = parseObject(receipt.payload), actorId = readNonEmptyString(receipt.requestedByActorId);
-      const recordedCommentId = readNonEmptyString(recordedPayload.commentId);
-      return receipt.requestedByActorType === "user" && recordedPayload.issueId === issueId && actorId &&
-        recordedCommentId && authors.get(recordedCommentId) === actorId ? [recordedCommentId] : [];
-    }));
-    if (commentIds.some(id => !recordedCommentIds.has(id))) return null;
+    const authority = await readQueuedCommentRunAuthority(tx, run, issueId);
+    if (!authority || !isUserCommentContinuationReason(readNonEmptyString(authority.context.wakeReason))) return null;
+    const { wake, payload, context, commentIds } = authority;
     await notifyDeferredExecutionWork(tx, { companyId: run.companyId, requestId: wake.id });
     const [deferred] = await tx.update(agentWakeupRequests).set({
       status: "deferred_issue_execution", runId: null, claimedAt: null, finishedAt: null, error: null,
@@ -1142,6 +1098,16 @@ export function createPostgresRunDispatchAdapter(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
+    // Input authority survives removal of cleanup admission. Empty adoption
+    // lists (including adopted Retry receipts) are not comment input; single comments still need
+    // their own receipt and proof this queued turn has never been delivered.
+    if (!await hasQueuedRunInputAuthority(tx, run, issueId)) {
+      return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
+        errorCode: "execution_reconciliation_required" as const,
+        reason: "Saved input authority could not be verified. Reconcile the original delivery receipts before sending.",
+        details: { issueId, reason: "delivery_unknown" },
+      } };
+    }
     if (typeof contextSnapshot.workspaceReconstructionActionId === "string") {
       try {
         await validateReconstructedWorkspaceDispatch(tx, run);

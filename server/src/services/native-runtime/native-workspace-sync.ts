@@ -42,7 +42,9 @@ const LEGACY_DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v1";
 const PREVIOUS_DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v2";
 const DESCRIPTOR_SCHEMA = "paperclip.native-workspace-sync/v3";
 type DescriptorSchema = typeof DESCRIPTOR_SCHEMA | typeof PREVIOUS_DESCRIPTOR_SCHEMA | typeof LEGACY_DESCRIPTOR_SCHEMA;
-const STAMP_SCHEMA = "paperclip.native-workspace-stamp/v1";
+// A v1 reader trusts hostSha256 alone. Give the stronger export-equality
+// receipt a distinct version so rollback cannot admit an unsafe warm baseline.
+const STAMP_SCHEMA = "paperclip.native-workspace-stamp/v2";
 const STATE_ROOT_NAME = "native-workspace-sync";
 const DESCRIPTOR_NAME = "descriptor";
 const WORKSPACE_SEED_NAME = "workspace-seed.tar";
@@ -78,6 +80,8 @@ interface NativeWorkspaceSyncDescriptor {
   createdAt: string;
   finalizedAt: string | null;
   finalHostSha256: string | null;
+  /** Independently observed export digest; old descriptors have no warm proof. */
+  finalSourceSha256?: string | null;
   resourceDisposition: NativeWorkspaceResourceDisposition | null;
 }
 
@@ -567,6 +571,8 @@ async function readDescriptor(input: {
     candidate.schema !== input.reference.schema ||
     candidate.state !== input.reference.state ||
     finalHostSha256 === undefined ||
+    (candidate.finalSourceSha256 != null &&
+      (typeof candidate.finalSourceSha256 !== "string" || !/^[0-9a-f]{64}$/.test(candidate.finalSourceSha256))) ||
     finalHostSha256 !== input.reference.finalHostSha256 ||
     resourceDisposition === undefined ||
     resourceDisposition !== input.reference.resourceDisposition ||
@@ -603,6 +609,7 @@ async function readDescriptor(input: {
           ? candidate.finalizedAt
           : null,
       finalHostSha256,
+      ...(candidate.finalSourceSha256 !== undefined ? { finalSourceSha256: candidate.finalSourceSha256 as string | null } : {}),
       resourceDisposition,
     },
     baseline,
@@ -782,7 +789,8 @@ function leaseStamp(input: {
     stamp.providerLeaseId !== input.providerLeaseId ||
     stamp.remoteCwd !== input.remoteCwd ||
     typeof stamp.hostSha256 !== "string" ||
-    !/^[0-9a-f]{64}$/.test(stamp.hostSha256)
+    !/^[0-9a-f]{64}$/.test(stamp.hostSha256) ||
+    stamp.sourceSha256 !== stamp.hostSha256
   ) {
     return null;
   }
@@ -799,6 +807,7 @@ function finalizedWorkspaceStamp(input: {
     providerLeaseId: input.descriptor.binding.providerLeaseId,
     remoteCwd: input.descriptor.binding.remoteCwd,
     hostSha256: input.hostSha256,
+    sourceSha256: input.descriptor.finalSourceSha256 ?? null,
     finalizedRunId: input.descriptor.binding.runId,
   };
 }
@@ -855,8 +864,18 @@ async function finalizePreparedRuntime(input: {
   onPhase?: RuntimeSpanRunner;
   onCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
 }): Promise<NativeWorkspaceSyncReference> {
-  if (input.onPhase) await input.onPhase("workspace.restore", () => input.runtime.restoreWorkspace());
-  else await input.runtime.restoreWorkspace();
+  const assertWriteAuthority = async () => {
+    await input.assertOwnership?.();
+    const [run] = await input.db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, input.runId));
+    if (!run || run.status === "cancelled") {
+      // The runtime has already exported into private rescue staging. Refusing
+      // this callback preserves that export without touching the shared tree.
+      throw Object.assign(new Error("Cancelled workspace export retained for reconciliation"), { code: "WORKSPACE_EXPORT_ONLY" });
+    }
+  };
+  if (input.onPhase) await input.onPhase("workspace.restore", () => input.runtime.restoreWorkspace(undefined, assertWriteAuthority));
+  else await input.runtime.restoreWorkspace(undefined, assertWriteAuthority);
   return measureRunPhase("execution.workspace_commit", async () => {
     await input.assertOwnership?.();
     const finalSnapshot =
@@ -870,17 +889,15 @@ async function finalizePreparedRuntime(input: {
       );
     const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
     await disposeDirectorySnapshot(finalSnapshot);
-    const stamp = finalizedWorkspaceStamp({
-      descriptor: input.descriptor,
-      hostSha256: finalHostSha256,
-    });
-    await writeRemoteStamp({ target: input.target, stamp });
     const finalizedDescriptor: NativeWorkspaceSyncDescriptor = {
       ...input.descriptor,
       state: "finalized",
       finalizedAt: new Date().toISOString(),
       finalHostSha256,
+      finalSourceSha256: input.runtime.workspaceSyncSnapshot?.restoredSourceSha256 ?? null,
     };
+    const stamp = finalizedWorkspaceStamp({ descriptor: finalizedDescriptor, hostSha256: finalHostSha256 });
+    await writeRemoteStamp({ target: input.target, stamp });
     await input.assertOwnership?.();
     const reference = await writeDescriptor(finalizedDescriptor);
     await persistRunReference(input.db, input.runId, reference);

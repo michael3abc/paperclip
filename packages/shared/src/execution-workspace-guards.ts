@@ -4,6 +4,32 @@ import type { ExecutionWorkspace } from "./types/workspace-runtime.js";
 export const MAIN_MANAGED_WORKTREE_KEY = "mainManagedWorktree";
 export const MAIN_MANAGED_WORKTREE_SCHEMA = "paperclip.main-managed-worktree.v1";
 
+export interface MainManagedWorktree {
+  schema: typeof MAIN_MANAGED_WORKTREE_SCHEMA;
+  phase: "open" | "converging" | "merged" | "retired";
+  sourceCwd: string;
+  parentDir: string;
+  branch: string;
+  targetBranch: string;
+  hostId: string | null;
+  pendingOperationId: string | null;
+  participants: Record<string, { issueId: string; agentId: string; runId: string | null; joinedAt: string }>;
+  lastReceipt?: { operationId: string; head: string; targetHead: string };
+}
+
+/** Unknown markers remain protected but cannot be admitted or mutated. */
+export function readMainManagedWorktree(metadata: Record<string, unknown> | null | undefined): MainManagedWorktree | null {
+  const raw = metadata?.[MAIN_MANAGED_WORKTREE_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as MainManagedWorktree;
+  if (value.schema !== MAIN_MANAGED_WORKTREE_SCHEMA || !["open", "converging", "merged", "retired"].includes(value.phase)
+    || ![value.sourceCwd, value.parentDir, value.branch, value.targetBranch].every(item => typeof item === "string" && item.length > 0)
+    || !(value.hostId === null || typeof value.hostId === "string")
+    || !(value.pendingOperationId === null || typeof value.pendingOperationId === "string")
+    || !value.participants || typeof value.participants !== "object" || Array.isArray(value.participants)) return null;
+  return value;
+}
+
 export function isMainManagedExecutionWorkspace(
   workspace: { metadata?: Record<string, unknown> | null } | null | undefined,
 ): boolean {

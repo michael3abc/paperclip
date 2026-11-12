@@ -171,6 +171,8 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
+  executionMode?: "worktree" | "session_only";
+  defaultExecutionWorkspaceId?: string | null;
   storageProviderPluginId?: string | null;
   sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
@@ -188,6 +190,7 @@ export interface ProjectExecutionWorkspacePolicy {
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
+  sessionOnly?: boolean;
   sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;

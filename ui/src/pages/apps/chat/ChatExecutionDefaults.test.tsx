@@ -7,7 +7,7 @@ import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 import type { ChatExecutionDefaults as Defaults } from "@paperclipai/shared";
 const mocks = vi.hoisted(() => ({ projects: vi.fn(), workspaces: vi.fn(), save: vi.fn() }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: mocks.projects } }));
-vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { listSummaries: mocks.workspaces } }));
+vi.mock("@/api/execution-workspaces", () => ({ executionWorkspacesApi: { list: mocks.workspaces } }));
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.projects.mockResolvedValue([]); mocks.workspaces.mockResolvedValue([]); mocks.save.mockResolvedValue(undefined);
@@ -32,22 +32,22 @@ it("lets a destination clear inherited workspace independently of project", asyn
 });
 it("keeps edits visible after a save failure and permits retry", async () => {
   mocks.save.mockRejectedValueOnce(new Error("Workspace access was revoked"));
-  await render(); await choose("task"); await save();
+  await render(); await choose("session"); await save();
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("Workspace access was revoked");
-  expect(container.querySelectorAll("select")[1].value).toBe("task");
+  expect(container.querySelectorAll("select")[1].value).toBe("session");
   await save();
-  expect(mocks.save).toHaveBeenLastCalledWith({ projectId: null, workspace: { kind: "task_directory" } });
+  expect(mocks.save).toHaveBeenLastCalledWith({ projectId: null, workspace: { kind: "session_only" } });
   expect(container.textContent).toContain("Saved for new tasks.");
 });
 
 it("retains accepted selections until the parent refreshes and then follows later defaults", async () => {
   await render();
-  await choose("task");
+  await choose("session");
   await save();
-  expect(container.querySelectorAll("select")[1].value).toBe("task");
+  expect(container.querySelectorAll("select")[1].value).toBe("session");
   expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
   expect(container.textContent).toContain("Saved for new tasks.");
-  await render({ projectId: null, workspace: { kind: "task_directory" } });
+  await render({ projectId: null, workspace: { kind: "session_only" } });
   await render({ projectId: null, workspace: null });
   expect(container.querySelectorAll("select")[1].value).toBe("clear");
   expect(mocks.save).toHaveBeenCalledTimes(1);
@@ -55,8 +55,12 @@ it("retains accepted selections until the parent refreshes and then follows late
 
 it("offers and saves an idle workspace from the shared task selection filter", async () => {
   mocks.workspaces.mockResolvedValue([
-    { id: "active-workspace", name: "Active files", status: "active", closedAt: null },
-    { id: "idle-workspace", name: "Idle files", status: "idle", closedAt: null },
+    { id: "active-workspace", name: "Active files", status: "active", closedAt: null, metadata: { mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open",
+      sourceCwd: "/source", parentDir: "/trees", branch: "michael/feature", targetBranch: "main",
+      hostId: null, pendingOperationId: null, participants: {} } } },
+    { id: "idle-workspace", name: "Idle files", status: "idle", closedAt: null, metadata: { mainManagedWorktree: { schema: "paperclip.main-managed-worktree.v1", phase: "open",
+      sourceCwd: "/source", parentDir: "/trees", branch: "michael/feature", targetBranch: "main",
+      hostId: null, pendingOperationId: null, participants: {} } } },
   ]);
   await render();
   expect(mocks.workspaces).toHaveBeenCalledWith("company", { selectableForTask: true });

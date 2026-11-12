@@ -32,6 +32,60 @@ enrollment may target this baseline only, with dispatch drained first; never sel
 a pre-baseline binary that treats a shared row as an old disposable task tree.
 No new dispatch or registration is enabled by this baseline alone.
 
+The feature branch adds a server-owned resident-session authority receipt in
+`agent_task_sessions.session_params_json.adapterSessionAuthority` and a reference
+on the original run. Heartbeat alone exposes the awaited adapter callback; agents
+cannot claim authority through an HTTP API. Dispatch commits the server CAS, saves
+the host binding, then sends input. The CAS binds company, agent, provider, host,
+native identity, previous run, generation and operation ID. A lost response may
+only read the original operation; it never authorizes input replay. `lastRunId`
+remains a publication pointer, not authority. Legacy enrollment requires the host's
+current run and its original native identity receipt; missing proof is explicit.
+New Claude cards may not expose a native ID until their first input. Their initial
+authority uses the exact host/provider/Bridge card identity with a null native ID;
+only that card may later attach its observed native identity. This bootstrap
+cannot replace an existing native owner. Unknown receipt versions fail visibly.
+
+Cancellation revokes business writes immediately. Other terminal helpers retain
+their existing permissions until replacement, reset or credential expiry. HTTP
+mutation admission and transactional business-write guards check the same receipt.
+Late session publishers preserve the protected field and cannot publish over a
+successor. Cross-task rows sharing a native identity are superseded together.
+Binding, task, session and run locks order authority transitions; a writer that
+already owns business rows uses a nonblocking binding lock and reports
+`session_authority_busy`, avoiding an inverted blocking wait. This prerequisite
+does not itself enable cooperative workspace admission or authorize tree deletion.
+
+New recovery actions opt in to original-main delivery using server-owned
+`evidence.mainBlockerPolicy` and `mainBlockerNotices`; refreshing recovery or
+exhausting its budget preserves these fields atomically. Existing actions are not
+silently enrolled. The identity includes the action, cause, evidence fingerprint,
+original failed run and session generation. The task's creator/run provenance
+selects its original project main and conversation; project lead lookup alone
+cannot pick another Chat. Both main and that conversation's Owner must still be
+able to read the source. Holds, project/agent lifecycle and existing admission
+policies remain authoritative.
+
+The delivery coordinator reconstructs pending notices on restart and reacts to
+recovery, lifecycle and run-completion writes. A busy main waits for those events;
+there is no idle scan. Comment and wake identities are persisted before I/O, CAS
+prevents competing deliveries, and admission rechecks the original receipt under
+the conversation lock and before session-authority transfer. One 30-second receipt
+deadline allows an in-flight admission to finish; thereafter unknown delivery
+reconciles the same wake and never sends another input. Only the adapter's exact
+`paperclip.bridge-input.v1` receipt establishes input acceptance.
+
+The main is instructed to repair within its existing authority or ask Owner in
+the original conversation. A blocked main session, a failed repair-notification
+turn, or unknown delivery becomes a single human-only system question there;
+answering that system question grants no automatic resend or hold release. New
+blockers from the notification turn cannot recursively wake main. If the original
+main/conversation/access no longer exists, responsibility remains visibly with
+Owner on the source recovery action. When original evidence later proves delivery
+or the blocker is resolved, only the matching pending system question is withdrawn.
+The existing workspace-creator repair lane keeps its own receipts and is excluded
+from this lane to avoid duplicate notices or extra repair authority.
+
 Paperclip separates four concepts that are easy to blur together:
 
 1. structure: parent/sub-issue relationships
@@ -462,12 +516,15 @@ action. Resolving or cancelling that action removes its repair instructions from
 subsequent wakes, so the original worker can resume the task. This prompt change
 does not clear any persisted execution reconciliation hold.
 
-Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
-parks the same admitted run as `scheduled_retry`, with no deadline while its
-holder remains unsettled. Holder settlement makes that row eligible once through
-the delivery coordinator; normal authority, pause and physical ownership checks
-still run at promotion. No child retry rows or cancellation receipts are created.
-An opaque holder digest keeps foreign project/run details out of public state.
+Historical workspace contention (`workspace_busy`) keeps its original waiting
+run. The feature migration records before/after receipts and distinguishes
+unstarted intent, superseded work and unknown delivery. An unexpired controller
+lease retains its actual deadline; once eligible, the same row is reconsidered
+through ordinary dispatch. Historical holder cleanup and physical-path overlap
+do not block the new admission, and no child retry rows are created. Permissions,
+Owner holds, task authority, native-session ownership and input provenance are
+rechecked. An opaque holder digest preserves historical diagnostics without
+exposing foreign project/run details. After migration there is no idle scan.
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
@@ -1037,19 +1094,39 @@ The handshake failure code is distinct from a session-identity mismatch. A timeo
 
 ### Explicit recovery actions
 
-Connected task Retry can continue a failed legacy setup before provider dispatch. The bootstrap marker is insufficient by itself. The server requires its exact error and durable measurement events, a dispatch-only Runner profile, and no retained runtime, process, output, coordinator, result or environment lease. Current source authorization and every normal admission gate still apply. An inherited session display hint grants no resume authority. The original failed attempt remains unchanged, and an independent unfinished writer keeps its hold.
+Connected task Retry can continue a failed legacy setup before provider dispatch.
+The bootstrap marker is insufficient by itself. Its exact error, durable
+measurement events and dispatch-only Runner profile must independently prove
+non-delivery; provider events, input checkpoints, source mismatch or uncertain
+execution cannot be ignored. Current source authorization and normal admission
+gates still apply. An inherited session display hint grants no resume authority.
+The failed attempt remains unchanged. Another workspace participant or a
+cleanup-only lease/finalizer does not invalidate otherwise verified input proof.
 
 An explicit recovery action is a typed liveness repair path for a source issue. It is the recovery primitive; the action can be rendered directly on the source issue or backed by a separate recovery issue when the repair needs its own work item.
 
-A terminal native failure can retain a result accepted before checkpoint or cleanup failed. That result is historical evidence, not a live controller. New user input may start a fresh turn after the controller and execution environment have stopped and ordinary admission checks pass. Preserve the failed run, its result, and its recovery budget. Do not commit the old result, infer action outcomes, or replay the failed turn. A message saved while cleanup is pending must be reconsidered after verified cleanup and delivered once. External chat messages retain their original inbound action, wake receipt and actor. Cleanup delegates reconsideration to the live inbound owner, which revalidates the endpoint, conversation generation, principal and exact saved source before normal admission. The existing stranded-queue sweep uses the same owner after a lost callback or restart; it cannot substitute a generic assignment wake. A rejected source must not prevent other saved messages from being reconsidered. Admission must consume its deferred receipt in the same transaction that creates the new run, including in agent chat, where later messages keep their separate turns. Completing that run must not promote the consumed receipt again. Workspace-export repair retains its separate saved-result recovery path.
+A terminal native failure can retain a result accepted before checkpoint or cleanup failed. That result is historical evidence, not a live controller. Independently authorized new input may start a fresh turn after its task, input, native-session and operation checks pass; historical workspace cleanup is not an admission hold. Preserve the failed run, its result, and its recovery budget. Do not commit the old result, infer action outcomes, or replay the failed turn. A message saved while cleanup is pending is reconsidered without waiting for that cleanup and delivered once, provided its own receipt and session authority are valid. External chat messages retain their original inbound action, wake receipt and actor. Reconsideration delegates to the live inbound owner, which revalidates the endpoint, conversation generation, principal and exact saved source before normal admission. The existing stranded-queue sweep uses the same owner after a lost callback or restart; it cannot substitute a generic assignment wake. A rejected source must not prevent other saved messages from being reconsidered. Admission must consume its deferred receipt in the same transaction that creates the new run, including in agent chat, where later messages keep their separate turns. Completing that run must not promote the consumed receipt again. Workspace-export repair retains its separate saved-result recovery path.
 
 When a legacy turn admitted by an explicit user message fails or times out, a bounded transient retry needs its own durable continuation authorization. Initial admission binds the message's exact body digest and revision. Scheduling requires that original binding and revalidates the human author, source task, assignee, and execution ownership, then records the successor's receipt in the same transaction as its run. Historical receipts without a message binding cannot authorize automatic retries and are not backfilled. The parent receipt remains intact. Dispatch checks the exact successor, retry parent, and unchanged message binding again. Deleted or edited input, changed actors or ownership, superseded work, and duplicate successors cannot renew authority. One-run Retry and Interrupt intents retain their separate admission contracts; they are not renewable user-message authority. Other retry policies cannot borrow this receipt: their scheduling fails closed. Successful explicit turns do not create a prose-only missing-comment follow-up with spent authority.
 
-Explicit retry admission checks the local parent adapter controller and verified environment cleanup. The existing queue-first release policy may retain only its own terminal execution claim while that cleanup is pending; finalization and the periodic stale-lock sweep reconsider the same policy after cleanup. Generic terminal-lock cleanup and stale checkout adoption leave these claims for that settlement. New user input, reassignment, and a successor's claim take precedence. Exhausted retries and revoked or missing authorization release the terminal claim without requesting another retry. Pending or failed environment cleanup cannot mint a successor receipt.
+Explicit retry admission verifies the original input and successor authorization,
+current task authority and the selected native session's owner. Cleanup settlement
+uses its own receipts and does not retain a workspace admission claim. New input,
+reassignment or a successor's authority cannot be overwritten by a late finalizer.
+Exhausted retries and revoked or missing authorization never request another
+retry. Pending or failed environment cleanup neither mints a successor receipt
+nor prevents independently authorized work from joining an open shared tree.
 
-A new user message can continue a terminal native run whose process fields were cleared before local stop receipts existed. Admission must verify the exact run, runner, workspace, and provider session in the retained suspended state, with no active provider turn, pending tool call, or undelivered output. Missing or mismatched state keeps the hold. A later recorded process launch also keeps the hold until its stop is verified. Normal assignment, decision, controller, environment cleanup, and active-run gates still apply. The message starts one fresh conversation turn; it does not replay the failed run, reset its recovery budget, or certify unknown action outcomes.
+Reusing the same native provider session after a terminal run requires exact
+run, runner and provider identity with no active or unknown session owner. Missing
+or mismatched suspended state, a later process launch, pending provider tools or
+undelivered output remain a session/input gate with the bounded admission deadline.
+Historical workspace cleanup and leases are separate obligations. Current
+assignment, decision, budget and Owner holds still apply. A new message starts
+one authorized turn; it never replays the failed run, resets its recovery budget
+or certifies unknown action outcomes.
 
-The task thread exposes the guarded Retry action for failed or timed-out conversation runs and native preparation cancelled before provider startup when the never-started proof is verified. The server projects this eligibility on the recovery notice and rechecks it on Retry. Cleanup quarantine retains its inspection path, and non-conversation reconciliation gates remain enforced. Pending decisions, active execution, pause, budget, dependency, and ownership gates remain in force. A refused Retry reports its reason inline and remains available for another attempt. When a newer linked-human GitHub message was saved but its admission was skipped by a budget or agent-availability gate, ordinary task Retry selects that unstarted message before considering the older failed run. The existing chat task-Retry owner snapshots the complete pending batch, including eligible skipped input, into a new admission generation bound to the canonical processed deliveries, comments, principal, session generation, admitted instruction snapshots, and task Retry intent. It retains the original skipped receipt and failed result unchanged. A terminal failed publication of that old result also remains history for a distinct selected request; pending or uncertain publication still holds work, and the old output is never replayed. Board Retry refusals expose only stable allowlisted authority categories, never source payloads, identifiers, or credential fingerprints. Admission rechecks source integrity and current access, then uses the normal new-user-turn continuation proof: a committed failed result can remain history only after controller, successor, process, workspace, and exact remote-termination guards pass. Unknown ownership stays deferred; Retry cannot certify it. The existing chat retry queue owns delivery and bounded infrastructure retries; a committed receipt settles a lost acknowledgment without another execution. An accepted saved-input receipt discharges only its matching unadmitted-input gate, allowing later genuine conversation or tree-resume wakes without replaying the skipped request.
+The task thread exposes the guarded Retry action for failed or timed-out conversation runs and native preparation cancelled before provider startup when the never-started proof is verified. The server projects this eligibility on the recovery notice and rechecks it on Retry. Cleanup quarantine retains its inspection path without claiming the workspace; actual native-session ownership and non-conversation reconciliation gates remain enforced. Pending decisions, active execution, pause, budget, dependency, and ownership gates remain in force. A refused Retry reports its reason inline and remains available for another attempt. When a newer linked-human GitHub message was saved but its admission was skipped by a budget or agent-availability gate, ordinary task Retry selects that unstarted message before considering the older failed run. The existing chat task-Retry owner snapshots the complete pending batch, including eligible skipped input, into a new admission generation bound to the canonical processed deliveries, comments, principal, session generation, admitted instruction snapshots, and task Retry intent. It retains the original skipped receipt and failed result unchanged. A terminal failed publication of that old result also remains history for a distinct selected request; pending or uncertain publication still holds work, and the old output is never replayed. Board Retry refusals expose only stable allowlisted authority categories, never source payloads, identifiers, or credential fingerprints. Admission rechecks source integrity and current access, then uses the normal new-user-turn continuation proof: a committed failed result remains history while the selected input, current task authority, native-session ownership and original operation outcomes are checked independently of historical cleanup. Unknown ownership stays deferred; Retry cannot certify it. The existing chat retry queue owns delivery and bounded infrastructure retries; a committed receipt settles a lost acknowledgment without another execution. An accepted saved-input receipt discharges only its matching unadmitted-input gate, allowing later genuine conversation or tree-resume wakes without replaying the skipped request.
 
 A deliberate Retry also binds an already completed file-preservation record to
 that intent. Other recovery holds for the same source run can then use its saved
@@ -1063,7 +1140,7 @@ Newer saved input keeps its own receipt while the existing Retry explanation sta
 visible. Terminal waits direct the user to send new input and hide the Retry action
 that cannot continue that attempt.
 
-A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
+A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies the original input never reached a provider and the new request has current authority; unfinished file cleanup alone does not block it. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
 Other legacy queued-run gate cancellations also stay out of unknown-action reconciliation when the terminal run has no retained execution authority, session, workspace recovery, resources, or execution events. The same proof removes the effect of an old false recovery hold only for its exact company, task, and run; the audit row remains. Started or conflicting work retains its hold. Review waits retain their guarded Retry path. New work still passes the current approval, dependency, budget, pause, and ownership gates.
 
@@ -1072,7 +1149,7 @@ Task Retry resumes that input's existing durable chat receipt through the inboun
 owner, instead of replaying the successful run as a failed attempt. The original
 actor, source, result, and publication history remain intact. Duplicate clicks
 follow one canonical receipt. Current board permission, task ownership, source
-authorization, and prior execution cleanup are rechecked before normal admission;
+authorization, input provenance and current native-session ownership are rechecked before normal admission;
 pause, budget, approval, and dependency gates remain effective. Completion or
 newer execution supersedes an unadmitted retry.
 
@@ -1681,7 +1758,9 @@ is **Blocked**; **In Review** requires a concrete human decision.
 Subtree pause and cancel record the authenticated board actor on each run they
 interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
-future execution until Resume, and missing stop proof still blocks continuation.
+future execution until Resume. Missing stop proof retains the original cleanup
+obligation; unknown ownership of the selected native session remains a scoped
+admission gate rather than workspace occupancy.
 
 ### Provider continuity and bounded finalization
 
@@ -1785,16 +1864,17 @@ and the exact prepared source lease. They atomically register file preservation
 without replaying provider work or changing the current task. A live owner,
 recorded process or mismatched source remains held. Retirement does not prove
 termination or saved files; the existing stop-and-save worker must establish both
-before workspace selection can proceed. Both callers hold the task, coordinator
+for source cleanup. A new worktree selection proceeds independently under its
+revision, current authority and input checks. Both callers hold the task, coordinator
 and source-run locks throughout retirement and preservation registration.
 
-A settled native bootstrap failure does not keep a workspace change blocked
-solely because startup recorded `workspace_finalize=failed`. Admission requires
-an explicit no-provider-work bootstrap receipt, a finished failed run, an unowned
-terminal coordinator without a result, and no recorded provider events or process.
-A restore failure, sync descriptor, copyback owner, unfinished operation, or pending
-lease cleanup still blocks the change. This applies to next-admission selections
-and legacy binding updates. Historical failure records remain unchanged.
+Workspace selection does not wait for a historical restore failure, sync
+descriptor, copyback owner, unfinished cleanup operation or lease. New execution
+still needs the selected tree's current lifecycle generation, repository access
+and an independently authorized input. A Retry of failed bootstrap input also
+requires exact provider non-delivery evidence; selection itself cannot prove it.
+Uncertain worktree-management operations retain their own lifecycle fence.
+Historical failures and cleanup receipts remain unchanged.
 
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
@@ -2059,20 +2139,23 @@ select its exact immutable descriptor and the finalizer's accepted successful
 result under the same company, task, run and completion contract. Lease reuse
 policy alone does not discharge that persistence obligation. Ordinary reusable
 sources without this proof remain ineligible. The preservation owner still
-requires an independently stopped, exclusively bound allocation and no host writer;
-it saves files and resumes the existing finalizer without another provider turn.
+requires independently stopped, exactly bound source allocation evidence.
+Platform merge operations preflight conflicts without excluding collaborating
+workspace runs. It saves eligible files and resumes the existing finalizer
+without another provider turn; cancelled output remains private rescue-only.
 
-Both the legacy native copyback descriptor and the remote-workspace descriptor
-keep an unfinished export under the execution hold. Task Retry saves its intent
-behind that hold; an accepted successful result resumes its existing finalizer
-after verified preservation instead of admitting another task run. Pending human
-review remains effective when the result commits.
+Legacy native copyback and remote-workspace descriptors retain the unfinished
+export's cleanup obligation. They do not create a workspace admission hold.
+Retry must not repeat input whose accepted successful result is awaiting its
+existing finalizer; verified preservation resumes that finalizer without another
+provider turn. Independently authorized new input retains its own receipt and
+admission checks. Pending human review remains effective when a result commits.
 
 If a later failure supersedes the original recovery action, an explicit board
 `recover-workspace` request can still preserve that exact historical export.
 The cancelled action remains historical and the current action retains attention
-ownership. Preservation checks current writers and source identity, records a
-durable snapshot, and leaves the task's newer workspace binding unchanged. It
+ownership. Preservation checks exact source identity and shared-file conflicts,
+records a durable snapshot, and leaves the task's newer workspace binding unchanged. It
 does not apply an older accepted result over a newer run or authorize continuation.
 Cancelled history without a saved explicit recovery request remains ineligible.
 
@@ -2100,8 +2183,9 @@ the source allocated and exposes the specific service blocker.
 File recovery alone never requests another agent turn. Existing saved human
 messages re-enter ordinary admission once, with the original authors and current
 pause, approval, budget and assignment checks. Historical conversational adapters
-can continue through Paperclip Runner only after their saved adapter identity and
-file receipt are verified. Known GitHub publication receipts enter continuation
+retain their saved adapter identity and exact input provenance through Paperclip
+Runner. A continuation that uses saved files also verifies their preservation
+receipt; separate new input does not inherit a cleanup admission hold. Known GitHub publication receipts enter continuation
 context with their repository, PR and reviewed commit; they authorize no writes
 and settle no other action. Cleanup is a later obligation and can destroy the
 source only after verified persistence and an original `destroy` disposition.
@@ -2112,7 +2196,7 @@ Real gates still apply: company and task ownership, active provider ownership, b
 
 A source that already stopped and was released remains fenced until its export settles; restart reconciliation scans these released sources too. Both provider reuse and destruction check the physical allocation for a shutdown fence or file-repair pin, including historical lease rows.
 
-An operator Stop waits for provider termination. Remote sandbox providers may return a stopped/deleted receipt after their control-plane operation completes. Paperclip binds that receipt to the company, run, and exact lease; successful file cleanup, a terminal run row, or an in-sandbox shutdown event is not sufficient. Legacy conversational runs and native runs with an audited run-only Stop receive their shared cancellation acknowledgement after all remote leases have confirmed termination. A native interrupt acknowledgement alone does not establish containment. Workspace preservation remains a separate obligation and its recovery hold survives this acknowledgement. Stop alone never creates a continuation. A user message queued during remote cleanup is reconsidered when the provider confirms termination; it still passes normal admission and adopts pending comment IDs in order. Once stopped, the next explicit wake uses the same queue. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
+An operator Stop commits cancellation and revokes admission participation immediately; its stop acknowledgement still waits for provider termination. Remote sandbox providers may return a stopped/deleted receipt after their control-plane operation completes. Paperclip binds that receipt to the company, run, and exact lease; successful file cleanup, a terminal run row, or an in-sandbox shutdown event is not sufficient. Legacy conversational runs and native runs with an audited run-only Stop receive their shared cancellation acknowledgement after all remote leases have confirmed termination. A native interrupt acknowledgement alone does not establish containment. Workspace preservation remains a separate obligation and its recovery hold survives this acknowledgement. Stop alone never creates a continuation. A user message queued during remote cleanup is reconsidered independently of that file/resource obligation. It passes current input and native-session admission and adopts pending comment IDs in order. A busy or unknown selected native session uses the bounded session wait; cleanup cannot occupy other worktrees or sessions. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
 
 Native workspace finalization can complete after an operator Stop has cancelled
 its run. The accepted provider result and saved-file receipts remain available,
@@ -2132,11 +2216,19 @@ Cancelled runs and runs with a recorded pending stop lose run-scoped API write a
 
 For native conversations, an authenticated user message sent after the previous run finishes can retire its execution recovery holds and start a fresh turn. Hold retirement and the new run are atomic. The previous transcript, tool outcomes, and recovery history remain intact. This starts a new conversation; it does not replay tool calls with unknown outcomes.
 
-Local recovery records a server-authored stop receipt before it clears a verified absent process identity. A new execution request invalidates that receipt before any process can spawn; recording a new process identity also invalidates it. Missing process IDs without a receipt still block admission. Remote execution continues to require termination receipts for every lease.
+Local recovery records a server-authored stop receipt before it clears a verified absent process identity. A new execution request invalidates that receipt before any process can spawn; recording a new process identity also invalidates it. Missing process IDs without a receipt do not prove termination. They retain cleanup/retirement uncertainty and, when relevant, the selected native session's ownership gate. Reuse or destruction of each remote allocation still requires its exact termination receipt; those leases do not occupy a shared execution tree.
 
-If cleanup or another execution gate is still pending, the message stays in its existing queue receipt. Startup and periodic scheduling reconsider up to 50 due receipts per pass, at most once per 30 seconds per receipt, without calling a model or resetting recovery attempts. Cleanup callbacks use the same admission path. The issue lock prevents concurrent workers from delivering an adopted or discarded receipt again. The queued-message area shows the current wait reason. Pauses, approvals, budgets, ownership, and external chat authorization remain enforced. For a failed native conversation, saved authenticated messages that have never been delivered can request a fresh turn after verified stop even when submitted before the failure finished. Admission validates and adopts their exact queue receipt, order, and original authors. This does not replay the failed request or undo an operator cancellation.
+If a current task, native-session, input or external-operation gate is pending,
+the message retains its existing queue receipt and concrete reason. Historical
+workspace cleanup alone is not such a gate. Existing delivery events and actual
+retry/session deadlines reconsider that same receipt without resetting attempts
+or polling completed history. The issue lock prevents duplicate consumption.
+Pauses, approvals, budgets, task ownership and external chat authorization remain
+enforced. Saved authenticated messages must prove non-delivery and preserve their
+order and original authors. A new authorized turn does not replay the failed
+request, undo an operator cancellation or certify unknown input/effects.
 
-Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Automatic classification uses the server-owned adapter identity saved atomically at run claim, the saved adapter invocation, or the continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the automatic hold; an explicit user continuation can retire it after proving the predecessor stopped. A terminal row with a live predecessor process, an unreleased environment lease, or failed/pending cleanup still blocks actual admission and Resume; a release timestamp alone does not prove cleanup succeeded. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
+Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Automatic classification uses the server-owned adapter identity saved atomically at run claim, the saved adapter invocation, or the continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains uncertainty about the original input/operation. A live owner of the selected native session remains session_busy; an unreleased historical lease or failed/pending cleanup alone does not block admission or Resume. A release timestamp never proves cleanup succeeded. Retry still requires independent source and user authority, and never grants authority from cleanup state. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
 
 The server projection remains available for diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. Active transcript headers keep saying Working during automatic retry and execution confirmation; attempts, causes, and recovery decisions belong in the run log. Recovery uses the existing transcript and run log rather than adding a reconciliation form. A cancelled run that never started says “Couldn't start” instead of implying that the agent answered.
 
@@ -2250,23 +2342,24 @@ request, task history, completed work, and the interruption notice. It receives
 no instruction to repeat old tool calls. Later messages cannot reset the old
 incident's retry budget or create another automatic replacement for it.
 
-Explicit continuation verifies local process identities for local runs. Remote runs
-instead require a provider termination receipt for every lease, with successful
-cleanup and no active ownership. This applies to both per-turn and warm native
-runners. A stop receipt retires only the settled cleanup owner for that exact company, run, provider, and sandbox resource, without changing its checkpoint or recorded action outcomes. Independent remote sandboxes have separate cleanup gates, including when one run owns multiple sandboxes. Successful pending-cleanup retries persist the same receipt and reconsider deferred user messages; a delivery failure never reverts successful provider cleanup. A failed checkpoint does not prevent destruction of a terminal run's isolated sandbox; busy ownership still prevents it.
-Missing receipts and failed cleanup retain the hold. Older providers that return
-no receipt remain supported but cannot authorize remote continuation. A terminal
-database status or a PID check on the wrong host is insufficient.
+Same-session reuse verifies the original local process or exact remote provider
+allocation ownership. Remote reuse, cleanup and retirement retain termination
+receipts for each lease, including warm runners; missing receipts never prove
+physical safety. A stop receipt settles only its exact company/run/provider/resource
+obligation, preserving checkpoints and unknown action outcomes. These allocation
+checks do not exclude independent authorized work on the shared tree. A new turn
+retains its input receipt, task authority and bounded native-session checks; a
+terminal row or a PID check on the wrong host cannot authorize replay.
 No historical task is automatically awakened by this change.
 
 Startup waits for provider plugin initialization before remote recovery and
-lease cleanup. The task's blocked notice offers Retry, and a refused retry
-shows the actual recovery hold. Each explicit user Retry can make one scoped
-cleanup attempt for its failed run even after automatic cleanup is exhausted.
-If that attempt fails, a later user Retry may try again after the provider
-recovers. The failed cleanup keeps the execution hold in place. Retry does not reset
-the automatic limit or clean up another task's leases. Provider shutdown must
-still be confirmed before a new conversation is admitted.
+lease cleanup. Cleanup inspection/recheck reads the original receipt without
+resending Stop or provider input. Explicit recovery may use its bounded, recorded
+cleanup attempt without resetting the automatic budget or touching another
+task's leases. Failed cleanup remains a visible source obligation, not a
+workspace admission hold. Ordinary Retry reports the actual input, session or
+operation gate and retains its original message; it does not manufacture
+termination evidence or silently resend uncertain input.
 
 ### Explicit Recovery Action
 
@@ -2927,12 +3020,14 @@ their new input is deferred without changing the other agent's queued work.
 
 ### Queued input after a native Stop
 
-A run-only Stop ends the current response. It does not discard queued user
-messages or require a recovery incident. After the controller releases ownership
-and the old local process or remote environment has a verified stop record,
-Paperclip submits saved input through normal task admission, once, with the
-original user's authority. Pauses, task ownership, budgets, approvals, and
-execution recovery holds still apply. Unconfirmed cleanup does not start work.
+A run-only Stop cancels the current response and immediately revokes its business
+writes and admission participation. It does not discard queued user messages or
+require a recovery incident. Paperclip reconsiders saved input through normal
+task/input/native-session admission, once, with the original user's authority.
+Pauses, task ownership, budgets, approvals and unknown input/operation outcomes
+retain their checks. Controller/termination evidence remains scoped to its native
+session or physical allocation; historical workspace cleanup alone cannot occupy
+the selected linked tree or delay independent authorized input.
 
 A Stop from a bound Slack session records the verified user's identity, just as
 a board Stop does. Native cancellation can then recognize the acknowledged
@@ -2948,24 +3043,26 @@ same continuation checks as a new message. A message from before the Stop cannot
 authorize that continuation by itself. Previously delivered messages stay excluded.
 
 The Send click also covers saved question answers and confirmation responses.
-Admission checks the last native Stop's process, workspace and cleanup receipts
-even when no recovery action exists. Its continuation authority is recorded on
-the exact queue receipt and verified again at dispatch. A deferred response keeps
-its messages and controls visible and explains the current wait. Historical
-recovery actions cannot stand in for the newest failed or cancelled native run:
-Send checks that run's controller, process, lease and cleanup proofs as well.
+Admission validates the exact source, responsible user and non-delivery or
+explicit continuation authority even when no recovery action exists. Authority
+is recorded on the queue receipt and rechecked before queue/coalescing shortcuts
+and at dispatch. A deferred response keeps its messages and controls visible
+with its actual task, native-session, input or operation wait. Historical recovery
+actions cannot stand in for the newest failed/cancelled run's input provenance;
+its old workspace cleanup does not establish a new admission hold.
 
 A live plan Interrupt binds the click to its target run and the exact operator
 cancellation receipt. Its click may precede that run's stop time, but cannot
-bypass process or workspace cleanup. Other Send clicks must follow the Stop.
+bypass native-session ownership or unknown input/operation gates. Other Send
+clicks must follow the Stop or carry independently verified undelivered input.
 Only a persisted Agent Chat `/new` authored by the requesting user retains the
 conversation-reset exception. Ordinary follow-ups still wait for an accepted
-result to finish committing, even after workspace export recovery clears its
-execution blocker. Committed successful results no longer create continuation
-waits from recovered-export history. Applied conversation resets retire older
-non-workspace holds; active workspace holds remain authoritative across the
-boundary. Workspace recovery holds still block the reset. Queue authorization
-is read again at dispatch for both cancelled and failed native predecessors.
+result to finish committing. Committed successful results no longer create
+continuation waits from recovered-export history. Applied conversation resets
+retain current task/session authority and unresolved operation outcomes; a
+historical workspace recovery receipt alone cannot block the reset. It remains
+available for source rescue and cleanup. Queue authorization is read again at
+dispatch for both cancelled and failed native predecessors.
 
 The active session advertises steering only when its driver supports it. A
 transport method that rejects steering does not grant that capability. The
@@ -3653,70 +3750,127 @@ start/controller/provider/resource trace. Its parent remains separately fenced.
 Deferred interrupt input has no independent backoff timer: the original run's
 persisted stop checks own the deadline and notify input delivery after settlement.
 
-Controller/finalizer ownership, uncollected files, workspace recovery/operations and
-unreleased leases continue to block writers. No claim is forcibly deleted.
+Controller/finalizer ownership, uncollected files, workspace recovery/operations
+and unreleased leases remain truthful obligations of their original source.
+They do not serialize cooperative writers. Native-session ownership and unknown
+input/operation outcomes keep their separate gates; no claim is forcibly deleted.
 Local legacy execution also persists `execution.local_process_stopped` after its
 executor returns, even without an instruction copy. The receipt binds the latest
 server-recorded local host, PID/group, process birth and identity event; both the
-process and group must be absent. A later launch/resume invalidates it. Physical
-admission still requires all cleanup fences, and the receipt wakes the existing
-workspace-wait coordinator without a recurring scan.
+process and group must be absent. A later launch/resume invalidates it. This is
+cleanup/retirement evidence, not shared-tree admission authority. Its event
+notifies the existing settlement coordinator without a recurring scan; historical
+workspace waits are reconciled under the cooperative contract below.
 
 ### Physical workspace admission
 
-Every managed writing task keeps selection, provider cwd and ownership in one
-formal workspace binding. Preserve project defaults. Task prose is not a
-workspace selection: register an existing worktree through the project source
-API, then select it with workspaceSelection (configured_source/shared), or use
-a supported managed_isolated selection and bind its realized result. Remote
-worktrees are separate remote_managed sources on their own Bridge host. Shared
-means sharing that source directory, not locking an entire project/repository.
+Session cwd, execution worktree and external resources are separate. New code
+execution selects a registered linked Git worktree; the project main chooses its
+batch lifetime and optional default through the lifecycle service. Multiple tasks
+and runs may join the same open tree. Origin-task completion and idle time do not
+authorize deletion. Primary checkouts, main session homes, data, models and services
+stay external; the platform never initializes Git merely to dispatch them.
 
-Admission serializes equal, symlink-aliased and parent/child physical paths,
-including registrations in different projects. Independent Git worktree roots
-remain concurrent even when they share Git objects. Worktree creation reserves
-the target before setup; it never claims the common Git directory. Native,
-local and Bridge tasks use the same host-path claims. Provider-managed storage
-uses its durable namespace/reference and retains runtime writer, lease,
-persistence and cleanup fences. GPU/capacity/deployment limits are independent.
-Invalid paths, mismatched bindings and unsupported isolation fail before
-provider launch, without a source-directory fallback. Existing admitted work
-keeps its contract until its next normal admission; terminal status alone is
-not stop or cleanup proof. Cross-scope holder details remain private.
-An exhausted terminal finalizer does not keep physical ownership after independently
-recorded process stop and complete instruction-copy cleanup. Its failure outcome
-and history remain unchanged. Pending retries, finalizer ownership/recovery,
-workspace export/restore pins, retained copies, operations and leases still fence
-admission. Missing stop or cleanup evidence never releases ownership.
-Historical owners are inspected by their canonical physical directory and Git
-metadata root, without rerunning Git validation on a damaged old checkout. They
-still block overlapping writers; unrelated directories remain admissible. This
-inspection neither repairs metadata nor qualifies a broken source for a new run.
-A historical owner on a non-shared remote host whose stop was never recorded may
-be settled only by the Owner's holderless reconciliation: the Bridge host
-catalog reads the host's boot id and uptime, and a boot that began after the
-owner finished (with matching SSH endpoint and absent local process) is
-recorded as `workspace.remote_host_rebooted`. Idle, terminal status or task
-completion is still never stop proof, and the other settlement fences remain.
-For a historical Bridge run with released local preparation leases, the stop
-coordinator also consumes this existing server receipt to collect retained local
-instruction files. Bind it to the original invocation host and exact finish time;
-later launch/resume evidence invalidates it at settlement, collection and admission.
-The receipt remains remote-host evidence, never a provider result or cancellation
-ACK. Recording the boundary notifies the existing coordinator transactionally;
-exhausted historical records require new evidence or an explicit Recheck.
+Issue executionWorkspaceSettings.sessionOnly=true explicitly selects external
+resource or existing-script work without an execution workspace. Resident Chats
+and main coordination default to session-only. Project policy may explicitly set
+executionMode=session_only; otherwise new project tasks require their selected
+managed tree or defaultExecutionWorkspaceId. Missing configuration fails during
+creation/assignment as configuration_required. A session-only main must select
+and join a worktree before editing versioned code. Full-access native tools remain
+cooperative; this control plane contract is not an OS filesystem sandbox.
+
+Paths, aliases, parent/child overlaps and historical stop/lease/finalizer/export
+records never serialize ordinary admission. Cancellation revokes the original
+run's business-write authority at commit; provider stop and cleanup remain honest,
+independent obligations. Task selection may change after cancellation without
+waiting for persistence. Active same-task authority, Owner holds, permissions,
+actual capacity, native-session ownership and unknown input/operation outcomes
+retain their own checks. A session wait has its own bounded deadline, default 30
+seconds, even when execution timeout is unlimited; unknown delivery is never sent
+again automatically. Cross-project diagnostics retain existing read boundaries.
+
+The workspace tree CLI is a thin client of /projects/:projectId/worktrees/:id.
+Its operations are create/register, join/leave, set_default, converge, merge,
+reopen and retire, with expectedGeneration and a durable operationId. Recheck
+reads the original receipt. Only an authorized human or the project's running,
+current main may manage the lifecycle. Participants are a roster, not writer locks.
+Converge immediately closes new admission; only explicit reopen admits more work.
+Merge pins candidate and target HEAD; a checked-out target uses ff-only in that
+checkout. Retirement rechecks current ancestry, actual consumers and private
+backups; dirty/ignored data, newer unmerged commits or unknown liveness retain the
+tree with a concrete reason. Merge and deletion are separate operations.
+Checked-out target preflight includes ignored untracked files because Git may
+otherwise overwrite them. A known refusal before shared mutation records
+effectStarted=false, permitting an explicit repair/reopen with a new operation ID.
+
+Warm sandbox reuse requires equal exported-source and final
+host digests; a host-only collaborator file must never become a remote deletion
+on a later handoff. Finalization persists the export digest in its sealed descriptor
+and repairs stamps from that receipt. Historical or partial exports (including
+independently exported child repositories) lack whole-root equality proof and
+require current-host staging for a new turn. Same-run recovery still uses its
+original baseline. This adds no idle probe or provider-input replay.
+The stamp uses `paperclip.native-workspace-stamp/v2`; older readers refuse it,
+so rolling back cannot mistake the merged host hash for remote-content proof.
+
+Platform copyback preflights the entire incoming delta against its original
+baseline. Any conflicting host edit rejects the save before touching files or
+Git HEAD and preserves the export in private workspace-rescue storage. Cancelled
+results are export-only; no stale helper or late finalizer may regain successor
+authority. Recovery never retries a conflict with the same obsolete baseline.
+Original receipts remain useful for cleanup and safe retirement, including verified
+host reboot evidence; they no longer constitute a workspace admission claim.
+Ordinary agent comments require matching agent-author/receipt namespaces, while
+saved-user recovery remains human-only. Case handoff input additionally retains
+its phase-ledger authority; a generic system/agent label is never an exemption
+from input provenance validation.
+Bounded explicit retries validate the successor's renewed human authorization
+and exact scheduler wake again at claim. Original-main and workspace-creator
+notices validate their protected action/wake, current source and original
+conversation, and only the recorded system comment. Missing receipts, changed
+input or appended comments fail closed; these are not general system bypasses.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
 For an agent with a configured fixed directory, ordinary Retry retains the fixed
 placement instead of choosing a new isolated directory implicitly. Record the
 decision on the original retry intent; normal preparation still enforces task
-selection, trust, environment and all stop/cleanup/physical ownership gates. An
+selection, trust, environment, current task authority and native input/session gates. An
 explicit fresh-isolated intent is not rewritten and remains incompatible with a
 fixed binding. Bridge main agents register the same cwd in adapter settings and
 runtimeConfig.workspaceBinding; correcting a historical Chat selection uses the
 revision-checked workspace API and preserves its original native session.
 Selection is persistent and applies at the next normal admission; it does not
 Retry or start a task. Inspect the original receipt after uncertain delivery.
+New selections are `{ kind: "existing", workspaceId }` for an open main-managed
+linked worktree, or `{ kind: "session_only" }` for conversation/external resources.
+Session-only clears both source/workspace bindings. Historical configured_source
+and task_directory selections remain readable for their persisted runs; new UI
+choices and new admissions cannot create those unmanaged workspaces. The task
+properties use the same revision-checked card instead of legacy field PATCHes.
+
+Cleanup classification affects admission only. Continuation provenance still reads
+the original recovery receipts and persists the new user's authorization without
+resolving unfinished cleanup. Merged user input is checked against every original
+wake receipt under the issue/run locks, including its principal, company, task and
+carrier run. Missing or changed delivery provenance remains delivery_unknown even
+when no workspace blocker exists; it never authorizes a resend.
+Retry and deferred-input checks precede queue/coalescing shortcuts and run again
+at dispatch. Failed preparation uses independent provider non-delivery and
+settlement evidence; an unfinished cleanup lease or another workspace participant
+does not invalidate that proof. Contradictory provider events, input checkpoints,
+source identity, snapshot integrity or user authority do invalidate it. Single
+comments need the same paired wake/comment authority as merged input, and queued
+turns with prior execution evidence cannot be delivered again. An adopted Retry
+receipt alone is not a comment batch. Preserved-file continuation receipts remain
+attached to the new authorized turn even when no cleanup admission hold remains.
+Admitting that turn does not remove the original recovery action from cleanup or
+Stop-evidence reconciliation. A cancelled source can export to private rescue
+while its successor is queued; it still needs exact source and termination
+evidence and cannot copy back to the shared tree. Ordinary Retry retains the
+explicitly selected managed tree after a verified preparation failure. Managed
+admission checks registered repository access without provisioning, switching
+branches, or repairing collaborators' files.
 The task workspace card displays binding state, observed host/cwd and waiting
 reason. Main-agent MCP exposes inspection/selection with the same authorization;
 new worker dispatch must persist workspaceSelection. Never invent a free cwd
@@ -3725,8 +3879,7 @@ input or infer a path from task text during bulk reconciliation.
 A currently assigned formal review by a fixed project main agent uses that
 agent's registered project source on its configured host. This is a run-scoped
 review home, not a change to the worker's task selection. Preserve the worker
-workspace row, binding revision and repository contents, and claim the actual
-reviewer cwd through ordinary physical admission. Require the persisted pending
+workspace row, binding revision and repository contents, without creating a recursive claim on the reviewer cwd. Require the persisted pending
 review participant and matching project/assignee; wake payloads, stale reviews
 and unrelated fixed agents cannot bypass source-conflict checks. A missing
 registered reviewer home fails explicitly.
@@ -3736,4 +3889,4 @@ it lives at the selected workspace root (for example a resident home directory).
 Recognize it by directory entries without reading the ignore contents or running
 Git. Empty, partial, symlinked or additional local Git metadata still goes through
 Git validation. Explicit repository/revision requirements still reject a non-Git
-directory, and canonical parent/child ownership is unchanged.
+directory. Session-only external resources acquire no canonical parent/child claim.

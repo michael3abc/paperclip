@@ -131,6 +131,10 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   })();
   return {
     enabled,
+    ...(["worktree", "session_only"].includes(String(parsed.executionMode))
+      ? { executionMode: parsed.executionMode as "worktree" | "session_only" } : {}),
+    ...(typeof parsed.defaultExecutionWorkspaceId === "string" || parsed.defaultExecutionWorkspaceId === null
+      ? { defaultExecutionWorkspaceId: parsed.defaultExecutionWorkspaceId } : {}),
     ...(typeof parsed.storageProviderPluginId === "string" || parsed.storageProviderPluginId === null ? { storageProviderPluginId: parsed.storageProviderPluginId } : {}),
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
@@ -248,6 +252,7 @@ export function parseIssueExecutionWorkspaceSettings(
     ...(normalizedMode
       ? { mode: normalizedMode as IssueExecutionWorkspaceSettings["mode"] }
       : {}),
+    ...(typeof parsed.sessionOnly === "boolean" ? { sessionOnly: parsed.sessionOnly } : {}),
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(options.includeEnvironmentId && (typeof parsed.environmentId === "string" || parsed.environmentId === null)
       ? { environmentId: parsed.environmentId }

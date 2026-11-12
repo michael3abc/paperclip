@@ -798,6 +798,14 @@ Full effective-profile and effective-tool responses keep their complete shape.
 
 ## Execution identity row locks
 
+Resident Bridge adapters keep the server-owned `adapterSessionAuthority` receipt
+inside existing task-session JSON and its reference in the original run profile.
+Claims use binding advisory locks, sorted issues, sorted session rows and sorted
+runs. A business transaction already owning an issue uses a try-lock and fails
+explicitly on contention; it cannot wait while reversing the claim order. No
+lock spans provider input. Late publication preserves the field; reset revokes
+its authority. `last_run_id` is not a current-owner credential.
+
 Identity initialization, credential acquisition, and steering reconciliation lock
 the task before its run. These operations use `FOR NO KEY UPDATE`: they change
 identity state, not parent keys. The lock still serializes identity writers and

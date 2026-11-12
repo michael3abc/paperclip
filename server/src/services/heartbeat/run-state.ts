@@ -1,3 +1,4 @@
+import { ADAPTER_SESSION_AUTHORITY, mergeProtectedSessionParams, readAdapterSessionAuthority, lockAdapterSessionAuthority } from "../adapter-session-authority.js";
 import type { RunStopSettlement } from "@paperclipai/shared";
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { readRuntimeAccountingTotals } from "../runtime-accounting-totals.js";
@@ -1664,12 +1665,14 @@ export function createHeartbeatRunState(db: Db) {
         const [run] = input.lastRunId ? await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.lastRunId)) : [];
         if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return null;
       }
-    const existing = await tx.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId), eq(agentTaskSessions.adapterType, input.adapterType), eq(agentTaskSessions.taskKey, input.taskKey))).then((rows) => rows[0] ?? null);
+    const existing = await tx.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId), eq(agentTaskSessions.adapterType, input.adapterType), eq(agentTaskSessions.taskKey, input.taskKey))).for("update").then((rows) => rows[0] ?? null);
+    const sessionParamsJson = mergeProtectedSessionParams(existing?.sessionParamsJson, input.sessionParamsJson, input.lastRunId);
+    if (sessionParamsJson === undefined) return null;
     if (existing) {
       return tx
         .update(agentTaskSessions)
         .set({
-          sessionParamsJson: input.sessionParamsJson,
+          sessionParamsJson,
           sessionDisplayId: input.sessionDisplayId,
           lastRunId: input.lastRunId,
           lastError: input.lastError,
@@ -1687,7 +1690,7 @@ export function createHeartbeatRunState(db: Db) {
         agentId: input.agentId,
         adapterType: input.adapterType,
         taskKey: input.taskKey,
-        sessionParamsJson: input.sessionParamsJson,
+        sessionParamsJson,
         sessionDisplayId: input.sessionDisplayId,
         lastRunId: input.lastRunId,
         lastError: input.lastError,
@@ -1752,7 +1755,20 @@ export function createHeartbeatRunState(db: Db) {
       const goals = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
         .where(and(...conditions, sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)).limit(1);
       if (goals.length) await notifyExternalConversationSettlement(tx, { companyId });
-      return tx.delete(agentTaskSessions).where(and(...conditions)).returning().then((rows) => rows.length);
+      const rows = await tx.select().from(agentTaskSessions).where(and(...conditions)).orderBy(agentTaskSessions.id).for("update");
+      let count = 0;
+      for (const row of rows) {
+        const authority = readAdapterSessionAuthority(row.sessionParamsJson);
+        if (authority) {
+          if (opts?.expectedRunId && authority.runId !== opts.expectedRunId) continue;
+          await lockAdapterSessionAuthority(tx as unknown as Db, [authority.bindingKey]);
+          await tx.update(agentTaskSessions).set({ sessionParamsJson: {
+            [ADAPTER_SESSION_AUTHORITY]: { ...authority, revoked: true },
+          }, sessionDisplayId: null, updatedAt: new Date() }).where(eq(agentTaskSessions.id, row.id));
+        } else await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.id, row.id));
+        count++;
+      }
+      return count;
     });
   }
 

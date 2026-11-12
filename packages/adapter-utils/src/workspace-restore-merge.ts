@@ -717,6 +717,33 @@ export class DirectoryMergeConflict extends Error {
   }
 }
 
+/** Private durable staging. Failed exports stay here for the owning run's
+ * reconciliation; callers remove only a successfully applied staging directory. */
+export async function createWorkspaceRestoreDirectory(): Promise<string> {
+  const { resolvePaperclipInstanceRootForAdapter } = await import("./server-utils.js");
+  const root = path.join(resolvePaperclipInstanceRootForAdapter(), "workspace-rescue");
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  const stat = await fs.lstat(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0)
+    throw new Error("Workspace rescue root must be a private directory");
+  return fs.mkdtemp(path.join(root, "restore-"));
+}
+
+async function writeMergeRescue(input: { directory: string; baseline: DirectorySnapshot; source: DirectorySnapshot; target: string }) {
+  for (const [name, snapshot] of [["baseline", input.baseline], ["incoming", input.source]] as const) {
+    const file = await fs.open(path.join(input.directory, `${name}.jsonl`), "wx", 0o600);
+    try {
+      await file.write(JSON.stringify({ exclude: snapshot.exclude }) + "\n");
+      for (const entry of snapshot.entries) await file.write(JSON.stringify(entry) + "\n");
+      await file.sync();
+    } finally { await file.close(); }
+  }
+  await fs.writeFile(path.join(input.directory, "restore.json"), JSON.stringify({
+    schema: "paperclip.workspace-rescue.v1", target: input.target, createdAt: new Date().toISOString(),
+    status: "not_committed",
+  }), { mode: 0o600, flag: "wx" });
+}
+
 /** Preflight the entire delta before writing. Identical replays are safe after
  * an interrupted apply; unrelated edits are left alone. No history is retained. */
 export function directoryMergeConflicts(baseline: DirectorySnapshot, source: DirectorySnapshot, current: DirectorySnapshot): string[] {
@@ -758,20 +785,23 @@ export async function mergeDirectoryWithBaseline(input: {
   sourceDir: string;
   targetDir: string;
   conflictPolicy?: "reject";
+  /** Run-private durable staging, retained by the caller after any failure. */
+  rescueDirectory?: string;
+  rescueOnFailure?: boolean;
   workspaceSnapshotIsolation?: "worker";
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
   /** Caller holds the target's writer lock and validated an immutable sparse
    * source. Unchanged entries need no payload and are never copied. */
   snapshots?: { source: DirectorySnapshot; current?: DirectorySnapshot };
-}): Promise<void> {
+}): Promise<{ sourceSha256: string }> {
   const capture = input.workspaceSnapshotIsolation === "worker" ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
   const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
-      await input.beforeApply?.();
       if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
+        await input.beforeApply?.();
         await input.afterApply?.();
         return;
       }
@@ -784,6 +814,9 @@ export async function mergeDirectoryWithBaseline(input: {
           const conflicts = directoryMergeConflicts(input.baseline, source, current);
           if (conflicts.length) throw new DirectoryMergeConflict(conflicts);
         }
+        // Git integration and other writes must also wait for the complete
+        // file preflight. A rejected delta must not advance the destination HEAD.
+        await input.beforeApply?.();
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
@@ -802,6 +835,17 @@ export async function mergeDirectoryWithBaseline(input: {
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
     });
+    // This is the exported source, not the merged host: collaborators may have
+    // retained files that were never present in the remote workspace.
+    return { sourceSha256: directorySnapshotSha256(source) };
+  } catch (error) {
+    if (input.rescueDirectory || input.rescueOnFailure) {
+      const directory = input.rescueDirectory ?? await createWorkspaceRestoreDirectory();
+      if (!input.rescueDirectory) await fs.cp(input.sourceDir, path.join(directory, "payload"), { recursive: true, verbatimSymlinks: true });
+      await writeMergeRescue({ directory, baseline: input.baseline, source, target: input.targetDir });
+      if (error && typeof error === "object") Object.assign(error, { workspaceRescueId: path.basename(directory) });
+    }
+    throw error;
   } finally { await disposeDirectorySnapshot(source); }
 }
 

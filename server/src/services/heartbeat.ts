@@ -1,5 +1,6 @@
 import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
 import { registerWorkspaceCreatorRecovery } from "./recovery/workspace-creator-delivery.js";
+import { registerOriginalMainBlockers } from "./recovery/main-blocker.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
@@ -4373,6 +4374,10 @@ export function heartbeatService(
         wakeup: trackWakeup, cancelRun: cancelRunInternal,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
+    registerOriginalMainBlockers: (coordinator: Parameters<typeof registerOriginalMainBlockers>[1], canRun: () => boolean) =>
+      registerOriginalMainBlockers(db, coordinator, {
+        wakeup: trackWakeup, schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
@@ -4438,6 +4443,7 @@ export function heartbeatService(
       const run = await getRun(runId);
       // A terminal run only rechecks its original obligations. Never Stop a successor.
       if (run && isHeartbeatRunTerminalStatus(run.status) && !options?.cancellationRequestId) {
+        await runControl.cancelTerminalRunHandoffs(run.id, reason ?? "Cancelled by control plane", options);
         return await stopSettlement.reconcile(run.id, run.companyId, { manual: true }) ?? run;
       }
       return cancelRunInternal(runId, reason, options);

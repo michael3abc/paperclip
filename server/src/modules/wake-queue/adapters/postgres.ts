@@ -13,7 +13,7 @@ import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
-import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
@@ -1191,9 +1191,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
         if (await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
-        if (input.resumeStrandedQueue && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 

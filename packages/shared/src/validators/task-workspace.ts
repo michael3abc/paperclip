@@ -1,5 +1,6 @@
 import { z } from "zod";
 export const taskWorkspaceSelectionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("session_only") }).strict(),
   z.object({ kind: z.literal("task_directory") }).strict(),
   z.object({ kind: z.literal("existing"), workspaceId: z.string().uuid() }).strict(),
   z.object({ kind: z.literal("configured_source"), projectWorkspaceId: z.string().uuid(), mode: z.enum(["shared", "managed_isolated"]).default("shared") }).strict(),

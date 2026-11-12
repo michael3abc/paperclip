@@ -1769,7 +1769,7 @@ export {
   type ResourceMembershipUpdateResult,
 } from "./types/resource-memberships.js";
 
-export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
+export { workspaceRuntimeControlTargetSchema, managedWorktreeOperationSchema, managedWorktreeRecheckSchema } from "./validators/execution-workspace.js";
 export {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,
@@ -1821,6 +1821,8 @@ export {
   MAIN_MANAGED_WORKTREE_KEY,
   MAIN_MANAGED_WORKTREE_SCHEMA,
 } from "./execution-workspace-guards.js";
+export { readMainManagedWorktree } from "./execution-workspace-guards.js";
+export type { MainManagedWorktree } from "./execution-workspace-guards.js";
 
 export {
   MAX_TASK_DRAIN_TTL_MS,

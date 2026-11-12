@@ -1,4 +1,5 @@
 import { delegateWorkerSecretSchema } from "../services/worker-secret-delegation.js";
+import { managedWorktreeOperationSchema, managedWorktreeRecheckSchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -9316,6 +9317,26 @@ registry.registerPath({
     body: jsonBody(updateExecutionWorkspaceSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/projects/{projectId}/worktrees/{id}", tags: ["execution-workspaces"],
+  summary: "Inspect a main-managed linked worktree and its original operation receipts",
+  request: { params: z.object({ projectId: z.string().uuid(), id: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "post", path: "/api/projects/{projectId}/worktrees/{id}/operations", tags: ["execution-workspaces"],
+  summary: "Create, register, join, leave, converge, merge, reopen or retire a linked worktree",
+  description: "Management requires an authorized human or the current running project main. Participants are informational, never an exclusive writer claim. Supply an operation ID and expected generation; Git mutations also require pinned candidate and target HEADs.",
+  request: { params: z.object({ projectId: z.string().uuid(), id: z.string().uuid() }), body: jsonBody(managedWorktreeOperationSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+registry.registerPath({
+  method: "post", path: "/api/projects/{projectId}/worktrees/{id}/recheck", tags: ["execution-workspaces"],
+  summary: "Reconcile only the original worktree operation receipt without repeating Git mutations",
+  request: { params: z.object({ projectId: z.string().uuid(), id: z.string().uuid() }), body: jsonBody(managedWorktreeRecheckSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
 });
 
 registry.registerPath({

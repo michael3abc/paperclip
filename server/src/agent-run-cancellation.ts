@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { caseHandoffs, heartbeatRuns, type Db } from "@paperclipai/db";
 import { forbidden } from "./errors.js";
+import { adapterSessionWriteAllowed } from "./services/adapter-session-authority.js";
 
 /** Stop revokes write authority before waiting for the executor to settle. */
 export function agentRunWritesRevoked(run: {
@@ -19,6 +20,9 @@ export async function assertAgentRunWriteAllowed(tx: Db, companyId: string, acto
   stopId?: string | null;
 }) {
   if (!actor.agentId || !actor.runId) return;
+  if (!await adapterSessionWriteAllowed(tx, { companyId, agentId: actor.agentId, runId: actor.runId }, true)) {
+    throw forbidden("This run no longer owns the native session", { code: "agent_run_superseded" });
+  }
   const [run] = await tx.select({ status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson,
     runtimeMode: heartbeatRuns.runtimeMode, companyId: heartbeatRuns.companyId,
     contextSnapshot: heartbeatRuns.contextSnapshot })

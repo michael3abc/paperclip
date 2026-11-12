@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { registerManagedWorktreeCommands } from "./managed-worktree.js";
 import {
   addCommonClientOptions,
   apiPath,
@@ -32,6 +33,7 @@ export function registerWorkspaceCommands(program: Command): void {
   addCompanyGet(program.command("agent-config").description("Agent configuration summaries"), "list", "List agent configurations", "agent-configurations");
 
   const workspace = program.command("workspace").description("Execution workspace operations");
+  registerManagedWorktreeCommands(workspace);
   addCompanyGet(workspace, "list", "List execution workspaces", "execution-workspaces");
   addIdGet(workspace, "get", "Get an execution workspace", "execution-workspaces");
   addIdGet(workspace, "close-readiness", "Check execution workspace close readiness", "execution-workspaces", "close-readiness");
