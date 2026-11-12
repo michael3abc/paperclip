@@ -1,5 +1,12 @@
 # Paperclip fork
 
+2026-11-12 worker-card presentation: a project-scoped session-bridge read endpoint
+proves the current worker run/input and saved successful result. Existing durable
+status delivery and control events invalidate cards; late session publication
+re-arms that same queue. The host additionally verifies native turn/tools/input
+before display collapse. Unknown, pending, failed or superseded turns remain
+visible. No native archive, stop, history removal or workspace release is involved.
+
 2026-11-12 bounded original-main blocker repair: a failed notification turn and
 its automatic retry lineage cannot alternate with generic continuation to obtain
 fresh repair budgets. Preserve the original receipt, escalate failure after input

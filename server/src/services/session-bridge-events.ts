@@ -1,6 +1,9 @@
 import { and, asc, desc, eq, gte, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, issues, issueTreeHoldMembers, issueTreeHolds } from "@paperclipai/db";
+import { activityLog, agents, agentTaskSessions, heartbeatRuns, issues, issueTreeHoldMembers, issueTreeHolds } from "@paperclipai/db";
+import { mainAgentDispatchScope } from "./main-agent-workers.js";
+import { readAdapterSessionAuthority } from "./adapter-session-authority.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import type { LiveEvent } from "@paperclipai/shared";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 
@@ -29,6 +32,7 @@ import { subscribeCompanyLiveEvents } from "./live-events.js";
 export const SESSION_BRIDGE_EVENTS_DEFAULT_WAIT_SEC = 25;
 export const SESSION_BRIDGE_EVENTS_MAX_WAIT_SEC = 30;
 export const SESSION_BRIDGE_EVENTS_PAGE_SIZE = 50;
+export const SESSION_BRIDGE_WORKER_CARD_SNAPSHOT_LIMIT = 50;
 /** A just-published event can be visible a moment before its commit is; look once more shortly after a relevant wake. */
 const SESSION_BRIDGE_EVENTS_RECHECK_DELAY_MS = 300;
 const SESSION_BRIDGE_EVENTS_MAX_AFFECTED_ISSUES = 20;
@@ -83,6 +87,7 @@ export type SessionBridgeAffectedIssue = {
 };
 
 export type SessionBridgeControlEvent =
+  | { id: string; cursor: string; at: string; type: "worker_card_changed"; runId: string }
   | { id: string; cursor: string; at: string; type: "agent_paused" }
   | { id: string; cursor: string; at: string; type: "agent_resumed" }
   | {
@@ -115,7 +120,7 @@ export type SessionBridgeEventsResponse = {
   events: SessionBridgeControlEvent[];
   hasMore: boolean;
   agent: SessionBridgeAgentState | null;
-  snapshot?: { agent: SessionBridgeAgentState | null; activeHolds: SessionBridgeHoldSummary[] };
+  snapshot?: { agent: SessionBridgeAgentState | null; activeHolds: SessionBridgeHoldSummary[]; workerCardRunIds: string[] };
 };
 
 type RawActivityRow = {
@@ -131,6 +136,7 @@ type RawActivityRow = {
 };
 
 const CONTROL_ACTIONS = {
+  workerCardChanged: "session_bridge.worker_card_changed",
   paused: "agent.paused",
   resumed: "agent.resumed",
   holdCreated: "issue.tree_hold_created",
@@ -138,6 +144,9 @@ const CONTROL_ACTIONS = {
   issueCreated: "issue.created",
   issueUpdated: "issue.updated",
 } as const;
+const WORKER_CARD_ISSUE_ACTIONS = ["issue.comment_added", "issue.thread_interaction_created",
+  "issue.thread_interaction_answered", "issue.thread_interaction_accepted",
+  "issue.thread_interaction_cancelled", "issue.thread_interaction_dismissed"] as const;
 
 function guardedUuid(expression: SQL): SQL {
   // CASE guarantees the cast only runs on well-formed text, so unrelated rows
@@ -168,7 +177,10 @@ export function isRelevantSessionBridgeLiveEvent(event: LiveEvent, agentId: stri
   const payload = event.payload as Record<string, unknown>;
   const action = readString(payload.action);
   if (!action) return false;
+  if ((WORKER_CARD_ISSUE_ACTIONS as readonly string[]).includes(action)) return true;
   switch (action) {
+    case CONTROL_ACTIONS.workerCardChanged:
+      return payload.entityType === "agent" && payload.entityId === agentId;
     case CONTROL_ACTIONS.paused:
     case CONTROL_ACTIONS.resumed:
       return payload.entityType === "agent" && payload.entityId === agentId;
@@ -226,10 +238,21 @@ function relevancePredicate(input: { companyId: string; agentId: string }): SQL 
       ),
     ),
   );
-  return or(pauseOrResume, holdTouchingAgent, assignedToAgent)!;
+  const workerCardChange = and(eq(activityLog.entityType, "agent"), eq(activityLog.entityId, agentId),
+    eq(activityLog.action, CONTROL_ACTIONS.workerCardChanged));
+  const workerIssueActivity = and(eq(activityLog.entityType, "issue"), inArray(activityLog.action, [...WORKER_CARD_ISSUE_ACTIONS]),
+    sql`exists (select 1 from ${issues} i join ${agents} a on a.company_id = i.company_id
+      and a.id = ${agentId}::uuid and a.adapter_type = 'ccpocket_bridge' and a.adapter_config->>'role' = 'main'
+      and a.adapter_config->>'projectId' = i.project_id::text
+      where i.company_id = ${companyId}::uuid and i.id = ${guardedUuid(sql`${activityLog.entityId}`)}
+      and i.conversation_agent_id is null)`);
+  return or(pauseOrResume, holdTouchingAgent, assignedToAgent, workerCardChange, workerIssueActivity)!;
 }
 
-export function sessionBridgeEventsService(db: Db) {
+export function sessionBridgeEventsService(db: Db, options: {
+  /** Request-bound key/project and issue-read authorization, fail closed if absent. */
+  canReadWorkerIssue?: (issueId: string, projectId: string) => Promise<boolean>;
+} = {}) {
   async function readHeadCursor(companyId: string): Promise<string> {
     const row = await db
       .select({ id: activityLog.id, cursor: cursorTextSql })
@@ -393,9 +416,52 @@ export function sessionBridgeEventsService(db: Db) {
     }
 
     const events: SessionBridgeControlEvent[] = [];
+    const workerRows = rows.some(row => row.action === CONTROL_ACTIONS.workerCardChanged
+      || (WORKER_CARD_ISSUE_ACTIONS as readonly string[]).includes(row.action));
+    const [main] = workerRows && options.canReadWorkerIssue ? await db.select().from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))) : [];
+    const workerScope = main ? mainAgentDispatchScope(main) : null;
+    const configuredWorkers = workerScope?.delegation?.workers.filter(worker => "harness" in worker
+      && worker.harness === "ccpocket_bridge").map(worker => worker.agentId) ?? [];
+    const mayReadWorkerRun = async (runId: string, sourceIssueId?: string) => {
+      if (!workerScope || !configuredWorkers.length || !options.canReadWorkerIssue) return false;
+      const [record] = await db.select({ issueId: issues.id, projectId: issues.projectId }).from(heartbeatRuns)
+        .innerJoin(issues, and(eq(issues.companyId, heartbeatRuns.companyId), eq(issues.id, sql`coalesce(
+          ${heartbeatRuns.issueId}, ${heartbeatRuns.nativeIssueId}, ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)})`)))
+        .innerJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
+          inArray(heartbeatRuns.agentId, configuredWorkers), eq(agents.adapterType, "ccpocket_bridge"),
+          sql`coalesce(${agents.adapterConfig}->>'role', '') <> 'main'`,
+          sql`(${agents.runtimeConfig}->>'requireTaskWorktree' = 'true' or ${agents.runtimeConfig}->>'requireProjectWorkspace' = 'true')`,
+          eq(issues.projectId, workerScope.projectId), sql`${issues.conversationAgentId} is null`));
+      return !!record?.projectId && (!sourceIssueId || sourceIssueId === record.issueId)
+        && await options.canReadWorkerIssue(record.issueId, record.projectId);
+    };
     for (const row of rows) {
       const base = { id: row.id, cursor: formatSessionBridgeEventCursor(row.cursor, row.id), at: row.at.toISOString() };
+      if ((WORKER_CARD_ISSUE_ACTIONS as readonly string[]).includes(row.action)) {
+        if (!configuredWorkers.length || !options.canReadWorkerIssue) continue;
+        // One event-bound read, never a recurring scan. Proof endpoint repeats
+        // project/worker/authority checks before returning any completion state.
+        const sessions = await db.select({ params: agentTaskSessions.sessionParamsJson }).from(agentTaskSessions)
+          .where(and(eq(agentTaskSessions.companyId, companyId), eq(agentTaskSessions.taskKey, row.entityId),
+            inArray(agentTaskSessions.agentId, configuredWorkers),
+            eq(agentTaskSessions.adapterType, "ccpocket_bridge")));
+        for (const session of sessions) {
+          const authority = readAdapterSessionAuthority(session.params);
+          const runId = readString(authority?.runId);
+          if (runId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(runId) && await mayReadWorkerRun(runId, row.entityId))
+            events.push({ ...base, id: base.id + ":" + runId, type: "worker_card_changed", runId });
+        }
+        continue;
+      }
       switch (row.action) {
+        case CONTROL_ACTIONS.workerCardChanged: {
+          const runId = readString(row.details?.runId);
+          if (runId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(runId) && await mayReadWorkerRun(runId))
+            events.push({ ...base, id: base.id + ":" + runId, type: "worker_card_changed", runId });
+          break;
+        }
         case CONTROL_ACTIONS.paused:
           events.push({ ...base, type: "agent_paused" });
           break;
@@ -469,15 +535,48 @@ export function sessionBridgeEventsService(db: Db) {
     return { cursor, events, hasMore, examined: rows.length };
   }
 
+  async function readWorkerCardSnapshot(companyId: string, agentId: string): Promise<string[]> {
+    if (!options.canReadWorkerIssue) return [];
+    const [main] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    const scope = main ? mainAgentDispatchScope(main) : null;
+    const workers = scope?.delegation?.workers.filter(worker => "harness" in worker && worker.harness === "ccpocket_bridge").map(worker => worker.agentId) ?? [];
+    if (!scope || !workers.length) return [];
+    // Bound the candidate read itself, then apply request permissions. Do not
+    // refill denied/unknown rows from history or scan again on an idle poll.
+    const candidates = await db.select({ params: agentTaskSessions.sessionParamsJson, runId: heartbeatRuns.id,
+      issueId: issues.id, projectId: issues.projectId }).from(agentTaskSessions)
+      .innerJoin(issues, and(eq(issues.companyId, agentTaskSessions.companyId), eq(sql`${issues.id}::text`, agentTaskSessions.taskKey)))
+      .innerJoin(agents, and(eq(agents.companyId, agentTaskSessions.companyId), eq(agents.id, agentTaskSessions.agentId)))
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, agentTaskSessions.companyId), eq(heartbeatRuns.agentId, agentTaskSessions.agentId),
+        eq(heartbeatRuns.id, guardedUuid(sql`${agentTaskSessions.sessionParamsJson}->'adapterSessionAuthority'->>'runId'`)),
+        eq(issues.id, sql`coalesce(${heartbeatRuns.issueId}, ${heartbeatRuns.nativeIssueId}, ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)})`)))
+      .where(and(eq(agentTaskSessions.companyId, companyId), inArray(agentTaskSessions.agentId, workers),
+        eq(agentTaskSessions.adapterType, "ccpocket_bridge"), eq(agents.adapterType, "ccpocket_bridge"),
+        sql`coalesce(${agents.adapterConfig}->>'role', '') <> 'main'`,
+        sql`(${agents.runtimeConfig}->>'requireTaskWorktree' = 'true' or ${agents.runtimeConfig}->>'requireProjectWorkspace' = 'true')`,
+        eq(issues.projectId, scope.projectId), sql`${issues.conversationAgentId} is null`))
+      .orderBy(desc(agentTaskSessions.updatedAt), asc(agentTaskSessions.id)).limit(SESSION_BRIDGE_WORKER_CARD_SNAPSHOT_LIMIT);
+    const runIds = new Set<string>();
+    for (const candidate of candidates) {
+      const authority = readAdapterSessionAuthority(candidate.params);
+      // Even cancelled/failed/revoked turns need a fresh proof to undo an old
+      // projection. This is discovery, never completion or execution authority.
+      if (authority?.runId === candidate.runId && authority.taskKey === candidate.issueId && candidate.projectId
+        && await options.canReadWorkerIssue(candidate.issueId, candidate.projectId)) runIds.add(candidate.runId);
+    }
+    return [...runIds];
+  }
+
   async function currentSnapshot(companyId: string, agentId: string) {
     // Head first, then state: an event landing in between is delivered again
     // through the cursor and applying it twice is harmless.
     const cursor = await readHeadCursor(companyId);
-    const [agent, activeHolds] = await Promise.all([
+    const [agent, activeHolds, workerCardRunIds] = await Promise.all([
       readAgentState(companyId, agentId),
       readActiveHolds(companyId, agentId),
+      readWorkerCardSnapshot(companyId, agentId),
     ]);
-    return { cursor, agent, activeHolds };
+    return { cursor, agent, activeHolds, workerCardRunIds };
   }
 
   /**
@@ -503,7 +602,7 @@ export function sessionBridgeEventsService(db: Db) {
         events: [],
         hasMore: false,
         agent: snapshot.agent,
-        snapshot: { agent: snapshot.agent, activeHolds: snapshot.activeHolds },
+        snapshot: { agent: snapshot.agent, activeHolds: snapshot.activeHolds, workerCardRunIds: snapshot.workerCardRunIds },
       };
     }
 

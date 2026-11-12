@@ -29,6 +29,7 @@ type Rule = { method: string; pattern: RegExp; companyGroup?: number };
 
 const rules: Rule[] = [
   { method: "GET", pattern: /^\/api\/agents\/me\/session-bridge\/workers$/i },
+  { method: "GET", pattern: /^\/api\/agents\/me\/session-bridge\/worker-card-proof$/i },
   { method: "POST", pattern: /^\/api\/agents\/me\/session-bridge\/(receipt|tools-search|tools-call)$/i },
   { method: "GET", pattern: /^\/api\/health$/i },
   { method: "GET", pattern: /^\/api\/agents\/me$/i },

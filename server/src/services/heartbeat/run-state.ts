@@ -1,6 +1,7 @@
 import { ADAPTER_SESSION_AUTHORITY, mergeProtectedSessionParams, readAdapterSessionAuthority, lockAdapterSessionAuthority } from "../adapter-session-authority.js";
 import type { RunStopSettlement } from "@paperclipai/shared";
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { queueWorkerCardSessionPublication } from "../session-bridge-worker-cards.js";
 import { readRuntimeAccountingTotals } from "../runtime-accounting-totals.js";
 import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
@@ -1668,6 +1669,8 @@ export function createHeartbeatRunState(db: Db) {
     const existing = await tx.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId), eq(agentTaskSessions.adapterType, input.adapterType), eq(agentTaskSessions.taskKey, input.taskKey))).for("update").then((rows) => rows[0] ?? null);
     const sessionParamsJson = mergeProtectedSessionParams(existing?.sessionParamsJson, input.sessionParamsJson, input.lastRunId);
     if (sessionParamsJson === undefined) return null;
+    if (input.adapterType === "ccpocket_bridge" && input.lastRunId && !issue?.conversationAgentId)
+      await queueWorkerCardSessionPublication(tx as unknown as Db, { companyId: input.companyId, agentId: input.agentId, runId: input.lastRunId });
     if (existing) {
       return tx
         .update(agentTaskSessions)

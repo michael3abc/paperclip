@@ -4,6 +4,8 @@ import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { publishLiveEvent } from "./live-events.js";
 import { logger } from "../middleware/logger.js";
+import { persistWorkerCardChange } from "./session-bridge-worker-cards.js";
+import { publishActivity } from "./activity-log.js";
 
 /** Status delivery is at-least-once; clients invalidate by run id. It grants no execution authority. */
 export async function deliverExecutionStatuses(
@@ -30,6 +32,7 @@ export async function deliverExecutionStatuses(
       and(
         eq(issues.companyId, heartbeatRuns.companyId),
         eq(issues.id, sql`coalesce(
+          ${heartbeatRuns.issueId},
           ${heartbeatRuns.nativeIssueId},
           ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
         )`),
@@ -56,7 +59,15 @@ export async function deliverExecutionStatuses(
         },
       });
       options.failpoint?.("published");
-      await db.transaction(async tx => {
+      const publications = await db.transaction(async tx => {
+        // Serialize the durable marker before publishing card invalidations.
+        // A duplicated delivery cannot manufacture a second completion.
+        const [owned] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.executionStatusDeliveryId, run.executionStatusDeliveryId!))).for("update");
+        if (!owned) return [];
+        const cardEvents = await persistWorkerCardChange(tx as unknown as Db, {
+          companyId: run.companyId, runId: run.id, agentId: run.agentId, issueId: run.issueId });
         if (["failed", "timed_out"].includes(run.status)) await enqueuePushSource(tx as unknown as Db, {
           companyId: run.companyId, issueId: run.issueId, eventKey: `run:${run.id}:${run.status}`,
           sourceKind: "run", sourceId: run.id, category: "problem",
@@ -74,7 +85,9 @@ export async function deliverExecutionStatuses(
               ),
             ),
           );
+        return cardEvents;
       });
+      for (const publication of publications) publishActivity(publication);
       delivered += 1;
     } catch (error) {
       if (options.failpoint) throw error;

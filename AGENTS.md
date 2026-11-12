@@ -2,6 +2,15 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Worker-card collapse is presentation only. The session-bridge proof endpoint
+requires the current main's project/worker policy and issue read permission,
+server session authority, the exact accepted native input and a saved successful
+result. Pending input/questions and newer runs deny completion. The Bridge must
+also prove its current turn, saved response and settled tools; idle alone is not
+completion. Reuse execution-status delivery and control events, including session
+publication after terminal status, without adding a card polling loop. Preserve
+main/manual/pinned cards and all histories. See `doc/execution-semantics.md`.
+
 Resident Bridge session authority is server-owned. Use the awaited heartbeat
 callback before saving host ownership or sending input. Never grant authority from
 `lastRunId`, a terminal status, adapter-returned JSON or a late finalizer. Preserve

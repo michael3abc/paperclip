@@ -7,6 +7,7 @@ import { agents, projectWorkspaces, issues } from "@paperclipai/db";
 import { sessionBridgeChatBinding, sessionBridgeChatService } from "../services/session-bridge-chat.js";
 import { mainAgentDispatchScope } from "../services/main-agent-workers.js";
 import { pmDispatchDiagnostics } from "../services/pm-dispatch-diagnostics.js";
+import { sessionBridgeWorkerCardProof } from "../services/session-bridge-worker-cards.js";
 import { getAssignedMcpGateway } from "../services/native-runtime/assigned-mcp-tools.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { badRequest, forbidden, notFound } from "../errors.js";
@@ -67,8 +68,31 @@ export function sessionBridgeRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
   const mirror = sessionBridgeMirrorService(db);
-  const events = sessionBridgeEventsService(db);
   const chat = sessionBridgeChatService(db);
+
+  async function canReadWorkerIssue(req: Request, issueId: string, projectId?: string) {
+    const identity = sessionBridgeKeyIdentity(req);
+    if (!identity || identity.scopeConversationAgentId !== identity.agentId) return false;
+    if (projectId && !identity.projectIds.includes(projectId)) return false;
+    const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, identity.companyId)));
+    if (!issue?.projectId || !identity.projectIds.includes(issue.projectId) || (projectId && projectId !== issue.projectId)) return false;
+    const decision = await access.decide({ actor: req.actor, action: "issue:read", resource: {
+      type: "issue", companyId: issue.companyId, issueId: issue.id, projectId: issue.projectId,
+      parentIssueId: issue.parentId, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
+    }, scope: { issueId: issue.id, projectId: issue.projectId, parentIssueId: issue.parentId, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId } });
+    return decision.allowed;
+  }
+
+  router.get("/agents/me/session-bridge/worker-card-proof", async (req, res) => {
+    const identity = sessionBridgeKeyIdentity(req);
+    if (!identity || identity.scopeConversationAgentId !== identity.agentId) throw forbidden("Session bridge conversation key required");
+    const { runId } = z.object({ runId: z.uuid() }).strict().parse(req.query);
+    const proof = await sessionBridgeWorkerCardProof(db, { companyId: identity.companyId,
+      mainAgentId: identity.agentId, projectIds: identity.projectIds, runId });
+    if (!await canReadWorkerIssue(req, proof.issueId)) throw notFound("Worker card not found");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(proof);
+  });
 
   router.post("/agents/me/session-bridge/receipt", async (req, res) => {
     const identity = sessionBridgeKeyIdentity(req);
@@ -221,6 +245,7 @@ export function sessionBridgeRoutes(db: Db) {
     });
 
     const binding = await sessionBridgeChatBinding(db, identity.companyId, identity.agentId);
+    const events = sessionBridgeEventsService(db, { canReadWorkerIssue: (issueId, projectId) => canReadWorkerIssue(req, issueId, projectId) });
     const page = await events.poll({
       companyId: identity.companyId,
       agentId: identity.agentId,

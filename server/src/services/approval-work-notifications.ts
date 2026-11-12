@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { approvals, issueApprovals, type Db } from "@paperclipai/db";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { queueWorkerCardIssueChange } from "./session-bridge-worker-cards.js";
 
 export const notifyApprovalQueueWork = (transaction: object, companyId: string) => notifyDeliveryWork(transaction, DELIVERY_QUEUES.approvalQueueSeeding, companyId);
 
@@ -23,7 +24,10 @@ export async function notifyApprovalWork(transaction: object, companyId: string,
       .where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.approvalId, scope.approvalId)));
     for (const link of links) issueIds.add(link.issueId);
   }
-  for (const issueId of issueIds) await notifyIssueReviewState(transaction, { companyId, issueId });
+  for (const issueId of issueIds) {
+    await notifyIssueReviewState(transaction, { companyId, issueId });
+    await queueWorkerCardIssueChange(transaction as Db, { companyId, issueId });
+  }
 }
 
 export function writeApprovalChange<T>(db: Db, companyId: string, write: (transaction: Db) => Promise<T>, scope?: ApprovalChangeScope): Promise<T> {

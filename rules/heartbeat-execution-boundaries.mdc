@@ -78,8 +78,11 @@ ownership changes.
   after the origin task ends. Recheck under the workspace lifecycle lock before
   destructive work. The safety baseline rejects unsupported execution explicitly;
   it must never convert cooperative participation into an old exclusive holder.
-  The feature contract admits multiple tasks/runs to an open registered linked
-  tree. Cancellation immediately removes workspace admission participation;
+  The feature contract admits multiple tasks/runs to an open registered Git
+  directory (repository root or linked worktree). Explicit main-authorized code
+  initialization creates metadata only; external data/model/service directories
+  are never automatically initialized. Root retirement unregisters without deleting
+  files. Cancellation immediately removes workspace admission participation;
   historical Stop, lease, finalizer, export and instruction cleanup remain
   obligations of their own source, not locks on the tree. This describes the
   feature branch, not a claim that the feature is deployed.

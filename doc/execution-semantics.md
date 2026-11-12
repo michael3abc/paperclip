@@ -1,5 +1,45 @@
 # Execution Semantics
 
+## Completed Paperclip worker cards
+
+Card collapse is a client preference, enabled by default for workers only.
+`GET /api/agents/me/session-bridge/worker-card-proof?runId=<uuid>` is a read-only
+session-bridge endpoint. It requires the key's company/project scope, the current
+main's worker policy and normal issue read permission. Names and an idle session
+are never role or completion evidence. The response contains no prompt, answer
+body, credentials or paths.
+
+The `paperclip.worker-card-proof.v1` projection requires a current, unrevoked
+server session authority with matching run/generation/binding/operation, a
+correlated `paperclip.bridge-input.v1` receipt, and a persisted successful
+provider result/answer. Newer runs, queued input, pending questions/approvals and
+undelivered question responses deny completion. Generic terminal status alone
+does not qualify. The Bridge must additionally verify its exact current native
+identity, turn/input, persisted answer, settled tools and empty local input/question
+queues. Server proof is not permission to archive, stop or release any resource.
+
+Existing execution-status delivery emits durable `worker_card_changed` control
+events. Publishing the final session identity re-arms that same delivery marker
+because terminal status can arrive first. Input/question activity invalidates
+the current card. Approval changes re-arm it in their existing transaction,
+including linking or removing a pending approval after completion. Each fan-out
+event has a run-specific ID; the underlying
+activity cursor remains unchanged. No new scheduler or idle card scan is used.
+The initial events snapshot exposes `snapshot.workerCardRunIds`: at most 50
+current task-session authority pointers in the key's readable project/worker
+scope, including failed/running turns to invalidate stale completion. It never
+fills missing authority from history. A Bridge with a persisted event cursor
+requests this snapshot once at startup without replacing its cursor or replaying
+other snapshot controls. Later activity uses the normal event stream.
+
+The client folds eligible cards into the default-collapsed completed-worker
+section, retaining unread counts and access to the conversation. Main/manual,
+unknown-role and pinned cards stay visible. New work, failure or questions
+restore visibility; a late result cannot collapse a newer turn. Reconnection
+rebuilds from persisted identity/evidence, and Bridge startup performs at most
+one bounded verification per known eligible record. Unverified historical cards
+remain visible. All native IDs, histories and workspaces are preserved.
+
 Status: Current implementation guide
 Date: 2026-08-18
 Audience: Product and engineering
