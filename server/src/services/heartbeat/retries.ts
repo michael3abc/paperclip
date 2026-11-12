@@ -1,4 +1,5 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { isOriginalMainBlockerRetry } from "../recovery/main-blocker-run.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -417,6 +418,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (blocksAutomaticSshReplay(run, agent)) {
       return { outcome: "not_scheduled" as const, reason: "SSH in_place execution may have changed the workspace; inspect its result before an explicit new attempt.", issueId: run.issueId ?? null };
     }
+    if (await isOriginalMainBlockerRetry(db, run)) return { outcome: "not_scheduled" as const,
+      reason: "The original-main notice owns failure escalation to Owner; automatic continuation cannot replay its repair turn.",
+      errorCode: "main_blocker_owns_recovery" as const, issueId: run.issueId ?? null };
     if (await hasCaseHandoffForRun(run)) return { outcome: "not_scheduled" as const,
       reason: "The durable case handoff owns successor work.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))

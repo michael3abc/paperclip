@@ -1,5 +1,11 @@
 # Paperclip fork
 
+2026-11-12 bounded original-main blocker repair: a failed notification turn and
+its automatic retry lineage cannot alternate with generic continuation to obtain
+fresh repair budgets. Preserve the original receipt, escalate failure after input
+acceptance to Owner, and keep independent new Owner input eligible. Targeted
+PostgreSQL tests cover the scheduler, retry writer and original notice lifecycle.
+
 Upstream reference: `upstream/master` (fetch-only). Recorded merge base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 

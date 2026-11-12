@@ -2,7 +2,7 @@ import { heartbeatRuns } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
 
 const recoveryContextKeys = [
-  "issueId", "taskId", "retryReason", "source", "wakeReason",
+  "issueId", "taskId", "retryReason", "source", "wakeReason", "mainBlockerActionId",
   "handoffReason", "handoffRequired", "handoffAttempt", "maxHandoffAttempts",
   "sourceRunId", "resumeFromRunId", "missingDisposition",
   "providerQuotaRetryNotBefore", "transientRetryNotBefore",

@@ -252,6 +252,14 @@ describePostgres("heartbeat retry module database wiring", () => {
     const [history]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,run.id));
     expect(history!.contextSnapshot).toEqual(snapshot);
   });
+  it("bounded blocker repair cannot obtain a transient retry budget", async () => {
+    const { run, agent } = await fixture();
+    const contextSnapshot = { ...run.contextSnapshot, wakeReason: "original_main_blocker", mainBlockerActionId: randomUUID() };
+    await db.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun({ ...run, contextSnapshot }, agent))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "main_blocker_owns_recovery" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+  });
 
   it("reuses one successor across concurrent factories and keeps writes committed before callbacks", async () => {
     const { run, agent, issue, companyId } = await fixture();

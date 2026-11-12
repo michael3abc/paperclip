@@ -1,4 +1,5 @@
 import { creatorRecovery, WORKSPACE_CREATOR_MAX_REPAIRS } from "./workspace-creator.js";
+import { isOriginalMainBlockerRetry } from "./main-blocker-run.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
@@ -4847,6 +4848,14 @@ export function recoveryService(
         issue.status === "in_review"
           ? participantLatestRunForRecovery
           : latestRun;
+      // The original notice owns failure escalation, including automatic retry
+      // descendants left by older servers. Generic continuation must not reset
+      // its one-notice budget by alternating recovery wake reasons.
+      if (executionRecoverySource && isUnsuccessfulTerminalIssueRun(executionRecoverySource) &&
+          await isOriginalMainBlockerRetry(db, { ...executionRecoverySource, companyId: issue.companyId })) {
+        result.skipped += 1;
+        continue;
+      }
       if (
         executionRecoverySource?.agentId === agentId &&
         (
