@@ -244,7 +244,8 @@ including stale worker-role contexts; preserve execution-policy reviews in the P
 home with the PM's own model. A shared Claude or Codex worker may serve multiple
 projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
-hold when changing this topology or reuse another task's session/worktree.
+hold when changing this topology or reuse another task's native session. An
+open registered Git directory may be shared through the normal workspace selection.
 Shared workers select a main-registered Git repository root or linked worktree for code work. Multiple
 tasks/runs may join an open tree; canonical paths, aliases and parent/child overlap
 are not exclusive writer locks. Session cwd and external data/model/service paths
@@ -752,8 +753,10 @@ Cancel revokes run writes immediately; task authority, native-session order,
 unknown input/operation outcomes, permissions and Owner holds remain independent.
 Session cwd, including /home/michael, never creates a recursive occupancy scope.
 Use revision-checked selection and lifecycle generation/operation receipts. Recheck
-never resends Stop/input. Cleanup and retirement still require actual liveness,
-backup and ancestry evidence; no force removal or invented stop proof.
+never resends Stop/input. Destructive linked-worktree retirement still requires
+actual liveness, backup and ancestry evidence; no force removal or invented stop
+proof. Repository-root retirement only unregisters execution metadata, without
+deleting the directory or requiring a merge.
 An exact .git/info/exclude-only directory is ignore metadata even at the selected
 workspace root. It must remain an ordinary canonical directory without requiring
 Git. Empty, partial, symlinked or additional local Git metadata still requires Git
