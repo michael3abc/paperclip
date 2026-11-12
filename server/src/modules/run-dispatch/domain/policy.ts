@@ -64,6 +64,7 @@ export type ScheduledRetryGateErrorCode =
   | "issue_dependencies_blocked"
   | "issue_disposition_repair_superseded"
   | "issue_waiting_for_response"
+  | "retry_input_superseded"
   | "retry_source_cancelled";
 
 export type GateDecision =
@@ -82,6 +83,7 @@ export type ScheduledRetryFacts = {
   issueId: string | null;
   retryReasonKind: RetryReasonKind;
   cancelledRetrySourceId?: string | null;
+  supersedingInputCommentId?: string | null;
   enforceIssueExecutionLock: boolean;
 
   budgetBlock: BudgetBlockFacts | null;
@@ -110,6 +112,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "retry_input_superseded"
   | "retry_source_cancelled"
   | "issue_waiting_for_response"
   | "execution_reconciliation_required"
@@ -271,6 +274,11 @@ export function decideScheduledRetryGate(
     allowed: false, errorCode: "retry_source_cancelled", issueId: facts.issueId,
     reason: "Cancelled execution cannot acquire an automatic retry; new input requires its own admission.",
     details: { sourceRunId: facts.cancelledRetrySourceId },
+  };
+  if (facts.supersedingInputCommentId) return {
+    allowed: false, errorCode: "retry_input_superseded", issueId: facts.issueId,
+    reason: "A newer independent input owns its own admission; the previous input cannot be replayed.",
+    details: { supersedingCommentId: facts.supersedingInputCommentId },
   };
   if (facts.budgetBlock) {
     return {

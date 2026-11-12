@@ -15273,12 +15273,16 @@ export function issueRoutes(
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
+      // Reopening must publish the new input in the same commit. Otherwise the
+      // status notification can promote a failed predecessor before its replacement exists.
+      const commentWithReopen = Boolean(commentBody && updateFields.status === "todo");
+      const persistCommentWithUpdate = Boolean(commentAttachmentIds?.length) ||
+        commentWithAdapterOverrides || commentWithReopen;
+      const transactionalCommentSourceTrust = persistCommentWithUpdate
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
-        Boolean(commentAttachmentIds?.length) ||
-        commentWithAdapterOverrides ||
+        persistCommentWithUpdate ||
         Boolean(decision) ||
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
@@ -15293,8 +15297,8 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
-              // Adapter settings, reassignment, comment and upload binding commit together.
+            if (persistCommentWithUpdate) {
+              // Reopening, adapter settings, comment and upload binding commit together.
               // A failed comment or invalid receipt rolls back the issue update.
               transactionalComment = await svc.addComment(
                 id,
@@ -19560,6 +19564,12 @@ export function issueRoutes(
       const reopenRequested = req.body.reopen === true;
       const resumeRequested = req.body.resume === true;
       const interruptRequested = req.body.interrupt === true;
+      if (interruptRequested && req.actor.type !== "board") {
+        res.status(403).json({
+          error: "Only board users can interrupt active runs from issue comments",
+        });
+        return;
+      }
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
       const crossIssueCommentOnlyGrant =
@@ -19719,6 +19729,8 @@ export function issueRoutes(
 
       let scheduledRetrySupersededByComment = false;
       let cancelledScheduledRetryRunId: string | null = null;
+      let transactionalReopenComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+      let fastResponseEnqueued = false;
       if (effectiveMoveToTodoRequested && shouldResumeInProgressScheduledRetry) {
         cancelledScheduledRetryRunId = await cancelScheduledRetrySupersededByComment({
           scheduledRetryRunId: scheduledRetryForHumanComment?.runId,
@@ -19736,11 +19748,74 @@ export function issueRoutes(
         scheduledRetrySupersededByComment =
           shouldResumeInProgressScheduledRetry &&
           issue.status === "in_progress";
-        const reopenedIssue = await svc.update(id, { status: "todo" });
-        if (!reopenedIssue) {
-          res.status(404).json({ error: "Issue not found" });
+        const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        const postCommitIssueActions: IssuePostCommitAction[] = [];
+        const saveReopenComment = (tx: Parameters<typeof svc.addComment>[4]) =>
+          svc.addComment(id, req.body.body, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+            onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+          }, {
+            authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+            presentation: commentPresentation,
+            metadata: req.body.metadata ?? null,
+            attachmentIds: req.body.attachmentIds,
+            clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
+            mirrorToSlack: actor.actorType === "user",
+            authorizationReason: commentAuthorizationReason,
+            sourceTrust,
+          }, tx);
+        // The issue lock is also the retry admission fence. Save the new input
+        // before reopening, and commit both together, so a status wake cannot
+        // regain authority for the failed input while the comment is in flight.
+        const reopenResult = await db.transaction(async (tx) => {
+          const lockedIssue = await svc.getByIdForUpdate(id, tx);
+          if (!lockedIssue) throw notFound("Issue not found");
+          // A duplicate can arrive before the first transaction commits. Its
+          // retained receipt wins over the stale reopen snapshot, including the
+          // original redaction-aware body conflict check in addComment.
+          if (actor.actorType === "user" && req.body.clientRequestId) {
+            const [accepted] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+              eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+              eq(issueComments.authorUserId, actor.actorId), eq(issueComments.clientRequestId, req.body.clientRequestId),
+            ));
+            if (accepted) return { issue: lockedIssue, comment: await saveReopenComment(tx), alreadyAccepted: true };
+          }
+          if (lockedIssue.companyId !== issue.companyId ||
+            lockedIssue.status !== issue.status ||
+            lockedIssue.statusVersion !== issue.statusVersion ||
+            lockedIssue.assigneeAgentId !== issue.assigneeAgentId ||
+            lockedIssue.assigneeUserId !== issue.assigneeUserId ||
+            lockedIssue.projectId !== issue.projectId) {
+            throw conflict("Task changed before the comment could reopen it", {
+              code: "issue_comment_reopen_observation_stale",
+            });
+          }
+          const saved = await saveReopenComment(tx);
+          const updated = await svc.update(id, { status: "todo" }, tx,
+            postCommitActivityPublications, postCommitIssueActions);
+          if (!updated) throw notFound("Issue not found");
+          if (actor.actorType === "user" && updated.assigneeAgentId) {
+            await enqueueFastResponse(tx as unknown as Db, {
+              companyId: updated.companyId, issueId: updated.id, agentId: updated.assigneeAgentId,
+              responsibleUserId: actor.actorId, sourceCommentId: saved.id,
+              sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt),
+            });
+            fastResponseEnqueued = true;
+          }
+          return { issue: updated, comment: saved, alreadyAccepted: false };
+        });
+        if (reopenResult.alreadyAccepted) {
+          currentIssue = reopenResult.issue;
+          res.status(201).json(reopenResult.comment);
           return;
         }
+        for (const publication of postCommitActivityPublications) publishActivity(publication);
+        await flushIssuePostCommitActions(postCommitIssueActions);
+        const reopenedIssue = reopenResult.issue;
+        transactionalReopenComment = reopenResult.comment;
         reopened = isClosed || (isBlocked && !hasUnresolvedFirstClassBlockers);
         reopenFromStatus = reopened ? issue.status : null;
         currentIssue = reopenedIssue;
@@ -19780,14 +19855,6 @@ export function issueRoutes(
       }
 
       if (interruptRequested) {
-        if (req.actor.type !== "board") {
-          res.status(403).json({
-            error:
-              "Only board users can interrupt active runs from issue comments",
-          });
-          return;
-        }
-
         const runToInterrupt = await resolveActiveIssueRun(currentIssue);
         if (runToInterrupt) {
           const cancelled = await heartbeat.cancelRun(
@@ -19840,8 +19907,9 @@ export function issueRoutes(
       // comment is inserted would leave an orphan comment without the corresponding state change.
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
-      let fastResponseEnqueued = false;
-      if (shouldAutoApproveReviewComment) {
+      if (transactionalReopenComment) {
+        comment = transactionalReopenComment;
+      } else if (shouldAutoApproveReviewComment) {
         const transition = applyIssueExecutionPolicyTransition({
           issue: currentIssue,
           policy: currentExecutionPolicy,
