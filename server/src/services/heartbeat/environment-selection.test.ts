@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, environments, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environments, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -80,6 +80,19 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     };
     return { input, issue, project, workspace, recover };
   }
+
+  it.each([{ schema: "paperclip.main-managed-worktree.v1", phase: "open" }, { schema: "future" }, null])("rejects unsupported main-managed admission without parking on a holder: %s", async marker => {
+    const { input, issue, workspace } = await fixture();
+    const saved = await workspace();
+    await db.update(executionWorkspaces).set({ metadata: { mainManagedWorktree: marker } })
+      .where(eq(executionWorkspaces.id, saved.id));
+    input.task.issueRef = { ...issue, executionWorkspaceId: saved.id };
+    await expect(selectHeartbeatEnvironment(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "shared_worktree_unsupported" } },
+    });
+    expect(input.services.findExecutionWorkspaceHolder).not.toHaveBeenCalled();
+    expect(input.services.findSharedWorkspaceHolder).not.toHaveBeenCalled();
+  });
 
   it("continues the saved non-Git Recovery copy of a configured source without reinterpreting it as a worktree", async () => {
     const { input, issue, project } = await fixture();
