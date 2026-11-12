@@ -13,6 +13,7 @@ import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-t
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
+import { findRetrySupersedingInput } from "../automatic-retry-authority.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
@@ -3260,6 +3261,7 @@ export function recoveryService(
     const sourceRun = input.latestRun?.id ? await db.select()
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.issue.companyId)))
       .limit(1).then(rows => rows[0]) : null;
+    if (sourceRun && await findRetrySupersedingInput(db, sourceRun)) return null;
     const timing = dispositionRepairDelayMs(input.attempt, input.fingerprint);
     const now = new Date();
     const retryAt = new Date(now.getTime() + timing.delayMs);
@@ -3306,7 +3308,7 @@ export function recoveryService(
         .limit(1)
         .then((rows) => rows[0]?.run ?? null);
 
-    let scheduledRun = await findScheduledRun();
+    let scheduledRun: typeof heartbeatRuns.$inferSelect | null = await findScheduledRun();
     let created = false;
     if (!scheduledRun) {
       try {
@@ -3336,6 +3338,13 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
+            // A saved fresh comment owns the next turn even before its wake is
+            // published. Serialize delayed repair creation with comment commit.
+            await tx.execute(sql`select id from issues where id = ${input.issue.id} and company_id = ${input.issue.companyId} for update`);
+            const [currentSource] = sourceRun ? await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, sourceRun.id), eq(heartbeatRuns.companyId, input.issue.companyId),
+            )).limit(1) : [];
+            if (currentSource && await findRetrySupersedingInput(tx as unknown as Db, currentSource)) return null;
             await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
             const wakeup = await tx
               .insert(agentWakeupRequests)
@@ -3844,6 +3853,9 @@ export function recoveryService(
     if ((readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId)) !== issue.id) {
       return { kind: "skip" as const, reason: "invalid_issue_binding" };
     }
+    // Inspect the original successful source, never the repair's prepared
+    // envelope, which may already contain later comments as task history.
+    if (await findRetrySupersedingInput(db, run)) return { kind: "skip" as const, reason: "retry_input_superseded" };
     const [agent, pause, budget, stop, active, routine, goal, latest, durableWait, workspaceChildren] = await Promise.all([
       getAgent(run.agentId),
       isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc),

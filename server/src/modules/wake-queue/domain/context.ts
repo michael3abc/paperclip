@@ -82,10 +82,16 @@ export function wakeMustNotJoinActiveRun(
   interactionReceipt: boolean,
 ): boolean {
   const active = parseObject(activeRunContext);
-  // New comment authority cannot inherit a retry's prior rendered envelope.
-  const newComment = mergeWakeCommentIds(wakeContext).some(id => !mergeWakeCommentIds(active).includes(id));
-  const priorExecution = Boolean(active.retryOfRunId || active.dispositionRepairSourceRunId || active.executionContinuation);
-  return newComment && priorExecution || interactionReceipt || Boolean(active.interactionId) ||
+  // Keep independent input separate in BOTH arrival orders. A repair arriving
+  // after a fresh comment must not turn that comment's run into system recovery.
+  // The locked writer passes a merged snapshot, so also detect newly introduced
+  // retry ancestry even when that snapshot retained the active comment IDs.
+  const activeIds = mergeWakeCommentIds(active), incomingIds = mergeWakeCommentIds(wakeContext);
+  const activePrior = Boolean(active.retryOfRunId || active.dispositionRepairSourceRunId || active.executionContinuation);
+  const incomingPrior = Boolean(wakeContext.retryOfRunId || wakeContext.dispositionRepairSourceRunId || wakeContext.executionContinuation);
+  const differentInput = incomingIds.some(id => !activeIds.includes(id)) || activeIds.some(id => !incomingIds.includes(id));
+  const introducesRepair = activeIds.length > 0 && !activePrior && incomingPrior;
+  return (activePrior || incomingPrior) && (differentInput || introducesRepair) || interactionReceipt || Boolean(active.interactionId) ||
     wakeChatConversationsConflict(activeRunContext, wakeContext);
 }
 

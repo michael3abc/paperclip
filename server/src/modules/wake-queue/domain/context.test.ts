@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { enrichPromotedWakeContext } from "./context.js";
+import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "./context.js";
+
+describe("independent input and disposition repair boundaries", () => {
+  const fresh = { wakeCommentIds: ["fresh-comment"] };
+  const repair = { retryOfRunId: "successful-source", dispositionRepairSourceRunId: "successful-source" };
+  it.each([
+    ["fresh input arrives first", fresh, repair],
+    ["repair arrives first", repair, fresh],
+    ["locked writer sees a merged repair envelope", fresh, { ...fresh, ...repair }],
+  ])("keeps separate authority when %s", (_label, active, incoming) => {
+    expect(wakeMustNotJoinActiveRun(active, incoming, false)).toBe(true);
+  });
+  it("still permits ordinary fresh comment batching without retry ancestry", () => {
+    expect(wakeMustNotJoinActiveRun(fresh, { wakeCommentIds: ["second-comment"] }, false)).toBe(false);
+  });
+});
 
 describe("enrichPromotedWakeContext", () => {
   it("clears stale derived comment projections when the canonical id list is empty, but keeps an independent interaction continuation", () => {

@@ -3993,6 +3993,30 @@ its own normal admission and delivery checks; neither this fence nor task
 reopening grants replay permission for unknown/delivered input or cancels an
 already productive provider turn.
 
+A queued input rejected before provider admission may retain
+`execution_reconciliation_required` / `delivery_unknown`. That label alone
+does not mean an input was delivered. Exempt only the cancelled legacy run
+whose `stale_queued_run_gate` result matches the original system lifecycle
+event and skipped wake, with no execution identity, provider event, accepted
+input, lease, finalizer, instruction copy or workspace operation. Preserve the
+rejected input and original recovery rows; the existing deferred-input
+coordinator may admit only a later independently authorized saved comment.
+A separate unknown source incident remains blocking, and no old input is
+retried or backfilled.
+Startup reconstruction of the existing deferred-receipt coordinator rechecks
+that saved wake through ordinary locked release/admission; no repost, recovery
+row rewrite or periodic polling is needed.
+
+The same independent-input fence applies to disposition repair of a successful
+source, before scheduling and again before dispatch. Repair wakes and fresh
+input cannot coalesce in either direction. A suppressed, prepared Bridge repair
+may retain remote instruction copies awaiting collection: its exact persisted
+undispatched receipt must identify this rejected run and the original successful
+source's native session, record that source as the last input, and prove a settled
+background. Together with its original admission, skipped wake, accounting and
+cleanup-intent records and no contradictory provider evidence, this permits a
+later independent input without marking any instruction copy cleaned.
+
 Original-main and workspace-creator
 notices validate their protected action/wake, current source and original
 conversation, and only the recorded system comment. Missing receipts, changed

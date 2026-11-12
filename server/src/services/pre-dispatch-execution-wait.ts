@@ -21,6 +21,41 @@ function staleDispatchExecutionWaitPredicate() {
     AND ${noRetainedExecutionPredicate()}, false)`;
 }
 
+/** Rejecting an unverifiable queued input is not sending it. Historical retry
+ * coalescing could leave this child with stale input authority; its own gate
+ * receipt may release a later independent input, never replay the rejected one.
+ * Keep any separate source incident and every contradictory execution proof. */
+function rejectedQueuedInputPredicate() {
+  return sql`coalesce(
+    ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
+    AND ${heartbeatRuns.finishedAt} IS NOT NULL
+    AND ${heartbeatRuns.errorCode} = 'execution_reconciliation_required'
+    AND ${heartbeatRuns.resultJson}->>'stopReason' = 'execution_reconciliation_required'
+    AND ${heartbeatRuns.resultJson}->>'timeoutSource' = 'stale_queued_run_gate'
+    AND ${heartbeatRuns.resultJson}#>>'{executionWait,reason}' = 'delivery_unknown'
+    AND ${canonicalExecutionUuid(sql`${heartbeatRuns.resultJson}#>>'{executionWait,issueId}'`)}
+      = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+    AND (${heartbeatRuns.issueId} IS NULL OR ${heartbeatRuns.issueId}
+      = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)})
+    AND ${heartbeatRuns.resultJson}->>'bridgeSessionId' IS NULL
+    AND ${heartbeatRuns.resultJson}->>'nativeSessionId' IS NULL
+    AND NOT (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ?| ARRAY[
+      'bridgeInputReceipt', 'nativeTurnId', 'nativeInputId', 'antigravityTurnReceipt'])
+    AND coalesce(${heartbeatRuns.usageJson}->'accountingProviderWorkStarted', 'false'::jsonb) = 'false'::jsonb
+    AND ${noRetainedExecutionPredicate()}
+    AND EXISTS (SELECT 1 FROM agent_wakeup_requests w WHERE w.id = ${heartbeatRuns.wakeupRequestId}
+      AND w.company_id = ${heartbeatRuns.companyId} AND w.agent_id = ${heartbeatRuns.agentId}
+      AND w.run_id = ${heartbeatRuns.id} AND w.status = 'skipped' AND w.finished_at IS NOT NULL
+      AND w.error = ${heartbeatRuns.error}
+      AND w.payload->>'issueId' = ${heartbeatRuns.contextSnapshot}->>'issueId')
+    AND EXISTS (SELECT 1 FROM heartbeat_run_events e WHERE e.run_id = ${heartbeatRuns.id}
+      AND e.company_id = ${heartbeatRuns.companyId} AND e.agent_id = ${heartbeatRuns.agentId}
+      AND e.source_event_id IS NULL AND e.event_type = 'lifecycle' AND e.stream = 'system'
+      AND e.message = ${heartbeatRuns.error} AND e.payload = ${heartbeatRuns.resultJson}->'executionWait')
+    AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c WHERE c.run_id = ${heartbeatRuns.id})
+    AND NOT EXISTS (SELECT 1 FROM workspace_operations o WHERE o.heartbeat_run_id = ${heartbeatRuns.id}), false)`;
+}
+
 /** A parked workspace wait has entered preparation, but the admission gate has
  * not granted access. An operator cancellation must retain that original proof.
  * Neither the error code nor an absent PID alone establishes this fact. */
@@ -84,6 +119,31 @@ function cancelledScheduledWorkspaceRetryPredicate() {
  * cancellation or missing process columns alone are not proof. Local prepared
  * copies still go through the original collector and all resource fences. */
 export function suppressedDispositionRepairPredicate() {
+  // A remote instruction copy remains a cleanup obligation when Bridge proved
+  // this exact run never received input. This is not terminal/idle evidence:
+  // bind the retained receipt to the original successful source below.
+  const remoteUndispatched = sql`coalesce(
+    ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
+    AND ${heartbeatRuns.resultJson}->'executionCancellation' IS NULL
+    AND ${heartbeatRuns.resultJson}#>>'{executionStopVerification,schema}' = 'paperclip.bridge-undispatched-stop.v1'
+    AND ${heartbeatRuns.resultJson}#>>'{executionStopVerification,proof}' = 'bridge_undispatched_reverified'
+    AND ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,schema}' = 'ccpocket.bridge-undispatched-stop.v1'
+    AND ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,runId}' = ${heartbeatRuns.id}::text
+    AND length(${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,bridgeSessionId}') > 0
+    AND length(${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,nativeSessionId}') > 0
+    AND jsonb_typeof(${heartbeatRuns.resultJson}#>'{executionStopVerification,bridgeStopProof,recordedInputs}') = 'number'
+    AND ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,recordedInputs}' ~ '^[1-9][0-9]*$'
+    AND ${heartbeatRuns.resultJson}#>'{executionStopVerification,bridgeStopProof,background}' = '{"known":true,"active":[]}'::jsonb
+    AND ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,lastRecordedRunId}' <> ${heartbeatRuns.id}::text
+    AND EXISTS (SELECT 1 FROM heartbeat_runs source WHERE
+      source.id = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'dispositionRepairSourceRunId'`)}
+      AND source.company_id = ${heartbeatRuns.companyId} AND source.agent_id = ${heartbeatRuns.agentId}
+      AND source.context_snapshot->>'issueId' = ${heartbeatRuns.contextSnapshot}->>'issueId'
+      AND source.result_json->>'nativeSessionId' = ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,nativeSessionId}'
+      AND source.id::text = ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,lastRecordedRunId}')
+    AND EXISTS (SELECT 1 FROM heartbeat_run_events e WHERE e.run_id = ${heartbeatRuns.id}
+      AND e.company_id = ${heartbeatRuns.companyId} AND e.source_event_id IS NULL AND e.stream = 'system'
+      AND e.event_type = 'execution.stop_settlement_checked' AND e.payload->'stopVerified' = 'true'::jsonb), false)`;
   return sql`coalesce(
     ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
     AND ${heartbeatRuns.finishedAt} IS NOT NULL
@@ -92,6 +152,8 @@ export function suppressedDispositionRepairPredicate() {
     AND ${heartbeatRuns.costAccountedAt} IS NOT NULL
     AND ${heartbeatRuns.resultJson}->>'bridgeSessionId' IS NULL
     AND ${heartbeatRuns.resultJson}->>'nativeSessionId' IS NULL
+    AND NOT (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ?| ARRAY[
+      'bridgeInputReceipt', 'nativeTurnId', 'nativeInputId', 'antigravityTurnReceipt'])
     AND coalesce(${heartbeatRuns.resultJson}#>>'{executionCancellation,forced}', 'false') <> 'true'
     AND ${noRetainedProviderIdentityPredicate()}
     AND ${heartbeatRuns.runnerProfileJson}->'chatControlRecoveryAdmission' = jsonb_build_object(
@@ -127,13 +189,15 @@ export function suppressedDispositionRepairPredicate() {
       AND (l.provider IS DISTINCT FROM 'local' OR l.released_at IS NULL OR l.status = 'pending_cleanup'
         OR l.cleanup_status = 'failed' OR l.metadata ? 'nativeWorkspaceExportResume'))
     AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c WHERE c.run_id = ${heartbeatRuns.id}
-      AND (c.location <> 'local' OR c.receipt ? 'retainedByRunId'))
+      AND ((c.location <> 'local' AND NOT (c.location LIKE 'remote:%'
+        AND c.company_id = ${heartbeatRuns.companyId} AND c.agent_id = ${heartbeatRuns.agentId}
+        AND c.receipt->>'schema' = 'paperclip.agent-files.v1' AND ${remoteUndispatched})) OR c.receipt ? 'retainedByRunId'))
     AND NOT EXISTS (SELECT 1 FROM workspace_operations o WHERE o.heartbeat_run_id = ${heartbeatRuns.id}
       AND o.status IN ('running', 'queued', 'pending')), false)`;
 }
 
 function preDispatchExecutionWaitPredicate() {
-  return sql`(${staleDispatchExecutionWaitPredicate()} OR ${cancelledWorkspaceWaitPredicate()}
+  return sql`(${staleDispatchExecutionWaitPredicate()} OR ${rejectedQueuedInputPredicate()} OR ${cancelledWorkspaceWaitPredicate()}
     OR ${cancelledScheduledWorkspaceRetryPredicate()} OR ${suppressedDispositionRepairPredicate()})`;
 }
 
