@@ -632,3 +632,12 @@ Candidate HTTP/UI acceptance caught a hidden workspace-wait banner when the
 event-driven wait had no deadline. Header and composer now retain the waiting
 status and exact-run cancellation control with scheduledRetryAt=null. Preserve
 the failed c3b8a423d candidate receipt alongside the corrective validation.
+
+### 2026-11-12 — Fixed-directory Chat Retry
+
+- Ordinary Retry retains the agent's configured fixed directory through normal
+  admission instead of implicitly allocating an incompatible isolated directory.
+- Explicit fresh isolation, stop/cleanup evidence, source/trust/environment checks
+  and physical ownership keep their existing gates. No historical run is rewritten.
+- Bridge main-agent rollout config must bind the same cwd on both platform and
+  adapter sides. Historical selection repairs use the revision-checked API.

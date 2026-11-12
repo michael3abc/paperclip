@@ -322,6 +322,36 @@ describe("durable task Retry admission", () => {
     expect(await readFreshWorkspaceReadiness(db, successor)).toEqual(readiness);
     expect(await readFreshWorkspaceReadiness(db, { ...successor, id: randomUUID() })).toBeNull();
   });
+  it.each([
+    { strategy: "evaluate", hostId: undefined },
+    { strategy: "continue", hostId: "remote-host" },
+    { strategy: "fresh_isolated_workspace", hostId: undefined },
+  ])("retains fixed placement without rewriting an explicit fresh attempt: $strategy $hostId", async ({ strategy, hostId }) => {
+    const input = await seed();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+    const binding = { mode: "fixed", cwd: "/project/main", ...(hostId ? { hostId } : {}) };
+    await db.update(agents).set({ runtimeConfig: { workspaceBinding: binding } }).where(eq(agents.id, source.agentId));
+    const receipt = await requestTaskRetry(input);
+    const [successor] = await db.insert(heartbeatRuns).values({ companyId: input.companyId,
+      agentId: source.agentId, issueId: input.issueId, status: "queued",
+      contextSnapshot: { issueId: input.issueId, taskRetryRequestId: receipt.requestId } }).returning();
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    await db.update(agentWakeupRequests).set({ runId: successor.id, status: "coalesced",
+      payload: { ...wake.payload, taskRetry: { ...(wake.payload!.taskRetry as object), strategy } } })
+      .where(eq(agentWakeupRequests.id, receipt.requestId!));
+    const readiness = await readFreshWorkspaceReadiness(db, successor);
+    if (strategy === "fresh_isolated_workspace") expect(readiness).toMatchObject({ mode: strategy });
+    else expect(readiness).toBeNull();
+    expect(await readFreshWorkspaceReadiness(db, successor)).toEqual(readiness);
+    const [retained] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect((retained.payload!.taskRetry as { strategy: string }).strategy)
+      .toBe(strategy === "fresh_isolated_workspace" ? strategy : "continue");
+    // Placement is not termination, cleanup, task-state or dispatch authority.
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id)))[0]).toEqual(source);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id)))[0].status).toBe("queued");
+    expect((await db.select().from(issues).where(eq(issues.id, input.issueId)))[0].status).toBe("blocked");
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.companyId))).toHaveLength(0);
+  });
   it("reuses completed API effects only from the retry ancestry while retaining unrelated uncertainty", async () => {
     const input = await seed();
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));

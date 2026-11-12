@@ -554,6 +554,12 @@ A change is done when all are true:
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
 
 PM Retry may reuse its task-owned home only after a settled pre-provider setup failure and an unchanged zero-slot PM binding. Never reinterpret an explicit fresh-workspace request or relax worker isolation; preserve original failed runs and recheck trust and environment restrictions during preparation.
+Ordinary Retry for a configured fixed directory retains that placement through
+normal admission; do not replace it with an implicit isolated directory. Explicit
+fresh attempts remain explicit and may conflict with fixed policy. Placement
+selection never proves stop or cleanup, overrides a task's isolation requirement,
+or bypasses physical ownership. Bridge main-agent configuration must register the
+same cwd in both adapter settings and runtimeConfig.workspaceBinding.
 
 PM worker options may pin an existing explicit AI connection alongside their model.
 Worker catalogs use that connection's routed models, not a global official-provider

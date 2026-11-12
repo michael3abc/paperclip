@@ -216,6 +216,31 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
         return readiness;
       }
     }
+    // A fixed directory is an execution contract, not a failed task directory
+    // that Retry can replace. Normal preparation still checks current policy,
+    // trust, source selection, provider stop and every resource owner. This
+    // chooses placement only; it neither settles the source nor admits a writer.
+    if (intent.strategy !== "fresh_isolated_workspace") {
+      const [agent] = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents).where(and(
+        eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
+      ));
+      const configured = agent?.runtimeConfig?.workspaceBinding as Record<string, unknown> | undefined;
+      if (configured?.mode === "fixed") {
+        const binding = readWorkspaceBinding(agent?.runtimeConfig ?? undefined);
+        if (!binding) throw new Error("Fixed retry workspace binding is unavailable");
+        await db.transaction(async tx => {
+          const changed = await tx.update(agentWakeupRequests).set({
+            payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"continue"'::jsonb)`,
+          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.runId, run.id),
+            sql`${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' = 'evaluate'`)).returning({ id: agentWakeupRequests.id });
+          if (changed.length) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
+            actorType: "system", actorId: "task-recovery", action: "issue.retry_fixed_workspace_selected",
+            entityType: "issue", entityId: issueId, runId: run.id,
+            details: { retryIntentId: wake.id, sourceRunId: source.id, cwd: binding.cwd, hostId: binding.hostId ?? null } });
+        });
+        return null;
+      }
+    }
     const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, source.id),
     ));

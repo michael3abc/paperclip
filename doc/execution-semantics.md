@@ -3685,6 +3685,14 @@ ACK. Recording the boundary notifies the existing coordinator transactionally;
 exhausted historical records require new evidence or an explicit Recheck.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
+For an agent with a configured fixed directory, ordinary Retry retains the fixed
+placement instead of choosing a new isolated directory implicitly. Record the
+decision on the original retry intent; normal preparation still enforces task
+selection, trust, environment and all stop/cleanup/physical ownership gates. An
+explicit fresh-isolated intent is not rewritten and remains incompatible with a
+fixed binding. Bridge main agents register the same cwd in adapter settings and
+runtimeConfig.workspaceBinding; correcting a historical Chat selection uses the
+revision-checked workspace API and preserves its original native session.
 Selection is persistent and applies at the next normal admission; it does not
 Retry or start a task. Inspect the original receipt after uncertain delivery.
 The task workspace card displays binding state, observed host/cwd and waiting
