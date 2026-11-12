@@ -363,20 +363,22 @@ export function createPostgresRunDispatchAdapter(
     const isBlocked = () => !decideScheduledRetryGate(facts, now).allowed;
     // The durable source, not a child's copied context, owns retry authority.
     // This also rejects already-persisted retries on restart/promotion.
-    const source = input.retryOfRunId ? await dbOrTx.select({
+    const retryAuthoritySourceId = readNonEmptyString(input.contextSnapshot.dispositionRepairSourceRunId)
+      ?? input.retryOfRunId ?? readNonEmptyString(input.contextSnapshot.retryOfRunId);
+    const source = retryAuthoritySourceId ? await dbOrTx.select({
       id: heartbeatRuns.id, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson,
     }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
-      eq(heartbeatRuns.id, input.retryOfRunId),
+      eq(heartbeatRuns.id, retryAuthoritySourceId),
     )).limit(1).then(rows => rows[0]) : input.retrySource;
     if (source && cancelledRunRejectsAutomaticRetry(source, retryReason)) {
-      facts.cancelledRetrySourceId = input.retryOfRunId ?? input.runId;
+      facts.cancelledRetrySourceId = retryAuthoritySourceId ?? input.runId;
       return { agentFound: true, facts };
     }
 
     if (source) {
       const [retrySource] = await dbOrTx.select().from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.id, input.retryOfRunId ?? input.runId), eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.id, retryAuthoritySourceId ?? input.runId), eq(heartbeatRuns.companyId, input.companyId),
       )).limit(1);
       facts.cancelledRetrySourceId = retrySource ? await findCancelledRetryAncestor(dbOrTx, retrySource) : null;
       if (facts.cancelledRetrySourceId) return { agentFound: true, facts };
@@ -1127,12 +1129,15 @@ export function createPostgresRunDispatchAdapter(
     if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
     // A persisted retry can already be queued when Stop wins on its source.
     // Keep its copied comment/envelope from becoming new input authority.
-    const retrySourceId = run.retryOfRunId ?? readNonEmptyString(contextSnapshot.retryOfRunId);
+    const retrySourceId = readNonEmptyString(contextSnapshot.dispositionRepairSourceRunId)
+      ?? run.retryOfRunId ?? readNonEmptyString(contextSnapshot.retryOfRunId);
+    let retrySource: HeartbeatRun | undefined;
     if (retrySourceId) {
       const [source] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, retrySourceId), eq(heartbeatRuns.companyId, run.companyId),
         eq(heartbeatRuns.agentId, run.agentId),
       )).limit(1);
+      retrySource = source;
       if (source && cancelledRunRejectsAutomaticRetry(source, run.scheduledRetryReason ?? readNonEmptyString(contextSnapshot.retryReason))) {
         return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
           errorCode: "retry_source_cancelled" as const, reason: "Cancelled execution cannot acquire an automatic retry; new input requires its own admission.",
@@ -1147,7 +1152,7 @@ export function createPostgresRunDispatchAdapter(
         reason: "An earlier execution in this retry chain was cancelled; fresh input requires its own admission.",
         details: { issueId, sourceRunId: cancelledAncestorId },
       } };
-      const supersedingCommentId = await findRetrySupersedingInput(tx, run);
+      const supersedingCommentId = retrySource ? await findRetrySupersedingInput(tx, retrySource) : null;
       if (supersedingCommentId) return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
         errorCode: "retry_input_superseded" as const,
         reason: "A newer independent input owns its own admission; the previous input cannot be replayed.",

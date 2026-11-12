@@ -1,4 +1,5 @@
 import { MAIN_BLOCKER_REASON, verifyMainBlockerWake } from "../recovery/main-blocker.js";
+import { findRetrySupersedingInput } from "../automatic-retry-authority.js";
 import { verifyWorkspaceRecoveryWake, WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON, WORKSPACE_RESUME_REASON } from "../recovery/workspace-creator.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { assertIssueContinuationWake } from "../issue-continuations.js";
@@ -42,7 +43,7 @@ import {
   CHAT_COMPLETION_WAKE_REASON,
   isCompletedOnboardingHandoffWake,
 } from "../chat-completion-delivery.js";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
@@ -3165,6 +3166,29 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
+          }
+
+          // Scanner snapshots are advisory. Under the same issue lock used by
+          // addComment, reject a repair of an input superseded by a fresh saved
+          // comment; that comment retains its own wake and provider authority.
+          if (reason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) {
+            const sourceId = readNonEmptyString(enrichedContextSnapshot.dispositionRepairSourceRunId)
+              ?? readNonEmptyString(enrichedContextSnapshot.retryOfRunId);
+            const [repairSource] = sourceId ? await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, agentId),
+            )).limit(1) : [];
+            const supersedingCommentId = repairSource ? await findRetrySupersedingInput(tx as unknown as Db, repairSource) : null;
+            if (supersedingCommentId) {
+              await tx.insert(agentWakeupRequests).values({
+                companyId: agent.companyId, agentId, source, triggerDetail,
+                reason: "retry_input_superseded", payload: { ...payload, sourceRunId: sourceId, supersedingCommentId },
+                status: "skipped", requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null, idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
+              });
+              return { kind: "skipped" as const };
+            }
           }
 
           // Completion can settle the conversation while admission is outside

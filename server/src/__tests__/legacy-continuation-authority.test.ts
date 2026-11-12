@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { recoveryService } from "../services/recovery/service.js";
@@ -36,6 +36,94 @@ describe("legacy continuation persisted authority", () => {
     }
     return { companyId, agentId, issueId, runId, createRecovery, runs, actions, finish };
   }
+  async function saveIndependentInput(f: Awaited<ReturnType<typeof fixture>>) {
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId,
+      createdAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, f.runId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "fixture-owner", origin: "comment", body: "A new independent request" }).returning();
+    return comment;
+  }
+  it("fresh input supersedes a successful source before disposition repair creates a wake", async () => {
+    const f = await fixture();
+    const comment = await saveIndependentInput(f);
+    expect(await f.createRecovery().reconcileLegacyContinuation(f.runId)).toBe("skipped");
+    expect(await f.runs()).toHaveLength(1);
+    expect(await f.actions()).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, comment.id)))[0]).toEqual(comment);
+  });
+  it("fresh input supersedes a scanner snapshot under immediate repair admission lock", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId,
+      createdAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, f.runId));
+    let release!: () => void, locked!: () => void, commentId!: string;
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const commit = new Promise<void>(resolve => { release = resolve; });
+    const writer = db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      const [comment] = await tx.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "fixture-owner", body: "Fresh saved input without its wake" }).returning();
+      commentId = comment.id; locked(); await commit;
+    });
+    await ready;
+    const service = heartbeatService(db);
+    const attempt = service.wakeup(f.agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_disposition_repair", requestedByActorType: "system",
+      payload: { issueId: f.issueId, retryOfRunId: f.runId },
+      contextSnapshot: { issueId: f.issueId, retryOfRunId: f.runId, dispositionRepairSourceRunId: f.runId,
+        legacyDispositionEpisode: { id: f.runId, attempt: 1, maxAttempts: 2 } },
+      issueStateGuard: { statuses: ["in_progress"], assigneeAgentId: f.agentId },
+    });
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.$client.unsafe("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+        expect(rows[0].n).toBeGreaterThan(0);
+      });
+    } finally { release(); }
+    await writer;
+    expect(await attempt).toBeNull();
+    expect(await f.runs()).toHaveLength(1);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(wake).toMatchObject({ status: "skipped", reason: "retry_input_superseded", runId: null,
+      payload: { supersedingCommentId: commentId } });
+  });
+  it("fresh input supersedes prepared repair by its original source despite contaminated comment IDs", async () => {
+    const f = await fixture();
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    const repair = (await f.runs()).find(run => run.id !== f.runId)!;
+    const comment = await saveIndependentInput(f);
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId, status: "running",
+      startedAt: new Date(), contextSnapshot: { ...repair.contextSnapshot,
+        wakeCommentIds: [comment.id], commentId: comment.id } }).where(eq(heartbeatRuns.id, repair.id));
+    expect(await f.createRecovery().legacyRepairDispatchBlock(repair.id)).toBe("retry_input_superseded");
+    expect((await f.actions())[0].attemptCount).toBe(1);
+  });
+  it("fresh input supersedes queued repair before claim despite contaminated comment IDs", async () => {
+    const f = await fixture();
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    const repair = (await f.runs()).find(run => run.id !== f.runId)!;
+    const comment = await saveIndependentInput(f);
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId,
+      contextSnapshot: { ...repair.contextSnapshot, wakeCommentIds: [comment.id], commentId: comment.id } }).where(eq(heartbeatRuns.id, repair.id));
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId,
+      runId: repair.id, expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "retry_input_superseded" });
+    expect((await f.runs()).find(run => run.id === repair.id)).toMatchObject({ status: "cancelled", startedAt: null });
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, comment.id)))[0]).toEqual(comment);
+  });
+  it("fresh input supersedes persisted repair promotion by the original successful source", async () => {
+    const f = await fixture();
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    const repair = (await f.runs()).find(run => run.id !== f.runId)!;
+    const comment = await saveIndependentInput(f);
+    const due = new Date(Date.now() - 1000);
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: f.issueId, status: "scheduled_retry",
+      retryOfRunId: f.runId, scheduledRetryAt: due, scheduledRetryReason: "issue_disposition_repair",
+      scheduledRetryAttempt: 1, contextSnapshot: { ...repair.contextSnapshot,
+        wakeCommentIds: [comment.id], commentId: comment.id } }).where(eq(heartbeatRuns.id, repair.id));
+    expect((await heartbeatService(db).promoteDueScheduledRetries(new Date())).runIds).not.toContain(repair.id);
+    expect((await f.runs()).find(run => run.id === repair.id)).toMatchObject({
+      status: "cancelled", errorCode: "retry_input_superseded", startedAt: null });
+  });
   it("does not freeze a never-started dispatch cancellation or retain its historical hold", async () => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "queued", resultJson: null }).where(eq(heartbeatRuns.id, f.runId));

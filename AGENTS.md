@@ -14,6 +14,14 @@ predecessor. Save comments and reopen atomically under the issue lock; schedulin
 promotion and queued dispatch inspect the durable comment before its wake exists.
 Retry ancestry cannot reset the input epoch or erase an ancestor cancellation. Worker output and interaction answers
 are not new execution intent; never alter the failed source or replay old input.
+A historical queued authority rejection is non-delivery only with its exact
+server gate event and skipped wake plus no retained provider/resource evidence.
+It cannot hold a later independently authorized saved comment; preserve the old
+run/input and any separate unknown source incident without replay.
+Successful-source disposition repairs obey that same independent-input fence;
+repair wakes and fresh comments never coalesce in either direction. Exact Bridge
+undispatched proof may leave remote instruction copies pending cleanup without
+holding a later input; preserve the copy and original provider/source identity.
 See `doc/execution-semantics.md`.
 
 Adapter non-delivery survives independent workspace finalizer failures. Persist

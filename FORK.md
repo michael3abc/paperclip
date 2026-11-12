@@ -1,5 +1,14 @@
 # Paperclip fork
 
+2026-11-12 queued authority rejection: distinguish a proven pre-dispatch input
+rejection from uncertain provider delivery using the exact gate event, skipped
+wake and all retained execution/resource fences. Admit a later independently
+authorized saved input once through the existing coordinator, retaining the
+rejected run/input, recovery rows and any separate unknown source incident.
+Exact Bridge undispatched proof also separates remote instruction cleanup from
+admission. Successful-source disposition repairs share the independent-input
+fence and cannot coalesce with fresh comments in either direction.
+
 2026-11-12 independent-input supersession: failed retries also lose automatic
 authority when a genuine human or authorized project-main input is saved. Retry
 scheduling, promotion and pre-dispatch share the issue admission fence, including

@@ -14,11 +14,13 @@ import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../se
 import { createQueuedCommentIssueLockWriter } from "../modules/wake-queue/adapters/queued-comment-postgres.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
+import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
+import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, authUsers, chatActions, chatEndpoints, toolApplications, toolConnections, companies, companyMemberships, costEvents, createDb, projects, reconcileDatabaseWork, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, chatActions, chatEndpoints, toolApplications, toolConnections, companies, companyMemberships, costEvents, createDb, projects, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -159,6 +161,62 @@ describe("deferred receipt durable dispatch", () => {
       // receipt backlog; a 1s wall deadline expired before the first attempt returned.
     }, { timeout: 15_000 });
   }
+  it.each([false, true])("reconstructs the original fresh deferred input after queued authority rejection without replay (provider evidence: %s)", async providerEvidence => {
+    const f = await fixture(), finishedAt = new Date(Date.now() - 60_000);
+    const error = "Saved input authority could not be verified. Reconcile the original delivery receipts before sending.";
+    const executionWait = { issueId: f.issue.id, reason: "delivery_unknown" };
+    const [oldWake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      runId: f.source.id, source: "automation", reason: "transient_failure_retry", status: "skipped", error, finishedAt,
+      payload: { issueId: f.issue.id } }).returning();
+    const [source] = await db.update(heartbeatRuns).set({ status: "cancelled", startedAt: null, finishedAt,
+      wakeupRequestId: oldWake.id, errorCode: "execution_reconciliation_required", error, resultJson: {
+        stopReason: "execution_reconciliation_required", timeoutSource: "stale_queued_run_gate", executionWait,
+      } }).where(eq(heartbeatRuns.id, f.source.id)).returning();
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: source.id, agentId: f.agent.id, seq: 1,
+      eventType: "lifecycle", stream: "system", message: error, payload: executionWait });
+    if (providerEvidence) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: source.id,
+      agentId: f.agent.id, seq: 2, eventType: "provider.event", stream: "system" });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issue.id,
+      kind: "active_run_watchdog", ownerType: "board", cause: "legacy_execution_requires_reconciliation", status: "resolved",
+      fingerprint: source.id, evidence: { runId: source.id, automaticRecovery: { replay: "blocked" } },
+      nextAction: "Original gate rejection retained." }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issue.id,
+      authorType: "user", authorUserId: f.actorId, body: "A distinct saved input after the rejected historical attempt." }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "on_demand", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: f.actorId,
+      status: "deferred_issue_execution", updatedAt: finishedAt, payload: { issueId: f.issue.id, commentId: comment.id,
+        executionWait: { reason: "execution_recovery" },
+        _paperclipWakeContext: { issueId: f.issue.id, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } } }).returning();
+    const deps = createHeartbeatQueueTestDependencies(db), queue = createHeartbeatQueue(db, deps);
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, {
+      resolveResponsibleUserId: async () => f.actorId, getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+    }), recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} } });
+    deps.releaseIssueExecutionAndPromote.mockImplementation(async run => {
+      await release({ companyId: run.companyId, runId: run.id, now: new Date() });
+    });
+    // Exact production startup registration: it discovers the preexisting wake,
+    // reclassifies the historical hold and invokes the ordinary locked release.
+    await registerDeferredReceiptWork(db, coordinator, { resume: scope => queue.resumeDeferredExecutionReceipts(scope),
+      settleTaskChat: async () => {}, createNativeBatch: () => async () => {}, schedulingSuppressed: async () => false }, () => !drain).ready;
+    await waitForReal(() => expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalled(), { timeout: 5000 });
+    await quiet();
+    const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(runs).toHaveLength(providerEvidence ? 1 : 2);
+    if (providerEvidence) expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    else {
+      expect(saved.runId).not.toBeNull();
+      expect(runs.find(run => run.id === saved.runId)).toMatchObject({ status: "queued", retryOfRunId: null,
+        contextSnapshot: { wakeCommentIds: [comment.id] } });
+      expect(deps.resumeSavedLegacyComments).not.toHaveBeenCalled();
+    }
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id)))[0]).toEqual(source);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0]).toEqual(hold);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, oldWake.id)))[0]).toEqual(oldWake);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toEqual([comment]);
+  });
+
   it("is quiet after empty reconstruction and terminal receipt history", async () => {
     const f = await fixture();
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
