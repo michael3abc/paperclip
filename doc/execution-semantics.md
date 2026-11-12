@@ -109,10 +109,18 @@ authority records `legacySessionRecovery.sourceRunId/sourceEventId`; no new tabl
 or polling is introduced. A foreign native owner or any feature-era authority
 history prevents this generation-zero reconstruction. It never revives an old
 run, infers permission from terminal status, or resends an input.
-New Claude cards may not expose a native ID until their first input. Their initial
+New Claude and Antigravity cards may not expose a native ID until their first input. Their initial
 authority uses the exact host/provider/Bridge card identity with a null native ID;
-only that card may later attach its observed native identity. This bootstrap
-cannot replace an existing native owner. Unknown receipt versions fail visibly.
+that card may later attach its observed native identity. If maintenance replaces
+the card first, the successor must additionally match the still-current server
+publication of that native ID, the original successful run's accepted-input receipt
+and its original host/provider/card invocation. The original bootstrap authority
+must still match the server run and task row, and the predecessor/generation CAS
+still applies. The successor records `bootstrapNativeRecovery` with its source
+run/event; it never rewrites the original receipt or sends the original input.
+Missing proof, deleted/revoked bindings and late finalizers cannot authorize this
+transition. This bootstrap cannot replace an existing native owner. Unknown
+receipt versions fail visibly.
 
 Cancellation revokes business writes immediately. Other terminal helpers retain
 their existing permissions until replacement, reset or credential expiry. HTTP
