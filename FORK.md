@@ -24,8 +24,9 @@ The local release line is `michael/main`; previous releases and consolidation me
   linked trees use the owning host's Git inspector with run/cwd/branch/HEAD
   receipt checks. No remote path is resolved on the controller and no shared
   branch is automatically restored. Host failure stays explicit; old input is
-  never replayed. Targeted Git and isolated PostgreSQL tests retain failures and
-  verify successful completion on a registered remote host.
+  never replayed. Targeted tests use real Git and isolated PostgreSQL with mocked
+  remote transport to verify host-routed finalization; live remote acceptance
+  remains a separate release check.
 
 - Git workspace registration (2026-11-12 follow-up): explicit repository roots
   and linked worktrees share the lifecycle API. Preserve complete canonical
