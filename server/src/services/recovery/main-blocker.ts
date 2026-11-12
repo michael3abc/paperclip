@@ -14,6 +14,7 @@ import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import type { WakeupOptions } from "../heartbeat/run-preparation.js";
+import { isOriginalMainBlockerRetry } from "./main-blocker-run.js";
 
 export const MAIN_BLOCKER_REASON = "original_main_blocker";
 type Action = typeof issueRecoveryActions.$inferSelect;
@@ -264,7 +265,9 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
     let notice = readMainBlockerNotice(action);
     if (notice && ["sending", "queued", "uncertain"].includes(notice.status)) return reconcile(action, notice);
     if (notice?.status === "superseded") return;
-    if (notice?.status === "acknowledged") return withdrawOwnerQuestion(action, notice);
+    // Input acceptance is not successful repair. A later failed handling turn
+    // belongs to this notice and must ask Owner rather than resume itself.
+    if (notice?.status === "acknowledged") return reconcile(action, notice);
     if (notice?.status === "needs_owner") return askOwner(action, notice);
     const failedId = sourceRunId(action);
     const [failed] = failedId ? await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, failedId), eq(heartbeatRuns.companyId, action.companyId))) : [];
@@ -275,7 +278,11 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
       wakeId: randomUUID(), commentId: randomUUID(), requestedAt: new Date().toISOString(), sourceRunId: failedId, status: "pending" };
       if (!await save(action, notice, null)) return;
     }
-    if (failed?.contextSnapshot?.mainBlockerActionId) return save(action, { ...notice, status: "needs_owner", reason: "main_repair_blocked" }, notice);
+    if (failed && await isOriginalMainBlockerRetry(db, failed)) {
+      const next: Notice = { ...notice, status: "needs_owner", reason: "main_repair_blocked" };
+      if (await save(action, next, notice)) await askOwner(action, next);
+      return;
+    }
     if (context.reason) return save(action, { ...notice, status: context.reason === "owner_hold" ? "held" : "needs_owner", reason: context.reason }, notice);
     if (context.conversation.id !== notice.conversationIssueId || context.main.id !== notice.mainAgentId
         || context.conversation.conversationSessionGeneration !== notice.conversationGeneration) return save(action, { ...notice, status: "needs_owner", reason: "original_conversation_changed" }, notice);

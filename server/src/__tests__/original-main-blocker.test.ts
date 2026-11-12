@@ -8,6 +8,9 @@ import { MAIN_BLOCKER_REASON, mainBlockerKey, originalMainBlockerService, readMa
   registerOriginalMainBlockers, verifyMainBlockerWake, verifyMainBlockerRun } from "../services/recovery/main-blocker.js";
 import { reconcileMainBlockerQuestionsAfterCreatorInterruption } from "../services/recovery/main-blocker.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { isOriginalMainBlockerRetry } from "../services/recovery/main-blocker-run.js";
+import { recoveryService } from "../services/recovery/service.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -198,6 +201,42 @@ describe("original main blocker delivery", () => {
     await f.service.check(f.action.id); await f.service.check(f.action.id); await f.service.check(f.action.id);
     expect(f.wakeup).not.toHaveBeenCalled(); expect(await f.cards()).toHaveLength(1);
     expect((await f.cards())[0]).toMatchObject({ issueId: f.conversationId, addresseeUserId: f.ownerId, effectiveResolverPolicy: "human_only", continuationPolicy: "none" });
+  });
+  it("bounded blocker repair remains Owner-owned after accepted input fails and generic recovery repeats", async () => {
+    const f = await fixture();
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    await f.service.check(f.action.id);
+    const notice = readMainBlockerNotice(await f.read())!;
+    const runId = notice.runId!;
+    await db.update(heartbeatRuns).set({ resultJson: { nativeSessionId: "native", bridgeSessionId: "bridge",
+      bridgeInputReceipt: { schema: "paperclip.bridge-input.v1", runId, clientMessageId: randomUUID(), nativeSessionId: "native", bridgeSessionId: "bridge", acceptedSeq: 1 } } })
+      .where(eq(heartbeatRuns.id, runId));
+    await f.service.check(f.action.id);
+    expect(readMainBlockerNotice(await f.read())?.status).toBe("acknowledged");
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_error", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    const enqueueWakeup = vi.fn(async () => null), scheduleRecoveryRetry = vi.fn(async () => null);
+    for (let round = 0; round < 3; round++) {
+      // A restarted recovery service must retain the notification's budget.
+      await recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry }).reconcileStrandedAssignedIssues({ companyId: f.companyId });
+      await originalMainBlockerService(db, f.owner).check(f.action.id);
+    }
+    expect(scheduleRecoveryRetry).not.toHaveBeenCalled(); expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.wakeup).toHaveBeenCalledTimes(1); expect(await f.cards()).toHaveLength(1);
+    expect(readMainBlockerNotice(await f.read())?.status).toBe("needs_owner");
+    expect((await f.cards())[0]).toMatchObject({ continuationPolicy: "none", effectiveResolverPolicy: "human_only" });
+  });
+  it.each(["automatic", "explicit_owner", "foreign_issue"] as const)("bounded blocker ancestry never creates a new repair budget: %s", async kind => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.taskId, mainBlockerActionId: randomUUID() } }).where(eq(heartbeatRuns.id, f.failedRunId));
+    const [child] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.failedRunId)))[0].agentId,
+      issueId: kind === "foreign_issue" ? f.conversationId : f.taskId, status: "failed", errorCode: "adapter_error", finishedAt: new Date(), retryOfRunId: f.failedRunId,
+      contextSnapshot: { issueId: kind === "foreign_issue" ? f.conversationId : f.taskId, wakeReason: kind === "explicit_owner" ? "issue_comment_added" : "issue_continuation_needed" } }).returning();
+    expect(await isOriginalMainBlockerRetry(db, child)).toBe(kind === "automatic");
+    if (kind !== "automatic") return;
+    await db.update(issueRecoveryActions).set({ evidence: { ...f.action.evidence, runId: child.id } }).where(eq(issueRecoveryActions.id, f.action.id));
+    await f.service.check(f.action.id); await f.service.check(f.action.id);
+    expect(f.wakeup).not.toHaveBeenCalled(); expect(await f.cards()).toHaveLength(1);
+    expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "needs_owner", reason: "main_repair_blocked" });
   });
   it("preserves holds and generation; neither repairs nor notifications gain authority", async () => {
     const f = await fixture();

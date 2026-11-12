@@ -3839,7 +3839,13 @@ saved-user recovery remains human-only. Case handoff input additionally retains
 its phase-ledger authority; a generic system/agent label is never an exemption
 from input provenance validation.
 Bounded explicit retries validate the successor's renewed human authorization
-and exact scheduler wake again at claim. Original-main and workspace-creator
+and exact scheduler wake again at claim. Failed original-main blocker turns and
+their same-company/agent/issue automatic retry descendants cannot obtain a new
+generic continuation or transient retry budget. The original notification owns
+the Owner question even when its input was accepted before the run failed.
+Ancestry checks are bounded, event-triggered and stop at independent Owner input;
+they never replay input, cancel user intent or settle historical stop evidence.
+Original-main and workspace-creator
 notices validate their protected action/wake, current source and original
 conversation, and only the recorded system comment. Missing receipts, changed
 input or appended comments fail closed; these are not general system bypasses.

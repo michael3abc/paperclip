@@ -17,6 +17,10 @@ native session, equate a session ID with input acceptance, or resend uncertain
 input. Main repairs within existing authority; inability goes to an Owner question
 in the original conversation. No automatic historical enrollment or extra retry
 budget. See `doc/execution-semantics.md`.
+Failed original-main blocker turns and their automatic retry descendants belong
+to the original notice's Owner escalation, never generic continuation or transient
+retry. Accepted input followed by failure still requires Owner escalation; a new
+explicit Owner input retains independent authority.
 Workspace-creator deferred admission retains its exact durable wake and wait
 reason; do not classify it as unknown delivery or re-send it. Independent new
 Owner input is not authority to replay that system notice.
