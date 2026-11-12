@@ -350,6 +350,11 @@ If you change schema/API behavior, update all impacted layers:
   its recovery history; conflicting identities/events remain blocked. Deferred
   interrupt queues must not add polling beside the persisted stop-check budget.
   Historical unstarted retry children require exact parent-event/wake bindings.
+  Prepared disposition repairs suppressed before dispatch require the original
+  source/episode, skipped wake, admission, cleanup-intent and undispatched accounting
+  receipts together, without provider identity/events. Only released local leases
+  qualify; collect retained local files through the existing CAS collector. Recheck
+  this proof before collection and directory admission; keep failure history and holds.
   Notification hints project only company/run identifiers, never serialize
   caller DB handles or private payloads. Restored successor transcript inputs
   need the original native UUID and a real result, with provenance retained.

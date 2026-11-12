@@ -7,6 +7,7 @@ import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js"
 import { acknowledgedNativeApiStopExecutionHasStopped } from "../acknowledged-native-stop.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
+import { suppressedDispositionRepairPredicate } from "../pre-dispatch-execution-wait.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -14,6 +15,8 @@ type Run = typeof heartbeatRuns.$inferSelect;
 export async function hasCurrentStopVerification(db: Db, companyId: string, runId: string) {
   const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${runId}::uuid
     and r.company_id = ${companyId}::uuid and r.status in ('cancelled', 'timed_out', 'failed', 'interrupted')
+    and (r.error_code IS DISTINCT FROM 'legacy_disposition_repair_suppressed' OR EXISTS (
+      select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = r.id and ${suppressedDispositionRepairPredicate()}))
     and r.result_json#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
     and r.result_json#>>'{stopSettlement,state}' in ('cleaning', 'needs_attention', 'settled')
     and r.result_json#>>'{stopSettlement,stopVerified}' = 'true'

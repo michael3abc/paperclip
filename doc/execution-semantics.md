@@ -3606,6 +3606,18 @@ flow. Their verified original-session proof is recorded separately as
 resultJson.executionStopVerification, never as an invented cancellation request.
 The failed outcome and original error remain unchanged.
 
+A disposition repair can also be suppressed after local preparation but before
+provider dispatch. Its cancellation code alone is insufficient: require the exact
+original source/episode, skipped wake and reason, admitted company/agent/run/issue
+binding, cleanup-intent event and completed accounting with provider work false.
+Any execution identity/event, active controller, foreign/remote or unreleased lease,
+retained successor copy or pending workspace operation invalidates that proof.
+Released local preparation leases and local instruction copies are permitted;
+files still pass through the original CAS collector and cleanup before ownership
+settles. Revalidate the trace at collection and directory admission, preserving
+the cancelled outcome and recovery history. The same waiting run becomes eligible
+once through the existing coordinator; no Stop, provider input or repair replay.
+
 A parked workspace wait may already have a preparation timestamp/controller,
 but has not acquired the checkout or started its provider. On cancellation,
 verify the original workspaceWait event, holder fingerprint and admission

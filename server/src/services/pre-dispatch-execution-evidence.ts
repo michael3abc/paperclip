@@ -22,6 +22,15 @@ export function noRetainedExecutionPredicate() {
 /** Preparation can claim a controller before workspace admission, but cannot
  * acquire provider identity, resources or execution events. */
 export function noRetainedProviderExecutionPredicate() {
+  return and(noRetainedProviderIdentityPredicate(),
+    sql`not exists (select 1 from ${environmentLeases}
+      where ${environmentLeases.companyId} = ${heartbeatRuns.companyId} and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`,
+  );
+}
+
+/** Preparation can materialize files and a local lease before dispatch. Callers
+ * allowing those resources must prove their own admission trace and cleanup. */
+export function noRetainedProviderIdentityPredicate() {
   return and(
     isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
     isNull(heartbeatRuns.nativeIssueId), isNull(heartbeatRuns.nativeSessionId), isNull(heartbeatRuns.sessionIdAfter),
@@ -32,8 +41,6 @@ export function noRetainedProviderExecutionPredicate() {
       'nativeExecutionInput', 'nativeWorkspaceSync', 'remoteWorkspace', 'nativeWorkspaceFinalizationOwner', 'sessionCheckpoint'])`,
     sql`not exists (select 1 from ${nativeRunFinalizations}
       where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id})`,
-    sql`not exists (select 1 from ${environmentLeases}
-      where ${environmentLeases.companyId} = ${heartbeatRuns.companyId} and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`,
     sql`not exists (select 1 from ${heartbeatRunEvents}
       where ${and(eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId),
         eq(heartbeatRunEvents.runId, heartbeatRuns.id), executionStartedEventPredicate())})`,

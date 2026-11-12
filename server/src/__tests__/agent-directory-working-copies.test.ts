@@ -31,6 +31,9 @@ import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService }
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { seedSuppressedDisposition } from "./helpers/suppressed-disposition.js";
+import { sharedCheckoutHolderSettled } from "../services/heartbeat/shared-checkout.js";
+import { notifyRunStopSettlement } from "../services/run-stop-settlement-notifications.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_DIRECTORY_TEST_DATABASE_URL");
 
@@ -109,6 +112,46 @@ describe("persistent agent directories", () => {
       expect(await fs.readFile(path.join(root, "retained-result.txt"), "utf8")).toBe("original completed work");
       const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, copy.runId));
       expect(events.filter(e => e.eventType === "execution.instruction_collection_rechecked")).toHaveLength(1);
+    } finally { await coordinator.stop(); }
+  });
+
+  it("reconstructs suppressed repair cleanup and wakes the original workspace wait once without provider work", async () => {
+    const copy = await run();
+    await fs.writeFile(path.join(copy.localRoot, "retained-result.txt"), "preserve prepared work");
+    await copies.reportUnavailable(companyId, copy.runId);
+    const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, copy.runId));
+    await seedSuppressedDisposition(db, original);
+    const [waiter] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "scheduled_retry",
+      scheduledRetryReason: "workspace_busy", scheduledRetryAt: null,
+      resultJson: { workspaceBusy: { holderKey: createHash("sha256").update(copy.runId).digest("hex") } } }).returning();
+    const hook = vi.fn();
+    const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
+    await service.reconcile(copy.runId, companyId);
+    expect(await sharedCheckoutHolderSettled(db, companyId, copy.runId)).toBe(false);
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      // Recreate services: collection and settlement must recover from durable state.
+      const recoveredCopies = agentInstructionWorkingCopyService(db);
+      await recoveredCopies.registerStoppedCollectionWork(coordinator, () => true, async () => true).ready;
+      await createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false }).register(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        expect((await recoveredCopies.get(companyId, copy.runId))?.receipt?.cleanupPending).toBe(false);
+        expect(await sharedCheckoutHolderSettled(db, companyId, copy.runId)).toBe(true);
+        const [waiting] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiter.id));
+        expect(waiting.scheduledRetryAt).toBeInstanceOf(Date);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const [firstWake] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiter.id));
+      await db.transaction(tx => notifyRunStopSettlement(tx, { companyId, runId: copy.runId }));
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      const [sameWait] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiter.id));
+      expect(sameWait.scheduledRetryAt).toEqual(firstWake.scheduledRetryAt);
+      expect(sameWait.scheduledRetryAttempt).toBe(0);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+      expect(await fs.readFile(path.join(root, "retained-result.txt"), "utf8")).toBe("preserve prepared work");
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, copy.runId));
+      expect(events.filter(e => e.eventType === "execution.instruction_collection_rechecked")).toHaveLength(1);
+      expect(hook).not.toHaveBeenCalled();
     } finally { await coordinator.stop(); }
   });
 

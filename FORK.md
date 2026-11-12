@@ -5,6 +5,12 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Suppressed disposition repair settlement (2026-11-12): verify the full original
+  server trace for a prepared repair rejected before provider dispatch. Retained
+  instruction copies use normal collection/cleanup; the original workspace wait
+  wakes once. Missing or contradictory proof remains blocked, including later
+  provider events. No schema change, synthetic Stop or historical task replay.
+
 - Durable run stop settlement (2026-11-11): read-only Bridge/native verification,
   persistent four-check budgets, cleanup-only native finalization and same-row
   event-driven workspace waits. Recheck keeps original sessions, errors and holds;

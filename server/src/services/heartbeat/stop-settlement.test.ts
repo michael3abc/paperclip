@@ -13,6 +13,8 @@ import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
+import { seedSuppressedDisposition } from "../../__tests__/helpers/suppressed-disposition.js";
+import { hasCurrentStopVerification } from "./stop-settlement-evidence.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("durable run stop settlement", () => {
@@ -147,6 +149,48 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       nextAction: "Verify the original run", evidence: { runId: f.run.id } });
     return f;
   }
+
+  it.each(["valid", "missing_trace", "provider_event", "provider_identity", "accounting_started",
+    "wake_mismatch", "source_mismatch", "live_lease", "remote_lease", "active_controller", "retained_copy"])(
+    "settles only a fully evidenced undispatched disposition repair (%s)", async evidence => {
+      const f = await seed();
+      const s = await seedSuppressedDisposition(db, f.run);
+      const copy = { runId: f.run.id, companyId: f.company.id, agentId: f.agent.id, responsibleUserId: "test-owner",
+        entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test", location: "local",
+        state: "unavailable", receipt: { schema: "paperclip.agent-files.v1" } };
+      await db.insert(agentInstructionWorkingCopies).values(copy);
+      if (evidence === "missing_trace") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
+      if (evidence === "provider_event") await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke" });
+      if (evidence === "provider_identity") await db.update(heartbeatRuns).set({ resultJson: { bridgeSessionId: "accepted" } }).where(eq(heartbeatRuns.id, f.run.id));
+      if (evidence === "accounting_started") await db.update(heartbeatRuns).set({ usageJson: { accountingProviderWorkStarted: true } }).where(eq(heartbeatRuns.id, f.run.id));
+      if (evidence === "wake_mismatch") await db.update(agentWakeupRequests).set({ error: "other_reason" }).where(eq(agentWakeupRequests.id, s.wake.id));
+      if (evidence === "source_mismatch") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: s.issue.id, legacyDispositionEpisode: { id: randomUUID() } } }).where(eq(heartbeatRuns.id, s.source.id));
+      if (evidence === "live_lease") await db.update(environmentLeases).set({ releasedAt: null }).where(eq(environmentLeases.id, s.lease.id));
+      if (evidence === "remote_lease") await db.update(environmentLeases).set({ provider: "remote" }).where(eq(environmentLeases.id, s.lease.id));
+      if (evidence === "active_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, f.run.id));
+      if (evidence === "retained_copy") await db.update(agentInstructionWorkingCopies).set({ receipt: { ...copy.receipt, retainedByRunId: randomUUID() } }).where(eq(agentInstructionWorkingCopies.runId, f.run.id));
+      const hook = vi.fn();
+      const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
+      expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(evidence === "valid");
+      await service.reconcile(f.run.id, f.company.id);
+      expect(await receipt(f.run.id)).toMatchObject({ stopVerified: evidence === "valid" });
+      expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+      if (evidence === "valid") {
+        expect(await receipt(f.run.id)).toMatchObject({ state: "cleaning", reason: "instruction_process_stop_unverified" });
+        await db.update(agentInstructionWorkingCopies).set({ state: "unchanged", processStoppedAt: new Date(),
+          receipt: { ...copy.receipt, cleanupPending: false } }).where(eq(agentInstructionWorkingCopies.runId, f.run.id));
+        await service.reconcile(f.run.id, f.company.id);
+        expect(await receipt(f.run.id)).toMatchObject({ state: "settled", proof: "verified_pre_dispatch_wait" });
+        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
+        // A dispatch event must invalidate the proof even before the next stop check.
+        await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke" });
+        expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(false);
+        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+      }
+      expect(hook).not.toHaveBeenCalled();
+      expect((await read(f.run.id)).errorCode).toBe("legacy_disposition_repair_suppressed");
+      expect((await read(f.run.id)).resultJson?.executionCancellation).toBeUndefined();
+    });
 
   it("settles a parked run cancelled before workspace admission without stopping its holder or replaying input", async () => {
     const f = await parkedCancellation();

@@ -166,7 +166,8 @@ export function createRunStopSettlement(db: Db, deps: {
           'native.local_process_stopped', 'turn.started', 'session.resumed')`);
       const receipt = { schema: SCHEMA, processGeneration: Number(generation?.seq ?? 0), state: state === "settled" ? state : nextCheckAt ? state : "needs_attention",
         reason, attempts, checkedAt: new Date(now()).toISOString(), nextCheckAt,
-        evidenceKey: await evidenceKey(tx, { ...current, resultJson: { ...current.resultJson, ...nativeAck } }), stopVerified: state !== "stopping" };
+        evidenceKey: await evidenceKey(tx, { ...current, resultJson: { ...current.resultJson, ...nativeAck } }), stopVerified: state !== "stopping",
+        ...(neverStarted && state !== "stopping" ? { proof: "verified_pre_dispatch_wait" } : {}) };
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.runStopSettlement, JSON.stringify({ companyId, runId }));
       await notifyInstructionCollection(tx, { companyId, runId });
       if (state === "settled") {

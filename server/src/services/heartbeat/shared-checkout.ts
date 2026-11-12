@@ -9,6 +9,7 @@ import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { WorkspaceBusyDeferral } from "./retries.js";
 import { WorkspaceValidationFailure } from "./workspaces.js";
 import { workspaceProcessConsumers } from "../workspace-process-consumers.js";
+import { suppressedDispositionRepairPredicate } from "../pre-dispatch-execution-wait.js";
 
 const execFile = promisify(execFileCallback);
 export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" | "storage"; executionCwd?: string };
@@ -102,6 +103,8 @@ export async function sharedCheckoutPath(cwd: string): Promise<string> {
 export const REMOTE_HOST_REBOOT_EVENT = "workspace.remote_host_rebooted";
 export const REMOTE_HOST_REBOOT_SCHEMA = "paperclip.remote-host-boot-boundary.v1";
 const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
+          and (r.error_code IS DISTINCT FROM 'legacy_disposition_repair_suppressed' OR EXISTS (
+            select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = r.id and ${suppressedDispositionRepairPredicate()}))
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
             or (r.runtime_mode = 'legacy' and exists (select 1 from heartbeat_run_events stopped
               where stopped.run_id = r.id and stopped.company_id = r.company_id
