@@ -18,6 +18,21 @@ describe("bridgeSessionNeverStarted", () => {
     expect(bridgeSessionNeverStarted(run({ errorCode: "session_not_found", resultJson: { bridgeSessionId: "b1", nativeSessionId: "n1" } }))).toBe(false);
   });
 
+  it("uses durable adapter non-delivery when a finalizer replaced the original error", () => {
+    expect(bridgeSessionNeverStarted(run({ errorCode: "workspace_validation_failed",
+      usageJson: { accountingProviderWorkStarted: false } }))).toBe(true);
+    expect(bridgeSessionNeverStarted(run({ errorCode: "workspace_binding_mismatch",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }))).toBe(true);
+    expect(bridgeSessionNeverStarted(run({ errorCode: "workspace_validation_failed" }))).toBe(false);
+    for (const over of [
+      { resultJson: { bridgeInputReceipt: { acceptedSeq: 1 } } },
+      { resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+      { resultJson: { nativeSessionId: "native" } }, { sessionIdAfter: "native" },
+      { processStartedAt: new Date() }, { errorCode: "execution_uncertain" }, { errorCode: "delivery_unknown" },
+    ]) expect(bridgeSessionNeverStarted(run({ errorCode: "workspace_validation_failed",
+      usageJson: { accountingProviderWorkStarted: false }, ...over }))).toBe(false);
+  });
+
   it("keeps an adapter error with a Bridge session on hold", () => {
     expect(bridgeSessionNeverStarted(run({ errorCode: "adapter_error", resultJson: { bridgeSessionId: "b1" } }))).toBe(false);
     expect(bridgeSessionNeverStarted(run({ errorCode: "session_busy", resultJson: { bridgeSessionId: "b1" } }))).toBe(false);

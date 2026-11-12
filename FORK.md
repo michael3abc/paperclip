@@ -1,5 +1,11 @@
 # Paperclip fork
 
+2026-11-12 adapter non-delivery provenance: preserve the adapter result fact and
+original error before workspace finalization. New authorized Bridge input reads
+that server-held receipt even when a later finalizer replaced the terminal error;
+contradictory input/session/provider/process evidence still blocks admission.
+Keep the original saved wake, failed run and cleanup obligations without replay.
+
 2026-11-12 registered-workspace adapter boundary: heartbeat supplies authoritative
 kind/sourceCwd along with lifecycle participation. The paired adapter admits
 repository roots and nested registered paths for plain shared workers while

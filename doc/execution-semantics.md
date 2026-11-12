@@ -3989,6 +3989,16 @@ resolving unfinished cleanup. Merged user input is checked against every origina
 wake receipt under the issue/run locks, including its principal, company, task and
 carrier run. Missing or changed delivery provenance remains delivery_unknown even
 when no workspace blocker exists; it never authorizes a resend.
+Bridge adapter non-delivery is recorded before workspace finalization: the
+server-held accountingProviderWorkStarted=false fact and an immutable
+execution.adapter_non_delivery event preserve the original adapter error. A
+later finalizer failure may replace the terminal error, but cannot erase that
+input provenance. Earlier persisted accounting receipts retain the same meaning.
+A new authorized comment can continue using its original saved wake only when
+that non-delivery proof has no contradictory process, session, accepted input or
+provider event. Missing identity or a workspace-validation error alone is not
+proof; same-input replay, unknown delivery and changed user authority remain
+blocked. Historical errors and cleanup/stop obligations stay recorded.
 Retry and deferred-input checks precede queue/coalescing shortcuts and run again
 at dispatch. Failed preparation uses independent provider non-delivery and
 settlement evidence; an unfinished cleanup lease or another workspace participant

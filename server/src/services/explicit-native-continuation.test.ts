@@ -675,6 +675,39 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     if (scenario.admitted) expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
     else expect(result).toBeNull();
   });
+  it.each(["never_delivered", "unknown", "accepted", "provider_event", "same_input", "wrong_actor"] as const)("uses original non-delivery provenance for a saved new Bridge message: %s", async scenario => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, processPid: null, processGroupId: null,
+      status: "failed", errorCode: "workspace_validation_failed",
+      runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" } },
+      usageJson: scenario === "unknown" ? null : { accountingProviderWorkStarted: false },
+      resultJson: { workspaceValidation: { reason: "git_worktree_branch_incoherence" },
+        ...(scenario === "accepted" ? { bridgeInputReceipt: { acceptedSeq: 1 } } : {}) },
+      contextSnapshot: { issueId: f.issueId, ...(scenario === "same_input" ? { wakeCommentIds: [f.commentId] } : {}) },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (scenario === "provider_event") await appendHeartbeatRunEvent(db, { companyId: f.companyId, agentId: f.agentId,
+      runId: f.sourceRunId, eventType: "turn.started", stream: "system", level: "info", message: "input accepted" });
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "system", payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] } } });
+    const result = await db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, actorId: scenario === "wrong_actor" ? "another-user" : f.actorId,
+        db: tx as unknown as typeof db, queuedCommentRequestId: queueId, dryRun: true });
+    });
+    if (scenario === "never_delivered") expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    else expect(result).toBeNull();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(source.status).toBe("failed"); expect(source.resultJson?.executionCancellation).toBeUndefined();
+    const [queue] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    expect(queue.status).toBe("deferred_issue_execution"); expect(queue.runId).toBeNull();
+  });
+
   it.each(["verified", "unverified", "forced"] as const)("hands a held CC Pocket message over to the busy bridge session until its stop is verified: %s", async scenario => {
     const f = await seed();
     await db.update(agents).set({ adapterType: "ccpocket_bridge" }).where(eq(agents.id, f.agentId));

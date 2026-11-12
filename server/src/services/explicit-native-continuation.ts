@@ -15,15 +15,15 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped, PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { hasVerifiedBridgeUndispatchedStop } from "./heartbeat/bridge-undispatched-stop.js";
 import { z } from "zod";
-import { and, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
-  environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
+  environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
 import { executionReconciliationPredicate, getExecutionBlocker, nativeExecutionRecoveryActionPredicate } from "./execution-blocker.js";
@@ -39,7 +39,7 @@ import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
   "issueId" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runtimeMode" |
-  "runtimeModeResolvedAt" | "errorCode" | "error" | "resultJson" | "contextSnapshot" |
+  "runtimeModeResolvedAt" | "errorCode" | "error" | "resultJson" | "usageJson" | "contextSnapshot" |
   "runnerProfileJson" | "processPid" | "processGroupId" | "processStartedAt" |
   "sessionIdAfter" | "controllerBootId" | "controllerLeaseExpiresAt" | "executionStage">;
 const continuationContextKeys = ["issueId", "wakeCommentId", "wakeCommentIds", "source",
@@ -66,6 +66,7 @@ const continuationRunFields = {
   nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
   runtimeMode: heartbeatRuns.runtimeMode, runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
   errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error, resultJson: heartbeatRuns.resultJson,
+  usageJson: sql<Run["usageJson"]>`jsonb_build_object('accountingProviderWorkStarted', ${heartbeatRuns.usageJson}->'accountingProviderWorkStarted')`,
   contextSnapshot: continuationContext, runnerProfileJson: heartbeatRuns.runnerProfileJson,
   processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
   processStartedAt: heartbeatRuns.processStartedAt, sessionIdAfter: heartbeatRuns.sessionIdAfter,
@@ -120,11 +121,20 @@ export function bridgeSessionStopAcknowledged(run: Pick<Run, "id" | "status" | "
 export const BRIDGE_NEVER_STARTED_ERROR_CODES: readonly string[] =
   ["session_start_failed", "session_busy", "session_not_found", "adapter_error"];
 export function bridgeSessionNeverStarted(
-  run: Pick<Run, "status" | "runtimeMode" | "errorCode" | "resultJson" | "processPid" | "processGroupId" | "nativeSessionId">,
+  run: Pick<Run, "status" | "runtimeMode" | "errorCode" | "resultJson" | "usageJson" | "processPid" | "processGroupId" | "processStartedAt" | "nativeSessionId" | "sessionIdAfter">,
 ): boolean {
   if (run.runtimeMode !== "legacy" || run.status !== "failed") return false;
-  if (typeof run.errorCode !== "string" || !BRIDGE_NEVER_STARTED_ERROR_CODES.includes(run.errorCode)) return false;
-  if (run.processPid || run.processGroupId || run.nativeSessionId) return false;
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  // Runtime persists this adapter-returned non-delivery fact before workspace
+  // finalization. A later finalize error can replace errorCode/resultJson, but
+  // cannot turn that original input into accepted work. Missing identity alone
+  // is never this proof, and contradictory execution evidence keeps the hold.
+  const noDelivery = run.usageJson?.accountingProviderWorkStarted === false
+    || recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+  if (typeof run.errorCode !== "string" || (!noDelivery && !BRIDGE_NEVER_STARTED_ERROR_CODES.includes(run.errorCode))
+    || ["execution_uncertain", "delivery_unknown"].includes(run.errorCode)) return false;
+  if (run.processPid || run.processGroupId || run.processStartedAt || run.nativeSessionId || run.sessionIdAfter
+    || run.resultJson?.bridgeInputReceipt != null || recovery?.providerWorkStarted === true) return false;
   const result = run.resultJson as Record<string, unknown> | null | undefined;
   if (result?.executionCancellation !== undefined && result.executionCancellation !== null) return false;
   const keys = run.errorCode === "session_not_found" ? ["nativeSessionId"] : ["bridgeSessionId", "nativeSessionId"];
@@ -450,7 +460,18 @@ export async function admitExplicitNativeContinuation(input: {
       if ((historicalAdapter === BRIDGE_SESSION_ADAPTER || agent.adapterType === BRIDGE_SESSION_ADAPTER) &&
           (historicalAdapter !== BRIDGE_SESSION_ADAPTER || agent.adapterType !== BRIDGE_SESSION_ADAPTER)) return null;
       if (historicalAdapter === BRIDGE_SESSION_ADAPTER) {
-        if (!bridgeSessionStopAcknowledged(run) && !bridgeSessionNeverStarted(run)) {
+        const neverStarted = bridgeSessionNeverStarted(run);
+        if (neverStarted) {
+          const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+            eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, run.id),
+            or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, [
+              PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "harness.ready",
+              "session.started", "session.resumed", "turn.started", "provider.event", "provider.rpc_result", "tool.execution.started",
+            ])),
+          )).limit(1);
+          if (execution) return blocked("delivery_unknown", "Execution evidence contradicts the original non-delivery receipt. Reconcile that input before continuing.");
+        }
+        if (!bridgeSessionStopAcknowledged(run) && !neverStarted) {
           // An unconfirmed, unforced interrupt continues as a same-session
           // handoff; the adapter waits for that turn before delivering.
           const handoff = bridgeSessionHandoffFor(run);
