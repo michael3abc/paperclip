@@ -1,4 +1,5 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { cancelledRunRejectsAutomaticRetry } from "../automatic-retry-authority.js";
 import { isOriginalMainBlockerRetry } from "../recovery/main-blocker-run.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
@@ -415,6 +416,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       delayMs?: number;
     },
   ) {
+    if (cancelledRunRejectsAutomaticRetry(run, opts?.retryReason ?? "transient_failure")) return {
+      outcome: "not_scheduled" as const, errorCode: "retry_source_cancelled" as const,
+      reason: "Cancelled execution cannot acquire an automatic retry; new input requires its own admission.",
+      issueId: run.issueId ?? null,
+    };
     if (blocksAutomaticSshReplay(run, agent)) {
       return { outcome: "not_scheduled" as const, reason: "SSH in_place execution may have changed the workspace; inspect its result before an explicit new attempt.", issueId: run.issueId ?? null };
     }
@@ -724,6 +730,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
+            | "retry_source_cancelled"
             | "issue_execution_lock_changed";
           issueId: string | null;
           details: Record<string, unknown>;
@@ -1000,6 +1007,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             };
           }
         }
+
+        // Stop can win while preflight awaits I/O. Recheck the durable source
+        // under the existing issue -> run lock order before creating a child.
+        const [currentSource] = await tx.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
+        )).for("update");
+        if (currentSource && cancelledRunRejectsAutomaticRetry(currentSource, retryReason)) return {
+          outcome: "not_scheduled", issueId, errorCode: "retry_source_cancelled",
+          reason: "The original execution was cancelled before retry admission.", details: { sourceRunId: run.id },
+        };
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {

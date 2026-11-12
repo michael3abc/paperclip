@@ -9,6 +9,7 @@ import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInWakePayload } fro
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
+import { cancelledRunRejectsAutomaticRetry } from "../../../services/automatic-retry-authority.js";
 import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
@@ -93,6 +94,8 @@ import { RunDispatchApplicationError } from "../application/types.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type LoadGateFactsInput = {
+  retryOfRunId?: string | null;
+  retrySource?: Pick<HeartbeatRun, "status" | "errorCode" | "resultJson">;
   conversationContinuation: boolean;
   responsibleUserId: string | null;
   runId: string;
@@ -358,6 +361,18 @@ export function createPostgresRunDispatchAdapter(
       dispositionRepair: null,
     };
     const isBlocked = () => !decideScheduledRetryGate(facts, now).allowed;
+    // The durable source, not a child's copied context, owns retry authority.
+    // This also rejects already-persisted retries on restart/promotion.
+    const source = input.retryOfRunId ? await dbOrTx.select({
+      id: heartbeatRuns.id, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
+      eq(heartbeatRuns.id, input.retryOfRunId),
+    )).limit(1).then(rows => rows[0]) : input.retrySource;
+    if (source && cancelledRunRejectsAutomaticRetry(source, retryReason)) {
+      facts.cancelledRetrySourceId = input.retryOfRunId ?? input.runId;
+      return { agentFound: true, facts };
+    }
 
     const budgetBlock = await budgetsForRead.getInvocationBlock(input.companyId, input.agentId, {
       issueId,
@@ -501,6 +516,7 @@ export function createPostgresRunDispatchAdapter(
         runId: run.id,
         companyId: run.companyId,
         agentId: run.agentId,
+        retryOfRunId: run.retryOfRunId, retrySource: run,
         conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
         responsibleUserId: run.responsibleUserId,
         contextSnapshot: parseObject(run.contextSnapshot),
@@ -840,6 +856,7 @@ export function createPostgresRunDispatchAdapter(
           runId: run.id,
           companyId: run.companyId,
           agentId: run.agentId,
+          retryOfRunId: run.retryOfRunId, retrySource: run,
           conversationContinuation: run.runtimeMode === "legacy" && hasConversationContinuationPolicy(run.resultJson),
           responsibleUserId: run.responsibleUserId,
           contextSnapshot: parseObject(run.contextSnapshot),
@@ -1098,6 +1115,21 @@ export function createPostgresRunDispatchAdapter(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
+    // A persisted retry can already be queued when Stop wins on its source.
+    // Keep its copied comment/envelope from becoming new input authority.
+    const retrySourceId = run.retryOfRunId ?? readNonEmptyString(contextSnapshot.retryOfRunId);
+    if (retrySourceId) {
+      const [source] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, retrySourceId), eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.agentId, run.agentId),
+      )).limit(1);
+      if (source && cancelledRunRejectsAutomaticRetry(source, run.scheduledRetryReason ?? readNonEmptyString(contextSnapshot.retryReason))) {
+        return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
+          errorCode: "retry_source_cancelled" as const, reason: "Cancelled execution cannot acquire an automatic retry; new input requires its own admission.",
+          details: { issueId, sourceRunId: retrySourceId },
+        } };
+      }
+    }
     // Input authority survives removal of cleanup admission. Empty adoption
     // lists (including adopted Retry receipts) are not comment input; single comments still need
     // their own receipt and proof this queued turn has never been delivered.

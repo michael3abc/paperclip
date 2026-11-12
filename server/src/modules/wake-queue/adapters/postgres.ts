@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
+import { wakeMustNotJoinActiveRun } from "../domain/context.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
@@ -987,6 +988,10 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         eq(heartbeatRuns.agentId, input.agentId),
       )).for("update").limit(1);
       if (!current || current.status !== input.activeExecutionRunStatus || current.wakeupRequestId !== candidate.wakeupRequestId) return null;
+      // Admission may have observed the run before a retry/continuation was
+      // installed. Its locked envelope still owns the input boundary.
+      if (wakeMustNotJoinActiveRun(current.contextSnapshot, input.mergedContextSnapshot,
+        Boolean(input.payload?.interactionId))) return null;
       const commentIds = queuedCommentIdsFromRunContext(input.mergedContextSnapshot);
       const synchronizeBatch = current.status === "queued" && commentIds.length > 0
         && primary?.status === "queued" && queuedCommentIdsFromWakePayload(primary.payload).length > 0;

@@ -11,6 +11,8 @@ type DispatchFields = "startedAt" | "runtimeModeResolvedAt" | "processPid" | "pr
   "controllerBootId" | "controllerLeaseExpiresAt" | "executionStage" | "contextSnapshot";
 
 const staleDispatchReconciliationExemptions = {
+  // Cancellation at queued dispatch is not permission to replay its parent.
+  retry_source_cancelled: true,
   issue_not_found: true,
   issue_not_in_progress: true,
   issue_assignee_changed: true,

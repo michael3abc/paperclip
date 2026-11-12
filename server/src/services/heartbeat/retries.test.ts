@@ -252,6 +252,46 @@ describePostgres("heartbeat retry module database wiring", () => {
     const [history]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,run.id));
     expect(history!.contextSnapshot).toEqual(snapshot);
   });
+  it("cancelled disposition work never gains automatic retry authority from a new task state", async () => {
+    const { run, agent } = await fixture();
+    const [cancelled] = await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "legacy_disposition_repair_suppressed",
+      contextSnapshot: { ...run.contextSnapshot, dispositionRepairSourceRunId: randomUUID(), executionContinuation: { messages: [{ body: "OLD INPUT" }] } },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const retries = boundRetries().retries;
+    expect(await retries.scheduleBoundedRetryForRun(cancelled, agent)).toMatchObject({ outcome: "not_scheduled", errorCode: "retry_source_cancelled" });
+    expect(await retries.scheduleBoundedRetry(cancelled.id)).toMatchObject({ outcome: "not_scheduled", errorCode: "retry_source_cancelled" });
+    // The stale caller's failed snapshot cannot race past the durable cancellation.
+    expect(await retries.scheduleBoundedRetryForRun(run, agent)).toMatchObject({ outcome: "not_scheduled", errorCode: "retry_source_cancelled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(cancelled);
+  });
+
+  it("suppresses an already persisted scheduled retry when its source was cancelled", async () => {
+    const { run } = await fixture();
+    const { retries } = boundRetries();
+    const scheduled = await retries.scheduleBoundedRetry(run.id, { now, delayMs: 60_000 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected retry fixture");
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "legacy_disposition_repair_suppressed" }).where(eq(heartbeatRuns.id, run.id));
+    expect(await retries.promoteDueScheduledRetries(scheduled.dueAt)).toEqual({ promoted: 0, runIds: [] });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id)))[0])
+      .toMatchObject({ status: "cancelled", errorCode: "retry_source_cancelled", startedAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]?.status).toBe("cancelled");
+  });
+  it("suppresses an already queued retry when Stop wins after promotion", async () => {
+    const { run } = await fixture();
+    const { retries } = boundRetries();
+    const scheduled = await retries.scheduleBoundedRetry(run.id, { now, delayMs: 60_000 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected retry fixture");
+    expect(await retries.promoteDueScheduledRetries(scheduled.dueAt)).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+    await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+      ...run.resultJson, executionCancellation: { state: "requested" },
+    } }).where(eq(heartbeatRuns.id, run.id));
+    expect(await createRunDispatch(db).cancelStaleQueuedRun({ companyId: run.companyId,
+      runId: scheduled.run.id, expectedStatus: "queued", now: scheduled.dueAt,
+    })).toMatchObject({ outcome: "cancelled", errorCode: "retry_source_cancelled" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id)))[0])
+      .toMatchObject({ status: "cancelled", startedAt: null });
+  });
   it("bounded blocker repair cannot obtain a transient retry budget", async () => {
     const { run, agent } = await fixture();
     const contextSnapshot = { ...run.contextSnapshot, wakeReason: "original_main_blocker", mainBlockerActionId: randomUUID() };

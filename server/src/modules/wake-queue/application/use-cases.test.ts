@@ -874,6 +874,27 @@ function createFakeAdmissionHelpers(
 }
 
 describe("admitWakeBehindIssueExecution", () => {
+  it.each(["queued", "scheduled_retry"])("keeps fresh Owner input separate from a %s retry's old authority", async status => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader();
+    const helpers = createFakeAdmissionHelpers();
+    const contextSnapshot = { issueId: "issue-1", wakeReason: "issue_reopened_via_comment",
+      commentId: "new-comment", wakeCommentId: "new-comment", wakeCommentIds: ["new-comment"] };
+    const staleContext = { issueId: "issue-1", retryOfRunId: "cancelled-disposition-run",
+      executionContinuation: { trigger: { reason: "issue_disposition_repair" }, messages: [{ body: "old input" }] } };
+    const result = await createAdmitWakeBehindIssueExecution({ reader, writer, helpers })(SCOPE, admissionInput({
+      requestedByActorType: "user", requestedByActorId: "owner", wakeCommentId: "new-comment", contextSnapshot,
+      payload: { issueId: "issue-1", commentId: "new-comment" },
+      activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status, contextSnapshot: staleContext },
+    }));
+    expect(result).toEqual({ kind: "deferred" });
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(SCOPE, expect.objectContaining({
+      requestedByActorType: "user", requestedByActorId: "owner",
+      payload: expect.objectContaining({ commentId: "new-comment", _paperclipWakeContext: contextSnapshot }),
+    }));
+    expect(staleContext.executionContinuation.messages).toEqual([{ body: "old input" }]);
+  });
   it.each(["running", "queued"])(
     "keeps a dedicated durable continuation separate from a %s execution and an existing deferred wake",
     async (status) => {

@@ -1140,14 +1140,15 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
-    it.each(["running", "cancelled", "receipt-collision", "actor-mismatch"])("preserves both queued input sources after %s", async scenario => {
+    it.each(["running", "cancelled", "receipt-collision", "actor-mismatch", "late-retry-envelope"])("preserves both queued input sources after %s", async scenario => {
       const companyId = await seedCompany();
       const agentId = await seedAgent({ companyId });
       const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
       const [oldComment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "source-user", body: "Original input" }).returning();
       const [newComment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "source-user", body: "Incoming input" }).returning();
-      const runId = await seedRun({ companyId, agentId, status: ["receipt-collision", "actor-mismatch"].includes(scenario) ? "queued" : scenario,
-        contextSnapshot: withQueuedCommentIdsInRunContext({ issueId }, [oldComment.id]) });
+      const runId = await seedRun({ companyId, agentId, status: ["receipt-collision", "actor-mismatch", "late-retry-envelope"].includes(scenario) ? "queued" : scenario,
+        contextSnapshot: withQueuedCommentIdsInRunContext({ issueId, ...(scenario === "late-retry-envelope"
+          ? { retryOfRunId: randomUUID(), executionContinuation: { messages: [{ body: "OLD INPUT" }] } } : {}) }, [oldComment.id]) });
       const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, runId, source: "assignment", status: "queued",
         requestedByActorType: "user", requestedByActorId: "source-user",
         payload: withQueuedCommentIdsInWakePayload({ issueId }, [oldComment.id]),

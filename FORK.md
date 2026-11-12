@@ -1,5 +1,12 @@
 # Paperclip fork
 
+2026-11-12 cancelled retry authority: suppress automatic retry from cancelled
+executions at scheduling, durable promotion and queued dispatch. Preserve only
+matching pre-provider system resource-wait lanes; Stop wins over retained wait
+proof. Fresh Owner comments retain separate authority from stale retry/rendered
+continuation envelopes, including the locked coalescing check. Original failed
+inputs and uncertain delivery remain unchanged; no production replay/backfill.
+
 2026-11-12 Antigravity worker-card proof: a provider-specific persisted Bridge
 turn receipt binds the separately accepted input, native session and saved-answer
 hash without inventing native input/turn IDs. Current authority and activity gates

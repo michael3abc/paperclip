@@ -81,7 +81,11 @@ export function wakeMustNotJoinActiveRun(
   wakeContext: Record<string, unknown>,
   interactionReceipt: boolean,
 ): boolean {
-  return interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+  const active = parseObject(activeRunContext);
+  // New comment authority cannot inherit a retry's prior rendered envelope.
+  const newComment = mergeWakeCommentIds(wakeContext).some(id => !mergeWakeCommentIds(active).includes(id));
+  const priorExecution = Boolean(active.retryOfRunId || active.dispositionRepairSourceRunId || active.executionContinuation);
+  return newComment && priorExecution || interactionReceipt || Boolean(active.interactionId) ||
     wakeChatConversationsConflict(activeRunContext, wakeContext);
 }
 

@@ -20,6 +20,7 @@ import { notifyChatResponseAvailability } from "../chat-response-availability.js
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
+import { wakeMustNotJoinActiveRun } from "../../modules/wake-queue/index.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { readChatPreemptionMarker } from "../chat-task-preemption.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
@@ -166,7 +167,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
-import { allowsIssueInteractionWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { allowsIssueInteractionWake } from "../../modules/run-dispatch/index.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -4610,7 +4611,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A reviewed chat run attests one conversation, so never fold another
     // conversation's reply into it; that reply queues its own run instead.
     const coalescedTargetRun = rawCoalescedTarget &&
-      wakeChatConversationsConflict(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot)
+      wakeMustNotJoinActiveRun(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot,
+        Boolean(enrichedContextSnapshot.interactionId || payload?.interactionId))
       ? null
       : filterZombieCoalesceTarget(rawCoalescedTarget, liveRunExecutions);
 
