@@ -746,6 +746,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -834,6 +835,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -864,6 +866,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -1192,6 +1197,7 @@ describe("issue comment reopen routes", () => {
         assigneeAgentId: otherAgentId,
         status: "todo",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1204,6 +1210,113 @@ describe("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it.each(["post", "patch"] as const)("atomically commits the fresh %s comment with reopening before recovery can observe todo", async method => {
+    const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    let committedStatus = "blocked";
+    let pendingStatus = "blocked";
+    let pendingComment = false;
+    mockDb.transaction.mockImplementation(async fn => {
+      const result = await fn(mockTx);
+      if (pendingStatus === "todo") expect(pendingComment).toBe(true);
+      committedStatus = pendingStatus;
+      return result;
+    });
+    mockIssueService.update.mockImplementation(async (_id, patch, tx) => {
+      expect(tx).toBe(mockTx);
+      expect(committedStatus).toBe("blocked");
+      pendingStatus = patch.status;
+      return makeIssueUpdateReceipt(issue, patch);
+    });
+    mockIssueService.addComment.mockImplementation(async (id, body, author, _options, tx) => {
+      expect(tx).toBe(mockTx);
+      expect(committedStatus).toBe("blocked");
+      expect(author.userId).toBe("local-board");
+      pendingComment = true;
+      return { id: "comment-1", issueId: id, body, companyId: issue.companyId, createdAt: new Date() };
+    });
+    const app = await installActor(createApp());
+    const response = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "New authorized input" })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "New authorized input" });
+    expect(response.status).toBe(method === "post" ? 201 : 200);
+    expect(committedStatus).toBe("todo");
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      issue.assigneeAgentId, expect.objectContaining({
+        contextSnapshot: expect.objectContaining({ wakeCommentId: "comment-1" }),
+      }),
+    ));
+  });
+
+  it.each(["post", "patch"] as const)("rolls back reopening when the fresh %s comment cannot be saved", async method => {
+    const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    let committedStatus = "blocked";
+    let pendingStatus = "blocked";
+    mockDb.transaction.mockImplementation(async fn => {
+      const result = await fn(mockTx);
+      committedStatus = pendingStatus;
+      return result;
+    });
+    mockIssueService.update.mockImplementation(async (_id, patch, tx) => {
+      expect(tx).toBe(mockTx);
+      pendingStatus = patch.status;
+      return makeIssueUpdateReceipt(issue, patch);
+    });
+    mockIssueService.addComment.mockRejectedValue(new Error("comment persistence failed"));
+    const app = await installActor(createApp());
+    const response = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "New authorized input" })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "New authorized input" });
+    expect(response.status).toBe(500);
+    expect(committedStatus).toBe("blocked");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects stale POST reopen authority before saving a fresh comment", async () => {
+    const issue = { ...makeIssue("blocked"), statusVersion: 4 };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, statusVersion: 5 });
+    const response = await request(await installActor(createApp()))
+      .post(`/api/issues/${issue.id}/comments`).send({ body: "New authorized input" });
+    expect(response.status).toBe(409);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("preserves the locked POST comment receipt when another request reopened first (changed body=%s)", async changed => {
+    const issue = { ...makeIssue("blocked"), statusVersion: 4 };
+    const saved = { id: "comment-retained", issueId: issue.id, companyId: issue.companyId, body: "Original input" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({ ...issue, status: "todo", statusVersion: 5 });
+    let receiptReads = 0;
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation(table => {
+      if (getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments") {
+        return { where: vi.fn(async () => ++receiptReads === 1 ? [] : [{ id: saved.id }]) };
+      }
+      return selectFrom(table);
+    });
+    mockIssueService.addComment.mockImplementation(async (_id, body, author, options, tx) => {
+      expect(tx).toBe(mockTx);
+      expect(author.userId).toBe("local-board");
+      expect(options.clientRequestId).toBe("77777777-7777-4777-8777-777777777777");
+      if (body !== saved.body) throw new HttpError(409, "Message request ID was already used for different content");
+      return saved;
+    });
+    const response = await request(await installActor(createApp()))
+      .post(`/api/issues/${issue.id}/comments`).send({
+        body: changed ? "Different input" : saved.body, clientRequestId: "77777777-7777-4777-8777-777777777777",
+      });
+    expect(response.status).toBe(changed ? 409 : 201);
+    if (!changed) expect(response.body).toEqual(saved);
+    expect(receiptReads).toBe(2);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("moves assigned blocked issues back to todo via POST comments", async () => {
@@ -1223,6 +1336,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -1274,6 +1390,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -1950,6 +2069,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
   });
 
@@ -2007,6 +2129,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      mockTx,
     );
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -2056,6 +2179,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      mockTx,
     );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     await waitForWakeup(() =>
@@ -2369,6 +2493,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: "22222222-2222-4222-8222-222222222222",
         actorUserId: null,
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -2426,6 +2551,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -2490,6 +2618,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -2825,6 +2956,9 @@ describe("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+      mockTx,
+      [],
+      [],
     );
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(

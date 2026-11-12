@@ -9,6 +9,11 @@ resource-wait receipts with providerWorkStarted=false retain their original wait
 lane, and Stop overrides those receipts. Fresh explicit comments retain their own
 input receipt and never merge into a prior retry/continuation envelope, including
 after the locked coalescing recheck. Unknown delivered input remains denied.
+Independent human/project-main input also supersedes automatic retry of a failed
+predecessor. Save comments and reopen atomically under the issue lock; scheduling,
+promotion and queued dispatch inspect the durable comment before its wake exists.
+Retry ancestry cannot reset the input epoch or erase an ancestor cancellation. Worker output and interaction answers
+are not new execution intent; never alter the failed source or replay old input.
 See `doc/execution-semantics.md`.
 
 Adapter non-delivery survives independent workspace finalizer failures. Persist

@@ -9,7 +9,7 @@ import { queuedCommentIdsFromRunContext, withQueuedCommentIdsInWakePayload } fro
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
-import { cancelledRunRejectsAutomaticRetry } from "../../../services/automatic-retry-authority.js";
+import { cancelledRunRejectsAutomaticRetry, findRetrySupersedingInput, findCancelledRetryAncestor } from "../../../services/automatic-retry-authority.js";
 import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
@@ -372,6 +372,16 @@ export function createPostgresRunDispatchAdapter(
     if (source && cancelledRunRejectsAutomaticRetry(source, retryReason)) {
       facts.cancelledRetrySourceId = input.retryOfRunId ?? input.runId;
       return { agentFound: true, facts };
+    }
+
+    if (source) {
+      const [retrySource] = await dbOrTx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.retryOfRunId ?? input.runId), eq(heartbeatRuns.companyId, input.companyId),
+      )).limit(1);
+      facts.cancelledRetrySourceId = retrySource ? await findCancelledRetryAncestor(dbOrTx, retrySource) : null;
+      if (facts.cancelledRetrySourceId) return { agentFound: true, facts };
+      facts.supersedingInputCommentId = retrySource ? await findRetrySupersedingInput(dbOrTx, retrySource) : null;
+      if (facts.supersedingInputCommentId) return { agentFound: true, facts };
     }
 
     const budgetBlock = await budgetsForRead.getInvocationBlock(input.companyId, input.agentId, {
@@ -1129,6 +1139,20 @@ export function createPostgresRunDispatchAdapter(
           details: { issueId, sourceRunId: retrySourceId },
         } };
       }
+    }
+    if (retrySourceId) {
+      const cancelledAncestorId = await findCancelledRetryAncestor(tx, run);
+      if (cancelledAncestorId) return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
+        errorCode: "retry_source_cancelled" as const,
+        reason: "An earlier execution in this retry chain was cancelled; fresh input requires its own admission.",
+        details: { issueId, sourceRunId: cancelledAncestorId },
+      } };
+      const supersedingCommentId = await findRetrySupersedingInput(tx, run);
+      if (supersedingCommentId) return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
+        errorCode: "retry_input_superseded" as const,
+        reason: "A newer independent input owns its own admission; the previous input cannot be replayed.",
+        details: { issueId, sourceRunId: retrySourceId, supersedingCommentId },
+      } };
     }
     // Input authority survives removal of cleanup admission. Empty adoption
     // lists (including adopted Retry receipts) are not comment input; single comments still need

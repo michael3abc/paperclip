@@ -1,5 +1,5 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
-import { cancelledRunRejectsAutomaticRetry } from "../automatic-retry-authority.js";
+import { cancelledRunRejectsAutomaticRetry, findRetrySupersedingInput, findCancelledRetryAncestor } from "../automatic-retry-authority.js";
 import { isOriginalMainBlockerRetry } from "../recovery/main-blocker-run.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
@@ -731,6 +731,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
             | "retry_source_cancelled"
+            | "retry_input_superseded"
             | "issue_execution_lock_changed";
           issueId: string | null;
           details: Record<string, unknown>;
@@ -738,6 +739,31 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
     const scheduleResult = await db.transaction(
       async (tx): Promise<ScheduledRetryTransactionResult> => {
+        // Comment persistence and retry admission share this fence. Check
+        // before even reusing a persisted child from an obsolete input.
+        if (issueId) await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, run.companyId), eq(issues.id, issueId),
+        )).for("update");
+        const [currentSource] = await tx.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
+        )).for("update");
+        if (currentSource && cancelledRunRejectsAutomaticRetry(currentSource, retryReason)) return {
+          outcome: "not_scheduled", issueId, errorCode: "retry_source_cancelled",
+          reason: "The original execution was cancelled before retry admission.", details: { sourceRunId: run.id },
+        };
+        const cancelledAncestorId = currentSource ? await findCancelledRetryAncestor(tx as unknown as Db, currentSource) : null;
+        if (cancelledAncestorId) return {
+          outcome: "not_scheduled", issueId, errorCode: "retry_source_cancelled",
+          reason: "An earlier execution in this retry chain was cancelled; fresh input requires its own admission.",
+          details: { sourceRunId: cancelledAncestorId },
+        };
+        const supersedingCommentId = currentSource
+          ? await findRetrySupersedingInput(tx as unknown as Db, currentSource) : null;
+        if (supersedingCommentId) return {
+          outcome: "not_scheduled", issueId, errorCode: "retry_input_superseded",
+          reason: "A newer independent input owns its own admission; the previous input cannot be replayed.",
+          details: { sourceRunId: run.id, supersedingCommentId },
+        };
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -1007,16 +1033,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             };
           }
         }
-
-        // Stop can win while preflight awaits I/O. Recheck the durable source
-        // under the existing issue -> run lock order before creating a child.
-        const [currentSource] = await tx.select().from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id),
-        )).for("update");
-        if (currentSource && cancelledRunRejectsAutomaticRetry(currentSource, retryReason)) return {
-          outcome: "not_scheduled", issueId, errorCode: "retry_source_cancelled",
-          reason: "The original execution was cancelled before retry admission.", details: { sourceRunId: run.id },
-        };
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {

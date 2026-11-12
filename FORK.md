@@ -1,5 +1,11 @@
 # Paperclip fork
 
+2026-11-12 independent-input supersession: failed retries also lose automatic
+authority when a genuine human or authorized project-main input is saved. Retry
+scheduling, promotion and pre-dispatch share the issue admission fence, including
+the comment/reopen-before-wake race and older retry ancestry; a failed child cannot erase an earlier Stop. Preserve original
+failed runs, delivery uncertainty, interaction answers and worker results.
+
 2026-11-12 cancelled retry authority: suppress automatic retry from cancelled
 executions at scheduling, durable promotion and queued dispatch. Preserve only
 matching pre-provider system resource-wait lanes; Stop wins over retained wait

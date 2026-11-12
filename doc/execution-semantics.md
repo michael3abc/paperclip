@@ -3977,6 +3977,22 @@ cancellation overrides that receipt. Fresh explicit comments have independent
 actor/input receipts, never coalesce into a retry or rendered continuation, and
 are checked again against the locked run before merging. This does not authorize
 resending unknown input or rewriting any prior failed/cancelled attempt.
+
+A newer independent human or current project-main comment supersedes the old
+failed input as well. Comment persistence and reopening share the issue lock;
+no recovery observer can see an eligible reopened task without its new comment.
+Scheduling/reusing a retry, durable promotion and queued dispatch read this
+same authority fence even before the comment wake exists. The source run and
+its input remain unchanged; only an unstarted stale retry is suppressed with
+retry_input_superseded. Retry descendants retain their original input epoch and cannot erase a cancelled ancestor;
+each ancestor retains only its own proven resource-wait exception.
+Only genuine human comments or server-authorized comments from the current
+project main's own run qualify. Worker/self replies, system/fast responses and
+answered interaction records are not independent input. The new comment keeps
+its own normal admission and delivery checks; neither this fence nor task
+reopening grants replay permission for unknown/delivered input or cancels an
+already productive provider turn.
+
 Original-main and workspace-creator
 notices validate their protected action/wake, current source and original
 conversation, and only the recorded system comment. Missing receipts, changed

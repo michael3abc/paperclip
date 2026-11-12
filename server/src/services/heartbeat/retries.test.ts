@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, projects, issues } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -207,6 +207,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -292,6 +293,129 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id)))[0])
       .toMatchObject({ status: "cancelled", startedAt: null });
   });
+  it.each(["schedule", "scheduled", "queued"] as const)("cancelled ancestor cannot be laundered through a FAILED child at %s admission", async phase => {
+    const { run, agent } = await fixture();
+    const [failedChild] = await db.insert(heartbeatRuns).values({ companyId: run.companyId, agentId: run.agentId,
+      scopeKind: "issue", issueId: run.issueId, status: "failed", retryOfRunId: run.id,
+      scheduledRetryReason: "transient_failure", contextSnapshot: run.contextSnapshot,
+      resultJson: run.resultJson, errorCode: run.errorCode,
+    }).returning();
+    const { retries } = boundRetries();
+    const scheduled = phase === "schedule" ? null : await retries.scheduleBoundedRetry(failedChild.id, { now, delayMs: 60_000 });
+    if (phase !== "schedule" && scheduled?.outcome !== "scheduled") throw new Error("Expected retry fixture");
+    if (phase === "queued" && scheduled?.outcome === "scheduled") await retries.promoteDueScheduledRetries(scheduled.dueAt);
+    await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+      ...run.resultJson, executionCancellation: { state: "requested" },
+    } }).where(eq(heartbeatRuns.id, run.id));
+    if (phase === "schedule") expect(await retries.scheduleBoundedRetryForRun(failedChild, agent))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "retry_source_cancelled" });
+    else if (scheduled?.outcome === "scheduled") {
+      if (phase === "scheduled") expect(await retries.promoteDueScheduledRetries(scheduled.dueAt)).toEqual({ promoted: 0, runIds: [] });
+      else expect(await createRunDispatch(db).cancelStaleQueuedRun({ companyId: run.companyId,
+        runId: scheduled.run.id, expectedStatus: "queued", now: scheduled.dueAt,
+      })).toMatchObject({ outcome: "cancelled", errorCode: "retry_source_cancelled" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id)))[0])
+        .toMatchObject({ status: "cancelled", errorCode: "retry_source_cancelled", startedAt: null });
+    }
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, failedChild.id)))[0]).toEqual(failedChild);
+  });
+
+  async function independentComment(run: Run, extra: Partial<typeof issueComments.$inferInsert> = {}) {
+    const [comment] = await db.insert(issueComments).values({ companyId: run.companyId, issueId: run.issueId!,
+      authorType: "user", authorUserId: "owner", body: "A distinct authorized input", ...extra,
+    }).returning();
+    return comment;
+  }
+
+  it("independent input committed before recovery wake fences FAILED retry scheduling under the issue lock", async () => {
+    const { run, agent, issue } = await fixture();
+    let release!: () => void, locked!: () => void;
+    const ready = new Promise<void>(resolve => { locked = resolve; });
+    const commit = new Promise<void>(resolve => { release = resolve; });
+    const writer = db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, issue.id)).for("update");
+      await tx.insert(issueComments).values({ companyId: run.companyId, issueId: issue.id,
+        authorType: "user", authorUserId: "owner", body: "Fresh independent comment, no wake yet" });
+      await tx.update(issues).set({ status: "todo", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issue.id));
+      locked(); await commit;
+    });
+    await ready;
+    const attempt = boundRetries().retries.scheduleBoundedRetryForRun(run, agent);
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.$client.unsafe("select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+        expect(rows[0].n).toBeGreaterThan(0);
+      });
+    } finally { release(); }
+    await writer;
+    expect(await attempt).toMatchObject({ outcome: "not_scheduled", errorCode: "retry_input_superseded" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it.each(["scheduled", "queued"] as const)("independent input suppresses a persisted %s FAILED retry without changing its source", async phase => {
+    const { run } = await fixture();
+    const { retries } = boundRetries();
+    const scheduled = await retries.scheduleBoundedRetry(run.id, { now, delayMs: 60_000 });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected retry fixture");
+    if (phase === "queued") expect(await retries.promoteDueScheduledRetries(scheduled.dueAt))
+      .toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+    await independentComment(run);
+    if (phase === "scheduled") expect(await retries.promoteDueScheduledRetries(scheduled.dueAt))
+      .toEqual({ promoted: 0, runIds: [] });
+    else expect(await createRunDispatch(db).cancelStaleQueuedRun({ companyId: run.companyId,
+      runId: scheduled.run.id, expectedStatus: "queued", now: scheduled.dueAt,
+    })).toMatchObject({ outcome: "cancelled", errorCode: "retry_input_superseded" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scheduled.run.id)))[0])
+      .toMatchObject({ status: "cancelled", errorCode: "retry_input_superseded", startedAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+  });
+
+  it("independent input cannot be hidden by a later failed retry descendant or stale caller context", async () => {
+    const { run, agent } = await fixture();
+    const comment = await independentComment(run);
+    const [child] = await db.insert(heartbeatRuns).values({ companyId: run.companyId, agentId: run.agentId,
+      scopeKind: "issue", issueId: run.issueId, status: "failed", retryOfRunId: run.id,
+      contextSnapshot: run.contextSnapshot, resultJson: run.resultJson, errorCode: run.errorCode,
+    }).returning();
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun({ ...child,
+      contextSnapshot: { ...child.contextSnapshot, commentId: comment.id, wakeCommentIds: [comment.id] } }, agent))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "retry_input_superseded" });
+  });
+
+  it("independent project main input supersedes worker retry but worker results and answered interactions do not", async () => {
+    const { run, agent, issue } = await fixture();
+    await independentComment(run, { authorType: "agent", authorUserId: null, authorAgentId: agent.id, createdByRunId: run.id });
+    await independentComment(run, { authorType: "user", createdByRunId: run.id });
+    await independentComment(run, { origin: "fast_response" });
+    await db.insert(issueThreadInteractions).values({ companyId: run.companyId, issueId: issue.id,
+      kind: "question", status: "resolved", resolvedByUserId: "owner", resolvedAt: new Date(),
+      payload: { question: "Approve?" } as never, result: { answer: "yes" } as never });
+    const { retries } = boundRetries();
+    const scheduled = await retries.scheduleBoundedRetry(run.id, { now, delayMs: 60_000 });
+    expect(scheduled.outcome).toBe("scheduled");
+    const [main] = await db.insert(agents).values({ companyId: run.companyId, name: "Project main", adapterType: "ccpocket_bridge", status: "active" }).returning();
+    const [project] = await db.insert(projects).values({ companyId: run.companyId, name: "Project", leadAgentId: main.id }).returning();
+    await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, issue.id));
+    const [mainRun] = await db.insert(heartbeatRuns).values({ companyId: run.companyId, agentId: main.id, status: "running" }).returning();
+    await independentComment(run, { authorType: "agent", authorUserId: null, authorAgentId: main.id,
+      createdByRunId: mainRun.id, metadata: { version: 1, sections: [{ kind: "text", body: "New instruction" }] as never,
+        authorizationReason: "allow_scoped_agent_write" } });
+    expect(await retries.scheduleBoundedRetryForRun(run, agent)).toMatchObject({ outcome: "not_scheduled", errorCode: "retry_input_superseded" });
+  });
+
+  it("independent input keeps its own fresh run retry authority and never lends it to old failed input", async () => {
+    const { run, agent } = await fixture();
+    const comment = await independentComment(run);
+    const [fresh] = await db.insert(heartbeatRuns).values({ companyId: run.companyId, agentId: run.agentId,
+      scopeKind: "issue", issueId: run.issueId, status: "failed", errorCode: run.errorCode, resultJson: run.resultJson,
+      contextSnapshot: { issueId: run.issueId, commentId: comment.id, wakeCommentId: comment.id, wakeCommentIds: [comment.id] },
+    }).returning();
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(fresh, agent)).toMatchObject({ outcome: "scheduled" });
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(run, agent)).toMatchObject({ outcome: "not_scheduled", errorCode: "retry_input_superseded" });
+  });
+
   it("bounded blocker repair cannot obtain a transient retry budget", async () => {
     const { run, agent } = await fixture();
     const contextSnapshot = { ...run.contextSnapshot, wakeReason: "original_main_blocker", mainBlockerActionId: randomUUID() };
