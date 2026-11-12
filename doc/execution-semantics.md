@@ -3894,6 +3894,9 @@ excluded; a broad same-company session/source ancestor does not occupy explicitl
 granted project sources beneath it. Aliases and Git administrative paths fail.
 Heartbeat rebuilds participation kind/sourceCwd, parentDir, cwd, host, project and
 generation from the admitted registration, discarding caller coordinates. The
+v1 marker originally represented linked worktrees only; an absent kind on a valid
+v1 registration is emitted as linked_worktree without rewriting persisted metadata.
+Unknown/invalid kinds still fail marker validation. The
 paired Bridge adapter reads the authoritative task even for plain shared workers;
 it accepts equality with the source or segment-contained descendants of either
 approved root, not only direct children. Unknown registration kinds and canonical,
