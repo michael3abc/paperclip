@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, agentTaskSessions, agentWakeupRequests, approvals, companies, createDb, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues, projects } from "@paperclipai/db";
@@ -44,6 +44,74 @@ describe.skipIf(!recoveryPostgresSupport.supported)("verified worker card projec
       clientMessageId: "client", authorityGeneration: 2, providerResultSaved: true, answerSaved: true, pending: false });
     expect(JSON.stringify(proof)).not.toContain("Saved answer");
     expect(proof).not.toHaveProperty("toolsSettled");
+  });
+  async function seedAntigravity() {
+    const f = await seed(), bridgeInputId = randomUUID();
+    const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+    const authority = { ...f.authority, provider: "antigravity" };
+    const result = { ...f.result, nativeTurnId: null,
+      bridgeInputReceipt: { ...f.result.bridgeInputReceipt, nativeInputId: null, bridgeInputId, promptSha256: sha256("Original input") },
+      bridgeTurnReceipt: { schema: "ccpocket.antigravity-turn-receipt.v1", provider: "antigravity",
+        bridgeSessionId: "bridge", nativeSessionId: "native", clientMessageId: "client", bridgeInputId,
+        promptSha256: sha256("Original input"), resultSha256: sha256(f.result.result),
+        status: "success", persisted: true, nativeNumTurns: 2 } };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterSessionAuthority: authority }, resultJson: result })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(agentTaskSessions).set({ sessionParamsJson: { nativeSessionId: "native", bridgeSessionId: "bridge",
+      adapterSessionAuthority: authority } }).where(eq(agentTaskSessions.taskKey, f.issueId));
+    return { ...f, authority, result };
+  }
+  it("antigravity transcript receipt proves the current turn without inventing native input or turn IDs", async () => {
+    const f = await seedAntigravity();
+    const proof = await sessionBridgeWorkerCardProof(db, f.input);
+    expect(proof).toMatchObject({ eligible: true, nativeInputId: null, nativeTurnId: null,
+      bridgeTurnReceipt: f.result.bridgeTurnReceipt, providerResultSaved: true, answerSaved: true });
+    expect(JSON.stringify(proof)).not.toContain("Saved answer");
+    expect(JSON.stringify(proof)).not.toContain("Original input");
+  });
+  it.each([
+    { schema: "unknown" }, { provider: "codex" }, { bridgeSessionId: "other" }, { nativeSessionId: "other" },
+    { clientMessageId: "other" }, { bridgeInputId: randomUUID() }, { promptSha256: "0".repeat(64) },
+    { resultSha256: "0".repeat(64) }, { status: "error" }, { persisted: false },
+    { nativeNumTurns: 0 }, { nativeNumTurns: Number.MAX_SAFE_INTEGER + 1 },
+  ])("antigravity transcript receipt rejects changed provenance %j", async changed => {
+    const f = await seedAntigravity();
+    await db.update(heartbeatRuns).set({ resultJson: { ...f.result,
+      bridgeTurnReceipt: { ...f.result.bridgeTurnReceipt, ...changed } } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await sessionBridgeWorkerCardProof(db, f.input)).toMatchObject({ eligible: false, reason: "input_identity_unverified" });
+  });
+  it("antigravity transcript receipt binds the separately accepted input and saved answer", async () => {
+    const f = await seedAntigravity();
+    for (const changed of [
+      { bridgeInputReceipt: { ...f.result.bridgeInputReceipt, bridgeInputId: randomUUID() } },
+      { bridgeInputReceipt: { ...f.result.bridgeInputReceipt, promptSha256: "f".repeat(64) } },
+      { bridgeInputReceipt: { ...f.result.bridgeInputReceipt, acceptedSeq: -1 } },
+      { result: "Changed saved answer" },
+    ]) {
+      await db.update(heartbeatRuns).set({ resultJson: { ...f.result, ...changed } }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await sessionBridgeWorkerCardProof(db, f.input)).toMatchObject({ eligible: false, reason: "input_identity_unverified" });
+    }
+  });
+  it("antigravity transcript receipt cannot replace another provider or backfill historical native IDs", async () => {
+    const f = await seedAntigravity();
+    await db.update(heartbeatRuns).set({ resultJson: { ...f.result, bridgeTurnReceipt: null, nativeTurnId: "invented",
+      bridgeInputReceipt: { ...f.result.bridgeInputReceipt, nativeInputId: "invented" } } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await sessionBridgeWorkerCardProof(db, f.input)).toMatchObject({ eligible: false, reason: "input_identity_unverified" });
+    const codexAuthority = { ...f.authority, provider: "codex" };
+    await db.update(heartbeatRuns).set({ resultJson: f.result, runnerProfileJson: { adapterSessionAuthority: codexAuthority } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(agentTaskSessions).set({ sessionParamsJson: { nativeSessionId: "native", bridgeSessionId: "bridge",
+      adapterSessionAuthority: codexAuthority } }).where(eq(agentTaskSessions.taskKey, f.issueId));
+    expect(await sessionBridgeWorkerCardProof(db, f.input)).toMatchObject({ eligible: false, reason: "input_identity_unverified" });
+  });
+  it("antigravity transcript receipt retains pending input and successor-generation gates", async () => {
+    const f = await seedAntigravity();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.workerId, source: "on_demand",
+      status: "deferred", payload: { issueId: f.issueId } });
+    expect(await sessionBridgeWorkerCardProof(db, f.input)).toMatchObject({ eligible: false, reason: "pending_activity" });
+    await db.update(agentTaskSessions).set({ sessionParamsJson: { nativeSessionId: "native", bridgeSessionId: "bridge",
+      adapterSessionAuthority: { ...f.authority, generation: 3, runId: randomUUID() } } }).where(eq(agentTaskSessions.taskKey, f.issueId));
+    expect(await sessionBridgeWorkerCardProof(db, f.input)).toMatchObject({ eligible: false, reason: "superseded_or_unverified_binding" });
   });
   it.each(["failed", "running", "cancelled"])("keeps %s visible despite a retained successful result", async status => {
     const f = await seed(); await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.runId));

@@ -23,6 +23,19 @@ does not qualify. The Bridge must additionally verify its exact current native
 identity, turn/input, persisted answer, settled tools and empty local input/question
 queues. Server proof is not permission to archive, stop or release any resource.
 
+Antigravity supplies no native input/turn identifier. Its paired Bridge/adapter
+may instead publish `ccpocket.antigravity-turn-receipt.v1`: provider, original
+Bridge/native session IDs, clientMessageId, Bridge-generated bridgeInputId,
+promptSha256, resultSha256, success/persisted and positive nativeNumTurns. The
+counter is native evidence, not a fabricated turn ID. Bridge issues this receipt
+only after matching persisted input/result readback and a fresh native counter.
+The adapter separately binds bridgeInputId/promptSha256 to the accepted input
+receipt; the server compares both identities/hashes and hashes its saved answer.
+Only a verified receipt is returned in eligible proof. Existing authority,
+generation, acceptance sequence, success and pending-activity gates still apply;
+other providers retain their native identity requirements. Old success records
+without this evidence remain visible and are never rewritten or replayed.
+
 Existing execution-status delivery emits durable `worker_card_changed` control
 events. The control event uses the server privacy binding behind current issue read
 authorization; generic status broadcasts retain their native/canonical legacy

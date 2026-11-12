@@ -24,6 +24,10 @@ publication after terminal status, without adding a card polling loop. Preserve
 main/manual/pinned cards and all histories. Dedicated `workerCardOnly` keys can
 only GET proof/events; never expose native controls, inbox or other API routes
 to observers. See `doc/execution-semantics.md`.
+Antigravity has no native input/turn ID: require the paired Bridge's persisted
+`ccpocket.antigravity-turn-receipt.v1`, separately accepted bridgeInputId/prompt
+hash, saved-answer hash and positive native turn counter. Never relabel host IDs
+as native IDs, backfill old results or waive current authority/activity gates.
 Worker-card control events may use the server privacy binding only behind current
 issue authorization. Do not broaden generic status events with that binding:
 their native/canonical legacy identity projection remains unchanged.

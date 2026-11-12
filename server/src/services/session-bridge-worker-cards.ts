@@ -5,11 +5,33 @@ import { object, readAdapterSessionAuthority } from "./adapter-session-authority
 import { mainAgentDispatchScope } from "./main-agent-workers.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export const WORKER_CARD_CHANGED = "session_bridge.worker_card_changed";
 const string = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
+
+/** Antigravity has no native input/turn ID. This is a host transcript receipt,
+ * not a native identity or execution grant. The adapter separately retains the
+ * accepted input coordinates; the host must still verify its current turn. */
+function antigravityTurnReceipt(result: Record<string, unknown>, input: Record<string, unknown>) {
+  const proof = object(result.bridgeTurnReceipt);
+  const bridgeInputId = string(proof.bridgeInputId);
+  if (proof.schema !== "ccpocket.antigravity-turn-receipt.v1" || proof.provider !== "antigravity"
+      || proof.status !== "success" || proof.persisted !== true
+      || !Number.isSafeInteger(proof.nativeNumTurns) || Number(proof.nativeNumTurns) <= 0
+      || !bridgeInputId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(bridgeInputId)
+      || input.bridgeInputId !== bridgeInputId || proof.clientMessageId !== input.clientMessageId
+      || proof.nativeSessionId !== input.nativeSessionId || proof.bridgeSessionId !== input.bridgeSessionId
+      || typeof proof.promptSha256 !== "string" || !/^[0-9a-f]{64}$/.test(proof.promptSha256)
+      || input.promptSha256 !== proof.promptSha256 || typeof result.result !== "string"
+      || proof.resultSha256 !== createHash("sha256").update(result.result).digest("hex")) return null;
+  return { schema: "ccpocket.antigravity-turn-receipt.v1" as const, provider: "antigravity" as const,
+    bridgeSessionId: proof.bridgeSessionId as string, nativeSessionId: proof.nativeSessionId as string,
+    clientMessageId: proof.clientMessageId as string, bridgeInputId, promptSha256: proof.promptSha256,
+    resultSha256: proof.resultSha256 as string, status: "success" as const, persisted: true as const,
+    nativeNumTurns: proof.nativeNumTurns as number };
+}
 
 /** Presentation proof, never run authority. The host must separately prove its
  * current native turn, persisted answer, settled tools and empty input/question
@@ -39,6 +61,8 @@ export async function sessionBridgeWorkerCardProof(db: Db, input: {
     const current = readAdapterSessionAuthority(session?.sessionParamsJson);
     const result = object(run.resultJson);
     const receipt = object(result.bridgeInputReceipt);
+    const bridgeTurnReceipt = authority?.provider === "antigravity" && current?.provider === "antigravity"
+      ? antigravityTurnReceipt(result, receipt) : null;
     const nativeSessionId = string(result.nativeSessionId) ?? current?.nativeSessionId ?? null;
     const bridgeSessionId = string(result.bridgeSessionId) ?? current?.bridgeSessionId ?? null;
     const base = { schema: "paperclip.worker-card-proof.v1" as const, runId: run.id, issueId: issue.id,
@@ -59,7 +83,8 @@ export async function sessionBridgeWorkerCardProof(db: Db, input: {
         || receipt.schema !== "paperclip.bridge-input.v1" || receipt.runId !== run.id
         || receipt.nativeSessionId !== nativeSessionId || receipt.bridgeSessionId !== bridgeSessionId
         || !base.clientMessageId || !Number.isSafeInteger(receipt.acceptedSeq) || Number(receipt.acceptedSeq) < 0
-        || (!base.nativeInputId && !base.nativeTurnId)) return denied("input_identity_unverified");
+        || (authority.provider === "antigravity" ? !bridgeTurnReceipt : (!base.nativeInputId && !base.nativeTurnId)))
+      return denied("input_identity_unverified");
     if (typeof result.result !== "string" || !result.result.trim()) return denied("answer_not_saved");
     const [pending] = await tx.execute<{ value: boolean }>(sql`select (
       exists (select 1 from heartbeat_runs r where r.company_id = ${input.companyId}::uuid
@@ -80,7 +105,8 @@ export async function sessionBridgeWorkerCardProof(db: Db, input: {
         and c.author_agent_id is distinct from ${worker.id}::uuid)
     ) as value`);
     if (pending?.value !== false) return denied("pending_activity");
-    return { ...base, eligible: true, providerResultSaved: true, answerSaved: true, pending: false };
+    return { ...base, ...(bridgeTurnReceipt ? { bridgeTurnReceipt } : {}),
+      eligible: true, providerResultSaved: true, answerSaved: true, pending: false };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }
 
