@@ -4566,11 +4566,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     mutationFn: (action: IssueRecoveryAction) => {
       const state = action.evidence.creatorRecovery as { failedRunId?: string } | undefined;
       if (!state?.failedRunId) throw new Error("The original recovery receipt is unavailable");
-      const key = action.id + ":" + action.updatedAt;
+      const expectedActionUpdatedAt = action.updatedAt instanceof Date
+        ? action.updatedAt.toISOString()
+        : action.updatedAt;
+      const key = action.id + ":" + expectedActionUpdatedAt;
       let requestKey = creatorRecheckRequests.current.get(key);
       if (!requestKey) { requestKey = crypto.randomUUID(); creatorRecheckRequests.current.set(key, requestKey); }
       return issuesApi.recheckCreatorDelivery(issueId!, { actionId: action.id, failedRunId: state.failedRunId,
-        expectedActionUpdatedAt: action.updatedAt, requestKey });
+        expectedActionUpdatedAt, requestKey });
     },
     onError: (err) => pushToast({ title: "送達重新檢查失敗", body: err instanceof Error ? err.message : "Unable to recheck delivery", tone: "error" }),
     onSettled: () => {

@@ -1353,7 +1353,7 @@ export function IssueRecoveryActionCard({
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
         <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
-          {onRecheckCreator && cardState !== "resolved" ? (
+          {onRecheckCreator ? (
             <Button type="button" size="sm" variant="outline" onClick={onRecheckCreator} disabled={creatorRecheckPending}>
               重新檢查送達
             </Button>
