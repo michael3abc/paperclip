@@ -81,6 +81,14 @@ describe("ordinary task interruption", () => {
     expect(container.textContent).toContain(retryWait.message);
     expect(container.querySelector("button")).toBeNull();
   });
+  it("shows a stopped reconciliation without a misleading Retry action", async () => {
+    const retryWait = { reason: "delivery_unknown",
+      message: "The saved input needs authorization and delivery reconciliation before it can be sent. No retry is scheduled." };
+    await render({ ...failed, canRetry: false, retryWait });
+    expect(container.textContent).toContain("No retry is scheduled.");
+    expect(container.textContent).not.toContain("waiting for execution checks");
+    expect(container.querySelector("button")).toBeNull();
+  });
   it("shows an unknown provider's original explanation as text and preserves read-only access", async () => {
     const providerFailure = { schema: "paperclip.provider-failure.v1" as const, provider: "new-provider", phase: "startup" as const,
       category: "unknown" as const, retryability: "unknown" as const, httpStatus: 429,

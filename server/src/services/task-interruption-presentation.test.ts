@@ -39,19 +39,43 @@ describe("unadmitted chat Retry presentation", () => {
   });
 });
 
-it("explains a persisted Retry wait without exposing the saved payload", () => {
+it("a retained Retry receipt explains the blocker without claiming an active recovery check", () => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id,
     executionWaitReason: "workspace_repair_required" };
   const presentation = projectTaskInterruption(issue, { run: failed, agent, wait, paused: false, approval: false });
   expect(presentation).toMatchObject({ state: "failed", canRetry: true,
-    retryWait: { reason: "workspace_repair_required", message: "Retry is waiting for Paperclip to recover the saved files. Your message is saved." } });
+    nextRetryAt: null,
+    retryWait: { reason: "workspace_repair_required", message: "The task folder needs repair. No recovery check is scheduled. Your message is saved." } });
   expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, sourceRunId: "another-run" }, paused: false, approval: false }))
     .not.toHaveProperty("retryWait");
   expect(projectTaskInterruption(issue, { run: failed, agent, wait: { ...wait, executionWaitReason: "secret-payload" }, paused: false, approval: false }))
-    .toMatchObject({ retryWait: { reason: "execution_recovery", message: "Retry is waiting for execution checks. Your message is saved." } });
+    .toMatchObject({ retryWait: { reason: "execution_recovery", message: "This retry has not been admitted. No recovery check is scheduled. Your message is saved." } });
   expect(projectTaskInterruption(issue, { run: failed, agent, wait, paused: true, approval: false }))
     .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
+});
+
+it("unverified saved input does not offer another send through Retry", () => {
+  const failed = { ...run, status: "cancelled", errorCode: "execution_reconciliation_required", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+    wait: { id: "retry", requestedAt: new Date(), sourceRunId: run.id, executionWaitReason: "delivery_unknown" } }))
+    .toMatchObject({ state: "failed", canRetry: false, nextRetryAt: null, retryWait: { reason: "delivery_unknown" } });
+});
+
+it("a generic reconciliation error preserves the specific workspace repair cause", () => {
+  expect(projectTaskInterruption(issue, { run: { ...run, status: "cancelled", errorCode: "execution_reconciliation_required" },
+    agent, paused: false, approval: false, wait: { id: "retry", requestedAt: new Date(), sourceRunId: run.id,
+      executionWaitReason: "workspace_repair_required" } }))
+    .toMatchObject({ state: "failed", retryWait: { reason: "workspace_repair_required" } });
+});
+
+it("a real scheduled retry takes precedence over the retained blocker explanation", () => {
+  const now = Date.parse("2026-11-12T12:00:00Z");
+  const presentation = projectTaskInterruption(issue, { run: { ...run, status: "scheduled_retry",
+    scheduledRetryAt: new Date(now + 30_000), errorCode: "transient", resultJson: null }, agent, paused: false, approval: false,
+    wait: { id: "retry", requestedAt: new Date(now), sourceRunId: run.id, executionWaitReason: "execution_recovery" } }, now);
+  expect(presentation).toMatchObject({ state: "retry_scheduled", nextRetryAt: new Date(now + 30_000).toISOString() });
+  expect(presentation).not.toHaveProperty("retryWait");
 });
 
 it.each(["cleanup_quarantined", "cancelled_by_operator"])("does not offer Retry for terminal Retry waits: %s", reason => {

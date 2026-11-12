@@ -45,17 +45,20 @@ function boundedJsonString(value: SQL, limit: number) {
 // Persisted wait messages can contain diagnostics. Ordinary task views expose
 // only these stable categories, never arbitrary payloads or source identifiers.
 const retryWaitMessages: Record<string, string> = {
-  workspace_repair_required: "Retry is waiting for Paperclip to recover the saved files. Your message is saved.",
-  remote_cleanup: "Retry is waiting for the previous environment to stop. Your message is saved.",
-  local_cleanup: "Retry is waiting for the previous execution to finish cleanup. Your message is saved.",
-  cleanup_pending: "Retry is waiting for the previous execution to finish cleanup. Your message is saved.",
-  execution_settling: "Retry is waiting for the previous execution to stop. Your message is saved.",
-  controller_settling: "Retry is waiting for the previous execution to finish recovery. Your message is saved.",
-  process_identity_missing: "Retry is waiting for Paperclip to verify that the previous execution stopped. Your message is saved.",
-  process_running: "Retry is waiting for the previous execution to stop. Your message is saved.",
-  execution_active: "Retry is waiting for the current run to finish. Your message is saved.",
-  decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
-  finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  workspace_repair_required: "The task folder needs repair. No recovery check is scheduled. Your message is saved.",
+  workspace_registration_required: "The task folder needs Git registration. Your message is saved.",
+  remote_cleanup: "The previous environment has unresolved cleanup. No recovery check is scheduled. Your message is saved.",
+  local_cleanup: "The previous execution has unresolved cleanup. No recovery check is scheduled. Your message is saved.",
+  cleanup_pending: "The previous execution has unresolved cleanup. No recovery check is scheduled. Your message is saved.",
+  execution_settling: "The previous execution has not settled. No recovery check is scheduled. Your message is saved.",
+  controller_settling: "The previous execution needs recovery. No recovery check is scheduled. Your message is saved.",
+  process_identity_missing: "The previous execution's stop status is unknown. No recovery check is scheduled. Your message is saved.",
+  process_running: "The previous execution has not been confirmed stopped. No recovery check is scheduled. Your message is saved.",
+  execution_active: "The current execution has not settled. Your message is saved.",
+  decision_pending: "Resolve the pending approval or question before continuing. Your message is saved.",
+  finalizing_saved_result: "The saved result still needs finalization. No recovery check is scheduled.",
+  delivery_unknown: "The saved input needs authorization and delivery reconciliation before it can be sent. No retry is scheduled.",
+  execution_recovery: "This retry has not been admitted. No recovery check is scheduled. Your message is saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
 };
@@ -121,11 +124,14 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (system?.state === "running" && typeof activeObservation === "number" &&
       activeObservation > now - 45_000) return { ...base, state: "working" };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
-    const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
-    // Keep the latest input receipt so message submission can settle independently.
+    const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason)
+      ? retryWait.executionWaitReason : "execution_recovery";
+    // A retained Retry receipt is not a running recovery operation. Actual
+    // execution, preparation, scheduled checks and active recovery were handled
+    // above. Keep its reason without promising background work or another send.
     return { ...base, state: "failed",
-      canRetry: !["cleanup_quarantined", "cancelled_by_operator"].includes(reason), retryWait: { reason,
-      message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator", "delivery_unknown", "decision_pending"].includes(reason),
+      retryWait: { reason, message: retryWaitMessages[reason]! } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };
