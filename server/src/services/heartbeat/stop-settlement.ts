@@ -14,7 +14,7 @@ import { publishLiveEvent } from "../live-events.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { createBridgeStopReverification, hasVerifiedBridgeTerminalStop } from "./bridge-stop-reverification.js";
 import { historicalAdapterType } from "../conversation-continuation.js";
-import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop } from "./stop-settlement-evidence.js";
+import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop, verifyBridgeHostReboot } from "./stop-settlement-evidence.js";
 import { registerWorkspaceWaitSettlement } from "./workspace-wait-settlement.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 
@@ -90,7 +90,7 @@ export function createRunStopSettlement(db: Db, deps: {
     });
     if (!claimed) return read(runId, companyId);
     let state: "stopping" | "cleaning" | "settled" = "stopping", reason = "inspection_interrupted";
-    let neverStarted = false;
+    let neverStarted = false, remoteHostStopped = false;
     try {
       if (claimed.inspect && !options.signal?.aborted) {
         let run = (await read(runId, companyId))!;
@@ -103,6 +103,9 @@ export function createRunStopSettlement(db: Db, deps: {
             neverStarted = true; stopProof = "verified_pre_dispatch_wait";
           } else if (run.runtimeMode === "native") stopProof = await verifyNativeStop(db, run);
           else if (cancellation.forced === true) reason = "forced_stop_unverified";
+          else if (await verifyBridgeHostReboot(db, run)) {
+            remoteHostStopped = true; stopProof = "remote_host_reboot_receipt";
+          }
           else if (hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_terminal_stop_receipt";
           else if (cancellation.state === "acknowledged") {
             if (cancellation.proof === "verified_pre_dispatch_wait") reason = "pre_dispatch_evidence_invalidated";
@@ -147,6 +150,7 @@ export function createRunStopSettlement(db: Db, deps: {
       }
       if (state !== "stopping" && (deps.isRunActive(runId) ||
           neverStarted && !await isPreDispatchExecutionWaitVerified(tx, current) ||
+          remoteHostStopped && !await verifyBridgeHostReboot(tx, current) ||
           current.runtimeMode === "native" && !await verifyNativeStop(tx, current))) {
         state = "stopping"; reason = "execution_changed";
       }
@@ -167,7 +171,8 @@ export function createRunStopSettlement(db: Db, deps: {
       const receipt = { schema: SCHEMA, processGeneration: Number(generation?.seq ?? 0), state: state === "settled" ? state : nextCheckAt ? state : "needs_attention",
         reason, attempts, checkedAt: new Date(now()).toISOString(), nextCheckAt,
         evidenceKey: await evidenceKey(tx, { ...current, resultJson: { ...current.resultJson, ...nativeAck } }), stopVerified: state !== "stopping",
-        ...(neverStarted && state !== "stopping" ? { proof: "verified_pre_dispatch_wait" } : {}) };
+        ...(neverStarted && state !== "stopping" ? { proof: "verified_pre_dispatch_wait" } : {}),
+        ...(remoteHostStopped && state !== "stopping" ? { proof: "remote_host_reboot_receipt" } : {}) };
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.runStopSettlement, JSON.stringify({ companyId, runId }));
       await notifyInstructionCollection(tx, { companyId, runId });
       if (state === "settled") {

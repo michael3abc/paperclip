@@ -10,6 +10,7 @@ import {
 } from "../heartbeat/shared-checkout.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { logActivity } from "../activity-log.js";
+import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
 import { record } from "./workspace-creator.js";
 
 /** Boot-time slack for the server clock reading around the remote uptime read. */
@@ -151,6 +152,7 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
             and event_type = ${REMOTE_HOST_REBOOT_EVENT} and payload->>'bootId' = ${observed.bootId}
             and payload->>'runFinishedAt' = ${finishedAt} limit 1`);
           if (existing.length) return;
+          await notifyRunStopSettlement(tx, { companyId: input.companyId, runId: holder.id });
           await appendHeartbeatRunEvent(tx as unknown as Db, {
             companyId: input.companyId, runId: holder.id, agentId: holder.agentId, eventType: REMOTE_HOST_REBOOT_EVENT,
             stream: "system", level: "info",

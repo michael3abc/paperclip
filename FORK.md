@@ -5,6 +5,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Remote boot cleanup handoff (2026-11-12): consume original Owner-observed
+  Bridge host reboot receipts through durable stop settlement and file collection.
+  Preserve exact host/finish/launch binding, failed outcomes and bounded checks;
+  later execution invalidates the old receipt. No provider input or task replay.
+
 - Suppressed disposition repair settlement (2026-11-12): verify the full original
   server trace for a prepared repair rejected before provider dispatch. Retained
   instruction copies use normal collection/cleanup; the original workspace wait

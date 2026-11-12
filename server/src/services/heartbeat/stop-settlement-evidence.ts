@@ -8,6 +8,7 @@ import { acknowledgedNativeApiStopExecutionHasStopped } from "../acknowledged-na
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { suppressedDispositionRepairPredicate } from "../pre-dispatch-execution-wait.js";
+import { verifiedBridgeHostRebootSql } from "./shared-checkout.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -20,11 +21,21 @@ export async function hasCurrentStopVerification(db: Db, companyId: string, runI
     and r.result_json#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
     and r.result_json#>>'{stopSettlement,state}' in ('cleaning', 'needs_attention', 'settled')
     and r.result_json#>>'{stopSettlement,stopVerified}' = 'true'
+    and (r.result_json#>>'{stopSettlement,proof}' IS DISTINCT FROM 'remote_host_reboot_receipt'
+      OR (${verifiedBridgeHostRebootSql}))
     and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
     and (r.result_json#>>'{stopSettlement,processGeneration}')::integer =
       (select coalesce(max(e.seq), 0) from heartbeat_run_events e where e.run_id = r.id
         and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
           'native.local_process_stopped', 'turn.started', 'session.resumed'))`);
+  return rows.length === 1;
+}
+
+export async function verifyBridgeHostReboot(db: Db, run: Run) {
+  const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${run.id}::uuid
+    and r.company_id = ${run.companyId}::uuid and r.status in ('cancelled', 'timed_out', 'failed', 'interrupted')
+    and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
+    and (${verifiedBridgeHostRebootSql})`);
   return rows.length === 1;
 }
 

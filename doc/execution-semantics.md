@@ -3676,6 +3676,13 @@ catalog reads the host's boot id and uptime, and a boot that began after the
 owner finished (with matching SSH endpoint and absent local process) is
 recorded as `workspace.remote_host_rebooted`. Idle, terminal status or task
 completion is still never stop proof, and the other settlement fences remain.
+For a historical Bridge run with released local preparation leases, the stop
+coordinator also consumes this existing server receipt to collect retained local
+instruction files. Bind it to the original invocation host and exact finish time;
+later launch/resume evidence invalidates it at settlement, collection and admission.
+The receipt remains remote-host evidence, never a provider result or cancellation
+ACK. Recording the boundary notifies the existing coordinator transactionally;
+exhausted historical records require new evidence or an explicit Recheck.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
 Selection is persistent and applies at the next normal admission; it does not

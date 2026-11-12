@@ -102,7 +102,38 @@ export async function sharedCheckoutPath(cwd: string): Promise<string> {
  * historical holder finished (written only by workspace-holder reconciliation). */
 export const REMOTE_HOST_REBOOT_EVENT = "workspace.remote_host_rebooted";
 export const REMOTE_HOST_REBOOT_SCHEMA = "paperclip.remote-host-boot-boundary.v1";
+
+/** Reuse an Owner-observed boot boundary for Bridge cleanup, never as a result
+ * or a new cancellation ACK. Alias r is the original heartbeat_runs row.
+ * The invocation binds the historical host; mutable project settings do not.
+ * Only released local preparation leases qualify for this cleanup path. */
+export const verifiedBridgeHostRebootSql = sql`r.runtime_mode = 'legacy'
+  and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
+  and r.process_pid is null and r.process_group_id is null and r.process_started_at is null
+  and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
+    and (l.company_id <> r.company_id or l.provider <> 'local' or l.released_at is null))
+  and exists (select 1 from heartbeat_run_events boot where boot.run_id = r.id
+    and boot.company_id = r.company_id and boot.agent_id = r.agent_id
+    and boot.event_type = ${REMOTE_HOST_REBOOT_EVENT} and boot.stream = 'system'
+    and boot.source_event_id is null and boot.source_instance_id is null
+    and boot.payload->>'schema' = ${REMOTE_HOST_REBOOT_SCHEMA}
+    and boot.payload->>'localProcess' in ('absent', 'not_recorded')
+    and (boot.payload->>'runFinishedAt')::timestamptz = r.finished_at
+    and (boot.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at
+    and boot.payload->>'hostId' = (select invoked.payload#>>'{context,hostId}'
+      from heartbeat_run_events invoked where invoked.run_id = r.id
+        and invoked.company_id = r.company_id and invoked.agent_id = r.agent_id
+        and invoked.event_type = 'adapter.invoke' and invoked.source_event_id is null
+        and invoked.payload->>'adapterType' = 'ccpocket_bridge'
+      order by invoked.seq desc limit 1)
+    and not exists (select 1 from heartbeat_run_events launched where launched.run_id = r.id
+      and launched.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded',
+        'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started')
+      and (launched.seq > boot.seq or launched.created_at >= (boot.payload->>'bootStartedAtLowerBound')::timestamptz)))`;
+
 const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
+          and (r.result_json#>>'{stopSettlement,proof}' IS DISTINCT FROM 'remote_host_reboot_receipt'
+            OR (${verifiedBridgeHostRebootSql}))
           and (r.error_code IS DISTINCT FROM 'legacy_disposition_repair_suppressed' OR EXISTS (
             select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = r.id and ${suppressedDispositionRepairPredicate()}))
           and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
@@ -136,7 +167,11 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
               and e.payload->>'schema' = ${REMOTE_HOST_REBOOT_SCHEMA}
               and e.payload->>'runFinishedAt' is not null and e.payload->>'bootStartedAtLowerBound' is not null
               and (e.payload->>'runFinishedAt')::timestamptz = r.finished_at
-              and (e.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at))
+              and (e.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at
+              and not exists (select 1 from heartbeat_run_events launched where launched.run_id = r.id
+                and launched.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded',
+                  'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started')
+                and (launched.seq > e.seq or launched.created_at >= (e.payload->>'bootStartedAtLowerBound')::timestamptz))))
           and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
             and (f.lease_owner is not null or (f.phase <> 'committed' and not (
               f.phase = 'terminal_failure' and f.next_attempt_at is null
@@ -156,7 +191,7 @@ const settledSharedCheckoutSql = sql`r.status in ('succeeded', 'failed', 'cancel
               or (c.receipt->>'cleanupPending' = 'true' or (c.receipt->>'schema' = 'paperclip.agent-files.v1' and c.receipt->>'cleanupPending' is distinct from 'false')) or c.receipt ? 'retainedByRunId'))
           and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
             and ((e.source_event_id is null and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))
-              or e.event_type in ('turn.started', 'session.resumed'))
+              or e.event_type in ('adapter.invoke', 'harness.ready', 'session.started', 'session.updated', 'turn.started', 'session.resumed'))
             and not exists (select 1 from heartbeat_run_events stopped where stopped.run_id = r.id
               and stopped.source_event_id is null and stopped.event_type = 'native.local_process_stopped' and stopped.seq > e.seq)
             and exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and e.created_at > c.process_stopped_at))

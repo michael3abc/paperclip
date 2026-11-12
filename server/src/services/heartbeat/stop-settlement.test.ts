@@ -102,6 +102,49 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     expect(hook).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["valid", "wrong_host", "wrong_finish", "old_boot", "provider_receipt", "new_launch",
+    "live_lease", "remote_lease", "local_process", "forced"])(
+    "uses the original server-observed Bridge boot boundary for cleanup only (%s)", async evidence => {
+      const f = await seed();
+      const finished = new Date(Date.now() - 5000);
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "original_adapter_failure", finishedAt: finished,
+        resultJson: { bridgeSessionId: "bridge", nativeSessionId: "native",
+          ...(evidence === "forced" ? { executionCancellation: { forced: true, state: "requested" } } : {}) }
+      }).where(eq(heartbeatRuns.id, f.run.id));
+      const invoked = await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+        eventType: "adapter.invoke", stream: "system", payload: { adapterType: "ccpocket_bridge", context: { hostId: "remote-e" } } });
+      await db.update(heartbeatRunEvents).set({ createdAt: new Date(finished.getTime() - 1000) }).where(eq(heartbeatRunEvents.id, invoked.row.id));
+      const boot = await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
+        eventType: "workspace.remote_host_rebooted", stream: "system", payload: {
+          schema: "paperclip.remote-host-boot-boundary.v1", hostId: evidence === "wrong_host" ? "other-host" : "remote-e",
+          bootId: randomUUID(), localProcess: "not_recorded",
+          runFinishedAt: new Date(finished.getTime() + (evidence === "wrong_finish" ? 1 : 0)).toISOString(),
+          bootStartedAtLowerBound: new Date(finished.getTime() + (evidence === "old_boot" ? -1000 : 1000)).toISOString() } });
+      if (evidence === "provider_receipt") await db.update(heartbeatRunEvents).set({ sourceEventId: randomUUID() }).where(eq(heartbeatRunEvents.id, boot.row.id));
+      if (evidence === "new_launch") await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "turn.started" });
+      if (["live_lease", "remote_lease"].includes(evidence)) await db.insert(environmentLeases).values({ companyId: f.company.id, heartbeatRunId: f.run.id,
+        provider: evidence === "remote_lease" ? "ssh" : "local", releasedAt: evidence === "live_lease" ? null : new Date() });
+      if (evidence === "local_process") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.run.id));
+      const hook = vi.fn(async () => ({ verified: false as const, reason: "result_not_recorded" }));
+      const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
+      await service.reconcile(f.run.id, f.company.id);
+      expect(await receipt(f.run.id)).toMatchObject({ stopVerified: evidence === "valid" });
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "original_adapter_failure" });
+      if (evidence !== "forced") expect((await read(f.run.id)).resultJson?.executionCancellation).toBeUndefined();
+      if (evidence === "valid") {
+        expect(await receipt(f.run.id)).toMatchObject({ state: "settled", proof: "remote_host_reboot_receipt" });
+        expect(hook).not.toHaveBeenCalled();
+        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
+        await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke",
+          payload: { adapterType: "ccpocket_bridge", context: { hostId: "remote-e" } } });
+        expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(false);
+        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+        await service.reconcile(f.run.id, f.company.id, { manual: true });
+        expect(await receipt(f.run.id)).toMatchObject({ stopVerified: false });
+        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+      }
+    });
+
   it.each(["unstarted", "started", "launch", "foreign_parent", "wrong_child", "missing_wake", "instruction_copy"])(
     "verifies the original scheduling trace of a historical cancelled workspace retry (%s)", async evidence => {
       const f = await seed();

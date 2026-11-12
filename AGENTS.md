@@ -355,6 +355,10 @@ If you change schema/API behavior, update all impacted layers:
   receipts together, without provider identity/events. Only released local leases
   qualify; collect retained local files through the existing CAS collector. Recheck
   this proof before collection and directory admission; keep failure history and holds.
+  Bridge cleanup may reuse an Owner-recorded remote host reboot only when the
+  original invocation host, exact finish boundary and latest execution still match.
+  Released local preparation leases and normal file CAS remain required; preserve
+  reboot provenance without inventing cancellation ACKs or replaying failed work.
   Notification hints project only company/run identifiers, never serialize
   caller DB handles or private payloads. Restored successor transcript inputs
   need the original native UUID and a real result, with provenance retained.

@@ -115,12 +115,24 @@ describe("persistent agent directories", () => {
     } finally { await coordinator.stop(); }
   });
 
-  it("reconstructs suppressed repair cleanup and wakes the original workspace wait once without provider work", async () => {
+  it.each(["suppressed", "remote_boot"])("reconstructs %s cleanup and wakes the original workspace wait once without provider work", async proof => {
     const copy = await run();
     await fs.writeFile(path.join(copy.localRoot, "retained-result.txt"), "preserve prepared work");
     await copies.reportUnavailable(companyId, copy.runId);
     const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, copy.runId));
-    await seedSuppressedDisposition(db, original);
+    if (proof === "suppressed") await seedSuppressedDisposition(db, original);
+    else {
+      const finished = new Date(Date.now() - 5000);
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "original_adapter_failure", runtimeMode: "legacy", finishedAt: finished,
+        runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" } },
+        resultJson: { bridgeSessionId: "original", nativeSessionId: "original-native" } }).where(eq(heartbeatRuns.id, copy.runId));
+      const invoked = await appendHeartbeatRunEvent(db, { companyId, runId: copy.runId, agentId, eventType: "adapter.invoke", stream: "system",
+        payload: { adapterType: "ccpocket_bridge", context: { hostId: "remote-e" } } });
+      await db.update(heartbeatRunEvents).set({ createdAt: new Date(finished.getTime() - 1000) }).where(eq(heartbeatRunEvents.id, invoked.row.id));
+      await appendHeartbeatRunEvent(db, { companyId, runId: copy.runId, agentId, eventType: "workspace.remote_host_rebooted", stream: "system", payload: {
+        schema: "paperclip.remote-host-boot-boundary.v1", hostId: "remote-e", bootId: randomUUID(), localProcess: "not_recorded",
+        runFinishedAt: finished.toISOString(), bootStartedAtLowerBound: new Date(finished.getTime() + 1000).toISOString() } });
+    }
     const [waiter] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "scheduled_retry",
       scheduledRetryReason: "workspace_busy", scheduledRetryAt: null,
       resultJson: { workspaceBusy: { holderKey: createHash("sha256").update(copy.runId).digest("hex") } } }).returning();
@@ -147,7 +159,7 @@ describe("persistent agent directories", () => {
       const [sameWait] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiter.id));
       expect(sameWait.scheduledRetryAt).toEqual(firstWake.scheduledRetryAt);
       expect(sameWait.scheduledRetryAttempt).toBe(0);
-      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(proof === "suppressed" ? 3 : 2);
       expect(await fs.readFile(path.join(root, "retained-result.txt"), "utf8")).toBe("preserve prepared work");
       const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, copy.runId));
       expect(events.filter(e => e.eventType === "execution.instruction_collection_rechecked")).toHaveLength(1);
