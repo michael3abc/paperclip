@@ -3880,6 +3880,13 @@ same-scope workspace IDs can be adopted without moving files or replacing their
 metadata. Cross-company/host scope and foreign nested project roots remain
 excluded; a broad same-company session/source ancestor does not occupy explicitly
 granted project sources beneath it. Aliases and Git administrative paths fail.
+Heartbeat rebuilds participation kind/sourceCwd, parentDir, cwd, host, project and
+generation from the admitted registration, discarding caller coordinates. The
+paired Bridge adapter reads the authoritative task even for plain shared workers;
+it accepts equality with the source or segment-contained descendants of either
+approved root, not only direct children. Unknown registration kinds and canonical,
+claim, host or project mismatches fail before native input. Session cwd does not
+override an explicit registered execution selection.
 
 initialize is a separate explicit operation for repository_root: it runs only
 git init with an empty template and the requested initial branch. It never stages

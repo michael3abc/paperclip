@@ -194,10 +194,10 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await leases(second.run.id)).toMatchObject([{ status: "active" }]);
   });
 
-  it("prepares one main-managed linked tree for multiple tasks without provisioning or changing shared files", async () => {
+  it("prepares one nested main-managed linked tree for multiple tasks without provisioning or changing shared files", async () => {
     const { input, source, issue } = await fixture(true);
     const parent = join(home, "managed-trees"); await mkdir(parent);
-    const cwd = join(parent, "batch");
+    const cwd = join(parent, "paperclip", "batch");
     await execFile("git", ["-C", source, "worktree", "add", "-b", "batch", cwd]);
     await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, workspaceStrategy: { type: "git_worktree", worktreeParentDir: parent } } })
       .where(eq(projects.id, issue.projectId!));
@@ -206,7 +206,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       actor: { type: "board" as const, source: "local_implicit" as const, isInstanceAdmin: true } };
     const management = mainManagedWorktreeService(db);
     await management.operate(scope, { action: "register", operationId: randomUUID(), expectedGeneration: 0,
-      projectWorkspaceId: issue.projectWorkspaceId!, name: "batch", branch: "batch", targetBranch: "main" });
+      projectWorkspaceId: issue.projectWorkspaceId!, cwd, name: "batch", branch: "batch", targetBranch: "main" });
     const stored = await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId);
     const second = await sibling(input);
     await reuse(input, stored!); await reuse(second, stored!);
@@ -219,6 +219,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const update = vi.spyOn(input.services.executionWorkspacesSvc, "update");
     const repositories = vi.spyOn(input.services.executionWorkspacesSvc, "prepareTaskRepositoriesForAdmission");
     const prepared = await Promise.all([prepareHeartbeatWorkspace(db, input), prepareHeartbeatWorkspace(db, second)]);
+    for (const value of [input, second]) expect(value.task.context.managedWorktreeParticipation).toMatchObject({
+      kind: "linked_worktree", sourceCwd: source, parentDir: parent, cwd, projectId: issue.projectId, workspaceId,
+    });
     expect(prepared.map(result => result.persistedExecutionWorkspace?.id)).toEqual([workspaceId, workspaceId]);
     expect(prepared.map(result => result.executionWorkspace.cwd)).toEqual([cwd, cwd]);
     expect(update).not.toHaveBeenCalled(); expect(repositories).not.toHaveBeenCalled();
@@ -241,6 +244,28 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const fourth = await sibling(input, 4); await reuse(fourth, (await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!);
     await expect(prepareHeartbeatWorkspace(db, fourth)).rejects.toThrow("workspace_converging");
     expect(await leases(fourth.run.id)).toEqual([]);
+  });
+
+  it("rebuilds repository-root participation from registration rather than caller coordinates", async () => {
+    const { input, source, issue } = await fixture(true);
+    const parent = join(home, "separate-parent"); await mkdir(parent);
+    await db.update(projects).set({ executionWorkspacePolicy: { enabled: true,
+      workspaceStrategy: { type: "git_worktree", worktreeParentDir: parent } } })
+      .where(eq(projects.id, issue.projectId!));
+    const workspaceId = randomUUID();
+    await mainManagedWorktreeService(db).operate({ companyId: issue.companyId, projectId: issue.projectId!, workspaceId,
+      actor: { type: "board", source: "local_implicit", isInstanceAdmin: true } },
+    { action: "register", operationId: randomUUID(), expectedGeneration: 0, kind: "repository_root",
+      projectWorkspaceId: issue.projectWorkspaceId!, cwd: source, name: "source", branch: "main", targetBranch: "main" });
+    const stored = (await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!;
+    await reuse(input, stored);
+    await db.update(issues).set({ executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, issue.id));
+    input.task.context.managedWorktreeParticipation = { kind: "linked_worktree", sourceCwd: "/forged", cwd: "/forged" };
+    const prepared = await prepareHeartbeatWorkspace(db, input);
+    expect(prepared.executionWorkspace.cwd).toBe(source);
+    expect(input.task.context.managedWorktreeParticipation).toMatchObject({ kind: "repository_root", sourceCwd: source,
+      parentDir: parent, cwd: source, projectId: issue.projectId, workspaceId, generation: 1 });
   });
 
   it("keeps the resident main conversation session-only without claiming its home or publishing an execution workspace", async () => {

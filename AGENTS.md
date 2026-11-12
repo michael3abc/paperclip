@@ -2,6 +2,11 @@
 
 Guidance for human and AI contributors working in this repository.
 
+Managed workspace participation rebuilds kind/sourceCwd from the current stored
+registration after lifecycle admission; wake JSON cannot supply those fields.
+Bridge adapters verify plain worker task projects and accept canonical roots or
+nested approved paths. Ship the matching adapter with this boundary change.
+
 Worker-card collapse is presentation only. The session-bridge proof endpoint
 requires the current main's project/worker policy and issue read permission,
 server session authority, the exact accepted native input and a saved successful

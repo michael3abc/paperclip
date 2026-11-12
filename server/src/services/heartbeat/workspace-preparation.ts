@@ -260,6 +260,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       Number(managedWorkspace.metadata?.lifecycleGeneration ?? 0));
     context.managedWorktreeParticipation = { workspaceId: managedWorkspace.id, generation: managedAdmission.generation,
       cwd: managedWorkspace.cwd, hostId: managedMarker.hostId, branch: managedMarker.branch,
+      kind: managedMarker.kind, sourceCwd: managedMarker.sourceCwd,
       parentDir: managedMarker.parentDir, projectId: managedWorkspace.projectId };
   }
   if (!managedWorkspace && agent.runtimeConfig?.requireTaskWorktree === true && (
