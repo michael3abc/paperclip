@@ -12,6 +12,9 @@ publication after terminal status, without adding a card polling loop. Preserve
 main/manual/pinned cards and all histories. Dedicated `workerCardOnly` keys can
 only GET proof/events; never expose native controls, inbox or other API routes
 to observers. See `doc/execution-semantics.md`.
+Worker-card control events may use the server privacy binding only behind current
+issue authorization. Do not broaden generic status events with that binding:
+their native/canonical legacy identity projection remains unchanged.
 
 Resident Bridge session authority is server-owned. Use the awaited heartbeat
 callback before saving host ownership or sending input. Never grant authority from

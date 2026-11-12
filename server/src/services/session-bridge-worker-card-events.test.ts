@@ -44,7 +44,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("worker card event authoriza
   it("publishes canonical issueId-only status with current request authorization", async () => {
     const f = await seed();
     await db.update(heartbeatRuns).set({ executionStatusDeliveryId: randomUUID() }).where(eq(heartbeatRuns.id, f.runIds[0]!));
-    expect(await deliverExecutionStatuses(db)).toEqual({ scanned: 1, delivered: 1 });
+    const publish = vi.fn(event => ({ ...event, id: 0, payload: event.payload ?? {}, createdAt: new Date().toISOString() }));
+    expect(await deliverExecutionStatuses(db, { publish })).toEqual({ scanned: 1, delivered: 1 });
+    // The scoped worker control event must not expand the legacy status payload.
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ issueId: null }) }));
     const authorize = vi.fn(async (issue: string, project: string) => issue === f.issueId && project === f.projectId);
     const page = await f.read(authorize);
     expect(page.events).toMatchObject([{ type: "worker_card_changed", runId: f.runIds[0] }]);

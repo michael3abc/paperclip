@@ -24,8 +24,11 @@ identity, turn/input, persisted answer, settled tools and empty local input/ques
 queues. Server proof is not permission to archive, stop or release any resource.
 
 Existing execution-status delivery emits durable `worker_card_changed` control
-events. Publishing the final session identity re-arms that same delivery marker
-because terminal status can arrive first. Input/question activity invalidates
+events. The control event uses the server privacy binding behind current issue read
+authorization; generic status broadcasts retain their native/canonical legacy
+identity projection and never inherit normalized malformed context IDs.
+Publishing the final session identity re-arms that same delivery marker because
+terminal status can arrive first. Input/question activity invalidates
 the current card. Approval changes re-arm it in their existing transaction,
 including linking or removing a pending approval after completion. Each fan-out
 event has a run-specific ID; the underlying

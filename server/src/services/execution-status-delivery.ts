@@ -21,6 +21,7 @@ export async function deliverExecutionStatuses(
       companyId: heartbeatRuns.companyId,
       agentId: heartbeatRuns.agentId,
       issueId: issues.id,
+      workerCardIssueId: heartbeatRuns.issueId,
       status: heartbeatRuns.status,
       startedAt: heartbeatRuns.startedAt,
       finishedAt: heartbeatRuns.finishedAt,
@@ -32,7 +33,6 @@ export async function deliverExecutionStatuses(
       and(
         eq(issues.companyId, heartbeatRuns.companyId),
         eq(issues.id, sql`coalesce(
-          ${heartbeatRuns.issueId},
           ${heartbeatRuns.nativeIssueId},
           ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
         )`),
@@ -67,7 +67,10 @@ export async function deliverExecutionStatuses(
           eq(heartbeatRuns.executionStatusDeliveryId, run.executionStatusDeliveryId!))).for("update");
         if (!owned) return [];
         const cardEvents = await persistWorkerCardChange(tx as unknown as Db, {
-          companyId: run.companyId, runId: run.id, agentId: run.agentId, issueId: run.issueId });
+          // The privacy binding can normalize legacy context spellings. It is
+          // valid for this issue-authorized control event, never for broadening
+          // the existing canonical status broadcast above.
+          companyId: run.companyId, runId: run.id, agentId: run.agentId, issueId: run.workerCardIssueId ?? run.issueId });
         if (["failed", "timed_out"].includes(run.status)) await enqueuePushSource(tx as unknown as Db, {
           companyId: run.companyId, issueId: run.issueId, eventKey: `run:${run.id}:${run.status}`,
           sourceKind: "run", sourceId: run.id, category: "problem",

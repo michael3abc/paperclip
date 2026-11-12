@@ -6,6 +6,8 @@ status delivery and control events invalidate cards; late session publication
 re-arms that same queue. The host additionally verifies native turn/tools/input
 before display collapse. Unknown, pending, failed or superseded turns remain
 visible. No native archive, stop, history removal or workspace release is involved.
+Worker-card invalidations use their authorized issue binding independently of
+generic status broadcasts, preserving canonical legacy identity redaction.
 
 2026-11-12 bounded original-main blocker repair: a failed notification turn and
 its automatic retry lineage cannot alternate with generic continuation to obtain
