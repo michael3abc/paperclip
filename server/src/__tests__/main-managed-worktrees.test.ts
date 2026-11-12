@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { hostname } from "node:os";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces,
@@ -117,6 +118,49 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.row()).toMatchObject({ id: f.workspaceId, providerType: "git_worktree", metadata: { trainingReceipt: "retain" } });
     expect(f.host).toHaveBeenCalledWith(null, expect.objectContaining({ cwd }));
     expect(f.host.mock.calls[0]![1].excludedRoots).not.toContain("/fixture/" + f.projectId);
+  });
+
+  it("adopts the original local git_repo source and nested git_worktree without a source alias", async () => {
+    const f = await fixture(), cwd = f.parentDir + "/paperclip/" + f.issueId;
+    await db.update(projectWorkspaces).set({ sourceType: "git_repo", metadata: { hostId: hostname(), usage: "development" },
+      repoUrl: null, remoteProvider: null, remoteWorkspaceRef: null }).where(eq(projectWorkspaces.id, f.sourceId));
+    const [sourceBefore] = await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.id, f.sourceId));
+    await db.insert(executionWorkspaces).values({ id: f.workspaceId, companyId: f.companyId, projectId: f.projectId,
+      projectWorkspaceId: f.sourceId, name: "Legacy", cwd, branchName: "michael/batch", mode: "isolated_workspace",
+      strategyType: "git_worktree", providerType: "git_worktree", metadata: { trainingReceipt: "retain" } });
+    await f.service.operate(f.scope, { ...f.registration, cwd });
+    expect(f.host).toHaveBeenCalledWith(null, expect.objectContaining({ action: "inspect", cwd, sourceCwd: f.sourceCwd }));
+    expect(await f.row()).toMatchObject({ id: f.workspaceId, projectWorkspaceId: f.sourceId, providerType: "git_worktree", cwd, metadata: { trainingReceipt: "retain" } });
+    expect((await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.id, f.sourceId)))[0]).toEqual(sourceBefore);
+  });
+
+  it("a local git_repo with an origin URL still requires host Git validation", async () => {
+    const f = await fixture();
+    await db.update(projectWorkspaces).set({ sourceType: "git_repo", repoUrl: "https://example.invalid/source.git", metadata: {} }).where(eq(projectWorkspaces.id, f.sourceId));
+    f.host.mockRejectedValueOnce(Object.assign(new Error("not a git repository"), { worktreeEffectStarted: false }));
+    await expect(f.service.operate(f.scope, f.registration)).rejects.toThrow("not a git repository");
+    expect(f.host).toHaveBeenCalledWith(null, expect.objectContaining({ action: "inspect" }));
+    expect(readMainManagedWorktree((await f.row()).metadata)?.phase).not.toBe("open");
+  });
+
+  it.each([
+    { metadata: { hostId: "foreign-host" } },
+    { metadata: { hostId: 42 } },
+    { remoteProvider: "remote-provider" },
+    { remoteWorkspaceRef: "remote-workspace" },
+  ])("rejects remote or ambiguous git_repo coordinates before local host I/O: %j", async patch => {
+    const f = await fixture();
+    await db.update(projectWorkspaces).set({ sourceType: "git_repo", ...patch }).where(eq(projectWorkspaces.id, f.sourceId));
+    await expect(f.service.operate(f.scope, f.registration)).rejects.toThrow("worktree_host_capability_unavailable");
+    expect(f.host).not.toHaveBeenCalled();
+    expect(await f.row()).toBeUndefined();
+  });
+
+  it("a git_repo URL without a local cwd is never auto-cloned for registration", async () => {
+    const f = await fixture();
+    await db.update(projectWorkspaces).set({ sourceType: "git_repo", cwd: null, repoUrl: "https://example.invalid/source.git" }).where(eq(projectWorkspaces.id, f.sourceId));
+    await expect(f.service.operate(f.scope, f.registration)).rejects.toThrow("worktree_source_configuration_required");
+    expect(f.host).not.toHaveBeenCalled();
   });
 
   it("admits an unborn registered root without a first commit while retaining current-run authorization", async () => {

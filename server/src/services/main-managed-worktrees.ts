@@ -279,7 +279,15 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
             const parent = configuredParent ?? source!.cwd!;
             if (!path.posix.isAbsolute(parent) || path.posix.normalize(parent) !== parent) fail("worktree_parent_configuration_required");
             const sourceHost = source!.sourceType === "remote_managed" ? source!.metadata?.hostId : null;
-            if (!["local_path", "remote_managed"].includes(source!.sourceType) || (source!.sourceType === "remote_managed" && (typeof sourceHost !== "string" || !sourceHost))) fail("worktree_host_capability_unavailable");
+            // A legacy Git source can already point at a local checkout. Keep
+            // its source ID/type during adoption; the host still validates the
+            // canonical Git root. A foreign host or remote manager is never
+            // interpreted as a controller-local path merely because cwd exists.
+            const localGitSource = source!.sourceType === "git_repo"
+              && source!.remoteProvider == null && source!.remoteWorkspaceRef == null
+              && (source!.metadata?.hostId == null || source!.metadata?.hostId === hostname());
+            if ((!localGitSource && !["local_path", "remote_managed"].includes(source!.sourceType))
+              || (source!.sourceType === "remote_managed" && (typeof sourceHost !== "string" || !sourceHost))) fail("worktree_host_capability_unavailable");
             const cwd = operation.cwd ?? (configuredParent ? path.posix.join(parent, operation.name!) : "");
             if (!cwd || !path.posix.isAbsolute(cwd) || path.posix.normalize(cwd) !== cwd
               || cwd.split("/").includes(".git")
