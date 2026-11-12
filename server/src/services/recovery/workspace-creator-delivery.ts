@@ -130,11 +130,28 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
         && Number.isSafeInteger(proof.acceptedSeq) && Number(proof.acceptedSeq) >= 0;
       const dispatched = accepted ? [run.id] : [];
       const admitted = run && ["queued", "running"].includes(run.status);
+      const wait = record(receipt?.payload?.executionWait);
+      // A committed pre-admission wait is known, but is not input acceptance
+      // or authority to resend. Keep its original wake for event reconciliation.
+      const deferred = receipt?.status === "deferred_issue_execution" && !receipt.runId
+        && receipt.agentId === state.creatorAgentId && receipt.reason === WORKSPACE_CREATOR_REASON
+        && receipt.payload?.issueId === state.conversationIssueId && receipt.payload?.commentId === state.commentId
+        && receipt.payload?.recoveryActionId === action.id
+        && (wait.recoveryActionId === null || typeof wait.recoveryActionId === "string")
+        && typeof wait.reason === "string" && wait.reason.length > 0
+        && typeof wait.message === "string" && wait.message.length > 0;
+      const executionWait = deferred ? { recoveryActionId: wait.recoveryActionId as string | null,
+        reason: wait.reason as string, message: wait.message as string } : undefined;
       await update(action.id, s => ({ ...s, delivery: { ...s.delivery,
-        status: dispatched.length ? "acknowledged" : admitted ? "queued" : "uncertain",
+        status: dispatched.length ? "acknowledged" : admitted ? "queued" : deferred ? "deferred" : "uncertain",
         ...(run ? { wakeRunId: run.id } : {}), ...(dispatched.length ? { acknowledgedAt: s.delivery.acknowledgedAt ?? new Date().toISOString() } : {}),
-        detail: !run ? "原送達 receipt 尚未確認；不會重送。" : undefined,
-      } }), dispatched.length ? "主 agent 處理中" : admitted ? "等待送達" : "送達未確認");
+        // JSONB may reorder keys. Reuse an equal wait so the existing no-op
+        // guard does not publish another work hint on every reconciliation.
+        executionWait: executionWait && s.delivery.executionWait?.recoveryActionId === executionWait.recoveryActionId
+          && s.delivery.executionWait.reason === executionWait.reason && s.delivery.executionWait.message === executionWait.message
+          ? s.delivery.executionWait : executionWait,
+        detail: executionWait ? executionWait.message : !run ? "原送達 receipt 尚未確認；不會重送。" : undefined,
+      } }), dispatched.length ? "主 agent 處理中" : admitted ? "等待送達" : deferred ? "通知尚未派工：" + executionWait!.message : "送達未確認");
       return Boolean(dispatched.length || admitted);
     }
     await update(action.id, s => phase === "repair"
@@ -162,7 +179,7 @@ export function workspaceCreatorDelivery(db: Db, owner: Owner) {
     if (state.preemption?.status === "pending" && ["queued", "acknowledged"].includes(state.delivery.status)) {
       await wake(initial, state, "resume"); return;
     }
-    if (state.delivery.status === "queued" || (["sending", "uncertain"].includes(state.delivery.status) && state.delivery.wakeKey)) {
+    if (["queued", "deferred"].includes(state.delivery.status) || (["sending", "uncertain"].includes(state.delivery.status) && state.delivery.wakeKey)) {
       await reconcileWake(initial, state, "notice"); return;
     }
     if (["sending", "uncertain"].includes(state.delivery.status) && state.delivery.method === "steer" && state.delivery.targetRunId && !state.delivery.wakeKey) {
@@ -286,7 +303,7 @@ export function registerWorkspaceCreatorRecovery(db: Db, coordinator: Parameters
       const rows = await db.select({ id: issueRecoveryActions.id, companyId: issueRecoveryActions.companyId }).from(issueRecoveryActions).where(and(
         scope ? eq(issueRecoveryActions.id, scope) : cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
         sql.raw("(evidence ? 'creatorRecovery' or (status = 'active' and evidence->>'workspaceCreatorCandidate' = 'true'))"),
-        sql.raw("(evidence->>'workspaceCreatorCandidate' = 'true' or evidence#>>'{creatorRecovery,delivery,status}' in ('pending','waiting_main','sending','interrupting','queued','uncertain') or evidence#>>'{creatorRecovery,repair,status}' in ('pending','uncertain') or evidence#>>'{creatorRecovery,preemption,status}' in ('pending','uncertain'))"),
+        sql.raw("(evidence->>'workspaceCreatorCandidate' = 'true' or evidence#>>'{creatorRecovery,delivery,status}' in ('pending','waiting_main','sending','interrupting','queued','deferred','uncertain') or evidence#>>'{creatorRecovery,repair,status}' in ('pending','uncertain') or evidence#>>'{creatorRecovery,preemption,status}' in ('pending','uncertain'))"),
       )).orderBy(asc(issueRecoveryActions.id)).limit(100);
       const complete = Boolean(scope) || rows.length < 100;
       if (!scope) cursor = complete ? undefined : rows.at(-1)!.id;

@@ -93,6 +93,11 @@ it never answers a question, resends input or independently wakes main. The crea
 receipt retains superseded action IDs so those original blockers remain visible.
 The existing workspace-creator repair lane keeps its own receipts and is excluded
 from this lane to avoid duplicate notices or extra repair authority.
+An exact workspace-creator wake with `deferred_issue_execution`, no run and a
+persisted execution-wait reason is `delivery.status=deferred`, not unknown delivery
+or provider acceptance. Reconcile that original wake on existing events/restart;
+never resend it or use it to resume a preempted run. A new Owner input retains
+its independent authority. Missing or mismatched receipts remain uncertain.
 
 Paperclip separates four concepts that are easy to blur together:
 

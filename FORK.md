@@ -5,6 +5,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Creator-notice deferred admission classification (2026-11-12): an exact durable
+  `deferred_issue_execution` wake without a run retains its execution-wait reason
+  instead of reporting unknown delivery. Event/restart reconciliation reads the
+  same receipt without resending, repeated writes or premature preemption resume.
+  Missing/mismatched receipt uncertainty and independent Owner input authority
+  remain unchanged. Covered by isolated PostgreSQL and selected recovery-card tests.
+
 - Cooperative worktree selection (2026-11-12, feature): task creation, task card,
   properties and Chat defaults select a registered open linked Git worktree or
   explicit session-only resources. Cleanup admission is separate from original

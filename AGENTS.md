@@ -17,6 +17,9 @@ native session, equate a session ID with input acceptance, or resend uncertain
 input. Main repairs within existing authority; inability goes to an Owner question
 in the original conversation. No automatic historical enrollment or extra retry
 budget. See `doc/execution-semantics.md`.
+Workspace-creator deferred admission retains its exact durable wake and wait
+reason; do not classify it as unknown delivery or re-send it. Independent new
+Owner input is not authority to replay that system notice.
 
 Shared-worktree rollout safety baseline (Owner 2026-11-12): metadata key
 `mainManagedWorktree` is server-owned, including unknown versions. Legacy

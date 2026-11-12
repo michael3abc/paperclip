@@ -1017,7 +1017,7 @@ export function IssueRecoveryActionCard({
     const creator = action.evidence.creatorRecovery as { delivery?: { status?: string } } | undefined;
     if (creator && action.status !== "resolved" && action.status !== "cancelled") {
       const status = creator.delivery?.status;
-      return status === "waiting_main" ? "等待原 main 完成本回合" : status === "acknowledged" ? "主 agent 處理中" : status === "uncertain" ? "送達未確認"
+      return status === "deferred" ? "通知尚未派工" : status === "waiting_main" ? "等待原 main 完成本回合" : status === "acknowledged" ? "主 agent 處理中" : status === "uncertain" ? "送達未確認"
         : status === "needs_owner" || action.status === "escalated" ? "需要你處理" : "等待送達";
     }
     if (cardState === "resolved" && action.outcome) {

@@ -23,10 +23,11 @@ export type CreatorRecovery = {
   version: 1; creatorAgentId: string; conversationIssueId: string; conversationGeneration: number;
   originRunId: string; failedRunId: string; commentId: string; responsibleUserId: string;
   bindingRevision: number; workerAgentId: string; requestKey: string;
-  delivery: { status: "pending" | "waiting_main" | "sending" | "interrupting" | "uncertain" | "queued" | "acknowledged" | "needs_owner";
+  delivery: { status: "pending" | "waiting_main" | "sending" | "interrupting" | "uncertain" | "deferred" | "queued" | "acknowledged" | "needs_owner";
     method?: "steer" | "interrupt" | "wake";
     targetRunId?: string; targetIssueId?: string; turnId?: string; nativeSessionId?: string; bridgeSessionId?: string;
-    wakeKey?: string; wakeRunId?: string; wakeStartedAt?: string; detail?: string; acknowledgedAt?: string };
+    wakeKey?: string; wakeRunId?: string; wakeStartedAt?: string; detail?: string; acknowledgedAt?: string;
+    executionWait?: { recoveryActionId: string | null; reason: string; message: string } };
   noticeWakeId: string;
   continuations?: Record<string, Record<string, unknown>>;
   preemption?: { runId: string; issueId: string; resumeWakeId: string; status: "pending" | "queued" | "uncertain" | "needs_owner" };

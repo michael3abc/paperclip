@@ -346,7 +346,7 @@ describe("IssueRecoveryActionCard", () => {
   });
 
   it.each([
-    ["pending", "等待送達"], ["queued", "等待送達"],
+    ["pending", "等待送達"], ["queued", "等待送達"], ["deferred", "通知尚未派工"],
     ["waiting_main", "等待原 main 完成本回合"],
     ["acknowledged", "主 agent 處理中"], ["uncertain", "送達未確認"], ["needs_owner", "需要你處理"],
   ])("shows creator delivery %s without claiming the workspace was repaired", (status, label) => {
