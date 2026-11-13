@@ -393,9 +393,11 @@ const support = externalDatabaseUrl
       const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
       expect(settled).toMatchObject({ status: "resolved", outcome: "blocked", evidence: { automaticRecovery: { replay: "blocked" } } });
 
-      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { errorFamily: "provider_quota" } })).toBe(true);
+      // Liveness-first: only unrestored workspace files hold a legacy run.
+      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { errorFamily: "provider_quota" } })).toBe(false);
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(false);
-      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", scheduledRetryAttempt: 2, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(true);
+      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", scheduledRetryAttempt: 2, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(false);
+      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } })).toBe(true);
     });
 
     it.each(["pending", "accepted", "rejected", "expired"] as const)("preserves %s approval and saved work while unsafe restore recovery is repeated", async (status) => {

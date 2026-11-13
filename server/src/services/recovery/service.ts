@@ -14,6 +14,7 @@ import {
   UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS,
   classifyRunFailure,
   runFailureBackoffMs,
+  shouldAutoRetryRunFailure,
 } from "./failure-classification.js";
 import { maybePostTransientFailureStreakNotice } from "./transient-failure-notice.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
@@ -527,6 +528,23 @@ function didAutomaticRecoveryFail(
   );
 }
 
+/**
+ * Liveness-first (rule 4): a failed automatic recovery only stops further
+ * automatic recovery when its failure is not retryable (deterministic, or an
+ * unknown code after three attempts). Transient failures are resent; the
+ * bounded retry scheduler applies the backoff.
+ */
+function automaticRecoveryStopped(
+  latestRun: LatestIssueRun,
+  expectedRetryReason: Parameters<typeof didAutomaticRecoveryFail>[1],
+) {
+  if (!latestRun || !didAutomaticRecoveryFail(latestRun, expectedRetryReason)) return false;
+  return !shouldAutoRetryRunFailure(
+    latestRun.errorCode,
+    executionRetryAccounting(latestRun).failureRetries + 1,
+  );
+}
+
 function isTerminalIssueRun(latestRun: LatestIssueRun) {
   if (!latestRun) return false;
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
@@ -548,6 +566,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = Number.POSITIVE_INFINITY;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = RUN_FAILURE_BACKOFF_BASE_MS;
+const DELIBERATE_WAIT_REPAIR_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -726,10 +745,11 @@ export function classifyContinuationFailure(
 ): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
+    // A deliberate wait is not a failure; it keeps its own bounded lane.
     return {
       kind: "deliberate_wait_without_target",
       maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
-      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      baseBackoffMs: DELIBERATE_WAIT_REPAIR_BASE_BACKOFF_MS,
       errorCode,
     };
   }
@@ -4975,9 +4995,12 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      // Liveness-first: a recovery issue's own transient failure is resent
+      // like any other issue; only a non-retryable failure blocks it in place.
       if (
         isStrandedIssueRecoveryIssue(issue) &&
-        isUnsuccessfulTerminalIssueRun(latestRun)
+        isUnsuccessfulTerminalIssueRun(latestRun) &&
+        !(latestRun && shouldAutoRetryRunFailure(latestRun.errorCode, executionRetryAccounting(latestRun).failureRetries + 1))
       ) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -5297,7 +5320,7 @@ export function recoveryService(
         }
 
         if (
-          didAutomaticRecoveryFail(
+          automaticRecoveryStopped(
             participantLatestRun,
             EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
           )
@@ -5427,7 +5450,7 @@ export function recoveryService(
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+        if (automaticRecoveryStopped(latestRun, "assignment_recovery")) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
@@ -5435,7 +5458,7 @@ export function recoveryService(
             notice: {
               body:
                 "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but it still has no live execution path. " +
+                "but it failed with an error that a retry cannot fix. " +
                 "Moving it to `blocked` so it is visible for intervention.",
               title: "No live execution path",
               tone: "danger",

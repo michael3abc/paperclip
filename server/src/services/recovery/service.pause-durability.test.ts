@@ -5,8 +5,13 @@ const run = (errorCode: string | null) =>
   ({ errorCode } as unknown as Parameters<typeof classifyContinuationFailure>[0]);
 
 describe("pause durability: continuation retry classification", () => {
-  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_failed", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled", "remote_workspace_prepare_timeout"])("does not grant %s another recovery budget", (code) => {
+  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_failed", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled"])("does not grant %s another recovery budget", (code) => {
     expect(classifyContinuationFailure(run(code))).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+  // Liveness-first: a remote mkdir/prepare timeout is host trouble, retried with backoff.
+  it("retries remote_workspace_prepare_timeout as a transient failure", () => {
+    expect(classifyContinuationFailure(run("remote_workspace_prepare_timeout")))
+      .toMatchObject({ kind: "transient_infra", maxAttempts: Number.POSITIVE_INFINITY });
   });
   it("agent_paused is retryable so work resumes (Option A: Resume Continues Work)", () => {
     // Pause still emits errorCode agent_paused for observability, but it is NOT
