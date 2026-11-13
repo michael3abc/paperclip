@@ -585,7 +585,10 @@ class CodexRpcClient {
     }
   }
 
-  private request(method: string, params: Record<string, unknown> = {}, timeoutMs = 6_000): Promise<Record<string, unknown>> {
+  // Includes native CLI initialization and provider account reads. A remote
+  // Business account read can exceed 6s; keep two bounded phases within the
+  // host collector's 45s SSH deadline without retrying provider requests.
+  private request(method: string, params: Record<string, unknown> = {}, timeoutMs = 15_000): Promise<Record<string, unknown>> {
     if (this.failure) return Promise.reject(this.failure);
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params }) + "\n";

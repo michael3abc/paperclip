@@ -65,7 +65,9 @@ Codex Business/Enterprise `individualLimit` maps to Monthly credit limit, using
 the percentage from rounded amounts. Missing balances produce no placeholder
 quota row; `credits.unlimited` produces an explicit Unlimited value. This follows
 the native Codex app-server spend-control contract and also works when both
-ordinary windows are null. Claude uses the existing local CLI
+ordinary windows are null. Each Codex RPC has a 15-second deadline (initialization
+then parallel account reads, at most 30 seconds plus bounded process cleanup),
+within the 45-second remote SSH limit; it never retries a provider read. Claude uses the existing local CLI
 credential reader and subscription usage parser. Antigravity reads its existing
 antigravity-oauth-token under ~/.gemini/antigravity-cli and the native
 retrieveUserQuotaSummary endpoint with its product User-Agent. When expiry is

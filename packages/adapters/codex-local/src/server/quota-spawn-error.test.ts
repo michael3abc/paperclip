@@ -196,7 +196,7 @@ describe("CodexRpcClient spawn failures", () => {
     mockSpawn.mockReturnValue(probe.child);
     const result = fetchCodexRpcQuota();
     const rejected = expect(result).rejects.toThrow("timed out on account/rateLimits/read");
-    await vi.advanceTimersByTimeAsync(6_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(probe.stdin.end).toHaveBeenCalledOnce();
     expect(probe.kill.mock.calls).toEqual([["SIGTERM"]]);
     await vi.advanceTimersByTimeAsync(250);
@@ -204,6 +204,29 @@ describe("CodexRpcClient spawn failures", () => {
     expect(probe.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
     expect(vi.getTimerCount()).toBe(0);
     expect(probe.child.listenerCount("close")).toBe(1);
+  });
+
+  it("accepts a slow Business quota read once without retrying or starting a turn", async () => {
+    vi.useFakeTimers();
+    const probe = createRpcChild((request) => {
+      if (request.method === "account/rateLimits/read") {
+        setTimeout(() => probe.stdout.emit("data", JSON.stringify({ id: request.id, result: {
+          rateLimits: { individualLimit: { limit: "1300", used: "806",
+            remainingPercent: 38, resetsAt: 1_796_083_200 } },
+        } }) + "\n"), 8_000);
+        return undefined;
+      }
+      return { id: request.id, result: {} };
+    });
+    mockSpawn.mockReturnValue(probe.child);
+    const result = fetchCodexRpcQuota();
+    await vi.advanceTimersByTimeAsync(8_000);
+    await expect(result).resolves.toMatchObject({ windows: [{ label: "Monthly credit limit", usedPercent: 62 }] });
+    expect(mockSpawn).toHaveBeenCalledOnce();
+    expect(probe.stdin.write.mock.calls.map(([line]) => JSON.parse(line).method)).toEqual([
+      "initialize", "initialized", "account/rateLimits/read", "account/read",
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("bounds shutdown even if a killed child never emits close", async () => {
