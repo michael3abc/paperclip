@@ -196,14 +196,92 @@ export function suppressedDispositionRepairPredicate() {
       AND o.status IN ('running', 'queued', 'pending')), false)`;
 }
 
+/** The scheduled-repair gate can cancel before preparation ever begins. Bind
+ * its original scheduling audit, source, system wake and cancellation event;
+ * this removes a false outcome hold, never authorizes replay of that repair. */
+function supersededScheduledDispositionRepairPredicate() {
+  const context = heartbeatRuns.contextSnapshot;
+  const deadline = sql`to_char(${heartbeatRuns.scheduledRetryAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+  return sql`coalesce(
+    ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
+    AND ${heartbeatRuns.finishedAt} IS NOT NULL
+    AND ${heartbeatRuns.errorCode} = 'issue_disposition_repair_superseded'
+    AND ${heartbeatRuns.invocationSource} = 'automation' AND ${heartbeatRuns.triggerDetail} = 'system'
+    AND ${heartbeatRuns.scheduledRetryReason} = 'issue_disposition_repair'
+    AND ${heartbeatRuns.scheduledRetryAt} <= ${heartbeatRuns.finishedAt}
+    AND ${heartbeatRuns.scheduledRetryAttempt} = 2
+    AND ${context}->>'source' = 'issue.deliberate_wait_disposition_repair'
+    AND ${context}->>'retryReason' = ${heartbeatRuns.scheduledRetryReason}
+    AND ${context}->>'dispositionRepairAttempt' = ${heartbeatRuns.scheduledRetryAttempt}::text
+    AND ${context}#>>'{legacyDispositionEpisode,attempt}' = ${heartbeatRuns.scheduledRetryAttempt}::text
+    AND ${context}#>>'{legacyDispositionEpisode,maxAttempts}' = '2'
+    AND (${heartbeatRuns.issueId} IS NULL OR ${heartbeatRuns.issueId}
+      = ${canonicalExecutionUuid(sql`${context}->>'issueId'`)})
+    AND NOT (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ?| ARRAY[
+      'cancellation', 'executionCancellation', 'startupCancellation', 'cancelledByActorType', 'cancelledByUserId',
+      'bridgeSessionId', 'nativeSessionId', 'bridgeInputReceipt', 'nativeTurnId', 'nativeInputId', 'antigravityTurnReceipt'])
+    AND ${heartbeatRuns.contextSnapshot}->>'sharedCheckoutClaim' IS NULL
+    AND coalesce(${heartbeatRuns.usageJson}->'accountingProviderWorkStarted', 'false'::jsonb) = 'false'::jsonb
+    AND ${noRetainedExecutionPredicate()}
+    AND NOT EXISTS (SELECT 1 FROM agent_instruction_working_copies c WHERE c.run_id = ${heartbeatRuns.id})
+    AND NOT EXISTS (SELECT 1 FROM workspace_operations o WHERE o.heartbeat_run_id = ${heartbeatRuns.id})
+    AND EXISTS (SELECT 1 FROM heartbeat_runs source
+      JOIN agent_wakeup_requests w ON w.id = ${heartbeatRuns.wakeupRequestId}
+      JOIN activity_log a ON a.run_id = source.id AND a.company_id = source.company_id
+      WHERE source.id = ${heartbeatRuns.retryOfRunId}
+        AND source.id = ${canonicalExecutionUuid(sql`${context}->>'dispositionRepairSourceRunId'`)}
+        AND source.id = ${canonicalExecutionUuid(sql`${context}->>'retryOfRunId'`)}
+        AND source.company_id = ${heartbeatRuns.companyId} AND source.agent_id = ${heartbeatRuns.agentId}
+        AND source.context_snapshot->>'issueId' = ${context}->>'issueId'
+        AND source.status = 'succeeded' AND source.finished_at IS NOT NULL
+        AND source.context_snapshot#>>'{legacyDispositionEpisode,id}' = ${context}#>>'{legacyDispositionEpisode,id}'
+        AND source.context_snapshot#>>'{legacyDispositionEpisode,attempt}' = '1'
+        AND w.company_id = ${heartbeatRuns.companyId} AND w.agent_id = ${heartbeatRuns.agentId}
+        AND w.run_id = ${heartbeatRuns.id} AND w.status = 'cancelled'
+        AND w.finished_at = ${heartbeatRuns.finishedAt} AND w.error = ${heartbeatRuns.error}
+        AND w.source = 'automation' AND w.trigger_detail = 'system'
+        AND w.requested_by_actor_type = 'system' AND w.requested_by_actor_id IS NULL
+        AND w.reason = ${heartbeatRuns.scheduledRetryReason}
+        AND w.payload->>'issueId' = ${context}->>'issueId'
+        AND w.payload->>'retryOfRunId' = source.id::text
+        AND w.payload->>'recoveryActionId' = ${context}->>'recoveryActionId'
+        AND w.payload->>'dispositionRepairFingerprint' = ${context}->>'dispositionRepairFingerprint'
+        AND w.payload->>'dispositionRepairAttempt' = ${heartbeatRuns.scheduledRetryAttempt}::text
+        AND w.idempotency_key = 'issue_disposition_repair:' || (${context}->>'issueId') || ':'
+          || (${context}->>'dispositionRepairFingerprint') || ':' || ${heartbeatRuns.scheduledRetryAttempt}::text
+        AND a.actor_type = 'system' AND a.actor_id = 'recovery'
+        AND a.action = 'issue.disposition_repair_scheduled' AND a.entity_type = 'issue_recovery_action'
+        AND a.entity_id = ${context}->>'recoveryActionId'
+        AND a.details->>'scheduledRunId' = ${heartbeatRuns.id}::text
+        AND a.details->>'sourceIssueId' = ${context}->>'issueId'
+        AND a.details->>'ownerAgentId' = ${heartbeatRuns.agentId}::text
+        AND a.details->>'sourceStateFingerprint' = ${context}->>'dispositionRepairFingerprint'
+        AND a.details->>'attempt' = ${heartbeatRuns.scheduledRetryAttempt}::text
+        AND a.details->>'retryAt' = ${deadline})
+    AND EXISTS (SELECT 1 FROM heartbeat_run_events e WHERE e.run_id = ${heartbeatRuns.id}
+      AND e.company_id = ${heartbeatRuns.companyId} AND e.agent_id = ${heartbeatRuns.agentId}
+      AND e.source_event_id IS NULL AND e.event_type = 'lifecycle' AND e.stream = 'system'
+      AND e.message = ${heartbeatRuns.error}
+      AND e.payload->>'issueId' = ${context}->>'issueId'
+      AND e.payload->>'expectedFingerprint' = ${context}->>'dispositionRepairFingerprint'
+      AND e.payload->>'scheduledRetryReason' = ${heartbeatRuns.scheduledRetryReason}
+      AND e.payload->>'scheduledRetryAttempt' = ${heartbeatRuns.scheduledRetryAttempt}::text
+      AND e.payload->>'scheduledRetryAt' = ${deadline}
+      AND (e.payload->'hasActiveExecutionPath' = 'true'::jsonb
+        OR length(e.payload->>'durablePathReason') > 0
+        OR e.payload->>'currentFingerprint' <> e.payload->>'expectedFingerprint')), false)`;
+}
+
 function preDispatchExecutionWaitPredicate() {
   return sql`(${staleDispatchExecutionWaitPredicate()} OR ${rejectedQueuedInputPredicate()} OR ${cancelledWorkspaceWaitPredicate()}
-    OR ${cancelledScheduledWorkspaceRetryPredicate()} OR ${suppressedDispositionRepairPredicate()})`;
+    OR ${cancelledScheduledWorkspaceRetryPredicate()} OR ${suppressedDispositionRepairPredicate()}
+    OR ${supersededScheduledDispositionRepairPredicate()})`;
 }
 
 export async function isPreDispatchExecutionWaitVerified(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
   if (run.runtimeMode !== "legacy" ||
       run.errorCode !== "execution_reconciliation_required" && run.errorCode !== "legacy_disposition_repair_suppressed"
+      && run.errorCode !== "issue_disposition_repair_superseded"
       && run.scheduledRetryReason !== "workspace_busy") return false;
   const [verified] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), preDispatchExecutionWaitPredicate(),
