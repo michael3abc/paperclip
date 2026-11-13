@@ -79,6 +79,38 @@ describe("embedded PostgreSQL supervisor", () => {
     expect(initial.instance.stop).not.toHaveBeenCalled();
   });
 
+  it("abandons an in-flight recovery once markShuttingDown is called", async () => {
+    const initial = createInstance();
+    const createReplacement = vi.fn(() => createInstance().instance);
+    let releaseDelay!: () => void;
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: createReplacement,
+      restartDelaysMs: [1_000],
+      delay: () => new Promise<void>((resolve) => { releaseDelay = resolve; }),
+    });
+    initial.process.emit("exit", 1, null);
+    supervisor.markShuttingDown();
+    releaseDelay();
+    await supervisor.waitForRecovery();
+    expect(createReplacement).not.toHaveBeenCalled();
+    await Promise.all([supervisor.shutdown(), supervisor.shutdown()]);
+    expect(initial.instance.stop).not.toHaveBeenCalled();
+  });
+
+  it("stops PostgreSQL only once when shutdown is requested repeatedly", async () => {
+    const initial = createInstance();
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: () => createInstance().instance,
+      restartDelaysMs: [0],
+    });
+    supervisor.markShuttingDown();
+    await Promise.all([supervisor.shutdown(), supervisor.shutdown()]);
+    await supervisor.shutdown();
+    expect(initial.instance.stop).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["SIGTERM", null, "SIGTERM"],
     ["exit code 0", 0, null],

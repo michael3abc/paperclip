@@ -3430,7 +3430,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
-  it("requires reconciliation for a lost monitor whose provider outcomes are unknown", async () => {
+  it("resends a lost monitor whose provider outcome is unknown", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
@@ -3444,17 +3444,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runIds: [runId],
     });
     await heartbeat.reapOrphanedRuns();
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toHaveLength(1);
-    const actions = await selectRecoveryActionsForIssue(issueId);
-    expect(actions).toEqual([
-      expect.objectContaining({
-        ownerType: "board",
-        returnOwnerAgentId: agentId,
-        cause: "legacy_execution_requires_reconciliation",
-      }),
-    ]);
+    // Liveness-first: no future monitor wake replaces the lost check, so the
+    // abandoned run is resent once (a repeated sweep adds nothing).
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.id === runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(runs.find((run) => run.id !== runId)).toMatchObject({ status: "scheduled_retry", retryOfRunId: runId });
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
   });
 
   it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
@@ -3515,7 +3511,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(reaped).toMatchObject({
       status: "failed",
       errorCode: "process_lost",
-      error: "Process lost -- server may have restarted; retrying once",
+      error: "Process lost -- server may have restarted; retrying automatically",
     });
     expect(reaped?.resultJson).toMatchObject({
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
@@ -3531,27 +3527,33 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
-  it("keeps an orphaned legacy run that reached adapter dispatch held for reconciliation", async () => {
+  it("resends an orphaned legacy run that reached adapter dispatch instead of holding it", async () => {
     const { companyId, runId, issueId } = await seedRestartOrphanedLegacySetup("dispatching");
 
     const heartbeat = heartbeatService(db);
+    const now = Date.now();
     await heartbeat.reapOrphanedRuns();
 
     const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(reaped).toMatchObject({
       status: "failed",
       errorCode: "process_lost",
-      error: "Process lost -- server may have restarted",
+      error: "Process lost -- server may have restarted; retrying automatically",
     });
     expect(reaped?.resultJson).not.toHaveProperty("executionRecovery");
-    expect(await db.select().from(heartbeatRuns).where(and(
+    // Liveness-first rule 1: the provider outcome is unknown, so the run is
+    // abandoned and resent with the transient backoff (30s for attempt 1).
+    const retries = await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId),
       eq(heartbeatRuns.retryOfRunId, runId),
-    ))).toEqual([]);
+    ));
+    expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryAttempt: 1 })]);
+    const dueInMs = new Date(retries[0]!.scheduledRetryAt!).getTime() - now;
+    expect(dueInMs).toBeGreaterThan(20_000);
+    expect(dueInMs).toBeLessThan(40_000);
     expect(await db.select().from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([
-      expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" }),
-    ]);
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 
   async function withTempPaperclipHome<T>(
@@ -4788,7 +4790,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("terminalizes an unsupported legacy session on shutdown without speculative replay", async () => {
+  it("resends a legacy session interrupted by shutdown as transient server_shutdown_interrupted", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       adapterType: "process",
       agentStatus: "running",
@@ -4798,40 +4800,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       new Date("2026-03-19T00:06:00.000Z"),
     );
     expect(result.interruptedRunIds).toEqual([runId]);
-    expect(result.retryRunIds).toEqual([]);
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toEqual([
-      expect.objectContaining({
-        id: runId,
-        status: "interrupted",
-        errorCode: "server_shutdown_interrupted",
-        signal: "SIGTERM",
-      }),
-    ]);
+    expect(result.retryRunIds).toHaveLength(1);
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.id === runId)).toMatchObject({
+      status: "interrupted",
+      errorCode: "server_shutdown_interrupted",
+      signal: "SIGTERM",
+    });
+    expect(runs.find((run) => run.id !== runId)).toMatchObject({
+      id: result.retryRunIds[0],
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 1,
+    });
     expect(
       await db
         .select()
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId)),
     ).toEqual([expect.objectContaining({ status: "cancelled" })]);
-    expect(
-      await db.select().from(issues).where(eq(issues.id, issueId)),
-    ).toEqual([
-      expect.objectContaining({
-        assigneeAgentId: agentId,
-        executionRunId: null,
-        checkoutRunId: null,
-      }),
-    ]);
-    expect(
-      await selectRecoveryActionsForIssue(issueId),
-    ).toEqual([
-      expect.objectContaining({
-        cause: "legacy_execution_requires_reconciliation",
-        ownerType: "board",
-      }),
-    ]);
+    // A shutdown is not an agent failure, and nothing waits for the Owner.
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("idle");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
   });
 
   it("suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run", async () => {
@@ -4935,7 +4926,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
-  it("does not duplicate a legacy reconciliation action across repeated shutdowns", async () => {
+  it("does not duplicate the shutdown resend across repeated shutdowns", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       adapterType: "process",
       agentStatus: "running",
@@ -4944,15 +4935,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.drainRunningRunsForShutdown("SIGTERM");
     await heartbeat.drainRunningRunsForShutdown("SIGTERM");
     await heartbeatService(db).reapOrphanedRuns();
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toEqual([expect.objectContaining({ id: runId, status: "interrupted" })]);
-    expect(
-      await selectRecoveryActionsForIssue(issueId),
-    ).toHaveLength(1);
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.id === runId)).toMatchObject({ status: "interrupted" });
+    expect(runs.find((run) => run.id !== runId)).toMatchObject({ status: "scheduled_retry", retryOfRunId: runId });
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
   });
 
-  it("does not reset an exhausted incident budget on server restart", async () => {
+  it("keeps resending a shutdown-interrupted run past the former retry budget", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "running",
     });
@@ -4966,31 +4956,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(heartbeatRuns.id, runId));
     await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
-    const reconciled = await heartbeatService(db).reconcileStrandedAssignedIssues();
-    // The budget stays spent across the restart: no successor run is
-    // queued, by the process-loss retry or by the sweeper.
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toHaveLength(1);
-    // A spent budget is no longer left to sit: the sweeper escalates the
-    // issue to a board-owned recovery action instead of skipping it on
-    // every tick with no live path. The action spawns no run of its own.
-    expect(reconciled.escalated).toBe(1);
-    const recoveryActions = await selectRecoveryActionsForIssue(issueId);
-    expect(recoveryActions).toHaveLength(1);
-    expect(recoveryActions[0]).toMatchObject({ status: "active", ownerType: "board", ownerAgentId: null });
+    // Server shutdown is transient: unlimited attempts, so the third attempt
+    // is scheduled with the 30s x 2^2 backoff instead of handing work to the Owner.
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.id === runId)).toMatchObject({
+      status: "interrupted",
+      errorCode: "server_shutdown_interrupted",
+    });
+    expect(runs.find((run) => run.id !== runId)).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 3,
+    });
+    const retry = runs.find((run) => run.id !== runId)!;
+    const dueInMs = new Date(retry.scheduledRetryAt!).getTime() - new Date(runs.find((run) => run.id === runId)!.finishedAt!).getTime();
+    expect(dueInMs).toBeGreaterThan(110_000);
+    expect(dueInMs).toBeLessThan(130_000);
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
     const escalatedIssue = await db
       .select({ status: issues.status })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(escalatedIssue?.status).toBe("blocked");
-    // And the escalation is idempotent across further sweeps.
-    const again = await heartbeatService(db).reconcileStrandedAssignedIssues();
-    expect(again.escalated).toBe(0);
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toHaveLength(1);
+    expect(escalatedIssue?.status).not.toBe("blocked");
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -5051,7 +5040,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("does not bypass unknown process outcomes through immediate continuation recovery", async () => {
+  it("resends an unknown process outcome after an earlier process-loss retry", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       adapterType: "process",
       agentStatus: "idle",
@@ -5061,21 +5050,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     await heartbeat.reapOrphanedRuns();
     await heartbeat.reconcileStrandedAssignedIssues();
+    // The resend waits for its backoff; immediate recovery adds no second run.
     expect(mockAdapterExecute).not.toHaveBeenCalled();
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toEqual([expect.objectContaining({ id: runId, status: "failed" })]);
-    expect(
-      await selectRecoveryActionsForIssue(issueId),
-    ).toEqual([
-      expect.objectContaining({
-        cause: "legacy_execution_requires_reconciliation",
-        returnOwnerAgentId: agentId,
-      }),
-    ]);
+    const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.id === runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(runs.find((run) => run.id !== runId)).toMatchObject({ status: "scheduled_retry", retryOfRunId: runId });
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
   });
 
-  it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
+  it("resends lost recovery work in place without nesting another recovery issue", async () => {
     const sourceIssueId = randomUUID();
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "process",
@@ -5116,8 +5100,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.runIds).toEqual([runId]);
 
     const runs = await selectRecoveryRunsByAgent(agentId);
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.status).toBe("failed");
+    expect(runs).toHaveLength(2);
+    expect(runs.find((run) => run.id === runId)).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(runs.find((run) => run.id !== runId)).toMatchObject({ status: "scheduled_retry", retryOfRunId: runId });
 
     const [recoveryIssue] = await db
       .select()
@@ -5127,17 +5112,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       assigneeAgentId: agentId,
       originKind: "stranded_issue_recovery",
       originId: sourceIssueId,
-      executionRunId: null,
-      checkoutRunId: null,
     });
-    const actions = await selectRecoveryActionsForIssue(issueId);
-    expect(actions).toEqual([
-      expect.objectContaining({
-        cause: "legacy_execution_requires_reconciliation",
-        ownerType: "board",
-      }),
-    ]);
-    expect(JSON.stringify(actions)).not.toContain("sk-test-recovery-secret");
+    expect(recoveryIssue?.status).not.toBe("blocked");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(JSON.stringify(await selectRecoveryCommentsForIssue(issueId))).not.toContain("sk-test-recovery-secret");
     expect(
       await db
         .select()
@@ -6165,9 +6143,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
+    // Transient process loss has no attempt cap; the cap text belongs to retries.ts.
     expect(comments[0]).toMatchObject({
       authorType: "system",
-      body: "Agent failed to resume after approval: `process_lost` — retrying (attempt 1/2)",
+      body: expect.stringMatching(/^Agent failed to resume after approval: `process_lost` — retrying.*attempt 1\b/),
     });
 
     const interaction = await db
@@ -6182,7 +6161,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "retrying",
         errorCode: "process_lost",
         attempt: 1,
-        maxAttempts: 2,
         runId,
         retryRunId: retryRun?.id ?? null,
       },

@@ -1013,6 +1013,73 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
   });
 
+  it("abandons a run orphaned by the previous process as transient process_lost and resends it", async () => {
+    const run = await seedRun();
+    // The previous server boot owned this run; its controller lease expired.
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID(), executionStage: "dispatching",
+      controllerLeaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(heartbeatRuns.id, run.id));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    deps.setRunStatusFromLive.mockImplementation(async (id, nextStatus, fromStatuses, patch) => {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
+      if (!current || !fromStatuses.includes(current.status)) return { updated: false, run: current ?? null };
+      const [updated] = await db.update(heartbeatRuns).set({ ...patch, status: nextStatus })
+        .where(eq(heartbeatRuns.id, id)).returning();
+      return { updated: true, run: updated };
+    });
+    const retryRun = { ...run, id: randomUUID(), status: "scheduled_retry", retryOfRunId: run.id, scheduledRetryAttempt: 1 };
+    deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "scheduled", run: retryRun,
+      dueAt: new Date(Date.now() + 30_000), attempt: 1, maxAttempts: Number.POSITIVE_INFINITY });
+    try {
+      expect(await createHeartbeatRecovery(db, deps).reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [run.id] });
+      const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
+        error: expect.stringContaining("retrying automatically") });
+      // The transient class owns the budget and backoff: no explicit cap or delay.
+      expect(deps.scheduleBoundedRetryForRun).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: run.id, status: "failed", errorCode: "process_lost" }), agent,
+        { now: expect.any(Date) });
+      expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+      expect(deps.appendRunEvent).toHaveBeenCalledWith(expect.objectContaining({ id: run.id }),
+        expect.objectContaining({ payload: expect.objectContaining({ retryRunId: retryRun.id }) }));
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!))).toEqual([]);
+      expect(deps.startNextQueuedRunForAgent).toHaveBeenCalledWith(run.agentId);
+    } finally {
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
+  it("interrupts a run on shutdown as transient server_shutdown_interrupted and resends it", async () => {
+    const run = await seedRun();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, run.agentId));
+    const deps = callbacks(db);
+    deps.setRunStatusIfRunning.mockImplementation(async (id, status, patch) => {
+      const [updated] = await db.update(heartbeatRuns).set({ ...patch, status }).where(eq(heartbeatRuns.id, id)).returning();
+      return { updated: true, run: updated };
+    });
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    const retryRun = { ...run, id: randomUUID(), status: "scheduled_retry", retryOfRunId: run.id, scheduledRetryAttempt: 1 };
+    deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "scheduled", run: retryRun,
+      dueAt: new Date(Date.now() + 30_000), attempt: 1, maxAttempts: Number.POSITIVE_INFINITY });
+    try {
+      expect(await createHeartbeatRecovery(db, deps).drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id]))
+        .toMatchObject({ interruptedRunIds: [run.id], retryRunIds: [retryRun.id] });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0])
+        .toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted" });
+      expect(deps.scheduleBoundedRetryForRun).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: run.id, errorCode: "server_shutdown_interrupted" }),
+        expect.objectContaining({ id: agent.id }), { now: expect.any(Date) });
+      expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+      // A server shutdown is not an agent error.
+      expect(deps.finalizeAgentStatus).toHaveBeenCalledWith(run.agentId, "interrupted", expect.any(String), expect.anything());
+    } finally {
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
   it("settles persisted native results before claiming restart authority and tracks the exact execution", async () => {
     const deps = callbacks(db);
     const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: randomUUID(), leaseOwner: "claimed-owner", controllerGeneration: 3, providerAttempt: 2, restartKind: "hard", recoveryRequestId: null };

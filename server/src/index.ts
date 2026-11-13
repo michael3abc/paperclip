@@ -497,6 +497,10 @@ async function startServerWithDatabaseTeardown(
   let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let embeddedPostgresSupervisor: EmbeddedPostgresSupervisor | null = null;
+  // Set once the graceful shutdown below exists; an orderly PostgreSQL exit
+  // (SIGTERM or code 0) shuts the server down instead of leaving it running
+  // without a database.
+  let requestOrderlyShutdown: (() => void) | null = null;
   let embeddedPostgresStartedByThisProcess = false;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
@@ -690,6 +694,11 @@ async function startServerWithDatabaseTeardown(
             { attempt, port },
             "Embedded PostgreSQL recovered after unexpected exit",
           ),
+          onOrderlyExit: (code, signal) => {
+            logger.warn({ code, signal }, "Embedded PostgreSQL stopped; shutting down the server");
+            if (requestOrderlyShutdown) requestOrderlyShutdown();
+            else process.exitCode = 1;
+          },
           onRecoveryExhausted: (err) => {
             logger.fatal(
               { err, recentLogs: logBuffer.getRecentLogs() },
@@ -2114,6 +2123,8 @@ async function startServerWithDatabaseTeardown(
     embeddedPostgresSupervisor?.markShuttingDown();
     return shutdownPromise ??= performShutdown(signal, exitProcess);
   };
+
+  requestOrderlyShutdown = () => { void shutdown("SIGTERM", true); };
 
   process.once("SIGINT", () => {
     // First: the service manager may signal the PostgreSQL child at the same
