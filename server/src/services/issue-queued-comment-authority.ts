@@ -160,7 +160,8 @@ export async function readQueuedCommentRunAuthority(tx: Db, run: Pick<typeof hea
     inArray(agentWakeupRequests.requestedByActorType, mode === "ordinary_input" ? ["user", "agent"] : ["user"]),
   )).for("update");
   const payload = parseObject(wake?.payload);
-  const originalCommentId = readNonEmptyString(payload.commentId);
+  // Interaction answers (question cards) record the answer comment as wakeCommentId.
+  const originalCommentId = readNonEmptyString(payload.commentId) ?? readNonEmptyString(payload.wakeCommentId);
   if (!wake?.requestedByActorId || payload.issueId !== issueId ||
       !originalCommentId || !commentIds.includes(originalCommentId)) return null;
   const comments = await tx.select().from(issueComments).where(and(
