@@ -3928,6 +3928,17 @@ protection and the registered source/host boundary. Session-only uses the select
 worker's host without inventing a controller-host source. No selection grants
 authority to replay old input or bypass session, hold or permission checks.
 
+At preparation, a project-scoped worker's persisted session_only selection and
+matching sessionOnly settings satisfy requireProjectWorkspace for external work.
+Caller wake JSON or settings without the stored selection are insufficient.
+Strict requireTaskWorktree remains an independent Owner-managed restriction.
+Use the session cwd without adopting a project checkout, provisioning Git/remote
+storage, or persisting an ExecutionWorkspace/claim. A remote Bridge worker needs
+a canonical configured session cwd on its own host; absent configuration fails
+explicitly. Existing native execution bindings remain immutable during recovery.
+Creator recovery notices describe both registered repository roots (including
+unborn repositories) and linked worktrees; notices grant no new authority.
+
 Paths, aliases, parent/child overlaps and historical stop/lease/finalizer/export
 records never serialize ordinary admission. Cancellation revokes the original
 run's business-write authority at commit; provider stop and cleanup remain honest,

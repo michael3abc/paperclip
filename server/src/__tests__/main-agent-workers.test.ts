@@ -120,6 +120,9 @@ describe("main agent worker policy and dispatch", () => {
   });
 
   it("creates worker tasks through HTTP with external resources, registered roots, and project defaults", async () => {
+    // Keep this HTTP boundary independently selectable with -t.
+    const policyService = pmWorkerPolicyService(db), policyBefore = await policyService.read(companyId, mainId, actor);
+    await policyService.save(companyId, mainId, { policy, baseRevision: policyBefore.revision, baseHash: policyBefore.documentHash }, actor);
     const create = async (extra: Record<string, unknown>) => {
       const response = await fetch(apiUrl + "/api/companies/" + companyId + "/issues", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -133,6 +136,8 @@ describe("main agent worker policy and dispatch", () => {
       expect(response, JSON.stringify(response.body)).toMatchObject({ status: 201,
         body: { projectId, assigneeAgentId: codexId, workspaceSelection: { selection } } });
       const [saved] = await db.select().from(issues).where(eq(issues.id, response.body.id));
+      expect(saved?.workspaceSelection).toMatchObject({ source: "explicit", selection });
+      if (selection.kind === "session_only") expect(saved?.executionWorkspaceSettings).toMatchObject({ sessionOnly: true });
       expect(saved?.executionWorkspaceSettings).not.toHaveProperty("sharedWorkspaceConcurrency");
       expect(saved?.executionWorkspaceId).toBe(selection.kind === "existing" ? workspaceId : null);
     }

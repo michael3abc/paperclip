@@ -852,3 +852,13 @@ focused replacements retain authority, cancellation and separate-lease assertion
 - The fixed-directory policy rejects only strategies that would apply. A project's
   unused worker worktree default no longer blocks a main agent's shared fixed run;
   explicit task, environment, storage-provider and merged strategies still do.
+
+### 2026-11-13 — Explicit external-resource worker session admission
+
+- Preserve explicit session_only from task creation through provider preparation;
+  requireProjectWorkspace no longer contradicts external-resource dispatch.
+- Use session cwd without adopting/provisioning project Git, remote storage or
+  a workspace claim; require persisted intent and preserve strict worktree and
+  native recovery restrictions. Remote hosts require a configured session cwd.
+- Creator guidance includes repository roots and unborn repositories. Validation
+  covers HTTP persistence, actual heartbeat/provider execution and negative gates.
