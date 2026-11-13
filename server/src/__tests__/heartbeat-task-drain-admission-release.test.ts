@@ -355,8 +355,9 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       await heartbeat.drainActiveRunExecutions();
       const runs = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, error: heartbeatRuns.error })
         .from(heartbeatRuns);
-      expect(runs).toHaveLength(1);
-      expect.soft(runs[0]).toMatchObject({ id: queued!.id, status: "failed", error: expect.stringContaining(acquisitionFailure) });
+      // Liveness-first: the unknown setup failure is resent after backoff.
+      expect(runs.find(run => run.id === queued!.id)).toMatchObject({ status: "failed", error: expect.stringContaining(acquisitionFailure) });
+      expect(runs.filter(run => run.id !== queued!.id).map(run => run.status)).toEqual(["scheduled_retry"]);
       expect.soft(calls).toEqual([{
         pluginId, method: "environmentAcquireLease",
         params: expect.objectContaining({ driverKey: provider, companyId, environmentId,
