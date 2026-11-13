@@ -1421,7 +1421,7 @@ describe("AgentConfigForm environment selector", () => {
       agent={makeAgent({ adapterType: "ccpocket_bridge", adapterConfig: { hostId: "local", provider, model: model(provider).id } })}
       onSave={() => {}} hidePromptTemplate showAdapterTypeField={false} />);
     await act(async () => render("claude")); await flushReact();
-    await clickByText(container, "claude-model");
+    await clickElement(container.querySelector('[aria-label="Model"]'));
     await clickByText(document.body, "Refresh models");
     expect(mockAgentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "ccpocket_bridge", expect.objectContaining({ refresh: true, hostId: "local", provider: "claude" }));
     await act(async () => render("codex")); await flushReact();
