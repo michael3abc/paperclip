@@ -108,7 +108,7 @@ export function validateWorkerChoices(policy: PmWorkerPolicy, catalog: PmWorkerC
   for (const worker of policy.workers) {
     const available = catalog.find(entry => entry.agentId === worker.agentId && entry.harness === worker.harness);
     if (!available) throw unprocessable(unavailableCode === "PM_WORKER_HOST_MISMATCH"
-      ? "The selected shared worker runs on a different Bridge host than this agent" : "The selected shared worker is unavailable",
+      ? "The selected shared worker is unavailable or runs on a different Bridge host than this agent" : "The selected shared worker is unavailable",
     { code: unavailableCode, agentId: worker.agentId });
     for (const choice of worker.selections) {
       const model = available.models.find(model => model.id === choice.model && isDeepStrictEqual(model.aiConnection, choice.aiConnection ?? available.defaultAiConnection));

@@ -452,7 +452,7 @@ describe("adapter management route authorization", () => {
 
 describe('company-scoped adapter schemas', () => {
   it('requires company membership before discovery and never shares schemas between selections', async () => {
-    const getConfigSchema = vi.fn(async context => ({ fields: [{ key: 'hostId', type: 'select', label: context.companyId, options: [] }] }));
+    const getConfigSchema = vi.fn(async context => ({ fields: [{ key: 'hostId', type: 'select' as const, label: context.companyId, options: [] }] }));
     registerServerAdapter({ ...createAdapter(), catalogScope: 'company', getConfigSchema });
     const app = createApp(boardMember('operator'));
     const endpoint = '/api/adapters/' + EXTERNAL_ADAPTER_TYPE + '/config-schema';

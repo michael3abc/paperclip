@@ -267,6 +267,7 @@ suite("project PM role and workspace at claim", () => {
   it("runs D and E through one shared worker with independent capacity and pinned remote cwd", async () => {
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Shared remote company", issuePrefix: `S${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Shared Codex", status: "idle", adapterType: "ccpocket_bridge",
       adapterConfig: { provider: "codex", hostId: "shopee-e", model: "shopee-e/codex/default" },
       runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 1, "shopee-e": 1 },
