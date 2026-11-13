@@ -150,7 +150,11 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
   const digest = createHash("sha256").update(JSON.stringify(originalInput)).digest("hex");
   try {
     if (recheckOnly) {
-      if (!await exists(operation)) fail("worktree_operation_receipt_missing");
+      // The receipt directory is created before any Git mutation, so its absence proves
+      // the original request never started: report it as a definite no-effect failure.
+      if (!await exists(operation)) throw Object.assign(new Error("worktree_operation_receipt_missing"), {
+        code: "worktree_operation_receipt_missing", worktreeEffectStarted: false,
+      });
       throw Object.assign(new Error("read original"), { code: "EEXIST" });
     }
     await fs.mkdir(operation, { mode: 0o700 });
