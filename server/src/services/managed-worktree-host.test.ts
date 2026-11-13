@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { managedWorktreeHostOperation as operation, managedWorktreeHostScript, type ManagedWorktreeHostInput } from "@paperclipai/adapter-utils/managed-worktree-host";
 
@@ -100,13 +100,76 @@ describe("managed linked Git worktree host operations", () => {
     await expect(operation({ ...request, operationId: randomUUID() })).rejects.toMatchObject({ code: "repository_initialization_metadata_exists" });
   });
 
-  it("reports a recheck of a never-started operation as a definite no-effect failure", async () => {
-    const f = await fixture(), cwd = path.join(f.parent, "paperclip/task-id/never-started");
+  it.each(["initialize", "create", "merge", "retire"] as const)(
+    "retains an unknown %s outcome when recheck cannot find the original receipt", async action => {
+      const f = await fixture(), cwd = path.join(f.parent, "existing-unregistered");
+      await fs.mkdir(cwd);
+      const request = f.request(action, action === "initialize" ? { kind: "repository_root", sourceCwd: cwd, cwd,
+        branch: "main", targetBranch: "main", expectedHead: undefined, expectedTargetHead: undefined } : {});
+      const before = await git(f.source, "worktree", "list", "--porcelain");
+      const error = await operation({ ...request, recheckOnly: true }).catch(error => error);
+      expect(error).toMatchObject({ code: "worktree_operation_receipt_missing" });
+      // New rule: absence cannot certify no effect or release a pending mutation.
+      expect(error.worktreeEffectStarted).toBeUndefined();
+      expect(await fs.readdir(cwd)).toEqual([]);
+      expect(await git(f.source, "worktree", "list", "--porcelain")).toBe(before);
+      await expect(fs.stat(path.join(request.receiptRoot, request.operationId))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+  it("rechecks an original read-only inspect without a mutation receipt or Git effects", async () => {
+    const f = await fixture(), request = f.request("inspect");
+    const before = await git(f.source, "worktree", "list", "--porcelain");
+    expect(await operation({ ...request, recheckOnly: true })).toMatchObject({ action: "inspect", head: f.created.head });
+    await expect(fs.stat(path.join(request.receiptRoot, request.operationId))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(f.source, "worktree", "list", "--porcelain")).toBe(before);
+  });
+
+  it("keeps a started receipt unknown until the original host records a terminal outcome", async () => {
+    const f = await fixture(), request = f.request("create", { cwd: path.join(f.parent, "still-starting"), branch: "michael/starting" });
+    const directory = path.join(request.receiptRoot, request.operationId);
+    await fs.mkdir(directory, { mode: 0o700 });
+    const receipt = { digest: createHash("sha256").update(JSON.stringify(request)).digest("hex"),
+      state: "started", input: request, effectStarted: false };
+    await fs.writeFile(path.join(directory, "receipt.json"), JSON.stringify(receipt));
+    const before = await git(f.source, "worktree", "list", "--porcelain");
+    const error = await operation({ ...request, recheckOnly: true }).catch(error => error);
+    expect(error).toMatchObject({ code: "worktree_operation_reconciliation_required" });
+    expect(error.worktreeEffectStarted).toBeUndefined();
+    expect(JSON.parse(await fs.readFile(path.join(directory, "receipt.json"), "utf8"))).toEqual(receipt);
+    await expect(fs.stat(request.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(f.source, "worktree", "list", "--porcelain")).toBe(before);
+  });
+
+  it("does not certify a delayed original host request as no-effect before its receipt exists", async () => {
+    const f = await fixture(), cwd = path.join(f.parent, "delayed-initialize");
+    await fs.mkdir(cwd);
     const request = f.request("initialize", { kind: "repository_root", sourceCwd: cwd, cwd, branch: "main", targetBranch: "main",
       expectedHead: undefined, expectedTargetHead: undefined });
-    await expect(operation({ ...request, recheckOnly: true }))
-      .rejects.toMatchObject({ code: "worktree_operation_receipt_missing", worktreeEffectStarted: false });
-    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    // A live remote helper can await the original input even after its caller
+    // loses the transport. Recheck is neither a stop fence nor permission to retry.
+    const child = spawn(process.execPath, ["--input-type=module", "-e",
+      `process.stdout.write(${JSON.stringify("ready\n")});` + managedWorktreeHostScript()], { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "", err = "";
+    child.stdout.on("data", chunk => { out += chunk; }); child.stderr.on("data", chunk => { err += chunk; });
+    const ready = new Promise<void>((resolve, reject) => { child.stdout.once("data", () => resolve()); child.once("error", reject);
+      child.once("close", code => reject(new Error(`Host helper closed before readiness (${code}): ${err}`))); });
+    const ended = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    try {
+      await ready;
+      const missing = await operation({ ...request, recheckOnly: true }).catch(error => error);
+      expect(missing).toMatchObject({ code: "worktree_operation_receipt_missing" });
+      expect(missing.worktreeEffectStarted).toBeUndefined();
+      expect(await fs.readdir(cwd)).toEqual([]);
+      child.stdin.end(JSON.stringify(request)); // Deliver the original request exactly once.
+      expect(await ended, err + out).toBe(0);
+      const result = JSON.parse(out.slice(out.indexOf("\n") + 1));
+      expect(result).toMatchObject({ ok: true, result: { action: "initialize", cwd, head: null } });
+      expect(await operation({ ...request, recheckOnly: true })).toEqual(result.result);
+      expect(await fs.readdir(path.join(request.receiptRoot, request.operationId))).toEqual(["receipt.json"]);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await ended;
+    }
   });
 
   it("initializes repository roots through the remote host script without staging existing content", async () => {

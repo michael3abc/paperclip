@@ -235,6 +235,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: f.registration.operationId, action: "create", recheckOnly: true });
   });
 
+  it.each(["register", "create"] as const)("missing host receipt releases only the original read-only action (%s)", async action => {
+    const f = await fixture();
+    const request = { ...f.registration, action, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
+    f.host.mockRejectedValue(Object.assign(new Error("worktree_operation_receipt_missing"), { code: "worktree_operation_receipt_missing" }));
+    await expect(f.service.operate(f.scope, request)).rejects.toMatchObject({ code: "worktree_operation_receipt_missing" });
+    const pending = action === "create" ? request.operationId : null;
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(pending);
+    const restarted = mainManagedWorktreeService(db, { host: f.host, receiptRoot: "/private/test-receipts" });
+    if (action === "create") {
+      await expect(restarted.recheck(f.scope, request.operationId, 1)).rejects.toMatchObject({ code: "worktree_operation_receipt_missing" });
+      expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: request.operationId, action: "create", recheckOnly: true });
+      await expect(restarted.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_operation_reconciliation_required");
+    } else {
+      expect(f.host.mock.calls[0]![1].action).toBe("inspect");
+      expect(await restarted.recheck(f.scope, request.operationId, 1)).toMatchObject({ status: "failed", pending: false });
+      expect(f.host).toHaveBeenCalledTimes(1);
+    }
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(pending);
+    const saved = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, request.operationId));
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ status: "failed", stderrExcerpt: "worktree_operation_receipt_missing" });
+  });
+
   it("does not let a refused retire deadlock reopening the tree", async () => {
     const f = await fixture(); await f.service.operate(f.scope, f.registration);
     await f.service.operate(f.scope, f.command("join", 1));

@@ -1,5 +1,13 @@
 # Paperclip fork
 
+2026-11-13 host-recheck safety: preserve missing mutation receipts as unknown
+outcomes, retaining the original pending operation rather than granting no-effect
+status. Only original read-only inspect failures are intrinsically harmless.
+This forward correction preserves dedaa412e history and prevents a delayed host
+request or changed receipt root from authorizing another Git operation.
+An in-flight started receipt likewise grants no release; explicit no-effect
+failure requires the original terminal failed receipt.
+
 2026-11-12 bootstrap native restoration: maintenance may replace a Bridge card
 before its null-native bootstrap authority has advanced. Permit a new admitted
 run to bind the published original native session only through current server
