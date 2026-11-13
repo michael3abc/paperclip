@@ -1,7 +1,7 @@
 /**
  * In-memory per-host circuit breaker (liveness-first rule 4 / plan 3c).
  *
- * Fed by `host_unavailable` / `bridge_unavailable` failures. While a host's
+ * Fed by `host_unavailable` / `bridge_unavailable` / `remote_boot_unreadable` failures. While a host's
  * breaker is open, wakes targeting it are deferred to `openUntil`; deferrals
  * are not counted as run failures. The breaker never blocks permanently:
  * backoff is 30s doubling to a 30 minute cap, and one success closes it.
@@ -15,6 +15,9 @@ export const HOST_CIRCUIT_NOTICE_AFTER_MS = 60 * 60_000;
 export const HOST_CIRCUIT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "host_unavailable",
   "bridge_unavailable",
+  // The adapter's remote boot observation is log-only; an unreadable boot
+  // still counts as host trouble for the breaker.
+  "remote_boot_unreadable",
 ]);
 
 type HostCircuitState = {

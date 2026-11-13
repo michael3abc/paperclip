@@ -47,6 +47,24 @@ export const TRANSIENT_RUN_FAILURE_CODES: ReadonlySet<string> = new Set<string>(
   "controller_lease_lost",
   "session_authority_busy",
   "remote_workspace_prepare_timeout",
+  // ccpocket adapter 0.5.0 transient codes.
+  "attachment_download_failed",
+  "history_mismatch",
+  "input_rejected",
+  "issue_unavailable",
+  "native_session_unavailable",
+  "paperclip_api_error",
+  "project_query_failed",
+  "project_relay_unavailable",
+  "provider_error",
+  "remote_boot_unreadable",
+  "remote_context_unavailable",
+  "session_configuration_changed",
+  "session_identity_changed",
+  "session_start_failed",
+  "timed_out",
+  "turn_interrupted",
+  "user_input_required",
   // Former ccpocket "uncertain" codes (legacy rows included).
   "manual_takeover",
   "input_source_unknown",
@@ -90,7 +108,26 @@ export const DETERMINISTIC_RUN_FAILURE_CODES: ReadonlySet<string> = new Set<stri
   "low_trust_boundary_mismatch",
   "low_trust_requires_sandbox_environment",
   "low_trust_runtime_services_denied",
+  // ccpocket adapter 0.5.0 deterministic codes.
+  "worktree_unavailable",
+  "workspace_not_allowed",
+  "invalid_config",
+  "model_unavailable",
+  "project_pm_out_of_bounds",
+  "worker_workspace_out_of_bounds",
+  "session_authority_unsupported",
+  "bridge_auth_missing",
+  "paperclip_auth_missing",
+  // An Owner cancellation reported by the adapter (retryable: false).
+  "cancelled",
 ]);
+
+/** Deterministic code families reported by the ccpocket adapter. */
+export const DETERMINISTIC_RUN_FAILURE_CODE_PREFIXES: readonly string[] = [
+  "unsupported_",
+  "pm_workspace_",
+  "chat_generation_",
+];
 
 function normalizeCode(code: unknown): string | null {
   if (typeof code !== "string") return null;
@@ -104,6 +141,7 @@ export function classifyRunFailure(code: string | null | undefined): RunFailureC
   if (!normalized) return "unknown";
   if (TRANSIENT_RUN_FAILURE_CODES.has(normalized)) return "transient";
   if (DETERMINISTIC_RUN_FAILURE_CODES.has(normalized)) return "deterministic";
+  if (DETERMINISTIC_RUN_FAILURE_CODE_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return "deterministic";
   return "unknown";
 }
 

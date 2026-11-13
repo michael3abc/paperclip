@@ -36,6 +36,26 @@ describe("liveness-first run failure classification", () => {
     }
   });
 
+  it("classifies the ccpocket adapter 0.5.0 contract codes", () => {
+    for (const code of [
+      "attachment_download_failed", "history_mismatch", "input_rejected", "issue_unavailable",
+      "native_session_unavailable", "paperclip_api_error", "project_query_failed", "project_relay_unavailable",
+      "provider_error", "remote_boot_unreadable", "remote_context_unavailable", "session_configuration_changed",
+      "session_identity_changed", "session_start_failed", "timed_out", "turn_interrupted", "user_input_required",
+    ]) {
+      expect(classifyRunFailure(code), code).toBe("transient");
+    }
+    for (const code of [
+      "worktree_unavailable", "workspace_not_allowed", "invalid_config", "model_unavailable",
+      "unsupported_provider", "project_pm_out_of_bounds", "worker_workspace_out_of_bounds", "pm_workspace_conflict",
+      "chat_generation_mismatch", "session_authority_unsupported", "bridge_auth_missing", "paperclip_auth_missing",
+      "cancelled",
+    ]) {
+      expect(classifyRunFailure(code), code).toBe("deterministic");
+    }
+    expect(shouldAutoRetryRunFailure("cancelled", 1)).toBe(false);
+  });
+
   it("treats missing and unrecognized codes as unknown", () => {
     expect(classifyRunFailure(null)).toBe("unknown");
     expect(classifyRunFailure(undefined)).toBe("unknown");
@@ -84,6 +104,7 @@ describe("host circuit breaker", () => {
     let now = 0;
     const breaker = createHostCircuitBreaker({ now: () => now });
     expect(breaker.recordFailure("h1", "adapter_failed")).toBeNull();
+    expect(breaker.recordFailure("h2", "remote_boot_unreadable")?.getTime()).toBe(30_000);
     expect(breaker.openUntil("h1")).toBeNull();
     expect(breaker.recordFailure("h1", "host_unavailable")?.getTime()).toBe(30_000);
     expect(breaker.recordFailure("h1", "bridge_unavailable")?.getTime()).toBe(60_000);
@@ -98,6 +119,7 @@ describe("host circuit breaker", () => {
     expect(breaker.takeNotice("h1")).toBe(false);
     breaker.recordSuccess("h1");
     expect(breaker.openUntil("h1")).toBeNull();
+    breaker.recordSuccess("h2");
     expect(breaker.snapshot()).toEqual([]);
   });
 
