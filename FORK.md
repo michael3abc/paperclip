@@ -1,5 +1,11 @@
 # Paperclip fork
 
+2026-11-13 exact linked-source inspection: an existing configured source can
+point at the linked worktree being registered. Permit only read-only inspect to
+reach its full Git identity checks in that case; preserve primary-checkout,
+alias, foreign-root and mutation guards. Both local and serialized remote helpers
+use the same code, and remote adoption still waits for host proof.
+
 2026-11-13 host-recheck safety: preserve missing mutation receipts as unknown
 outcomes, retaining the original pending operation rather than granting no-effect
 status. Only original read-only inspect failures are intrinsically harmless.
