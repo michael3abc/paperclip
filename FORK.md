@@ -115,7 +115,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 
 Shopee shared worker consolidation adds opt-in per-host Bridge worker capacity,
 host-scoped discovery, and immutable task routes; implementation history is on
-`michael/shopee-shared-workers`, merged into `michael/main`. Existing fixed workers
+`michael/shopee-shared-workers` for review; it is not deployed. Existing fixed workers
 and Bridge task/session identities remain unchanged (docs/agents/pm-agents.md).
 
 Develop on `michael/<topic>` with exclusive use of the project development checkout; create an additional worktree only for parallel work or an independent version. Merge into `michael/main` before building.
