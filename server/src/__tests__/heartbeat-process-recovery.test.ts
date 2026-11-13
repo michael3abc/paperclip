@@ -24,6 +24,7 @@ import { waitForPendingRunFailureReports } from "../services/run-failure-report.
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHash, randomUUID } from "node:crypto";
 import { recordLegacyWorkspaceRestoreFailure, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { runFailureBackoffMs } from "../services/recovery/failure-classification.js";
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
@@ -303,6 +304,23 @@ function commentMetadataRows(
   return (metadata?.sections ?? []).flatMap(
     (section) => section.rows ?? [],
   ) as Array<Record<string, unknown>>;
+}
+
+/**
+ * Liveness-first (rule 4): retry number `attempt` is due 30s x 2^(attempt-1)
+ * after it was scheduled, capped at 30 minutes. `before`/`after` bracket the
+ * call that scheduled it.
+ */
+function expectRetryDueAfterBackoff(
+  run: { scheduledRetryAt?: Date | null } | null | undefined,
+  attempt: number,
+  before: number,
+  after: number,
+) {
+  const dueAt = run?.scheduledRetryAt?.getTime();
+  expect(typeof dueAt).toBe("number");
+  expect(dueAt!).toBeGreaterThanOrEqual(before + runFailureBackoffMs(attempt));
+  expect(dueAt!).toBeLessThanOrEqual(after + runFailureBackoffMs(attempt));
 }
 
 function spawnAliveProcess() {
@@ -1207,6 +1225,105 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
+  }
+
+  /**
+   * Liveness-first (rule 4): an unknown failure code is retried three times
+   * as transient, then treated as deterministic. This turns the fixture's
+   * latest run into the third automatic retry of `errorCode`: the original
+   * failure and two earlier retries with the same code precede it on the
+   * retry chain, so the next attempt would be the fourth consecutive failure.
+   */
+  async function seedUnknownCodeRetryChain(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    runId: string;
+    errorCode: string;
+  }) {
+    let previousId: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const id = randomUUID();
+      const at = new Date(Date.UTC(2026, 2, 18, 23, 40 + attempt * 5));
+      await db.insert(heartbeatRuns).values({
+        id,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: attempt === 0 ? "assignment" : "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId: input.issueId,
+          taskId: input.issueId,
+          wakeReason: attempt === 0 ? "issue_assigned" : "transient_failure_retry",
+          ...(previousId ? { retryOfRunId: previousId } : {}),
+        },
+        retryOfRunId: previousId,
+        scheduledRetryAttempt: attempt,
+        scheduledRetryReason: attempt === 0 ? null : "transient_failure",
+        errorCode: input.errorCode,
+        error: "adapter exited without a recognized failure code",
+        startedAt: at,
+        finishedAt: at,
+        createdAt: at,
+        updatedAt: at,
+      });
+      previousId = id;
+    }
+    await db
+      .update(heartbeatRuns)
+      .set({
+        retryOfRunId: previousId,
+        scheduledRetryAttempt: 3,
+        scheduledRetryReason: "transient_failure",
+        contextSnapshot: {
+          issueId: input.issueId,
+          taskId: input.issueId,
+          wakeReason: "transient_failure_retry",
+          retryOfRunId: previousId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, input.runId));
+  }
+
+  /**
+   * Backfills two older failed continuation retries (retryReason
+   * `issue_continuation_needed`) before the fixture's latest run, so the
+   * sweeper sees three consecutive failed continuation retries of `errorCode`.
+   */
+  async function seedFailedContinuationRetries(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    errorCode: string;
+    error: string | null;
+  }) {
+    for (const finishedAt of [
+      new Date("2026-03-18T23:50:00.000Z"),
+      new Date("2026-03-18T23:55:00.000Z"),
+    ]) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId: input.issueId,
+          taskId: input.issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        errorCode: input.errorCode,
+        error: input.error,
+        startedAt: finishedAt,
+        finishedAt,
+        createdAt: finishedAt,
+        updatedAt: finishedAt,
+      });
+    }
   }
 
   async function bindChatConversation(input: {
@@ -7129,17 +7246,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRuns).toHaveLength(1);
   });
 
-  it("escalates an interrupted corrective successful-run handoff once its transient retry budget is spent", async () => {
-    const { companyId, agentId, runId, issueId } =
+  it("keeps retrying an interrupted corrective successful-run handoff after earlier transient retries", async () => {
+    // Liveness-first (rule 4): server_shutdown_interrupted is transient, so
+    // two earlier retries never spend the corrective run's retry budget. The
+    // third retry keeps the handoff contract and follows the 30s x 2^n backoff.
+    const { agentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
         runErrorCode: "server_shutdown_interrupted",
         runError: "Interrupted by graceful server shutdown (SIGTERM)",
         // The real interrupted run carries the conversation-continuation
-        // marker the shutdown path writes; it also keeps a spent retry chain
-        // out of legacy reconciliation so the sweeper reaches the handoff
-        // branch with an exhausted budget.
+        // marker the shutdown path writes.
         resultJson: {
           stopReason: "interrupted",
           conversationContinuation: "continue_conversation_v1",
@@ -7156,6 +7274,76 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId,
           taskId: issueId,
           wakeReason: "transient_failure_retry",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const before = Date.now();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const after = Date.now();
+    expect(result.successfulRunHandoffRetried).toBe(1);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retryRuns).toHaveLength(1);
+    expect(retryRuns[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "transient_failure",
+    });
+    expectRetryDueAfterBackoff(retryRuns[0], 3, before, after);
+    expect(retryRuns[0]?.contextSnapshot).toMatchObject({
+      issueId,
+      retryOfRunId: runId,
+      handoffRequired: true,
+      handoffReason: "successful_run_missing_state",
+      missingDisposition: "clear_next_step",
+      handoffAttempt: 1,
+      maxHandoffAttempts: 1,
+    });
+
+    const sourceIssue = await selectRecoveryIssueById(issueId);
+    expect(sourceIssue).toMatchObject({ status: "in_progress", assigneeAgentId: agentId });
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(await selectRecoveryCommentsForIssue(issueId)).toEqual([]);
+  });
+
+  it("escalates an interrupted corrective successful-run handoff whose failure a retry cannot fix", async () => {
+    // A deterministic failure code gets no automatic retry, so the corrective
+    // handoff escalates once as a missing disposition.
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "invalid_config",
+        runError: "Adapter configuration is invalid",
+        resultJson: {
+          stopReason: "interrupted",
+          conversationContinuation: "continue_conversation_v1",
+        },
+      });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
           sourceRunId,
           resumeFromRunId: sourceRunId,
           handoffRequired: true,
@@ -7192,27 +7380,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceRunId,
       missingDisposition: "clear_next_step",
       latestRunStatus: "interrupted",
-      latestRunErrorCode: "server_shutdown_interrupted",
+      latestRunErrorCode: "invalid_config",
       recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
     });
     const sourceIssue = await selectRecoveryIssueById(issueId);
     expect(sourceIssue?.status).toBe("blocked");
   });
 
-  it("escalates an in_progress issue whose interrupted run has spent its transient retry budget", async () => {
-    // Three deploy restarts in a row interrupted a run and both of its
-    // bounded transient retries. The retry scheduler then reports the
-    // budget exhausted and queues nothing, and the sweeper used to skip
-    // the issue on every tick: in_progress, no run, no path, no notice.
-    const { companyId, agentId, runId, issueId } =
+  it("keeps retrying an in_progress issue whose interrupted run already used earlier transient retries", async () => {
+    // Three deploy restarts in a row interrupted a run and two of its
+    // transient retries. Liveness-first (rule 4): server_shutdown_interrupted
+    // is transient, so the retries are unlimited. The sweeper schedules the
+    // third retry with its backoff instead of escalating the issue.
+    const { agentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
         runErrorCode: "server_shutdown_interrupted",
         runError: "Interrupted by graceful server shutdown (SIGTERM)",
         // A conversation adapter's interrupted run keeps its session for
-        // continuation, so legacy reconciliation does not terminalize it;
-        // the sweeper reaches the retry lane with a spent budget.
+        // continuation.
         resultJson: {
           stopReason: "interrupted",
           conversationContinuation: "continue_conversation_v1",
@@ -7233,6 +7420,66 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const before = Date.now();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const after = Date.now();
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "transient_failure",
+    });
+    expectRetryDueAfterBackoff(successors[0], 3, before, after);
+
+    const sourceIssue = await selectRecoveryIssueById(issueId);
+    expect(sourceIssue?.status).toBe("in_progress");
+    expect(sourceIssue?.assigneeAgentId).toBe(agentId);
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(await selectRecoveryCommentsForIssue(issueId)).toEqual([]);
+
+    // The scheduled retry is the live path: a second sweep neither escalates
+    // nor schedules a duplicate.
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.escalated).toBe(0);
+    expect(again.continuationRequeued).toBe(0);
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(1);
+  });
+
+  it("escalates an in_progress issue once an unknown failure code has used its three transient retries", async () => {
+    // Liveness-first (rule 4): an unknown code is retried three times as
+    // transient, then treated as deterministic. The retry scheduler queues
+    // nothing, so the sweeper notifies once instead of skipping the issue on
+    // every tick with no live execution path.
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "adapter_exit_code",
+        runError: "adapter exited without a recognized failure code",
+      });
+    await seedUnknownCodeRetryChain({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      errorCode: "adapter_exit_code",
+    });
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -7258,8 +7505,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("bounded retry budget");
-    expect(comments[0]?.body).toContain("no live execution path");
+    expect(comments[0]?.body).toContain("stopped retrying");
+    expect(comments[0]?.body).toContain("a retry cannot fix");
+    // The failure code is a metadata row, never part of the notice body.
+    expect(comments[0]?.body).not.toContain("adapter_exit_code");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "adapter_exit_code",
+    });
     expect(comments[0]?.authorType).toBe("system");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
@@ -7316,7 +7570,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceIssue?.status).toBe("in_progress");
   });
 
-  it("escalates an assigned todo issue whose lost dispatch has spent its transient retry budget", async () => {
+  it("keeps redispatching an assigned todo issue whose lost dispatch already used earlier transient retries", async () => {
+    // Liveness-first (rule 4): server_shutdown_interrupted is transient, so
+    // earlier retries never spend the lost dispatch's retry budget.
     const { agentId, runId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
@@ -7342,14 +7598,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.id, runId));
 
     const heartbeat = heartbeatService(db);
+    const before = Date.now();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const after = Date.now();
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+    });
+    expectRetryDueAfterBackoff(successors[0], 3, before, after);
+    const sourceIssue = await selectRecoveryIssueById(issueId);
+    expect(sourceIssue?.status).toBe("todo");
+    expect(sourceIssue?.assigneeAgentId).toBe(agentId);
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(await selectRecoveryCommentsForIssue(issueId)).toEqual([]);
+  });
+
+  it("escalates an assigned todo issue whose lost dispatch failed with a code a retry cannot fix", async () => {
+    // A deterministic failure gets no automatic retry. The sweeper notifies
+    // once instead of skipping the issue on every tick with no live path.
+    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "invalid_config",
+      runError: "Adapter configuration is invalid",
+    });
+
+    const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(1);
     expect(result.dispatchRequeued).toBe(0);
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(0);
     const sourceIssue = await selectRecoveryIssueById(issueId);
     expect(sourceIssue?.status).toBe("blocked");
     expect(sourceIssue?.assigneeAgentId).toBe(agentId);
     const comments = await selectRecoveryCommentsForIssue(issueId);
-    expect(comments[0]?.body).toContain("bounded retry budget");
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("retry budget is spent");
+    expect(comments[0]?.body).not.toContain("invalid_config");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "invalid_config",
+    });
   });
 
   it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
@@ -7452,17 +7756,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    if (dispatchReceipt && dispatchReceipt !== "receipt") {
-      expect(result.waitingOnReviewResolved).toBe(0);
-      expect(result.escalated).toBe(1);
-      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({
-        cause: "legacy_execution_requires_reconciliation", runId, canRetry: false,
-      });
-      return;
-    }
+    // Liveness-first (rule 1): launch, provider or cleanup evidence on the
+    // parked run no longer demands an operator reconciliation decision. Every
+    // variant resolves into the same dependency wait as the receipt-free run.
     expect(result.waitingOnReviewResolved).toBe(1);
     expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([issueId]);
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
 
     const umbrella = await selectRecoveryIssueById(issueId);
     expect(umbrella?.status).toBe("blocked");
@@ -10316,8 +10616,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).not.toHaveProperty("modelProfile");
   });
 
-  it("escalates an execution-review participant whose interrupted run has spent its transient retry budget", async () => {
-    const { companyId, agentId, issueId, runId, wakeupRequestId } =
+  it("keeps requeueing an execution-review participant whose interrupted run already used earlier transient retries", async () => {
+    // Liveness-first (rule 4): server_shutdown_interrupted is transient, so
+    // the reviewer's earlier retries never spend its retry budget.
+    const { agentId, issueId, runId, wakeupRequestId } =
       await seedInReviewParticipantRunFixture();
     const finishedAt = new Date("2026-03-19T00:05:00.000Z");
     await db
@@ -10336,6 +10638,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId,
           taskId: issueId,
           wakeReason: "transient_failure_retry",
+        },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    const heartbeat = heartbeatService(db);
+    const before = Date.now();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const after = Date.now();
+    expect(result.escalated).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+    });
+    expectRetryDueAfterBackoff(successors[0], 3, before, after);
+    const sourceIssue = await selectRecoveryIssueById(issueId);
+    expect(sourceIssue?.status).toBe("in_review");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+
+    // The scheduled retry is the reviewer's live path: no duplicate.
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.escalated).toBe(0);
+    expect(again.reviewParticipantRequeued).toBe(0);
+  });
+
+  it("escalates an execution-review participant whose interrupted run failed with a code a retry cannot fix", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } =
+      await seedInReviewParticipantRunFixture();
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        errorCode: "invalid_config",
+        error: "Adapter configuration is invalid",
+        resultJson: {
+          stopReason: "interrupted",
+          conversationContinuation: "continue_conversation_v1",
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_requested",
         },
         startedAt: new Date("2026-03-19T00:00:00.000Z"),
         finishedAt,
@@ -10371,11 +10730,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(again.escalated).toBe(0);
   });
 
-  it("does not block an issue whose review participant spent its retry budget while another agent is still working it", async () => {
-    // `blocked` is issue-wide. The exhausted participant is a dead end for
-    // the review stage, but another agent with a live run on the same issue
-    // must not be blocked under it: the escalation re-reads the live path
-    // for ANY agent and stands down.
+  it.each([
+    ["server_shutdown_interrupted", 1],
+    ["invalid_config", 0],
+  ] as const)("does not block an issue whose review participant failed (%s) while another agent is still working it", async (errorCode, expectedRequeued) => {
+    // `blocked` is issue-wide. A transient reviewer failure is simply retried
+    // (liveness-first rule 4). A deterministic one is a dead end for the
+    // review stage, but another agent with a live run on the same issue must
+    // not be blocked under it: the escalation re-reads the live path for ANY
+    // agent and stands down.
     const { companyId, issueId, runId, wakeupRequestId } =
       await seedInReviewParticipantRunFixture();
     const finishedAt = new Date("2026-03-19T00:05:00.000Z");
@@ -10383,8 +10746,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .update(heartbeatRuns)
       .set({
         status: "interrupted",
-        errorCode: "server_shutdown_interrupted",
-        error: "Interrupted by graceful server shutdown (SIGTERM)",
+        errorCode,
+        error: "Reviewer run ended before submitting a decision",
         scheduledRetryAttempt: 2,
         scheduledRetryReason: "transient_failure",
         resultJson: {
@@ -10426,7 +10789,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(0);
-    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(expectedRequeued);
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(expectedRequeued);
     const sourceIssue = await db
       .select({ status: issues.status })
       .from(issues)
@@ -10737,7 +11106,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryActivityEvent).toBeTruthy();
   });
 
-  it("blocks failed execution-review recovery under the reviewer when the source assignee differs", async () => {
+  async function seedFailedReviewRecoveryUnderReviewer(errorCode: string) {
     const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
       await seedInReviewParticipantRunFixture({
         wakeReason: "execution_review_participant_recovery",
@@ -10776,7 +11145,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         startedAt: new Date("2026-03-19T00:00:00.000Z"),
         finishedAt,
         updatedAt: finishedAt,
-        errorCode: "adapter_failed",
+        errorCode,
         error: "review recovery failed before submitting a decision",
       })
       .where(eq(heartbeatRuns.id, runId));
@@ -10790,6 +11159,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         error: "review recovery failed before submitting a decision",
       })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    return { companyId, agentId, issueId, runId, sourceAssigneeAgentId };
+  }
+
+  it("keeps retrying failed execution-review recovery under the reviewer when the source assignee differs", async () => {
+    // Liveness-first (rules 4 and 6): adapter_failed is transient. A failed
+    // automatic review recovery is retried under the reviewer with backoff;
+    // it never hands the review stage to the board.
+    const { agentId, issueId, runId, sourceAssigneeAgentId } =
+      await seedFailedReviewRecoveryUnderReviewer("adapter_failed");
+    const heartbeat = heartbeatService(db);
+
+    const before = Date.now();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const after = Date.now();
+    expect(result.reviewParticipantRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const [sourceIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(sourceIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: sourceAssigneeAgentId,
+    });
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+    });
+    expectRetryDueAfterBackoff(successors[0], 1, before, after);
+  });
+
+  it("blocks failed execution-review recovery under the reviewer when the source assignee differs", async () => {
+    // A deterministic failure is not retried: the review recovery escalates
+    // once, keeps the source assignee and returns the work to it.
+    const { agentId, issueId, runId, sourceAssigneeAgentId } =
+      await seedFailedReviewRecoveryUnderReviewer("invalid_config");
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -10802,20 +11216,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId));
     expect(sourceIssue).toMatchObject({
-      status: "in_review",
+      status: "blocked",
       assigneeAgentId: sourceAssigneeAgentId,
     });
-    const [recoveryAction] = await selectRecoveryActionsForIssue(issueId);
-    expect(recoveryAction).toMatchObject({
+    const recoveryActions = await selectRecoveryActionsForIssue(issueId);
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
       ownerType: "board",
+      previousOwnerAgentId: sourceAssigneeAgentId,
       returnOwnerAgentId: sourceAssigneeAgentId,
-      cause: "legacy_execution_requires_reconciliation",
-      evidence: {
-        runId,
-        reviewParticipantAgentId: agentId,
-        originalFailureCode: "adapter_failed",
-      },
+      cause: "execution_review_participant_recovery",
+      evidence: expect.objectContaining({
+        latestRunId: runId,
+        latestRunErrorCode: "invalid_config",
+      }),
     });
+    expect(
+      (await selectRecoveryRunsByAgent(agentId)).map((run) => run.id),
+    ).toEqual([runId]);
     expect(
       await db
         .select()
@@ -11404,13 +11822,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("blocks assigned todo work after the one automatic dispatch recovery was already used", async () => {
+  // Liveness-first: only a failure a retry cannot fix stops automatic
+  // dispatch recovery (transient codes are resent with backoff).
+  it("blocks assigned todo work after the automatic dispatch recovery failed with a code a retry cannot fix", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "todo",
         runStatus: "failed",
         retryReason: "assignment_recovery",
-        runErrorCode: "process_lost",
+        runErrorCode: "invalid_config",
         runError: "Authorization: Bearer sk-test-recovery-secret",
       });
     const longRecoveryOwnerName = "R".repeat(161);
@@ -11435,7 +11855,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
-      cause: "process_lost",
+      cause: "stranded_assigned_issue",
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain(
       "sk-test-recovery-secret",
@@ -11478,11 +11898,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
+  // Liveness-first: only a failure a retry cannot fix blocks a recovery issue in place.
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
       retryReason: "assignment_recovery",
+      runErrorCode: "invalid_config",
     });
     const sourceIssueId = randomUUID();
     const sourceRunId = randomUUID();
@@ -11904,8 +12326,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       wakes.some((row) => row.reason === "run_liveness_continuation"),
     ).toBe(false);
   });
-  it("blocks stranded in-progress work after the continuation retry was already used", async () => {
-    const { companyId, agentId, issueId, runId } =
+  it("keeps retrying stranded in-progress work after a failed process_lost continuation retry", async () => {
+    // Liveness-first (rule 4): process_lost is transient, so a failed
+    // continuation retry does not use up a one-shot budget. The next
+    // continuation is scheduled with backoff and nothing escalates.
+    const { agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
@@ -11913,45 +12338,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     const heartbeat = heartbeatService(db);
 
+    const before = Date.now();
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(0);
-    expect(result.escalated).toBe(1);
+    const after = Date.now();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await selectRecoveryIssueById(issueId);
-    expect(issue?.status).toBe("blocked");
+    expect(issue?.status).toBe("in_progress");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(await selectRecoveryCommentsForIssue(issueId)).toEqual([]);
 
-    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
-      companyId,
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
       agentId,
-      issueId,
-      runId,
-      previousStatus: "in_progress",
-      retryReason: "issue_continuation_needed",
-      cause: "process_lost",
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
     });
-
-    const comments = await selectRecoveryCommentsForIssue(issueId);
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.presentation).toMatchObject({
-      kind: "system_notice",
-      tone: "danger",
-    });
-    expect(
-      noticeMetadataReferencesRecoveryAction(
-        comments[0]?.metadata,
-        recoveryAction.id,
-      ),
-    ).toBe(true);
-    expect(
-      commentMetadataRows(comments[0]).some(
-        (row) =>
-          row.type === "key_value" &&
-          row.label === "Recovery owner" &&
-          row.value === "Board decision required",
-      ),
-    ).toBe(true);
+    expectRetryDueAfterBackoff(successors[0], 1, before, after);
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
@@ -11963,6 +12372,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runErrorCode: "adapter_exit_code",
         runError: null,
       });
+    // Liveness-first (rule 4): adapter_exit_code is an unknown code, retried
+    // three times as transient before it is treated as deterministic. Two
+    // older failed continuation retries plus the latest one use those attempts.
+    await seedFailedContinuationRetries({
+      companyId,
+      agentId,
+      issueId,
+      errorCode: "adapter_exit_code",
+      error: null,
+    });
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -12029,7 +12448,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("escalates after repeated adapter_failed continuation retries with the cause in the comment", async () => {
+  it("keeps retrying repeated adapter_failed continuation failures with backoff instead of escalating", async () => {
+    // Liveness-first (rule 4): adapter_failed is transient, so three failed
+    // continuation retries in a row do not reach a cap. The sweeper waits out
+    // the 30s x 2^n backoff after the latest failure, then requeues.
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -12038,34 +12460,80 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runErrorCode: "adapter_failed",
         runError: "ssh: connection reset",
       });
-    // Backfill two more consecutive failed continuation retries so the cap (3) is reached.
-    const olderTimestamps = [
-      new Date("2026-03-18T23:50:00.000Z"),
-      new Date("2026-03-18T23:55:00.000Z"),
-    ];
-    for (const finishedAt of olderTimestamps) {
-      await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
-        companyId,
-        agentId,
-        invocationSource: "automation",
-        triggerDetail: "system",
-        status: "failed",
-        contextSnapshot: {
-          issueId,
-          taskId: issueId,
-          wakeReason: "issue_continuation_needed",
-          retryReason: "issue_continuation_needed",
-          source: "issue.continuation_recovery",
-        },
-        errorCode: "adapter_failed",
-        error: "ssh: connection reset",
-        startedAt: finishedAt,
-        finishedAt,
-        createdAt: finishedAt,
-        updatedAt: finishedAt,
+    await seedFailedContinuationRetries({
+      companyId,
+      agentId,
+      issueId,
+      errorCode: "adapter_failed",
+      error: "ssh: connection reset",
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Inside the backoff window: nothing is queued and nothing escalates.
+    const recentFailureAt = new Date(Date.now() - 10_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ finishedAt: recentFailureAt })
+      .where(eq(heartbeatRuns.id, runId));
+    const deadlines: number[] = [];
+    const deferred = await heartbeat.reconcileStrandedAssignedIssues({
+      onDeferredDeadline: (at) => deadlines.push(at),
+    });
+    expect(deferred.continuationRequeued).toBe(0);
+    expect(deferred.escalated).toBe(0);
+    expect(deadlines).toEqual([
+      recentFailureAt.getTime() + runFailureBackoffMs(3),
+    ]);
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(0);
+
+    // After the backoff window the continuation is requeued.
+    await db
+      .update(heartbeatRuns)
+      .set({ finishedAt: new Date("2026-03-19T00:05:00.000Z") })
+      .where(eq(heartbeatRuns.id, runId));
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await selectRecoveryIssueById(issueId);
+    expect(issue?.status).toBe("in_progress");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(await selectRecoveryCommentsForIssue(issueId)).toEqual([]);
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+    });
+  });
+
+  it("escalates after three failed continuation retries of an unknown failure code with the cause in the details", async () => {
+    // Liveness-first (rule 4): an unknown code gets three transient attempts,
+    // then is treated as deterministic and notified once.
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        retryReason: "issue_continuation_needed",
+        runErrorCode: "adapter_exit_code",
+        runError: "ssh: connection reset",
       });
-    }
+    await seedFailedContinuationRetries({
+      companyId,
+      agentId,
+      issueId,
+      errorCode: "adapter_exit_code",
+      error: "ssh: connection reset",
+    });
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -12076,7 +12544,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await selectRecoveryIssueById(issueId);
     expect(issue?.status).toBe("blocked");
 
-    await expectSourceScopedStrandedRecoveryAction({
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
       issueId,
@@ -12089,14 +12557,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("3× attempts");
+    expect(comments[0]?.body).not.toContain("adapter_exit_code");
     expect(commentMetadataRows(comments[0])).toContainEqual({
       type: "key_value",
       label: "Failure code",
-      value: "adapter_failed",
+      value: "adapter_exit_code",
     });
+    expect(comments[0]?.presentation).toMatchObject({
+      kind: "system_notice",
+      tone: "danger",
+    });
+    expect(
+      noticeMetadataReferencesRecoveryAction(
+        comments[0]?.metadata,
+        recoveryAction.id,
+      ),
+    ).toBe(true);
+    expect(
+      commentMetadataRows(comments[0]).some(
+        (row) =>
+          row.type === "key_value" &&
+          row.label === "Recovery owner" &&
+          row.value === "Board decision required",
+      ),
+    ).toBe(true);
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(0);
   });
 
-  it("counts different failure causes against the same incident budget", async () => {
+  it("continues the shared incident attempt counter across different failure causes without a retry cap", async () => {
+    // Two earlier retries of this incident failed with other causes. The
+    // shared counter still drives the backoff (third retry: 120s), but the
+    // transient adapter_failed code has no attempt limit (liveness-first
+    // rule 4), so the continuation is requeued instead of escalated.
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -12107,23 +12604,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .update(heartbeatRuns)
       .set({ scheduledRetryAttempt: 2 })
       .where(eq(heartbeatRuns.id, runId));
+    const before = Date.now();
     const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(0);
-    expect(result.escalated).toBe(1);
-    expect(
-      await selectRecoveryRunsByAgent(agentId),
-    ).toHaveLength(1);
+    const after = Date.now();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+    });
+    expectRetryDueAfterBackoff(successors[0], 3, before, after);
     expect(
       await selectRecoveryActionsForIssue(issueId),
-    ).toEqual([
-      expect.objectContaining({
-        cause: "legacy_execution_requires_reconciliation",
-        evidence: expect.objectContaining({ attempt: 3 }),
-      }),
-    ]);
+    ).toEqual([]);
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("in_progress");
   });
 
-  it.each(["budget_blocked", "manual_takeover", "input_source_unknown", "session_busy", "bridge_update_required", "background_state_unknown", "stop_unconfirmed", "execution_uncertain"])("escalates non-retryable continuation failure %s without enqueuing another retry", async (code) => {
+  // Liveness-first (rule 4): only deterministic codes skip automatic retry.
+  it.each(["budget_blocked", "invalid_config"])("escalates non-retryable continuation failure %s without enqueuing another retry", async (code) => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -12168,6 +12673,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  // Liveness-first (rules 1 and 4): every former ccpocket "uncertain" code is
+  // transient. The prior outcome is abandoned and resent after backoff; the
+  // issue is never blocked for it.
+  it.each(["manual_takeover", "input_source_unknown", "session_busy", "bridge_update_required", "background_state_unknown", "stop_unconfirmed", "execution_uncertain"])("requeues a backed-off continuation after transient continuation failure %s without escalating", async (code) => {
+    const { agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: code,
+        runError: "The previous run outcome could not be confirmed.",
+      });
+    const heartbeat = heartbeatService(db);
+
+    const before = Date.now();
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    const after = Date.now();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await selectRecoveryIssueById(issueId);
+    expect(issue?.status).toBe("in_progress");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
+    expect(await selectRecoveryCommentsForIssue(issueId)).toEqual([]);
+
+    const successors = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      agentId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+    });
+    expectRetryDueAfterBackoff(successors[0], 1, before, after);
+
+    // The scheduled retry is the live path: a second sweep adds nothing.
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.continuationRequeued).toBe(0);
+    expect(again.escalated).toBe(0);
+    expect(
+      await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(1);
+  });
+
   it("does not recover a finished native chat while its response publication is pending", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -12200,7 +12754,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not turn a pre-adapter setup failure into a duplicate continuation run", async () => {
-    const { companyId, agentId, issueId, runId } =
+    // Liveness-first (rule 4): setup_failed is an unknown code, so its first
+    // failure is retried as transient. Exactly one successor is queued (the
+    // scheduled retry), never a second continuation wake beside it.
+    const { agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
@@ -12210,30 +12767,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     const heartbeat = heartbeatService(db);
 
+    const before = Date.now();
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(0);
-    expect(result.escalated).toBe(1);
+    const after = Date.now();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await selectRecoveryIssueById(issueId);
-    expect(issue?.status).toBe("blocked");
-
-    await expectSourceScopedStrandedRecoveryAction({
-      companyId,
-      agentId,
-      issueId,
-      runId,
-      previousStatus: "in_progress",
-      retryReason: null,
-    });
+    expect(issue?.status).toBe("in_progress");
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([]);
 
     const runs = await selectRecoveryRunsByAgent(agentId);
+    expect(runs).toHaveLength(2);
+    const successor = runs.find((row) => row.id !== runId);
+    expect(successor).toMatchObject({
+      retryOfRunId: runId,
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+    });
+    expectRetryDueAfterBackoff(successor, 1, before, after);
     expect(
       runs.find((row) => {
         const context = row.contextSnapshot as Record<string, unknown> | null;
         return context?.retryReason === "issue_continuation_needed";
       }),
     ).toBeUndefined();
+
+    // A second sweep sees the scheduled retry and queues nothing more.
+    const again = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(again.continuationRequeued).toBe(0);
+    expect(again.escalated).toBe(0);
+    expect(await selectRecoveryRunsByAgent(agentId)).toHaveLength(2);
   });
 
   it.each(["active", "waiting"] as const)(
@@ -13404,18 +13969,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       delayMs: 0,
       maxAttempts: 1,
     });
-    if (mode === "legacy_unknown") {
-      // Current master refuses a failed legacy attempt without proof that
-      // provider work never began. A chat close does not weaken that guard.
-      expect(scheduled).toMatchObject({
-        outcome: "not_scheduled",
-        errorCode: "legacy_execution_requires_reconciliation",
-      });
-      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-        .where(eq(heartbeatRuns.retryOfRunId, child.runId))).toEqual([]);
-      expect(mockAdapterExecute).not.toHaveBeenCalled();
-      return;
-    }
+    // Liveness-first (rule 1): a failed legacy attempt without proof that
+    // provider work never began is resent, not refused. The committed chat
+    // close still owns the retry: it is scheduled and then stopped before
+    // any provider call.
     expect(scheduled.outcome).toBe("scheduled");
     if (scheduled.outcome !== "scheduled")
       throw new Error("Expected actual scheduled retry");
@@ -13917,10 +14474,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("reuses the raced stranded recovery issue when duplicate active recovery creation conflicts", async () => {
+    // A deterministic failure escalates (liveness-first rule 4); concurrent
+    // sweeps must still converge on one recovery action.
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
       retryReason: "issue_continuation_needed",
+      runErrorCode: "invalid_config",
+      runError: "Adapter configuration is invalid",
     });
     const heartbeat = heartbeatService(db);
 
@@ -13949,12 +14510,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
+  // Liveness-first: a recovery issue is blocked in place only for a failure a
+  // retry cannot fix; transient failures are resent like any other issue.
   it("blocks stranded recovery issues in place instead of creating nested recovery issues", async () => {
     const sourceIssueId = randomUUID();
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
+        runErrorCode: "invalid_config",
       });
     await db
       .update(issues)
@@ -14018,11 +14582,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("keeps repeated recovery failures on the same canonical recovery issue", async () => {
+    // Both recovery attempts fail with deterministic codes a retry cannot fix
+    // (liveness-first rule 4), so each failure escalates instead of retrying.
     const sourceIssueId = randomUUID();
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "failed",
+        runErrorCode: "invalid_config",
+        runError: "Adapter configuration is invalid",
       });
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     await db.insert(issues).values({
@@ -14072,8 +14640,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       finishedAt: new Date("2030-03-19T00:15:00.000Z"),
       createdAt: new Date("2030-03-19T00:10:00.000Z"),
       updatedAt: new Date("2030-03-19T00:15:00.000Z"),
-      errorCode: "adapter_failed",
-      error: "adapter failed while retrying recovery issue",
+      errorCode: "workspace_not_allowed",
+      error: "workspace is not allowed for this agent",
     });
     await db
       .update(issues)
@@ -14089,6 +14657,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(secondResult.continuationRequeued).toBe(0);
     expect(secondResult.escalated).toBe(1);
     expect(secondResult.issueIds).toEqual([issueId]);
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("blocked");
 
     const recoveryIssuesForSource = await selectStrandedRecoveryIssuesForSource(companyId, sourceIssueId);
     expect(recoveryIssuesForSource.map((issue) => issue.id)).toEqual([issueId]);
@@ -14099,16 +14668,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceBlockerIssueIds(companyId, sourceIssueId),
     ).resolves.toEqual([issueId]);
 
+    // Each failed attempt is reported in place on the canonical recovery
+    // issue, once per failure; no source-scoped recovery action is opened.
     const comments = await selectRecoveryCommentsForIssue(issueId);
-    expect(comments).toHaveLength(1);
+    expect(comments).toHaveLength(2);
+    expect(
+      comments
+        .map((comment) => (comment.metadata as { sourceRunId?: string } | null)?.sourceRunId)
+        .sort(),
+    ).toEqual([runId, secondRunId].sort());
     expect(
       await selectRecoveryActionsForIssue(issueId),
-    ).toEqual([
-      expect.objectContaining({
-        cause: "legacy_execution_requires_reconciliation",
-        evidence: expect.objectContaining({ runId: secondRunId }),
-      }),
-    ]);
+    ).toEqual([]);
   });
 
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {
