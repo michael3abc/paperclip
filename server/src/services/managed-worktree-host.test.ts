@@ -100,6 +100,15 @@ describe("managed linked Git worktree host operations", () => {
     await expect(operation({ ...request, operationId: randomUUID() })).rejects.toMatchObject({ code: "repository_initialization_metadata_exists" });
   });
 
+  it("reports a recheck of a never-started operation as a definite no-effect failure", async () => {
+    const f = await fixture(), cwd = path.join(f.parent, "paperclip/task-id/never-started");
+    const request = f.request("initialize", { kind: "repository_root", sourceCwd: cwd, cwd, branch: "main", targetBranch: "main",
+      expectedHead: undefined, expectedTargetHead: undefined });
+    await expect(operation({ ...request, recheckOnly: true }))
+      .rejects.toMatchObject({ code: "worktree_operation_receipt_missing", worktreeEffectStarted: false });
+    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("initializes repository roots through the remote host script without staging existing content", async () => {
     const f = await fixture(), cwd = path.join(f.parent, "existing-root"); await fs.mkdir(cwd);
     // New contract: ancestor exclude-only metadata is not a repository and must
