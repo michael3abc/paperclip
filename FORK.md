@@ -134,3 +134,12 @@ Liveness-first (`/home/michael/services/docs/agents/liveness-first.md`) supersed
 - `docs/fork/sidebar-and-live-panels.md` — Sidebar status, live work panels, worker/subagent cards, mobile task panel
 - `docs/fork/artifacts-and-mobile.md` — Artifacts page filters/folders/preview and mobile PDF return
 - `docs/fork/session-bridge-and-dashboard.md` — Session bridge, host subscription dashboard, Compass pricing, capability inventory
+
+### 2026-11-13 — Antigravity CLI workers
+
+- Port upstream PR #21121 at 46b4510cae7d7dbbb73df5ce1c147c96fa73a45a (joshuacox).
+- Register agy_local, connection setup and the fork's main/shared-worker policy.
+  Preserve Bridge agents and sessions. Shared CLI workers use subscriptions only;
+  all CLI invocations disable paid extra credits. Additive provider constraints.
+- Branch: michael/agy-cli-integration. Release only from michael/main through the
+  managed workflow after merge. No production rollout is part of this PR.

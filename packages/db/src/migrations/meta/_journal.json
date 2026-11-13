@@ -3074,6 +3074,13 @@
       "when": 1794116125648,
       "tag": "0440_fine_leper_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 441,
+      "version": "7",
+      "when": 1794560673680,
+      "tag": "0441_robust_ironclad",
+      "breakpoints": true
     }
   ]
 }

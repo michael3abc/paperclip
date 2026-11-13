@@ -25,7 +25,7 @@ export function pmWorkerPolicyRevision(value: unknown): string | null {
 }
 
 export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string | null, hostId?: string): Promise<PmWorkerCatalogEntry[]> {
-  const workers = await db.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local", "ccpocket_bridge"])));
+  const workers = await db.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local", "ccpocket_bridge", "agy_local"])));
   const eligible = workers.filter(worker => (!hostId || bridgeWorkerSupportsHost(worker, hostId)) && isPmWorkerAgent(worker) && (worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
     && !["paused", "terminated", "pending_approval"].includes(worker.status));
   const connectionService = aiConnectionService(db);
@@ -40,6 +40,7 @@ export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string
     const models = await pmWorkerModels(db, worker);
     for (const connection of connections) {
       if (connection.status !== "connected" || !isAiConnectionCompatible(connection, harness)) continue;
+      if (harness === "agy_local" && connection.method !== "subscription") continue;
       const binding = aiConnectionBindingSchema.parse({ provider: connection.provider, method: connection.method,
         mode: connection.ownership === "personal" ? "delegated" : "shared", connectionId: connection.id, grantId: connection.grantId });
       if (isDeepStrictEqual(binding, defaultAiConnection)) continue;

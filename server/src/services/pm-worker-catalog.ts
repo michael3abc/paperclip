@@ -21,6 +21,9 @@ export async function pmWorkerModels(db: Db, worker: Worker, requested?: AiConne
   const raw = requested ?? worker.runtimeConfig?.aiConnection;
   if (!raw) return workerModelChoices(harness, await listAdapterModels(harness));
   const binding = aiConnectionBindingSchema.parse(raw);
+  if (harness === "agy_local" && (binding.provider !== "antigravity" || binding.method !== "subscription")) {
+    throw unprocessable("Antigravity CLI shared workers require an Antigravity subscription connection", { code: "PM_WORKER_CONNECTION_UNAVAILABLE" });
+  }
   if (binding.mode === "responsible_user") throw unprocessable("Select an explicit worker AI connection before configuring worker options");
   const [row] = await db.select({ metadata: toolConnections.config, name: toolConnections.name })
     .from(toolConnections).innerJoin(connectionGrants, and(eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, worker.companyId), eq(connectionGrants.id, binding.grantId), eq(connectionGrants.status, "active")))

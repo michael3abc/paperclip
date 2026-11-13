@@ -26,7 +26,7 @@ vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof
     { id: "shopee-d/codex/gpt-6-astra", label: "Astra on shopee-d", efforts: ["high"] },
     { id: "shopee-e/codex/gpt-6-astra", label: "Astra on shopee-e", efforts: ["high"] },
     { id: "shopee-e/claude/opus", label: "Claude on shopee-e", efforts: ["high"] },
-  ] : [{ id: "gpt-6.1-sol", label: "Sol" }]; },
+  ] : type === "agy_local" ? [{ id: "gemini-4-argon-high", label: "Argon High" }] : [{ id: "gpt-6.1-sol", label: "Sol" }]; },
 }));
 
 describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with owned database and real files", (instructionLayout) => {
@@ -156,6 +156,36 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     expect(result.pms).toEqual([{ id: pmId, name: "PM" }]);
     expect((await projectSessionRecords(db, randomUUID(), projectId, actor)).records).toEqual([]);
   });
+  it("saves and dispatches a CLI worker with the exact subscription binding", async () => {
+    const agyId = randomUUID(), appId = randomUUID(), connectionId = randomUUID(), grantId = randomUUID(), selectionId = randomUUID();
+    const aiConnection = { provider: "antigravity" as const, method: "subscription" as const, mode: "delegated" as const, connectionId, grantId };
+    await db.insert(toolApplications).values({ id: appId, companyId, name: "Antigravity", type: "rest_api" });
+    await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId: appId, name: "Owned subscription", uid: "agy-subscription", transport: "runtime_auth", connectionPurpose: "ai", enabled: true, status: "active", healthStatus: "ok",
+      config: { ai: { provider: "antigravity", method: "subscription" } } });
+    await db.insert(connectionGrants).values({ id: grantId, companyId, connectionId, kind: "user", subjectUserId: userId, status: "active" });
+    await db.insert(agents).values({ id: agyId, companyId, name: "Shared Antigravity CLI", status: "active", adapterType: "agy_local", runtimeConfig: { requireProjectWorkspace: true, aiConnection } });
+    await db.insert(toolConnectionInstalls).values({ companyId, connectionId, targetType: "agent", targetId: agyId });
+    const svc = pmWorkerPolicyService(db), before = await svc.read(companyId, pmId, actor);
+    try {
+      expect(before.catalog.find(worker => worker.agentId === agyId)).toMatchObject({ harness: "agy_local", permissions: ["default", "full-access"],
+        models: [{ id: "gemini-4-argon-high", thinking: ["high"], aiConnection }] });
+      const agyPolicy: PmWorkerPolicy = { version: 2, defaultSelectionId: selectionId, workers: [{ agentId: agyId, harness: "agy_local",
+        selections: [{ id: selectionId, model: "gemini-4-argon-high", thinking: "high", permission: "full-access", speed: "standard", aiConnection }] }] };
+      await svc.save(companyId, pmId, { policy: agyPolicy, baseRevision: before.revision, baseHash: before.documentHash }, actor);
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).resolves.toMatchObject({ assigneeAgentId: agyId,
+        assigneeAdapterOverrides: { workerSelectionId: selectionId, aiConnection, adapterConfig: {
+          model: "gemini-4-argon-high", effort: "high", dangerouslySkipPermissions: true, mode: "accept-edits", sandbox: false, subscriptionOnly: true } } });
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grantId));
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).rejects.toThrow("unavailable or not installed");
+    } finally {
+      // Restore this suite's original worker policy for its other independent cases.
+      await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, grantId));
+      const after = await svc.read(companyId, pmId, actor);
+      await svc.save(companyId, pmId, { policy: before.policy!, baseRevision: after.revision, baseHash: after.documentHash }, actor);
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agyId));
+    }
+  });
+
   it("saves connection-bound Sonnet/Qwen options, dispatches exact bindings and rejects revoked or uninstalled routes", async () => {
     const appId = randomUUID();
     await db.insert(toolApplications).values({ id: appId, companyId, name: "Owned model routes", type: "rest_api" });

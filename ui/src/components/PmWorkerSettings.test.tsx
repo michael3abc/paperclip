@@ -43,6 +43,22 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); client.clear(); });
 
 describe("PM worker settings", () => {
+  it("keeps the CLI worker and subscription distinct from Bridge choices", async () => {
+    const data = fixture();
+    const binding = { mode: "shared" as const, provider: "antigravity" as const, method: "subscription" as const,
+      connectionId: workerId, grantId: choiceId };
+    data.catalog = [{ agentId: workerId, name: "Shared Antigravity CLI", harness: "agy_local", permissions: ["default", "full-access"],
+      models: [{ id: "gemini-4-argon-high", label: "Argon · Subscription", thinking: ["high"], speeds: ["standard"], aiConnection: binding }] }];
+    api.workerPolicy.mockResolvedValue(data);
+    await render(); await click(button("Add worker option"));
+    expect(container.querySelector('[aria-label="Worker 1 harness"]')!.textContent).toContain("Antigravity CLI");
+    await select("harness", workerId);
+    await select("model", 'gemini-4-argon-high::shared:' + binding.connectionId + ':' + binding.grantId);
+    await select("thinking", "high"); await select("permission", "full-access");
+    await click(container.querySelector("input[type=radio]")!);
+    expect(button("Save workers").disabled).toBe(false);
+    expect(preview().workers[0]).toMatchObject({ harness: "agy_local", selections: [{ aiConnection: binding, model: "gemini-4-argon-high" }] });
+  });
   it.each(["WORKERS.md", "PROJECT.md"] as const)("saves settings into %s and reloads the projection receipt", async (documentPath) => {
     api.workerPolicy.mockResolvedValue({ ...fixture(), documentPath });
     await render(); await click(button("Add worker option"));

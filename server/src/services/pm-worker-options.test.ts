@@ -11,6 +11,23 @@ const policy: PmWorkerPolicy = { version: 2, defaultSelectionId: choiceId, worke
 const scope = { agentId: "pm", companyId: "company", projectId: "project", workerRoot: "/project", delegation: policy };
 
 describe("PM worker choices", () => {
+  it("dispatches native Antigravity choices with their connection and CLI permissions", () => {
+    const aiConnection = { provider: "antigravity" as const, method: "subscription" as const, mode: "shared" as const,
+      connectionId: workerId, grantId: choiceId };
+    const selection = { id: choiceId, model: "gemini-4-argon-high", thinking: "high", permission: "full-access" as const, speed: "standard" as const, aiConnection };
+    const agyPolicy = pmWorkerPolicySchema.parse({ ...policy, workers: [{ agentId: workerId, harness: "agy_local", selections: [selection] }] });
+    const result = assertPmWorkerSelection({ ...scope, delegation: agyPolicy }, workerId, { workerSelectionId: choiceId });
+    expect(result).toMatchObject({ workerSelectionId: choiceId, aiConnection, adapterConfig: {
+      model: selection.model, effort: "high", mode: "accept-edits", sandbox: false, dangerouslySkipPermissions: true, subscriptionOnly: true,
+    } });
+    expect(workerSelectionOverrides("agy_local", { ...selection, permission: "default", thinking: null })).toMatchObject({ effort: null, dangerouslySkipPermissions: false });
+    const catalog = [{ agentId: workerId, name: "Shared Antigravity CLI", harness: "agy_local" as const,
+      permissions: workerPermissionChoices({}, "agy_local"), models: workerModelChoices("agy_local", [{ id: selection.model, label: "Argon" }]).map(model => ({ ...model, aiConnection })) }];
+    expect(() => validateWorkerChoices(agyPolicy, catalog)).not.toThrow();
+    expect(catalog[0].models[0].thinking).toEqual(["high"]);
+    expect(isPmWorkerAgent({ adapterType: "agy_local" })).toBe(true);
+    expect(renderPmWorkerPolicy(agyPolicy, "main-v1")).toContain("Antigravity CLI");
+  });
   it("resolves an omitted choice and an explicit ID to the same pinned task config", () => {
     const defaults = assertPmWorkerSelection(scope, undefined, undefined);
     expect(defaults).toEqual(assertPmWorkerSelection(scope, workerId, { workerSelectionId: choiceId }));
@@ -63,7 +80,7 @@ describe("PM worker choices", () => {
       { agentId: "00000000-0000-4000-8000-000000000006", harness: "ccpocket_bridge" as const, selections: [{ ...choice, id: "00000000-0000-4000-8000-000000000007" }] }] };
     expect(pmWorkerPolicySchema.safeParse(three).success).toBe(true);
     expect(renderPmWorkerPolicy(three, "main-v1")).toContain("| Antigravity | michael-server/antigravity/gemini-test | high | standard |");
-    expect(pmWorkerPolicySchema.safeParse({ ...three, workers: [...three.workers, { ...three.workers[2]!, agentId: "00000000-0000-4000-8000-000000000008", selections: [{ ...choice, id: "00000000-0000-4000-8000-000000000009" }] }] }).success).toBe(false);
+    expect(pmWorkerPolicySchema.safeParse({ ...three, workers: [...three.workers, { ...three.workers[2]!, agentId: "00000000-0000-4000-8000-000000000008", selections: [{ ...choice, id: "00000000-0000-4000-8000-000000000009" }] }] }).success).toBe(true);
   });
   it("replaces only the managed block and retains all surrounding instructions", () => {
     const original = "# WORKERS\nHandwritten isolation/review rules.\n";
