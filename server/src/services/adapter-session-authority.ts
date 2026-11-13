@@ -59,7 +59,7 @@ export async function lockAdapterSessionAuthority(db: Db, keys: string[]) {
  * `expectedPreviousRunId`) are accepted for compatibility and ignored. A
  * deleted session index simply yields a fresh binding.
  */
-export async function claimAdapterSessionAuthority(db: Db, bound: { companyId: string; agentId: string; runId: string; taskKey: string }, input: Claim): Promise<Receipt> {
+export async function claimAdapterSessionAuthority(db: Db, bound: { companyId: string; agentId: string; runId: string; taskKey: string }, input: Claim): Promise<Receipt & Pick<Authority, "takeoverFrom">> {
   for (const value of [input.hostId, input.provider, input.bridgeSessionId, input.operationId,
     ...(input.nativeSessionId === null ? [] : [input.nativeSessionId])]) {
     if (typeof value !== "string" || !value.trim() || value.length > 512) throw conflict("Invalid native identity", { code: "session_identity_invalid" });
