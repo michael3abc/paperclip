@@ -5793,7 +5793,7 @@ export function recoveryService(
           notice: {
             body:
               "Paperclip stopped retrying this issue's run because it failed with an error that a retry " +
-              `cannot fix (\`${latestRun?.errorCode ?? "unknown"}\`).`,
+              "cannot fix. The failure code is listed in the details below.",
             title: "Run failed",
             tone: "danger",
           },

@@ -336,6 +336,29 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * The same eligibility as immediate release recovery: the run's issue is
+ * visible, open (todo or in_progress), agent-assigned and still assigned to
+ * the failed run's agent. Anything else is left to its current owner.
+ */
+async function issueAcceptsFailureRetry(db: Db, run: Run): Promise<boolean> {
+  const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  if (!issueId) return false;
+  const [issue] = await db
+    .select({
+      status: issues.status,
+      hiddenAt: issues.hiddenAt,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+    .limit(1);
+  return Boolean(issue && !issue.hiddenAt && !issue.assigneeUserId &&
+    issue.assigneeAgentId === run.agentId &&
+    (issue.status === "todo" || issue.status === "in_progress"));
+}
+
 /** A transient failure code carried by an error thrown during setup or dispatch. */
 function transientThrownErrorCode(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
@@ -1010,11 +1033,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // held for an operator. Deterministic codes are left to the notice.
         if (
           !interactionRetry &&
-          readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId) &&
           shouldAutoRetryRunFailure(
             livenessRun.errorCode,
             executionFailureRetryCount(livenessRun) + 1,
-          )
+          ) &&
+          (await issueAcceptsFailureRetry(db, livenessRun))
         ) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -1563,8 +1586,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             // resent after backoff; deterministic ones are left to the notice.
             if (
               !interactionRetry &&
-              readNonEmptyString(parseObject(livenessRun.contextSnapshot).issueId) &&
-              shouldAutoRetryRunFailure(livenessRun.errorCode, executionFailureRetryCount(livenessRun) + 1)
+              shouldAutoRetryRunFailure(livenessRun.errorCode, executionFailureRetryCount(livenessRun) + 1) &&
+              (await issueAcceptsFailureRetry(db, livenessRun))
             ) {
               await scheduleBoundedRetryForRun(livenessRun, failedAgent);
             }
