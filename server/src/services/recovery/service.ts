@@ -209,6 +209,8 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 5 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 15 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+/** Adapter inactivity limit (30 min) plus a 5 minute grace for the adapter to act first. */
+export const ACTIVE_RUN_INACTIVITY_CANCEL_MS = 35 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -731,7 +733,10 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  const failureClass = classifyRunFailure(errorCode);
+  // A plain `cancelled` code is never auto-retried by the failure lanes, but
+  // continuation recovery keeps its previous handling (operator-cancel
+  // exemptions run first) instead of blocking the issue as a config failure.
+  const failureClass = errorCode === "cancelled" ? "unknown" : classifyRunFailure(errorCode);
   if (isAiAuthenticationBlocked(latestRun) || failureClass === "deterministic") {
     return {
       kind: "non_retryable",
@@ -949,6 +954,12 @@ export function recoveryService(
       run: typeof heartbeatRuns.$inferSelect,
     ) => boolean;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
+    /**
+     * Liveness-first (rule 5) server fallback: cancel a running run that has
+     * been silent for ACTIVE_RUN_INACTIVITY_CANCEL_MS as `inactivity_timeout`.
+     * Returns whether the run was cancelled.
+     */
+    cancelInactiveRun?: (runId: string, details: { silenceAgeMs: number; lastActivityAt: Date }) => Promise<boolean>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     beforeStaleLockClear?: (issueId: string) => Promise<void>;
   },
@@ -2324,6 +2335,10 @@ export function recoveryService(
     suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
     criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
     continueRearmMs: ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
+    inactivityCancelMs: ACTIVE_RUN_INACTIVITY_CANCEL_MS,
+    ...(deps.cancelInactiveRun
+      ? { cancelInactiveRun: (run, details) => deps.cancelInactiveRun!(run.id, details) }
+      : {}),
   });
 
   async function buildRunOutputSilence(

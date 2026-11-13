@@ -225,6 +225,13 @@ export type ScanSilentActiveRunsDeps = {
   reader: WatchdogRunReader;
   foldSourceResolvedRun: ReturnType<typeof createFoldSourceResolvedRun>;
   suspicionThresholdMs: number;
+  /**
+   * Liveness-first (rule 5) server fallback: a running run with no output and
+   * no run event for this long is cancelled as `inactivity_timeout` (a
+   * transient code, so it is resent). Omitted or non-positive disables it.
+   */
+  inactivityCancelMs?: number;
+  cancelInactiveRun?: (run: RunSnapshot, details: { silenceAgeMs: number; lastActivityAt: Date }) => Promise<boolean>;
 };
 
 export type ScanSilentActiveRunsOptions = {
@@ -322,14 +329,37 @@ export function createScanSilentActiveRuns(deps: ScanSilentActiveRunsDeps) {
       folded: 0,
       snoozed: 0,
       skipped: 0,
+      inactivityCancelled: 0,
       evaluationIssueIds: [],
     };
+    const inactivityCancelMs = deps.inactivityCancelMs ?? 0;
 
     for (const run of candidates) {
       const decisionState = await deps.reader.findLatestDecision(run.companyId, run.id, now);
       if (evaluateSuppression({ snoozedOrContinued: Boolean(decisionState.quietUntilDecision) }).suppressed) {
         result.snoozed += 1;
         continue;
+      }
+      // The 5 and 15 minute levels are informational only. Past the
+      // inactivity limit (no output and no run event) the run is cancelled
+      // so the adapter's own hang cannot hold the issue or a PM slot forever.
+      if (inactivityCancelMs > 0 && deps.cancelInactiveRun) {
+        const outputAt = silenceStartedAt(run);
+        const eventAt = await deps.reader.findLatestRunEventAt(run.companyId, run.id);
+        const lastActivityAt = [outputAt, eventAt].reduce<Date | null>(
+          (latest, at) => (at && (!latest || at > latest) ? at : latest), null,
+        );
+        if (lastActivityAt) {
+          const age = now.getTime() - lastActivityAt.getTime();
+          if (age >= inactivityCancelMs) {
+            if (await deps.cancelInactiveRun(run, { silenceAgeMs: age, lastActivityAt })) {
+              result.inactivityCancelled += 1;
+              continue;
+            }
+          } else {
+            opts?.onDeferredDeadline?.(lastActivityAt.getTime() + inactivityCancelMs);
+          }
+        }
       }
       const outcome = await inspectSilentActiveRun({
         run,

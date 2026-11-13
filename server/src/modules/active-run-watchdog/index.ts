@@ -7,12 +7,16 @@ import {
   createFoldSourceResolvedRun,
   createRecordWatchdogDecision,
   createScanSilentActiveRuns,
+  type ScanSilentActiveRunsDeps,
 } from "./application/use-cases.js";
 
 export type ActiveRunWatchdogConfig = {
   suspicionThresholdMs: number;
   criticalThresholdMs: number;
   continueRearmMs: number;
+  /** Liveness-first server fallback; see ScanSilentActiveRunsDeps. */
+  inactivityCancelMs?: number;
+  cancelInactiveRun?: ScanSilentActiveRunsDeps["cancelInactiveRun"];
 };
 
 /**
@@ -31,7 +35,8 @@ export function createActiveRunWatchdog(db: Db, config: ActiveRunWatchdogConfig)
   });
 
   const scanSilentActiveRuns = createScanSilentActiveRuns({ reader: postgresAdapter, foldSourceResolvedRun,
-    suspicionThresholdMs: config.suspicionThresholdMs });
+    suspicionThresholdMs: config.suspicionThresholdMs, inactivityCancelMs: config.inactivityCancelMs,
+    cancelInactiveRun: config.cancelInactiveRun });
 
   return {
     registerSilenceWork: (coordinator: Parameters<typeof registerActiveRunSilenceWork>[1], canRun: () => boolean,

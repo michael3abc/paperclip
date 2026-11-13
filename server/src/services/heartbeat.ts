@@ -310,7 +310,7 @@ import {
   createAdapterExecutionControl,
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
-import { shouldAutoRetryRunFailure } from "./recovery/failure-classification.js";
+import { INACTIVITY_TIMEOUT_ERROR_CODE, shouldAutoRetryRunFailure } from "./recovery/failure-classification.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
@@ -1018,6 +1018,20 @@ export function heartbeatService(
     // codes after three transient attempts) report a spent budget.
     transientRetryBudgetSpent: (run) =>
       !shouldAutoRetryRunFailure(run.errorCode, executionFailureRetryCount(run) + 1),
+    // Liveness-first rule 5: a system cancellation with the transient
+    // inactivity_timeout code; release recovery resends it after backoff.
+    cancelInactiveRun: async (runId, details) => {
+      const minutes = Math.round(details.silenceAgeMs / 60_000);
+      const cancelled = await cancelRunInternal(runId, `No run activity for ${minutes} minutes`, {
+        errorCode: INACTIVITY_TIMEOUT_ERROR_CODE,
+        eventMessage: `Run cancelled after ${minutes} minutes without output or events (inactivity_timeout); it will be resent automatically`,
+        eventPayload: { silenceAgeMs: details.silenceAgeMs, lastActivityAt: details.lastActivityAt.toISOString() },
+      }).catch((err) => {
+        logger.warn({ err, runId }, "inactivity cancellation failed");
+        return null;
+      });
+      return Boolean(cancelled);
+    },
   });
   const runDispatch = createRunDispatch(db);
   const {
