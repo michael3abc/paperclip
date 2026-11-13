@@ -34,7 +34,7 @@ export function configFieldsForSection(
 }
 
 export function schemaFieldSection(key: string): AdapterConfigSection {
-  if (["model", "provider"].includes(key)) return "adapter";
+  if (["model", "provider", "hostId"].includes(key)) return "adapter";
   if (["command", "agentCommand", "args", "extraArgs"].includes(key))
     return "advanced";
   if (["env", "envVars", "environmentVariables"].includes(key))

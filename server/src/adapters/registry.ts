@@ -1,6 +1,6 @@
 import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
 import { HttpError } from "../errors.js";
-import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
+import type { AdapterRuntimeCommandSpec, ServerAdapterModule, AdapterCatalogContext, AdapterModel } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
@@ -1201,7 +1201,14 @@ function declaredModelsForAdapter(type: string): { id: string; label: string }[]
     : null;
 }
 
-export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function listAdapterModels(type: string, context?: AdapterCatalogContext): Promise<AdapterModel[]> {
+  const scoped = findActiveServerAdapter(type);
+  if (scoped?.catalogScope === "company") {
+    if (!context?.companyId) throw new HttpError(400, "Select a company for this adapter catalog");
+    const discover = scoped.listModels;
+    try { return discover ? await discover.call(scoped, context) : []; }
+    catch { throw new HttpError(422, "無法載入公司模型清單；請確認公司已配置主機、執行器及 Bridge 連線。"); }
+  }
   const declaredModels = declaredModelsForAdapter(type);
   if (declaredModels) return declaredModels;
   const adapter = findActiveServerAdapter(type);
@@ -1217,7 +1224,14 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
   return adapter.models ?? [];
 }
 
-export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+export async function refreshAdapterModels(type: string, context?: AdapterCatalogContext): Promise<AdapterModel[]> {
+  const scoped = findActiveServerAdapter(type);
+  if (scoped?.catalogScope === "company") {
+    if (!context?.companyId) throw new HttpError(400, "Select a company for this adapter catalog");
+    const discover = scoped.refreshModels ?? scoped.listModels;
+    try { return discover ? await discover.call(scoped, context) : []; }
+    catch { throw new HttpError(422, "無法更新公司模型清單；請確認主機、執行器及 Bridge 連線。"); }
+  }
   const declaredModels = declaredModelsForAdapter(type);
   if (declaredModels) return declaredModels;
   if (findActiveServerAdapter(type) === codexLocalAdapter) return listAdapterModels(type);

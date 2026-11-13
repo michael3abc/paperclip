@@ -1,7 +1,7 @@
 import { schemaFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
-import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { AdapterConfigSchema, AdapterCatalogContext, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
 
 import type { AdapterConfigFieldsProps } from "./types";
 import {
@@ -208,61 +208,84 @@ const schemaCache = new Map<string, AdapterConfigSchema | null>();
 const schemaFetchInflight = new Map<string, Promise<AdapterConfigSchema | null>>();
 const failedSchemaTypes = new Set<string>();
 
-async function fetchConfigSchema(adapterType: string): Promise<AdapterConfigSchema | null> {
-  const cached = schemaCache.get(adapterType);
-  if (cached !== undefined) return cached;
-  if (failedSchemaTypes.has(adapterType)) return null;
+function schemaKey(adapterType: string, context?: AdapterCatalogContext): string {
+  return JSON.stringify([adapterType, context?.companyId, context?.hostId, context?.provider]);
+}
 
-  const inflight = schemaFetchInflight.get(adapterType);
+async function fetchConfigSchema(adapterType: string, context?: AdapterCatalogContext): Promise<AdapterConfigSchema | null> {
+  const key = schemaKey(adapterType, context);
+  const cached = schemaCache.get(key);
+  if (cached !== undefined) return cached;
+  if (failedSchemaTypes.has(key)) return null;
+
+  const inflight = schemaFetchInflight.get(key);
   if (inflight) return inflight;
 
   const promise = (async () => {
     try {
-      const res = await fetch(`/api/adapters/${encodeURIComponent(adapterType)}/config-schema`);
+      const params = new URLSearchParams();
+      if (context) {
+        params.set("companyId", context.companyId);
+        if (context.hostId) params.set("hostId", context.hostId);
+        if (context.provider) params.set("provider", context.provider);
+      }
+      const res = await fetch(`/api/adapters/${encodeURIComponent(adapterType)}/config-schema${params.size ? `?${params}` : ""}`);
       if (!res.ok) {
-        failedSchemaTypes.add(adapterType);
+        if (context) {
+          const body = await res.json();
+          throw new Error(body.error ?? "Failed to load adapter catalog");
+        }
+        failedSchemaTypes.add(key);
         return null;
       }
       const schema = (await res.json()) as AdapterConfigSchema;
-      schemaCache.set(adapterType, schema);
+      schemaCache.set(key, schema);
       return schema;
-    } catch {
-      failedSchemaTypes.add(adapterType);
+    } catch (error) {
+      if (context) throw error;
+      failedSchemaTypes.add(key);
       return null;
     } finally {
-      schemaFetchInflight.delete(adapterType);
+      schemaFetchInflight.delete(key);
     }
   })();
 
-  schemaFetchInflight.set(adapterType, promise);
+  schemaFetchInflight.set(key, promise);
   return promise;
 }
 
 export function invalidateConfigSchemaCache(adapterType: string): void {
-  schemaCache.delete(adapterType);
-  failedSchemaTypes.delete(adapterType);
+  for (const key of schemaCache.keys()) if (JSON.parse(key)[0] === adapterType) schemaCache.delete(key);
+  for (const key of failedSchemaTypes) if (JSON.parse(key)[0] === adapterType) failedSchemaTypes.delete(key);
 }
 
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
 
-export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
-  const [loaded, setLoaded] = useState<{ adapterType: string; schema: AdapterConfigSchema | null }>(
-    () => ({ adapterType, schema: schemaCache.get(adapterType) ?? null }),
+export function useConfigSchemaState(adapterType: string, context?: AdapterCatalogContext) {
+  const key = schemaKey(adapterType, context);
+  const [loaded, setLoaded] = useState<{ key: string; schema: AdapterConfigSchema | null; error: string | null }>(
+    () => ({ key, schema: schemaCache.get(key) ?? null, error: null }),
   );
 
   useEffect(() => {
     let cancelled = false;
-    fetchConfigSchema(adapterType).then((s) => {
-      if (!cancelled) setLoaded({ adapterType, schema: s });
+    fetchConfigSchema(adapterType, context).then((s) => {
+      if (!cancelled) setLoaded({ key, schema: s, error: null });
+    }).catch(error => {
+      if (!cancelled) setLoaded({ key, schema: null, error: error instanceof Error ? error.message : "Failed to load adapter catalog" });
     });
     return () => {
       cancelled = true;
     };
-  }, [adapterType]);
+  }, [key]);
 
-  return loaded.adapterType === adapterType ? loaded.schema : schemaCache.get(adapterType) ?? null;
+  return loaded.key === key ? loaded : { key, schema: schemaCache.get(key) ?? null, error: null };
+}
+
+export function useConfigSchema(adapterType: string, context?: AdapterCatalogContext): AdapterConfigSchema | null {
+  return useConfigSchemaState(adapterType, context).schema;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +345,7 @@ export function fieldMatchesVisibleWhen(
 
 export function SchemaConfigFields({
   section,
+  companyId,
   hideModel,
   adapterType,
   isCreate,
@@ -331,7 +355,10 @@ export function SchemaConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
-  const schema = useConfigSchema(adapterType);
+  const scoped = adapterType === "ccpocket_bridge";
+  const currentHost = String(isCreate ? values?.adapterSchemaValues?.hostId ?? "" : eff("adapterConfig", "hostId", config.hostId ?? ""));
+  const currentProvider = String(isCreate ? values?.adapterSchemaValues?.provider ?? "codex" : eff("adapterConfig", "provider", config.provider ?? "codex"));
+  const { schema, error } = useConfigSchemaState(adapterType, scoped ? { companyId: companyId ?? "", hostId: currentHost, provider: currentProvider } : undefined);
 
   const defaultsApplied = useRef({ adapterType, applied: false });
   useEffect(() => {
@@ -356,6 +383,7 @@ export function SchemaConfigFields({
     }
   }, [schema, adapterType, isCreate, set, values?.adapterSchemaValues, section]);
 
+  if (error) return !section || section === "adapter" ? <p role="alert" className="text-xs text-destructive">{error}</p> : null;
   if (!schema || schema.fields.length === 0) return null;
 
   function readValue(field: ConfigFieldSchema): unknown {
@@ -367,11 +395,14 @@ export function SchemaConfigFields({
   }
 
   function writeValue(field: ConfigFieldSchema, value: unknown): void {
+    const resetFields = value === readValue(field) ? [] : Array.isArray(field.meta?.resetsFields)
+      ? field.meta.resetsFields.filter((key): key is string => typeof key === "string") : [];
     if (isCreate) {
       const next = {
         adapterSchemaValues: {
           ...values?.adapterSchemaValues,
           [field.key]: value,
+          ...Object.fromEntries(resetFields.map(key => [key, ""])),
         },
       };
 
@@ -388,9 +419,10 @@ export function SchemaConfigFields({
         }
       }
 
-      set?.(next);
+      set?.({ ...next, ...(resetFields.includes("model") ? { model: "" } : {}) });
     } else {
       mark("adapterConfig", field.key, value);
+      for (const key of resetFields) mark("adapterConfig", key, "");
 
       // Same logic for edit mode
       if (field.key === "provider" && schema) {

@@ -79,3 +79,18 @@ describe("ModelDropdown", () => {
     expect(shownModelIds()).toEqual(["openai/gpt-6-astra", "openai/gpt-6-sol"]);
   });
 });
+
+it('shows model name and source while selecting the original qualified ID', () => {
+  const model = { id: 'michael-server/claude/compass-opus5.5[1m]', label: 'compass-opus5.5[1m]', source: 'Compass' };
+  const container = document.createElement('div'); document.body.appendChild(container);
+  const root = createRoot(container); roots.push(root);
+  let selected = '';
+  act(() => root.render(<TooltipProvider><ModelDropdown models={[model]} value={model.id} onChange={id => { selected = id; }}
+    open onOpenChange={() => {}} allowDefault={false} required groupByProvider={false} preserveOrder catalogOnly /></TooltipProvider>));
+  const option = document.body.querySelector('button[role="option"]') as HTMLButtonElement;
+  expect(option.textContent).toContain(model.label);
+  expect(option.textContent).toContain('Compass');
+  expect(option.textContent).not.toContain('michael-server');
+  act(() => option.click());
+  expect(selected).toBe(model.id);
+});

@@ -798,6 +798,22 @@ export function adapterRoutes(options: {
       return;
     }
 
+    // Scoped catalogs must never use the instance-wide schema cache.
+    if (adapter.catalogScope === "company") {
+      const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+      if (!companyId) throw badRequest("Select a company for this adapter catalog");
+      assertCompanyAccess(req, companyId);
+      res.setHeader("Cache-Control", "no-store");
+      try {
+        res.json(await adapter.getConfigSchema({ companyId,
+          hostId: typeof req.query.hostId === "string" ? req.query.hostId : undefined,
+          provider: typeof req.query.provider === "string" ? req.query.provider : undefined }));
+      } catch {
+        res.status(422).json({ error: "無法載入公司主機設定；請確認公司已配置主機及 Bridge 連線。" });
+      }
+      return;
+    }
+
     const cached = configSchemaCache.get(type);
     if (cached && cached.adapter === adapter && Date.now() - cached.fetchedAt < CONFIG_SCHEMA_TTL_MS) {
       res.json(cached.schema);

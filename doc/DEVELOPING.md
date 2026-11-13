@@ -5263,3 +5263,23 @@ The task workspace card displays binding state, observed host/cwd and waiting
 reason. Main-agent MCP exposes inspection/selection with the same authorization;
 new worker dispatch must persist workspaceSelection. Never invent a free cwd
 input or infer a path from task text during bulk reconciliation.
+
+## Company-scoped adapter catalogs
+
+An adapter declaring catalogScope=company receives AdapterCatalogContext
+(companyId, optional hostId and provider) in listModels, refreshModels and
+getConfigSchema. The models company comes from the authorized route; the schema
+endpoint requires companyId and checks membership before adapter I/O. Scoped
+catalogs bypass instance-wide declared models, fallback lists and schema caching.
+Frontend query/cache identity includes company, host and provider; failures and
+outdated requests cannot supply another selection's options. Schema select fields
+may declare meta.resetsFields to clear dependent draft fields when changed.
+
+CC Pocket reads explicit companyIds on each external hosts.json entry, using IDs
+rather than company names. Home is configured for michael-server and Shopee for
+shopee-d/shopee-e. Unconfigured companies have no catalog. Only the selected host
+is probed; models come from the selected Bridge executor in native order. Stored
+model IDs remain host/provider/model. AdapterModel.source supplies a display-only
+source badge beside the short label. Selecting a different host/provider clears
+the model; invalid saved models require explicit reselection. Persistence checks
+the scoped model catalog. Existing running sessions are not rewritten.
