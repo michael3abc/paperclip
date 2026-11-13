@@ -180,7 +180,7 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local" || adapterType === "ccpocket_bridge";
 }
 
 export function resolvePaperclipRunnerTransitionModel(
@@ -1072,8 +1072,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   useEffect(() => {
     if (accountModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
   }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
-  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
-  const [refreshingModels, setRefreshingModels] = useState(false);
+  const modelRefreshScope = JSON.stringify(modelQueryKey);
+  const modelRefreshSequence = useRef(0);
+  const [modelRefresh, setModelRefresh] = useState({ scope: modelRefreshScope, request: 0, error: null as string | null, pending: false });
+  const refreshModelsError = modelRefresh.scope === modelRefreshScope ? modelRefresh.error : null;
+  const refreshingModels = modelRefresh.scope === modelRefreshScope && modelRefresh.pending;
   const models = isBridgeCatalog ? (fetchedModelsError || refreshModelsError ? [] : fetchedModels ?? []) : connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
   const modelError = connectionModels ? connectionModels.error : fetchedModelsError;
   const adapterCommandField = "command";
@@ -1438,15 +1441,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   async function handleRefreshModels() {
     if (!selectedCompanyId) return;
-    setRefreshingModels(true);
-    setRefreshModelsError(null);
+    const request = ++modelRefreshSequence.current;
+    const scope = modelRefreshScope;
+    setModelRefresh({ scope, request, error: null, pending: true });
     try {
       const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, hostId: catalogHostId, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
+      setModelRefresh(current => current.scope === scope && current.request === request
+        ? { ...current, error: error instanceof Error ? error.message : "Failed to refresh adapter models." } : current);
     } finally {
-      setRefreshingModels(false);
+      setModelRefresh(current => current.scope === scope && current.request === request
+        ? { ...current, pending: false } : current);
     }
   }
 
