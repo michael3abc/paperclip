@@ -310,7 +310,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const f = await fixture();
     const input = { companyId: f.companyId, projectId: f.projectId };
     expect(await resolveCooperativeTaskWorkspace(db, input)).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null,
-      executionWorkspacePreference: null, workspaceSelection: null, executionWorkspaceSettings: { sessionOnly: false } });
+      executionWorkspacePreference: null, workspaceSelection: null });
     const task = { title: "Code task", projectId: f.projectId, assigneeAgentId: f.agentId };
     expect(await issueService(db).create(f.companyId, task)).toMatchObject({ executionWorkspaceId: null, projectId: f.projectId });
     await f.service.operate(f.scope, f.registration);

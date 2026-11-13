@@ -47,6 +47,7 @@ import { getStartupTracer } from "../../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "../duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
 import { logger } from "../../middleware/logger.js";
+import { HttpError } from "../../errors.js";
 import { createGitRemoteAuthProvider } from "../git-credentials.js";
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd } from "../native-runtime/index.js";
 import { parseObject } from "../../adapters/utils.js";
@@ -175,6 +176,19 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Liveness-first (rule 3): joining a main-managed tree never fails on its
+ * registration generation, phase, pending operation, host receipt or host
+ * inspection. Authorization still does: a revoked, cancelled or paused run, a
+ * held agent or project, a closed task, or missing project/repository access.
+ */
+function isManagedAdmissionAuthorityFailure(error: unknown): boolean {
+  if (!(error instanceof HttpError)) return false;
+  if ([401, 403, 404].includes(error.status)) return true;
+  const details = parseObject(error.details);
+  return details.code === "worktree_run_no_longer_admitted";
+}
+
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   if (isMainManagedExecutionWorkspace(input.reuse.reusableExistingExecutionWorkspace ?? input.reuse.existingExecutionWorkspace)) {
     return prepareHeartbeatWorkspaceLocked(db, input);
@@ -267,6 +281,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         workspaceId: managedWorkspace.id, actor: { type: "agent", source: "agent_jwt", companyId: agent.companyId, agentId: agent.id,
           runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId } }, issueId,
         Number(managedWorkspace.metadata?.lifecycleGeneration ?? 0)).catch(error => {
+        // Current authority still applies: a revoked, paused or unauthorized run
+        // fails here. Generation, phase, pending-operation, receipt and host
+        // inspection results are advisory and only skip participant registration.
+        if (isManagedAdmissionAuthorityFailure(error)) throw error;
         warnManaged("worktree_admission_skipped", "participant registration failed; running in the directory anyway.", error);
         return null;
       });
@@ -335,7 +353,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     }
   }
   const enrolledRemoteAuthority = readRemoteWorkspaceAuthority((reusableExistingExecutionWorkspace ?? existingExecutionWorkspace)?.metadata) !== null;
-  let remoteAuthority = !sessionOnly && !managedWorkspace && !controllerOnly && !remoteWorkerHost && shouldUseRemoteWorkspaces({
+  // Liveness-first (rule 3): an agent's fixed directory wins over remote storage.
+  let remoteAuthority = !sessionOnly && !managedWorkspace && !controllerOnly && !remoteWorkerHost && !fixedBinding && shouldUseRemoteWorkspaces({
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     experimentalEnabled: (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" || resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled) && Boolean(issueId && issueRef)
@@ -412,10 +431,15 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           workspaceId: managedWorkspace.projectWorkspaceId, repoUrl: managedWorkspace.repoUrl, repoRef: managedWorkspace.baseRef,
           workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
       }
-      if (fixedBinding) {
-        if (fresh || remoteAuthority || providerApiPlacement) {
-          warnWorkspace("fixed_workspace_policy_conflict", "the fixed working directory replaces the requested fresh, remote-storage, or provider-owned workspace.");
-        }
+      // A provider-owned workspace has no local directory, so a fixed binding does not apply to it.
+      if (fixedBinding && providerApiPlacement) {
+        warnWorkspace("fixed_workspace_policy_conflict", "the provider-owned workspace ignores the fixed working directory.");
+      }
+      if (fixedBinding && !providerApiPlacement) {
+        // A run-requested fresh attempt still wins (rule 3: run-requested > agent fixed);
+        // remote storage does not apply to a fixed directory.
+        if (fresh) warnWorkspace("fixed_workspace_policy_conflict", "the requested fresh attempt is seeded from the fixed working directory.");
+        if (enrolledRemoteAuthority) warnWorkspace("fixed_workspace_policy_conflict", "the fixed working directory replaces remote workspace storage.");
         assertFixedWorkspacePolicy({
           binding: fixedBinding, environment: selectedEnvironmentForConfig,
           trustPreset: trustPreset.kind, mode: requestedExecutionWorkspaceMode, isDot: controllerOnly,
@@ -539,8 +563,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           });
         } catch (error) {
           if (!reusableExistingExecutionWorkspace) throw error;
-          warnWorkspace("isolated_task_directory_binding_mismatch", "the saved task directory binding changed; using a new task directory.");
-          cwd = await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId: issueRef.id, attemptId: run.id });
+          // Liveness-first: the saved binding no longer matches. Keep using the saved
+          // directory when its path is still this task's own directory, otherwise use
+          // the task's directory (created if missing); never fail the run.
+          warnWorkspace("isolated_task_directory_binding_mismatch", "the saved task directory binding changed; using the task's own directory.");
+          const savedCwd = !fresh && reusableExistingExecutionWorkspace.cwd
+            ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId: issueRef.id,
+              reuseCwd: reusableExistingExecutionWorkspace.cwd }).catch(() => null)
+            : null;
+          cwd = savedCwd ?? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId: issueRef.id,
+            ...(fresh ? { attemptId: run.id } : {}) });
         }
         return resolveWorkspaceForRun(agent, context, previousSessionParams, {
           executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
@@ -922,7 +954,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     policy: resolvedWorkspaceReusePolicy,
   } = managedWorkspace ? {
     executionWorkspace: { ...executionWorkspaceBase, strategy: "git_worktree" as const, cwd: managedWorkspace.cwd!,
-      branchName: managedMarker!.branch, worktreePath: managedWorkspace.cwd!, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
+      branchName: managedMarker?.branch ?? managedWorkspace.branchName, worktreePath: managedWorkspace.cwd!, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
     reusedExecutionWorkspace: true,
     policy: { ...workspaceReuseProvisioningPolicy, shouldRestoreExistingWorkspace: true, shouldRefreshWorkspaceConfigSnapshot: false,
       shouldPersistLatestWorkspaceConfigMetadata: false },

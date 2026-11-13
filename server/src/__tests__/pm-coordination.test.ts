@@ -201,21 +201,23 @@ describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["code
       assigneeActorId: workerId, assigneeAdapterOverrides: override, workspaceSelection };
     await expect(execute("create_task", args)).rejects.toThrow("Read the current bundle");
     await reads();
-    for (const selection of [undefined, { kind: "task_directory" }, { kind: "existing", workspaceId: randomUUID() }]) {
-      await expect(execute("create_task", { ...args, workspaceSelection: selection })).rejects.toMatchObject({
-        details: { code: "configuration_required" }, paperclipPublicToolError: expect.any(String),
-      });
-    }
+    // An unknown explicit worktree still fails its project/existence check.
+    await expect(execute("create_task", { ...args, workspaceSelection: { kind: "existing", workspaceId: randomUUID() } })).rejects.toMatchObject({
+      details: { code: "PM_PROJECT_DENIED" }, paperclipPublicToolError: expect.any(String),
+    });
     await expect(execute("create_task", { ...args, executionWorkspaceSettings: { mode: "shared_workspace" } })).rejects.toThrow("Workspace settings conflict");
-    await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/companies/${companyId}/issues`, query: {}, runId,
-      body: { title: args.title, initialPlan: args.initialPlan, projectId, parentId: issueId, assigneeAgentId: workerId, workspaceSelection: { kind: "task_directory" } } })).rejects.toThrow("main-managed");
+    // Liveness-first rule 3: no selection (project default directory) and a task directory are accepted placements.
+    for (const placement of [{}, { workspaceSelection: { kind: "task_directory" } }]) {
+      await expect(assertPmApiRequest(db, scope, { method: "POST", path: `/companies/${companyId}/issues`, query: {}, runId,
+        body: { title: args.title, initialPlan: args.initialPlan, projectId, parentId: issueId, assigneeAgentId: workerId, ...placement } })).resolves.toBeUndefined();
+    }
     expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toHaveLength(0);
     expect(wakes).toHaveLength(0);
     await expect(execute("create_task", { ...args, assigneeActorId: agentId })).rejects.toThrow("shared worker");
     const otherWorkspaceId = randomUUID();
     await seedManagedDispatchWorkspace(db, { id: otherWorkspaceId, companyId, projectId: otherProjectId, sourceId, cwd: home });
     await expect(execute("create_task", { ...args, workspaceSelection: { kind: "existing", workspaceId: otherWorkspaceId } }))
-      .rejects.toMatchObject({ details: { code: "configuration_required" } });
+      .rejects.toMatchObject({ details: { code: "PM_PROJECT_DENIED" } });
     await expect(execute("create_task", { ...args, executionPolicy: { authorizationPolicy: {} } })).rejects.toThrow();
     const defaultArgs = { idempotencyKey: args.idempotencyKey, title: args.title, initialPlan: args.initialPlan, workspaceSelection: args.workspaceSelection };
     const created = await execute("create_task", defaultArgs) as { task: { id: string } };

@@ -9,6 +9,7 @@ import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { logger } from "../middleware/logger.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -2698,6 +2699,8 @@ export type ManagedGitWorktreeBranchInspection = {
   expectedBranchName: string | null;
   actualBranchName: string | null;
   hostInspection?: { hostId: string | null; operationId: string; receipt?: ManagedWorktreeHostResult };
+  /** Set when a main-managed inspection mismatch was logged instead of failing the run. */
+  advisory?: true;
 };
 
 function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
@@ -2871,8 +2874,27 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
 }
 
 /** Main-owned coordinates are inspected on their registered host. No legacy
- * branch repair, local fallback or historical HEAD pin applies to a shared tree. */
+ * branch repair, local fallback or historical HEAD pin applies to a shared tree.
+ *
+ * Liveness-first (Owner 2026-11-13, rule 3): host inspection never fails a run.
+ * An unrecognized marker, registration mismatch, unavailable host capability,
+ * receipt mismatch, branch mismatch or transport failure is logged and returned
+ * as an advisory result (`valid: true`, `advisory: true`) that keeps its reason
+ * for the finalize record. The `mainManagedWorktree` marker only protects the
+ * tree from deletion; it is not an execution gate. */
 export async function inspectMainManagedGitWorkspaceBranch(input: {
+  workspace: { cwd: string | null; branchName: string | null; metadata: Record<string, unknown> | null };
+  operationId: string;
+}): Promise<ManagedGitWorktreeBranchInspection> {
+  const observed = await observeMainManagedGitWorkspaceBranch(input);
+  if (observed.valid) return observed;
+  logger.warn({ operationId: input.operationId, cwd: input.workspace.cwd, hostId: observed.hostInspection?.hostId ?? null,
+    workspaceValidation: { reason: observed.reason, reasonCode: observed.reasonCode } },
+  "Main-managed worktree inspection mismatch ignored; the run continues.");
+  return { ...observed, valid: true, advisory: true };
+}
+
+async function observeMainManagedGitWorkspaceBranch(input: {
   workspace: { cwd: string | null; branchName: string | null; metadata: Record<string, unknown> | null };
   operationId: string;
 }): Promise<ManagedGitWorktreeBranchInspection> {
@@ -3059,6 +3081,7 @@ export function formatManagedGitWorktreeBranchInspection(input: ManagedGitWorktr
     actualBranchName: input.actualBranchName,
     ...(input.hostInspection ? { hostInspection: input.hostInspection } : {}),
     ...(input.inspectionDiagnostic ? { inspectionDiagnostic: input.inspectionDiagnostic } : {}),
+    ...(input.advisory ? { advisory: true as const } : {}),
   };
 }
 

@@ -115,7 +115,7 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect((await selectHeartbeatEnvironment(db, input)).useIsolatedTaskDirectory).toBe(false);
   });
 
-  it("preserves compatible fixed executions and refuses a different cwd or host", async () => {
+  it("preserves compatible fixed executions and logs a different cwd or host without refusing the run", async () => {
     const { input, workspace, recover } = await fixture();
     const original = await workspace();
     const local = await input.services.environmentsSvc.ensureLocalEnvironment(input.agent.companyId);
@@ -125,11 +125,15 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     const saved = structuredClone(input.run.runnerProfileJson);
     const result = await selectHeartbeatEnvironment(db, input);
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(original.id);
+    // Liveness-first rule 3: an admitted execution bound to another cwd or host is logged; it keeps
+    // its recorded binding (resumed in its original session) and the saved binding is never rewritten.
     input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: "/different" } };
-    await expect(selectHeartbeatEnvironment(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
+    await expect(selectHeartbeatEnvironment(db, input)).resolves.toMatchObject({
+      persistedNativeExecutionInput: { binding: { executionWorkspaceId: original.id } } });
     input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: home } };
     input.run.contextSnapshot = { paperclipEnvironment: { id: local.id, driver: "ssh", host: "other" } };
-    await expect(selectHeartbeatEnvironment(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
+    await expect(selectHeartbeatEnvironment(db, input)).resolves.toMatchObject({
+      persistedNativeExecutionInput: { binding: { executionWorkspaceId: original.id } } });
     expect(input.run.runnerProfileJson).toEqual(saved);
   });
 

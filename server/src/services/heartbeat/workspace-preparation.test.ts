@@ -243,8 +243,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       .toMatchObject({ executionCancellation: { state: "requested" } });
     await management.operate(scope, { action: "converge", operationId: randomUUID(), expectedGeneration: 1 });
     const fourth = await sibling(input, 4); await reuse(fourth, (await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!);
-    await expect(prepareHeartbeatWorkspace(db, fourth)).rejects.toThrow("workspace_converging");
-    expect(await leases(fourth.run.id)).toEqual([]);
+    // Liveness-first: convergence is not an execution gate. The run joins the same directory;
+    // only participant registration is skipped and logged.
+    const joined = await prepareHeartbeatWorkspace(db, fourth);
+    expect(joined.executionWorkspace.cwd).toBe(cwd);
+    expect(joined.persistedExecutionWorkspace?.id).toBe(workspaceId);
+    expect(Object.keys(readMainManagedWorktree((await input.services.executionWorkspacesSvc.getStoredById(issue.companyId, workspaceId))!.metadata)!.participants))
+      .not.toContain(fourth.run.id);
+    expect(await readFile(join(cwd, "collaborator.txt"), "utf8")).toBe("unsaved collaborator content");
   });
 
   it("normalizes an existing v1 registration without kind to linked-worktree participation without rewriting metadata", async () => {
@@ -312,12 +318,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
   });
 
-  it("refuses an isolated mode that would still run in the source directory", async () => {
-    const { input } = await fixture(true); input.config.mergedConfig = {};
-    const acquire = vi.spyOn(input.services.envOrchestrator,"acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db,input)).rejects.toMatchObject({
-      resultJson:{workspaceValidation:{reason:"isolated_workspace_not_realized"}}});
-    expect(acquire).not.toHaveBeenCalled();
+  it("logs an isolated mode that still runs in the source directory and continues there", async () => {
+    // Liveness-first rule 3: a fixed/isolated mismatch never fails the run.
+    const { input, source } = await fixture(true); input.config.mergedConfig = {};
+    const result = await prepareHeartbeatWorkspace(db,input);
+    expect(result.executionWorkspace.cwd).toBe(source);
+    expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
   });
 
   it.each(["fresh", "cached", "worker_bound"])("keeps a worker task worktree binding when a native PM prepares its review home (%s)", async scenario => {
@@ -430,8 +436,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       return;
     }
     if (["not_review", "wrong_participant", "missing_source"].includes(scenario)) {
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ resultJson: { workspaceValidation: { reason: "fixed_workspace_project_conflict" } } });
-      expect(acquire).not.toHaveBeenCalled();
+      // Liveness-first rule 3: the project-source mismatch is logged; the agent's fixed directory is used.
+      // Outside a review the run binds its fixed directory as the task workspace; the worker's record
+      // and directory are kept (only released to idle), never deleted.
+      const result = await prepareHeartbeatWorkspace(db, input);
+      expect(result.executionWorkspace.cwd).toBe(reviewerCwd);
+      expect(acquire).toHaveBeenCalled();
+      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0])
+        .toMatchObject({ cwd: workerCwd, sourceIssueId: issue.id });
+      await expect(access(workerCwd)).resolves.toBeUndefined();
+      return;
     } else {
       const result = await prepareHeartbeatWorkspace(db, input);
       expect(result.executionWorkspace.cwd).toBe(reviewerCwd);
@@ -455,8 +469,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     // New contract: explicit external work does not require, repair or acquire a Git source.
     await db.update(projectWorkspaces).set({ cwd: join(home, "unavailable-project-source") }).where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
     const service = issueService(db);
-    await expect(service.create(issue.companyId, { projectId: issue.projectId, title: "Code without selection",
-      assigneeAgentId: input.agent.id, createdByUserId: userId })).rejects.toMatchObject({ details: { reason: "execution_worktree_required" } });
+    // Liveness-first rule 3: a project task without a worktree selection is accepted and falls back
+    // to the project default directory instead of being refused.
+    const defaulted = await service.create(issue.companyId, { projectId: issue.projectId, title: "Code without selection",
+      assigneeAgentId: input.agent.id, createdByUserId: userId });
+    expect(await readIssue(defaulted.id)).toMatchObject({ executionWorkspaceId: null, projectId: issue.projectId });
+    expect((await readIssue(defaulted.id)).executionWorkspaceSettings?.sessionOnly).not.toBe(true);
     const created = await service.create(issue.companyId, { projectId: issue.projectId, title: "Read external research", status: "todo",
       assigneeAgentId: input.agent.id, createdByUserId: userId, workspaceSelection: { kind: "session_only" },
       workspaceSelectionActor: { type: "board", source: "session", userId } });
@@ -488,7 +506,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     } finally { await heartbeat.drainActiveRunExecutions(); registerServerAdapter(original); }
   });
 
-  it.each(["missing_intent", "wake_only", "strict_worktree", "remote", "remote_missing_cwd", "low_trust", "native_bound"])("keeps explicit session-only admission scoped: %s", async kind => {
+  // native_bound only exercised the removed shared-worker gate with a partial native fixture; a real
+  // bound native input resumes its recorded workspace and is covered by the native preparation tests.
+  it.each(["missing_intent", "wake_only", "strict_worktree", "remote", "remote_missing_cwd", "low_trust"])("keeps explicit session-only admission scoped: %s", async kind => {
     const { input, issue } = await fixture();
     input.agent.runtimeConfig = { requireProjectWorkspace: true, ...(kind === "strict_worktree" ? { requireTaskWorktree: true } : {}) };
     input.task.issueRef!.projectWorkspaceId = null;
@@ -496,7 +516,6 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.policy.issueExecutionWorkspaceSettings = { sessionOnly: true, mode: "shared_workspace" };
     if (kind === "missing_intent") input.task.workspaceSelection = null;
     if (kind === "wake_only") { input.policy.issueExecutionWorkspaceSettings = null; input.task.context.sessionOnly = true; }
-    if (kind === "native_bound") input.reuse.persistedNativeExecutionInput = { binding: { executionWorkspaceId: randomUUID() } } as typeof input.reuse.persistedNativeExecutionInput;
     if (kind === "low_trust") input.policy.trustPreset = { kind: "low_trust_review", preset: "low_trust_review", sourcePresets: {},
       boundary: { mode: "low_trust_review", companyId: input.agent.companyId, rootIssueId: issue.id } };
     if (kind.startsWith("remote")) {
@@ -514,10 +533,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       expect(result.persistedExecutionWorkspace).toBeNull();
       expect(input.task.context.sharedCheckoutClaim).toBeUndefined();
       expect((await readIssue(issue.id)).executionWorkspaceId).toBeNull();
+    } else if (kind === "remote_missing_cwd") {
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ resultJson: { workspaceValidation: { reason: "remote_session_cwd_required" } } });
     } else {
-      const reason = kind === "strict_worktree" ? "shared_worker_requires_task_worktree"
-        : kind === "remote_missing_cwd" ? "remote_session_cwd_required" : "shared_worker_requires_project_workspace";
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ resultJson: { workspaceValidation: { reason } } });
+      // Liveness-first rule 3: a shared worker's project/worktree preference is logged, never a refusal.
+      const result = await prepareHeartbeatWorkspace(db, input);
+      expect(result.executionWorkspace.cwd).toBeTruthy();
+      if (kind !== "wake_only") {
+        expect(result.persistedExecutionWorkspace).toBeNull();
+        expect((await readIssue(issue.id)).executionWorkspaceId).toBeNull();
+      }
     }
   });
 
@@ -634,14 +659,17 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       } else await expect(access(join(source,".git"))).rejects.toMatchObject({ code:"ENOENT" });
     } finally { await heartbeat.drainActiveRunExecutions();registerServerAdapter(originalAdapter); }
   });
-  it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("refuses a shared worker without a task worktree: %s", async kind => {
+  it.each(["no_task", "no_project", "shared_mode", "shared_strategy"])("logs a shared worker without a task worktree and runs in the resolved directory: %s", async kind => {
+    // Liveness-first rule 3: the worker's worktree preference is advisory; the run is never refused.
     const { input } = await fixture(true);
     input.agent.runtimeConfig = { requireTaskWorktree: true };
     if (kind === "no_task") input.task.issueId = null;
     if (kind === "no_project") input.task.issueRef!.projectId = null;
     if (kind === "shared_mode") input.policy.effectiveExecutionWorkspaceMode = "shared_workspace";
     if (kind === "shared_strategy") input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/requires a project task with an isolated Git worktree/);
+    const result = await prepareHeartbeatWorkspace(db, input);
+    expect(typeof result.executionWorkspace.cwd).toBe("string");
+    expect(result.executionWorkspace.cwd.length).toBeGreaterThan(0);
   });
   it.each(["claude_local", "codex_local"])("preserves the retained directory contract at %s launch after dependency continuation", async adapterType => {
     const { input, source, issue } = await fixture(true);
@@ -668,7 +696,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
     await expect(access(join(source, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it.each(["foreign_owner", "git_required", "missing_directory", "no_copy_receipt"] as const)("rejects invalid retained Recovery reuse: %s", async scenario => {
+  it.each(["foreign_owner", "git_required", "missing_directory", "no_copy_receipt"] as const)("handles invalid retained Recovery reuse without ownership gates: %s", async scenario => {
     const { input, source, issue } = await fixture(true);
     await rm(join(source, ".git"), { recursive: true });
     input.agent.runtimeConfig = { requireProjectWorkspace: true, requireTaskWorktree: scenario === "git_required" };
@@ -682,12 +710,17 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, issue.id));
     await reuse(input, toExecutionWorkspace(saved));
     const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
-      scenario === "foreign_owner" ? /must reuse only this task/
-        : scenario === "git_required" ? /isolated Git worktree/
-        : scenario === "no_copy_receipt" ? /not a git checkout/ : /could not be restored/,
-    );
-    expect(acquire).not.toHaveBeenCalled();
+    if (scenario === "git_required") {
+      // Liveness-first rule 3: the worker's worktree preference is logged; the retained directory is reused.
+      await expect(prepareHeartbeatWorkspace(db, input)).resolves.toMatchObject({ executionWorkspace: { cwd: saved.cwd } });
+    } else {
+      // The foreign-owner gate is gone (logged only); what remains is the real realization limit of
+      // an isolated Git worktree over a non-Git directory, and a retained directory that is missing.
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(
+        scenario === "missing_directory" ? /could not be restored/ : /not a git checkout/,
+      );
+      expect(acquire).not.toHaveBeenCalled();
+    }
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
     await expect(access(join(saved.cwd!, ".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -1768,7 +1801,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each(["task_binding", "workspace_row", "foreign_issue", "foreign_company", "closed_workspace"])(
-    "rejects a retained task attempt after its %s changes", async change => {
+    "keeps the retained task attempt directory after its %s changes", async change => {
       const { input, issue, source } = await fixture();
       input.policy.useIsolatedTaskDirectory = true;
       input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
@@ -1788,9 +1821,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         await db.update(executionWorkspaces).set({ companyId: other.id }).where(eq(executionWorkspaces.id, workspace.id));
       }
       if (change === "closed_workspace") await db.update(executionWorkspaces).set({ status: "archived" }).where(eq(executionWorkspaces.id, workspace.id));
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-        resultJson: { workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issue.id } },
-      });
+      if (change === "foreign_company") {
+        // The company boundary still applies after the binding mismatch is logged.
+        await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/Task workspace unavailable/);
+      } else {
+        // Liveness-first rule 3: the binding mismatch is logged and the task's own saved directory is used.
+        const result = await prepareHeartbeatWorkspace(db, input);
+        expect(result.executionWorkspace.cwd).toBe(workspace.cwd);
+      }
       expect(await readFile(join(workspace.cwd!, "saved-review.txt"), "utf8")).toBe("keep saved work\n");
     },
   );
@@ -2394,7 +2432,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await leases(second.run.id)).toMatchObject([{ status: "active" }]);
   });
 
-  it.each(["missing", "project", "isolation", "external", "provision"])("rejects fixed workspace %s conflicts before acquiring a lease", async (kind) => {
+  it.each(["missing", "project", "isolation", "external", "provision"])("logs a fixed workspace %s mismatch and runs in the fixed directory", async (kind) => {
+    // Liveness-first rule 3: a binding mismatch never fails the run; a missing directory is created.
     const { input, source, issue } = await fixture();
     input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
     if (kind === "missing") await rm(source, { recursive: true });
@@ -2402,12 +2441,27 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     if (kind === "isolation") input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
     if (kind === "external") await db.update(issues).set({ originKind: "chat_channel" }).where(eq(issues.id, issue.id));
     if (kind === "provision") input.config.mergedConfig = { workspaceStrategy: { provisionCommand: "touch should-not-run" } };
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
-    expect(await leases(input.run.id)).toEqual([]);
+    const result = await prepareHeartbeatWorkspace(db, input);
+    const fixedCwd = kind === "project" ? home : source;
+    expect(result.executionWorkspace.cwd).toBe(fixedCwd);
+    if (kind === "missing") await expect(access(source)).resolves.toBeUndefined();
+    else if (kind !== "project") expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+  });
+
+  it("falls back to the project default directory when the fixed path cannot be a directory", async () => {
+    // Liveness-first rule 3: run cwd > agent fixed cwd > project default cwd > agent home. An unusable
+    // fixed path (here a file) is logged and skipped instead of failing the run.
+    const { input, source } = await fixture();
+    const file = join(home, `fixed-file-${randomUUID()}`);
+    await writeFile(file, "not a directory\n");
+    input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: file } };
+    const result = await prepareHeartbeatWorkspace(db, input);
+    expect(result.executionWorkspace.cwd).toBe(source);
+    expect(await readFile(file, "utf8")).toBe("not a directory\n");
   });
 
   it.each(["fresh", "remoteAuthority", "providerApiPlacement"] as const)(
-    "fails closed when a fixed binding meets a %s workspace, before acquiring a lease", async (kind) => {
+    "logs a fixed binding that meets a %s workspace and never fails the run", async (kind) => {
       const { input, source, run } = await fixture();
       input.agent.runtimeConfig = { workspaceBinding: { mode: "fixed", cwd: source } };
       if (kind === "fresh") {
@@ -2425,15 +2479,21 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
           provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification",
         } };
       }
-      const acquire = vi.spyOn(input.services.envOrchestrator, "acquireForRun");
       const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-        code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "fixed_workspace_policy_conflict" } },
-      });
-      expect(acquire).not.toHaveBeenCalled();
-      expect(resolve).not.toHaveBeenCalled();
-      expect(await leases(input.run.id)).toEqual([]);
-      expect(await db.select().from(executionWorkspaces)).toEqual([]);
+      const result = await prepareHeartbeatWorkspace(db, input);
+      if (kind === "providerApiPlacement") {
+        // A provider-owned workspace has no local directory; the fixed binding is ignored (logged).
+        expect(result.executionWorkspace.cwd).not.toBe(source);
+        expect(resolve).not.toHaveBeenCalled();
+      } else if (kind === "fresh") {
+        // A run-requested fresh attempt wins (rule 3) and is a separate directory; the fixed one is untouched.
+        expect(result.executionWorkspace.cwd).toContain("/isolated-workspace-attempts/");
+        expect(resolve).toHaveBeenCalled();
+      } else {
+        // The agent's fixed directory wins over remote workspace storage.
+        expect(result.executionWorkspace.cwd).toBe(source);
+        expect(resolve).toHaveBeenCalled();
+      }
       expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
     });
 

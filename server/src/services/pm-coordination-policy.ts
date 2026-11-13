@@ -12,6 +12,7 @@ import { agentProjectPmWorkspaceBindingSchema, issueExecutionPolicySchema, taskW
 import { resolveCooperativeTaskWorkspace } from "./cooperative-task-workspace.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
+import { logger } from "../middleware/logger.js";
 
 /** A platform capability boundary, independent of prompts and provider approvals. */
 export const PM_COORDINATION_VERSION = 2 as const;
@@ -150,16 +151,17 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
       const [workspace] = await db.select().from(executionWorkspaces)
         .where(and(eq(executionWorkspaces.id, selected.workspaceId), eq(executionWorkspaces.companyId, scope.companyId))).limit(1);
       if (workspace?.projectId !== scope.projectId) throw forbidden("Workspace is outside this PM's project", { code: "PM_PROJECT_DENIED" });
+      // Liveness-first (rule 3): registration is not required to dispatch; mismatches are logged only.
       const managed = readMainManagedWorktree(workspace.metadata);
-      if (!managed) throw conflict("Register this Git directory through the project main before dispatch.", { code: "configuration_required" });
+      if (!managed) warnPmWorkspace(scope, workspace.id, "configuration_required", "the selected Git directory is not registered by the project main");
       const [source] = workspace.projectWorkspaceId ? await db.select().from(projectWorkspaces).where(and(
         eq(projectWorkspaces.id, workspace.projectWorkspaceId), eq(projectWorkspaces.companyId, scope.companyId),
         eq(projectWorkspaces.projectId, scope.projectId),
       )).limit(1) : [];
-      sourceHost = managed.hostId === null ? DEFAULT_BRIDGE_HOST : managed.hostId;
-      if (!source || !sourceHost || projectSourceHost(source) !== sourceHost) throw unprocessable(
-        "The registered workspace host no longer matches its source; ask its main to reconcile the registration.", { code: "PM_WORKER_HOST_MISMATCH" });
-      if (source.metadata?.usage === "production" && (workspace.cwd === source.cwd || workspace.cwd === managed.sourceCwd)) {
+      sourceHost = managed ? (managed.hostId === null ? DEFAULT_BRIDGE_HOST : managed.hostId) : source ? projectSourceHost(source) : undefined;
+      if (managed && (!source || !sourceHost || projectSourceHost(source) !== sourceHost)) warnPmWorkspace(scope, workspace.id,
+        "PM_WORKER_HOST_MISMATCH", "the registered workspace host differs from its source; using the registered host");
+      if (source?.metadata?.usage === "production" && (workspace.cwd === source.cwd || workspace.cwd === managed?.sourceCwd)) {
         throw unprocessable("This directory serves production. Select a registered development worktree.", { code: "PM_DEVELOPMENT_SOURCE_REQUIRED" });
       }
       selectedWorkspaceMode = workspace.mode;
@@ -184,7 +186,8 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
       { code: "PM_WORKER_HOST_MISMATCH", workerHost, sourceHost: sourceHost ?? null });
   }
   if (worker.runtimeConfig?.requireTaskWorktree === true && (selectedWorkspaceMode === "shared_workspace" || (input.workspaceSelection as { mode?: string })?.mode === "shared")) {
-    throw unprocessable("This worker still requires isolated worktrees; its Owner-managed workspace policy has not been changed.", { code: "PM_WORKER_WORKSPACE_POLICY_CONFLICT" });
+    // Liveness-first (rule 3): a shared/isolated mismatch is logged; the worker runs in the selected directory.
+    warnPmWorkspace(scope, null, "PM_WORKER_WORKSPACE_POLICY_CONFLICT", "the worker prefers isolated worktrees but a shared directory was selected");
   }
   if (scope.delegation?.version === 2) {
     const group = scope.delegation.workers.find(item => item.agentId === worker.id)!;
@@ -202,7 +205,12 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   return { assigneeAgentId: String(input.assigneeAgentId), assigneeAdapterOverrides: overrides };
 }
 
-/** Use the same registered-directory/session-only contract as task creation. */
+/**
+ * Use the same placement contract as task creation. Liveness-first (rule 3):
+ * a configured source or task directory is accepted (task creation validates
+ * it), and without a usable worktree the task runs in the project default
+ * directory. Explicitly contradictory settings are still refused.
+ */
 export async function assertPmDispatchWorkspace(db: Db, scope: PmCoordinationScope, input: {
   workspaceSelection?: unknown; executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown;
 }) {
@@ -211,13 +219,16 @@ export async function assertPmDispatchWorkspace(db: Db, scope: PmCoordinationSco
     throw forbidden("PM dispatch cannot change runtime, environment or network grants", { code: "PM_WORKSPACE_POLICY_DENIED" });
   }
   const selected = input.workspaceSelection == null ? null : taskWorkspaceSelectionSchema.parse(input.workspaceSelection);
-  if (selected && selected.kind !== "existing" && selected.kind !== "session_only") {
-    throw conflict("Select an existing main-managed Git directory, or choose session-only for external-resource work.",
-      { code: "configuration_required", reason: "execution_worktree_required" });
-  }
   if ((selected?.kind === "session_only" && settings?.sessionOnly === false)
-    || (selected?.kind === "existing" && settings?.sessionOnly === true)) {
+    || (selected && selected.kind !== "session_only" && settings?.sessionOnly === true)) {
     throw conflict("session_only_workspace_conflict", { code: "session_only_workspace_conflict" });
+  }
+  if (selected?.kind === "configured_source" || selected?.kind === "task_directory") {
+    // Cooperative admission owns concurrency; legacy per-task writer settings grant nothing.
+    const { sharedWorkspaceConcurrency: _legacyConcurrency, ...normalized } = settings ?? {};
+    input.workspaceSelection = selected;
+    input.executionWorkspaceSettings = { ...normalized, sessionOnly: false };
+    return;
   }
   const workspace = await resolveCooperativeTaskWorkspace(db, {
     companyId: scope.companyId, projectId: scope.projectId,
@@ -232,9 +243,16 @@ export async function assertPmDispatchWorkspace(db: Db, scope: PmCoordinationSco
   }
   // Cooperative admission owns concurrency; legacy per-task writer settings grant nothing.
   const { sharedWorkspaceConcurrency: _legacyConcurrency, ...normalized } = resolvedSettings;
-  input.workspaceSelection = workspace.workspaceSelection.selection;
-  input.executionWorkspaceSettings = { ...normalized, mode };
+  // An unavailable explicit selection is kept, so dispatch and task creation still
+  // check its project and existence; no selection runs in the project default directory.
+  input.workspaceSelection = workspace.workspaceSelection?.selection ?? (selected?.kind === "existing" ? selected : null);
+  input.executionWorkspaceSettings = { ...normalized, ...(mode !== undefined ? { mode } : {}) };
   input.executionWorkspacePreference = workspace.executionWorkspacePreference;
+}
+
+function warnPmWorkspace(scope: PmCoordinationScope, workspaceId: string | null, reason: string, message: string) {
+  logger.warn({ companyId: scope.companyId, projectId: scope.projectId, agentId: scope.agentId, workspaceId,
+    workspaceValidation: { reason } }, `PM dispatch workspace mismatch ignored: ${message}.`);
 }
 
 /** Preserve source gates; PM-provided workflow settings cannot grant execution authority. */

@@ -1489,10 +1489,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ));
       if (!workspace) throw notFound("Workspace is unavailable or inaccessible");
       if (!storedForRun) {
+        // Liveness-first (rule 3): registration, convergence and pending main
+        // operations never refuse a selection; mismatches are logged only.
         const managed = readMainManagedWorktree(workspace.metadata);
-        if (!managed) throw conflict("Register this linked worktree through the project main before selecting it.", { code: "configuration_required" });
-        if (managed.phase !== "open") throw conflict("The selected worktree is closed to new work.", { code: "workspace_converging" });
-        if (managed.pendingOperationId) throw conflict("Reconcile the original worktree operation before joining.", { code: "worktree_operation_reconciliation_required" });
+        const mismatch = !managed ? "configuration_required" : managed.phase !== "open" ? "workspace_converging"
+          : managed.pendingOperationId ? "worktree_operation_reconciliation_required" : null;
+        if (mismatch) logger.warn({ companyId: input.companyId, workspaceId: workspace.id, issueId: input.issueId ?? null,
+          workspaceValidation: { reason: mismatch } }, "Workspace selection mismatch ignored; the selected directory is used.");
       }
       if (!storedForRun) {
         await assertExecutionWorkspaceRecordAccess(reader, input.actor, input.companyId, workspace.id);
@@ -1504,8 +1507,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return { executionWorkspaceId: workspace.id, projectWorkspaceId: workspace.projectWorkspaceId,
         executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: workspace.mode, sessionOnly: false } };
     }
-    if (!storedForRun) throw conflict("Select an existing main-managed linked worktree, or choose session-only for external-resource work.",
-      { code: "configuration_required", reason: "execution_worktree_required" });
+    // Liveness-first (rule 3): a configured project source or a task directory is
+    // a valid placement again; it keeps the source access and trust checks below.
     if (selection.kind === "configured_source") {
       const [source] = await reader.select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId, metadata: projectWorkspaces.metadata, executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projectWorkspaces)
         .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId)).where(and(

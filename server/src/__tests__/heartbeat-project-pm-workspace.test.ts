@@ -190,12 +190,11 @@ suite("project PM role and workspace at claim", () => {
       for (const release of gates.values()) release();
       execute.mockImplementation(deliver);
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
-      // This adapter double returns a session ID but has no child process or
-      // instruction collector. Model its completed stop explicitly; success
-      // alone must not make the original worktree available to a successor.
+      // Liveness-first rule 2: a terminal (succeeded) run releases its worktree at
+      // once; a recorded instruction copy is cleanup evidence, never a gate.
       for (const [i, run] of runs.entries()) {
         expect((await heartbeat.getRun(run.id))!.status).toBe("succeeded");
-        expect(await sharedCheckoutHolderSettled(db, pm.companyId, run.id)).toBe(false);
+        expect(await sharedCheckoutHolderSettled(db, pm.companyId, run.id)).toBe(true);
         const cwd = calls[i].context.paperclipWorkspace.cwd;
         await db.insert(agentInstructionWorkingCopies).values({ runId: run.id, companyId: pm.companyId, agentId: workerId,
           responsibleUserId: "responsible-user", entryFile: "AGENTS.md", baseHash: "a".repeat(64),

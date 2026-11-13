@@ -33,6 +33,7 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
+import { logger } from "../../middleware/logger.js";
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
 // and gateway delivery are external boundaries; browser acceptance covers their wiring.
@@ -145,16 +146,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     const registry = vi.spyOn(adapterRegistry, "getServerAdapter").mockReturnValue({ ...adapter, managedWorktreeOperation: hostInspect });
     const repair = vi.spyOn(workspaceRuntime, "ensureGitWorktreeBranchCoherent");
     try {
+      // Liveness-first: host inspection never fails the run; a mismatch is logged and recorded as advisory.
+      expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true, adapterResult: { exitCode: 0 } });
       if (outcome === "valid") {
-        expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true, adapterResult: { exitCode: 0 } });
         expect(await finalizations()).toMatchObject([{ status: "succeeded", metadata: { managedGitWorktreeBranch: {
           valid: true, hostInspection: { hostId: "remote-host", operationId: input.run.id, receipt: { head: "a".repeat(40) } },
         } } }]);
       } else {
-        await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({ code: "workspace_validation_failed" });
-        const finalizes = await finalizations();
-        expect(finalizes.length).toBeGreaterThan(0);
-        expect(finalizes.every(row => row.status === "failed")).toBe(true);
+        expect(await finalizations()).toMatchObject([{ status: "succeeded", metadata: { managedGitWorktreeBranch: {
+          valid: true, advisory: true,
+          reason: outcome === "branch_mismatch" ? "workspace_branch_mismatch" : "worktree_host_receipt_mismatch",
+        } } }]);
       }
       expect(adapter.execute).toHaveBeenCalledOnce();
       expect(hostInspect).toHaveBeenCalledExactlyOnceWith({ hostId: "remote-host", operation: expect.objectContaining({ action: "inspect", cwd, operationId: input.run.id }) });
@@ -174,15 +176,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(acquired).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("rejects a launch directory outside its physical claim before invoking the provider (native: %s)", async native => {
+  it.each([false, true])("logs a launch directory outside its claim and still invokes the provider (native: %s)", async native => {
+    // Liveness-first rule 3: a binding mismatch is logged only; it never fails the run.
     const { input, adapter } = await fixture(native);
     input.task.context.sharedCheckoutClaim = { version: 1, kind: "directory", host: "test-host",
       path: tmpdir(), executionCwd: tmpdir(), issueId: input.task.issueId };
-    await expect(executeHeartbeatRuntime(db, input)).rejects.toMatchObject({
-      code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "workspace_binding_mismatch" } },
-    });
-    expect(adapter.execute).not.toHaveBeenCalled();
-    expect(executePaperclipNativeSession).not.toHaveBeenCalled();
+    const warn = vi.spyOn(logger, "warn");
+    await expect(executeHeartbeatRuntime(db, input)).resolves.toMatchObject({ dispatched: true });
+    expect(native ? executePaperclipNativeSession : adapter.execute).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ workspaceValidation: { reason: "workspace_binding_mismatch" } }),
+      expect.stringContaining("Workspace mismatch ignored"));
+    warn.mockRestore();
   });
 
   it.each([false, true])("dispatches in its admitted physical directory (native: %s)", async native => {

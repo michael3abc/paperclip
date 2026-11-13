@@ -272,17 +272,18 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
       const existing = (workspaceId: string) => ({ kind: "existing", workspaceId }) as const;
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId,
         assigneeAdapterOverrides: { workerSelectionId: choice, adapterConfig: { model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" } } });
-      for (const selection of [existing(workspaceId), existing(unhostedWorkspaceId)]) {
-        await expect(assertPmDispatch(db, await scope(), { workspaceSelection: selection, projectId }))
-          .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
-      }
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(workspaceId), projectId }))
+        .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
+      // Liveness-first rule 3: a registration whose source lacks a host is logged; the registered host is used.
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(unhostedWorkspaceId), projectId }))
+        .resolves.toMatchObject({ assigneeAgentId: remoteId });
       // External-resource tasks stay on the Owner-selected remote worker without a fake local source.
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
         .resolves.toMatchObject({ assigneeAgentId: remoteId });
       await expect(assertPmDispatch(db, await scope(), { executionWorkspaceSettings: { sessionOnly: true }, projectId }))
         .resolves.toMatchObject({ assigneeAgentId: remoteId });
-      // No explicit workspace and no project default remains a configuration error.
-      await expect(assertPmDispatch(db, await scope(), { projectId })).rejects.toMatchObject({ details: expect.objectContaining({ code: "configuration_required" }) });
+      // Liveness-first rule 3: no explicit workspace and no project default runs in the project default directory.
+      await expect(assertPmDispatch(db, await scope(), { projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId });
       // Moving the worker to another host invalidates the saved choice instead of dispatching across hosts.
       await db.update(agents).set({ adapterConfig: { hostId: "shopee-d", provider: "codex", permissionMode: "fullAccess" } }).where(eq(agents.id, remoteId));
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
