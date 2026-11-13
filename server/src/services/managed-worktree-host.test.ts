@@ -52,7 +52,7 @@ describe("managed linked Git worktree host operations", () => {
 
   it("rejects a primary checkout and never initializes an external directory", async () => {
     const f = await fixture();
-    await expect(operation(f.request("inspect", { cwd: f.source, parentDir: f.root }))).rejects.toMatchObject({ code: "worktree_path_outside_parent" });
+    await expect(operation(f.request("inspect", { cwd: f.source, parentDir: f.root }))).rejects.toMatchObject({ code: "execution_workspace_requires_linked_worktree" });
     const external = path.join(f.parent, "data"); await fs.mkdir(external);
     await expect(operation(f.request("inspect", { cwd: external }))).rejects.toThrow();
     expect(await fs.readdir(external)).toEqual([]);
@@ -66,6 +66,47 @@ describe("managed linked Git worktree host operations", () => {
     const g = await fixture();
     await expect(operation(g.request("inspect", { sourceCwd: f.source }))).rejects.toMatchObject({ code: "worktree_repository_mismatch" });
   });
+
+  it.each(["local", "remote-script"])("inspects an existing linked worktree selected as its exact source (%s)", async transport => {
+    const f = await fixture(), request = f.request("inspect", { sourceCwd: f.input.cwd });
+    await fs.mkdir(path.join(f.input.cwd, ".lmas"));
+    await fs.writeFile(path.join(f.input.cwd, ".lmas/result"), "preserve");
+    await fs.writeFile(path.join(f.input.cwd, "base.txt"), "collaborator");
+    const before = await git(f.source, "worktree", "list", "--porcelain");
+    let result;
+    if (transport === "local") result = await operation(request);
+    else {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", managedWorktreeHostScript()], { stdio: ["pipe", "pipe", "pipe"] });
+      let out = "", err = "";
+      child.stdout.on("data", chunk => { out += chunk; }); child.stderr.on("data", chunk => { err += chunk; });
+      const ended = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+      child.stdin.end(JSON.stringify(request));
+      expect(await ended, err + out).toBe(0);
+      const response = JSON.parse(out); expect(response.ok).toBe(true); result = response.result;
+    }
+    expect(result).toMatchObject({ action: "inspect", operationId: request.operationId, cwd: f.input.cwd,
+      commonDir: path.join(f.source, ".git"), branch: f.input.branch, head: f.created.head, dirty: true });
+    expect(await git(f.source, "worktree", "list", "--porcelain")).toBe(before);
+    expect(await fs.readFile(path.join(f.input.cwd, ".lmas/result"), "utf8")).toBe("preserve");
+    expect(await fs.readFile(path.join(f.input.cwd, "base.txt"), "utf8")).toBe("collaborator");
+  });
+
+  it.each(["alias", "foreign-root", "wrong-branch", "create", "merge", "retire"] as const)(
+    "exact-source inspection preserves the %s boundary", async boundary => {
+      const f = await fixture();
+      let request = f.request("inspect", { sourceCwd: f.input.cwd });
+      let code = "worktree_path_outside_parent";
+      if (boundary === "alias") {
+        const alias = path.join(f.parent, "alias"); await fs.symlink(f.input.cwd, alias);
+        request = { ...request, cwd: alias, sourceCwd: alias }; code = "worktree_path_not_canonical";
+      } else if (boundary === "foreign-root") {
+        request.excludedRoots = [f.input.cwd]; code = "worktree_foreign_project_path";
+      } else if (boundary === "wrong-branch") {
+        request.branch = "michael/other"; code = "workspace_branch_mismatch";
+      } else request.action = boundary;
+      await expect(operation(request)).rejects.toMatchObject({ code });
+      expect(await git(f.input.cwd, "symbolic-ref", "HEAD")).toBe("refs/heads/michael/batch");
+    });
 
   it("registers a repository root without touching dirty ignored or training artifacts", async () => {
     const f = await fixture();

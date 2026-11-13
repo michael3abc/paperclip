@@ -3968,6 +3968,12 @@ same-scope workspace IDs can be adopted without moving files or replacing their
 metadata. Cross-company/host scope and foreign nested project roots remain
 excluded; a broad same-company session/source ancestor does not occupy explicitly
 granted project sources beneath it. Aliases and Git administrative paths fail.
+The selected configured source may itself already be a linked worktree. Its
+read-only inspect uses the exact source cwd and still requires a Git admin file,
+a distinct linked Git directory under the common repository, the canonical root,
+worktree-list membership and the selected branch. Path equality alone is not a
+primary-checkout classification. Create/merge/retire do not gain authority to
+mutate the configured source; repository roots keep their explicit separate kind.
 Heartbeat rebuilds participation kind/sourceCwd, parentDir, cwd, host, project and
 generation from the admitted registration, discarding caller coordinates. The
 v1 marker originally represented linked worktrees only; an absent kind on a valid

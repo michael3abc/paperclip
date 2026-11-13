@@ -41,6 +41,10 @@ Registered main-managed Git directories finalize through their registered host's
 read-only inspector, including repository roots. Verify receipt/run identity,
 branch and commit evidence; never fall back to controller paths or auto-repair
 a collaborator's branch. See `doc/execution-semantics.md`.
+An explicitly configured source may itself be the selected linked worktree.
+Read-only inspect accepts that exact canonical path only after the existing Git
+admin-file/common-directory/worktree-list/branch checks. It does not relabel a
+primary checkout or authorize create/merge/retire against the source itself.
 Missing host-operation receipts do not prove no effect. Recheck must keep
 initialize/create/merge/retire pending until their original outcome is known;
 only the original read-only inspect action can release its no-effect failure.

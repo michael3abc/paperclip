@@ -76,9 +76,14 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
   if (repositoryRoot && ["create", "merge", "retire"].includes(input.action)) fail("repository_root_metadata_lifecycle_only");
   const source = await canonical(input.sourceCwd);
   const parent = inside(source, input.cwd) ? source : await canonical(input.parentDir);
+  // A configured source may already be this linked worktree. Read-only
+  // registration/finalization still verifies its Git admin file, common dir and
+  // branch below; equality alone neither makes it a primary checkout nor grants
+  // permission to mutate the configured source.
   if (!path.isAbsolute(input.cwd) || path.normalize(input.cwd) !== input.cwd ||
       input.cwd.split(path.sep).includes(".git") ||
-      (!inside(parent, input.cwd) && !inside(source, input.cwd)) || (!repositoryRoot && input.cwd === source)) fail("worktree_path_outside_parent");
+      (!inside(parent, input.cwd) && !inside(source, input.cwd)) ||
+      (!repositoryRoot && input.cwd === source && input.action !== "inspect")) fail("worktree_path_outside_parent");
   for (const excluded of input.excludedRoots ?? []) {
     const resolved = await fs.realpath(excluded).catch(error => { if (error.code === "ENOENT") return excluded; throw error; });
     if (inside(resolved, input.cwd) || inside(input.cwd, resolved)) fail("worktree_foreign_project_path");
