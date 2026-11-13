@@ -5274,6 +5274,9 @@ catalogs bypass instance-wide declared models, fallback lists and schema caching
 Frontend query/cache identity includes company, host and provider; failures and
 outdated requests cannot supply another selection's options. Schema select fields
 may declare meta.resetsFields to clear dependent draft fields when changed.
+Manual refresh feedback is also bound to the exact query scope and request;
+late failures cannot hide the newly selected catalog. Forbidden hosts fail both
+schema and model discovery before probing another machine.
 
 CC Pocket reads explicit companyIds on each external hosts.json entry, using IDs
 rather than company names. Home is configured for michael-server and Shopee for

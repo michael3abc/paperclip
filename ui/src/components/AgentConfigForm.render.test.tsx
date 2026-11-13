@@ -1407,6 +1407,31 @@ describe("AgentConfigForm environment selector", () => {
     } finally { accounts.mockRestore(); }
   });
 
+  it("keeps a late Bridge refresh failure out of the next executor catalog", async () => {
+    const model = (provider: string) => ({ id: `local/${provider}/model`, label: `${provider}-model`, source: "Subscription" });
+    let rejectOld: (error: Error) => void = () => {};
+    mockAgentsApi.adapterModels.mockImplementation(async (_company, _adapter, options) => {
+      if (options.refresh) return new Promise((_resolve, reject) => { rejectOld = reject; });
+      return [model(options.provider)];
+    });
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container); roots.push(root);
+    const client = createFormQueryClient();
+    const render = (provider: string) => renderFormView(root, client, <AgentConfigForm mode="edit"
+      agent={makeAgent({ adapterType: "ccpocket_bridge", adapterConfig: { hostId: "local", provider, model: model(provider).id } })}
+      onSave={() => {}} hidePromptTemplate showAdapterTypeField={false} />);
+    await act(async () => render("claude")); await flushReact();
+    await clickElement(container.querySelector('[aria-label="Model"]'));
+    await clickByText(document.body, "Refresh models");
+    expect(mockAgentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "ccpocket_bridge", expect.objectContaining({ refresh: true, hostId: "local", provider: "claude" }));
+    await act(async () => render("codex")); await flushReact();
+    await act(async () => rejectOld(new Error("old Claude refresh failed"))); await flushReact();
+    expect(container.textContent).toContain("codex-model");
+    expect(container.textContent).not.toContain("old Claude refresh failed");
+    expect(container.textContent).not.toContain("目前模型不適用");
+    mockAgentsApi.adapterModels.mockReset().mockResolvedValue([]);
+  });
+
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
     const binding = { mode: "responsible_user", provider: "github", method: "api_key" } as const;
     const account = { id: "copilot-account", grantId: "copilot-grant", companyId: "company-1", provider: "github", method: "api_key", name: "My Copilot", ownership: "personal", ownerUserId: "you", isDefault: true, status: "needs_attention" } as const;

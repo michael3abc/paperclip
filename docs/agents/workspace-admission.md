@@ -98,3 +98,5 @@ config-schema requests require authorized companyId plus the unsaved host/provid
 selection. Never serve these from global schema caches or declared fallback lists.
 Keep qualified model IDs in persistence; names and source badges are display only.
 Bridge host companyIds live in the external host registry. See doc/DEVELOPING.md.
+Bind manual refresh feedback to the exact selection/request and reject forbidden
+schema hosts before probing; never substitute another host on an invalid query.
