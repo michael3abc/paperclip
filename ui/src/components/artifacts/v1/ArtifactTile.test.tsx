@@ -8,6 +8,9 @@ import { ArtifactSingleTile, ArtifactStackTile, ArtifactTileGrid } from "./Artif
 import { testSubject } from "./test-subject";
 import { PdfPreviewProvider } from "@/components/PdfPreviewProvider";
 
+const loadPdfThumbnail = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/pdf-thumbnail", () => ({ loadPdfThumbnail }));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: null, selectedCompanyId: null, companies: [] }),
 }));
@@ -113,6 +116,29 @@ describe("the Artifacts page tiles", () => {
     expect(tile?.getAttribute("target")).toBe("_blank");
     expect(tile?.getAttribute("rel")).toBe("noreferrer");
     expect(tile?.getAttribute("aria-label")).toBe("Open hero.png");
+  });
+
+  it("prints a single PDF's first page, and keeps the icon sheet when the page cannot be drawn", async () => {
+    const mount = () => act(() =>
+      root.render(
+        <MemoryRouter>
+          <ArtifactTileGrid>
+            <ArtifactSingleTile subject={testSubject({ kind: "pdf", filename: "deck.pdf", contentType: "application/pdf", pdfUrl: "/api/attachments/deck/content" })} now={NOW} />
+          </ArtifactTileGrid>
+        </MemoryRouter>,
+      ),
+    );
+    loadPdfThumbnail.mockResolvedValueOnce({ url: "data:image/jpeg;base64,AAAA", aspect: 0.75 });
+    await mount();
+    await vi.waitFor(() => expect(container.querySelector("[data-artifact-print] img")?.getAttribute("src")).toBe("data:image/jpeg;base64,AAAA"));
+    expect(loadPdfThumbnail).toHaveBeenCalledWith({ href: "/api/attachments/deck/content", filename: "deck.pdf", contentType: "application/pdf" });
+    act(() => root.render(<div />));
+
+    loadPdfThumbnail.mockRejectedValueOnce(new Error("bad pdf"));
+    await mount();
+    await vi.waitFor(() => expect(container.querySelector('[data-pdf-thumbnail="failed"]')).not.toBeNull());
+    expect(container.querySelector("[data-artifact-print]")).toBeNull();
+    expect(container.querySelector('[data-artifact-sheet="icon"]')?.textContent).toContain("PDF");
   });
 
   it("previews a PDF tile in place without leaving the page", () => {

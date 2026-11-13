@@ -1,4 +1,6 @@
-import type { CSSProperties, SyntheticEvent } from "react";
+import { useRef, type CSSProperties, type SyntheticEvent } from "react";
+import { usePdfThumbnail } from "@/hooks/usePdfThumbnail";
+import { pdfPreviewSource } from "@/lib/pdf-preview";
 import { ArtifactPrint, usePreviewFailure, type PrintSize } from "./ArtifactPrint";
 import { IconSheet, PreviewSheet } from "./ArtifactSheet";
 import { previewSourceOf, treatmentOf, type ArtifactSubject } from "./kinds";
@@ -59,4 +61,22 @@ export function ArtifactFront({
         </div>
       );
   }
+}
+
+/**
+ * A PDF on its own: its first page as a print once the tile nears the viewport,
+ * the icon sheet before that and whenever the page cannot be drawn.
+ */
+export function PdfFront({ subject }: { subject: ArtifactSubject }) {
+  const target = useRef<HTMLDivElement>(null);
+  const source = subject.pdfUrl
+    ? pdfPreviewSource({ href: subject.pdfUrl, filename: subject.filename ?? subject.title, contentType: subject.contentType })
+    : null;
+  const state = usePdfThumbnail(target, source);
+  const page = state.status === "ready" ? state.thumbnail : null;
+  return (
+    <div ref={target} data-pdf-thumbnail={state.status} className="flex shrink-0 items-end justify-center">
+      <ArtifactFront subject={page ? { ...subject, kind: "image", thumbnailUrl: page.url, aspect: page.aspect } : subject} />
+    </div>
+  );
 }

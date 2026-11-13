@@ -23,6 +23,9 @@ vi.mock("@/lib/router", () => ({
   ),
 }));
 
+const loadPdfThumbnail = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/pdf-thumbnail", () => ({ loadPdfThumbnail }));
+
 import { ArtifactCard } from "./ArtifactCard";
 import type { CompanyArtifact } from "@/api/artifacts";
 
@@ -278,5 +281,41 @@ describe("ArtifactCard", () => {
     expect(markup).toContain("Last edited Jun 1, 2026");
     expect(markup).not.toContain('aria-label="Download file"');
     expect(markup).not.toContain('aria-label="Open file in new tab"');
+  });
+  describe("PDF preview", () => {
+    const pdf = () => makeArtifact({ mediaKind: "file", contentType: "application/pdf", title: "Brief", contentPath: "/api/attachments/brief/content" });
+    const mount = (artifact: CompanyArtifact) => {
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      flushSync(() => root.render(<ArtifactCard artifact={artifact} />));
+      return { container, unmount: () => { root.unmount(); container.remove(); } };
+    };
+
+    it("draws the first page as the card's picture", async () => {
+      loadPdfThumbnail.mockResolvedValue({ url: "data:image/jpeg;base64,AAAA", aspect: 0.77 });
+      const { container, unmount } = mount(pdf());
+      await vi.waitFor(() => expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,AAAA"));
+      expect(loadPdfThumbnail).toHaveBeenCalledWith({ href: "/api/attachments/brief/content", filename: "Brief", contentType: "application/pdf" });
+      expect(container.querySelector('[data-pdf-thumbnail="ready"]')).not.toBeNull();
+      unmount();
+    });
+
+    it("falls back to the file placeholder when the page cannot be drawn", async () => {
+      loadPdfThumbnail.mockRejectedValue(new Error("bad pdf"));
+      const { container, unmount } = mount(pdf());
+      await vi.waitFor(() => expect(container.querySelector("[data-pdf-thumbnail]")).toBeNull());
+      expect(container.textContent).toContain("PDF");
+      expect(container.querySelector("svg")).not.toBeNull();
+      unmount();
+    });
+
+    it("does not fetch other files or PDFs outside the file routes", () => {
+      loadPdfThumbnail.mockClear();
+      renderToStaticMarkup(<ArtifactCard artifact={makeArtifact({ mediaKind: "file", contentType: "audio/mpeg", contentPath: "/api/attachments/a/content" })} />);
+      const { unmount } = mount(makeArtifact({ mediaKind: "file", contentType: "application/pdf", contentPath: "https://elsewhere.example/x.pdf" }));
+      expect(loadPdfThumbnail).not.toHaveBeenCalled();
+      unmount();
+    });
   });
 });

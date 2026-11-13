@@ -48,3 +48,11 @@ schema, restart, worker retry or workspace-policy changes are part of this fix.
   (`ArtifactPreviewProvider`: image, video, audio, PDF through the shared validated
   `PdfContent`; other types offer a download) with task, new-tab and download actions;
   modifier clicks keep the native new-tab link. Navigation closes the window.
+- Artifacts PDF thumbnails (HOM-210, 2026-11-13): PDF cards (classic card and the V1 single tile) draw the
+  file's first page with pdf.js (`pdfjs-dist`, new `ui` dependency, lazy chunk plus worker) once the card is
+  within 200px of the viewport. The read reuses `readPdfPreview` (authenticated file routes only, 32 MB cap, `%PDF-`
+  check), renders two PDFs at a time into a 480px JPEG data URL and caches 64 by URL
+  (`ui/src/lib/pdf-thumbnail.ts`, `usePdfThumbnail`). A failed read or render keeps the icon/"PDF" placeholder. A V1
+  stack whose newest artifact is a PDF still shows the icon sheet. Image and video thumbnails and the click-to-preview
+  window were already shipped. UI only; the new dependency changes `pnpm-lock.yaml`, so the release is not a pure
+  UI-overlay (T1) release.
