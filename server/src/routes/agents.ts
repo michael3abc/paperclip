@@ -5977,6 +5977,23 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
+    // Liveness-first: a retry waiting for a provider reset (quota) or backoff was
+    // scheduled for the previous harness/model. When the Owner changes either,
+    // start those retries now with the new settings instead of keeping the wait.
+    const previousConfig = asRecord(existing.adapterConfig) ?? {};
+    const nextConfig = asRecord(agent.adapterConfig) ?? {};
+    if (existing.adapterType !== agent.adapterType || previousConfig.model !== nextConfig.model
+        || previousConfig.provider !== nextConfig.provider) {
+      const waiting = await db.select({ issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+          eq(heartbeatRuns.status, "scheduled_retry")));
+      for (const issueId of new Set(waiting.map(row => row.issueId).filter((value): value is string => Boolean(value)))) {
+        await heartbeat.retryScheduledRetryNow({ issueId, actor: { actorType: actor.actorType, actorId: actor.actorId } })
+          .catch(error => logger.warn({ err: error, agentId: agent.id, issueId }, "could not start a waiting retry after an agent model change"));
+      }
+    }
+
     res.json({ ...redactAgentRowForResponse(agent), ...redactAgentConfiguration(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
