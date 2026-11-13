@@ -716,7 +716,10 @@ describe("residual recovery production matrix", () => {
     await vi.waitFor(async () => expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].status).toBe("idle"));
     await quiet();
   });
-  it("reaches a silent run behind more than 100 suppressed live runs and leaves only real controller deadlines", async () => {
+  // Liveness-first rule 5: quiet runs on blocked sources are no longer exempt
+  // forever; the only remaining silence deadline is the 35 minute inactivity
+  // fallback of the oldest suppressed run.
+  it("reaches a silent run behind more than 100 suppressed live runs and leaves only real deadlines", async () => {
     const f = await fixture(), now = new Date(), old = new Date(now.getTime() - 20 * 60_000);
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issue.id));
     const expiry = new Date(now.getTime() + 60 * 60_000);
@@ -735,17 +738,18 @@ describe("residual recovery production matrix", () => {
     await start(); await advance(31_000);
     await vi.waitFor(async () => expect((await getRun(target.id)).status).toBe("succeeded"));
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.status, "running"))).toHaveLength(suppressed.length);
-    expect(deadlines.get("active-run-silence")!()).toBeNull();
+    const inactivityDeadline = old.getTime() + 35 * 60_000;
+    expect(deadlines.get("active-run-silence")!()).toBe(inactivityDeadline);
     const [agentState] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
     const grace = agentState.updatedAt.getTime() + 5 * 60_000;
     expect(agentState.status).toBe("running");
     expect(deadlines.get("stranded-agent-status")!()).toBe(grace);
     await advance(grace - Date.now() + 1);
     expect(deadlines.get("stranded-agent-status")!()).toBe(expiry.getTime());
-    expect(coordinator.nextWakeAt(), JSON.stringify([...deadlines].map(([name, at]) => [name, at()]))).toBe(expiry.getTime());
+    expect(coordinator.nextWakeAt(), JSON.stringify([...deadlines].map(([name, at]) => [name, at()]))).toBe(inactivityDeadline);
     const queries: string[] = [], prior = db.$client.options.debug;
     db.$client.options.debug = (_connection, query) => { queries.push(query); };
-    try { await advance(20 * 60_000); expect(queries).toEqual([]); }
+    try { await advance(inactivityDeadline - Date.now() - 1_000); expect(queries).toEqual([]); }
     finally { db.$client.options.debug = prior; }
   });
   it("reconciles nested rollback and dispatches only the outer committed orphan producer", async () => {
