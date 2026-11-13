@@ -1,6 +1,6 @@
 # Issue Workspace Runtime Controls
 
-Use this reference to choose task file placement or inspect and run workspace services. A workspace may be a plain task directory without a project or Git repository.
+Use this reference to choose task file placement or inspect and run workspace services. New execution workspaces are registered Git repository roots or linked worktrees. External-resource work may explicitly use session-only placement. Historical plain task directories remain readable; they are not new dispatch options.
 
 ## Discover the Workspace
 
@@ -18,7 +18,7 @@ Read `currentExecutionWorkspace`:
 - `status` / `closedAt` — whether the workspace is usable
 - `runtimeServices[]` — current services, including `serviceName`, `status`, `healthStatus`, `url`, `port`, and `runtimeServiceId`
 
-If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
+If `currentExecutionWorkspace` is `null`, the issue has no registered execution directory. For code work, select an open registered directory or the project's current default. A parent relationship alone is not workspace selection or execution authority.
 
 ## Choose Files and Repositories
 
@@ -26,13 +26,17 @@ If `currentExecutionWorkspace` is `null`, the issue does not currently have a re
 
 `PUT /api/issues/:issueId/workspace` accepts a stable `requestKey`, the inspected `expectedBindingRevision`, and one typed `selection`:
 
-- `{ "kind": "task_directory" }`: the task's separate directory.
-- `{ "kind": "existing", "workspaceId": "<authorized-id>" }`: intentionally reuse a workspace.
-- `{ "kind": "configured_source", "projectWorkspaceId": "<authorized-source-id>", "mode": "shared" }`: use its configured folder; `managed_isolated` requests an isolated checkout.
+- `{ "kind": "existing", "workspaceId": "<authorized-id>" }`: use this project's open registered Git repository root or linked worktree. Multiple tasks may share it.
+- `{ "kind": "session_only" }`: use the native session for external-resource work without an execution workspace.
+
+New worker tasks use the same selection or the project's current default. Do not
+send `configured_source`, `task_directory`, or request single-writer serialization.
+If no registered directory exists, the current project main uses the workspace
+lifecycle API to register it; ordinary data/model/service directories stay external.
 
 `POST /api/issues/:issueId/workspace/repositories` accepts a stable `requestKey`, optional `ref`, and `repository: { kind: "catalog", id: "<authorized-repository-id>" }`. Discover IDs with `list_project_repositories`. Existing public HTTPS GitHub URLs can use `{ kind: "url", url: "https://github.com/owner/repo" }`; URLs do not grant private credentials or create a remote repository.
 
-Root selections and repository preparation return `next_normal_admission`. The active process retains its root. Do not claim a queued checkout is ready or repeatedly request it. A different ref cannot silently reset an existing checkout. New noncoding work can proceed immediately in task files without any repository. Explicitly shared folders remain shared; do not remove them when finishing one task.
+Selections apply at the next normal admission. The active process retains its root. Do not claim a pending selection is ready or repeatedly request it. A different ref cannot silently reset an existing checkout. Noncoding external-resource work uses session-only placement. Main controls convergence, merge and retirement; finishing a task never removes the shared directory. Selection does not Retry or replay prior input.
 
 ## Control Services
 

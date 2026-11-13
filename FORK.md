@@ -1,5 +1,24 @@
 # Paperclip fork
 
+2026-11-13 new-worker dispatch correction: the main/PM dispatch guard shares the
+registered Git directory/session-only contract with task creation. Resolve explicit
+selections or the project default without requiring legacy configured_source or
+single-writer serialization. HTTP and Runner creation preserve the normalized
+selection, current worker grants and project/source/host boundaries. Historical
+restoration acceptance did not cover this new-task entry point; retain that gap
+and the original Comfyui dispatch failures rather than treating them as successes.
+
+The same repair series distinguishes a scheduled disposition repair suppressed
+before execution from unknown provider delivery. Its original scheduler event,
+source/episode, skipped-or-cancelled wake and absent execution/resource evidence
+must agree. Operator cancellation remains distinct; source history is retained.
+Explicit registration also adopts historical remote project-primary rows in place
+after owning-host Git evidence, without moving files or replaying their tasks.
+Project-main continuation uses the original accepted Owner Chat and a current
+run-authored handoff, with explicit task/run observations and a durable operation
+receipt. The route and queue retain unknown-delivery, cancellation, policy,
+supersession and human gates; no Board impersonation or empty-request bypass.
+
 2026-11-12 bootstrap native restoration: maintenance may replace a Bridge card
 before its null-native bootstrap authority has advanced. Permit a new admitted
 run to bind the published original native session only through current server
@@ -509,8 +528,9 @@ for main agents it renders as the `main-v1` "Worker 選用" table with option ID
 PROJECT.md, between the managed worker-policy markers, which agent-side bundle
 writes cannot change. A main agent's `POST /companies/:id/issues` that names a
 worker option or a policy worker is checked like a PM dispatch: same project,
-configured source selection, option expansion into worker/model overrides,
-serialized shared workspace and a review stage back to the main agent. Other
+workspace selection, option expansion into worker/model overrides, and a review
+stage back to the main agent. The original configured-source/single-writer gate
+is superseded by the 2026-11-13 cooperative dispatch correction above. Other
 issue creation by the main agent is unchanged. Without a saved policy nothing
 changes. The main agent is not a zero-slot PM and gains no PM decision authority.
 Commit `f92bdcc5b`. Released as a backend release (no schema change) after
