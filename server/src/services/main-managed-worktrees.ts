@@ -89,6 +89,19 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
       action: "workspace.lifecycle." + operation.action, entityType: "execution_workspace", entityId: scope.workspaceId,
       details: { operationId: operation.operationId, phase, generation: currentGeneration } });
   }
+  async function assertLegacyRemoteAdoptionIdle(connection: Db, row: Workspace) {
+    const [active] = await connection.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, row.companyId), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+      or(sql`${heartbeatRuns.contextSnapshot}->>'executionWorkspaceId' = ${row.id}`,
+        sql`exists (select 1 from ${issues} linked where linked.company_id = ${row.companyId}
+          and (linked.execution_workspace_id = ${row.id} or linked.id = ${row.sourceIssueId})
+          and (${heartbeatRuns.id} in (linked.checkout_run_id, linked.execution_run_id)
+            or ${heartbeatRuns.issueId} = linked.id or ${heartbeatRuns.nativeIssueId} = linked.id
+            or ${heartbeatRuns.contextSnapshot}->>'issueId' = linked.id::text
+            or ${heartbeatRuns.contextSnapshot}->>'taskId' = linked.id::text))`),
+    )).limit(1);
+    if (active) fail("worktree_registration_active_run");
+  }
   async function assertRetirable(row: Workspace, managed: MainManagedWorktree) {
     const participants = Object.values(managed.participants);
     if (participants.some(value => !value.runId)) fail("retire_blocked_participants");
@@ -126,13 +139,33 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
       const tx = transaction as unknown as Db;
       const current = await load(tx, scope), marker = readMainManagedWorktree(current?.metadata);
       if (!current || generation(current) !== generation(row) || marker?.pendingOperationId !== operation.operationId) fail("worktree_generation_conflict");
+      const [savedOperation] = await tx.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.id, operation.operationId), eq(workspaceOperations.companyId, scope.companyId),
+        eq(workspaceOperations.executionWorkspaceId, row.id), eq(workspaceOperations.phase, "main_managed_worktree"),
+      ));
+      const normalizeRemoteProvider = savedOperation?.metadata?.normalizeLegacyRemoteProvider === true;
+      if (normalizeRemoteProvider) {
+        const [source] = await tx.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, current!.projectWorkspaceId!), eq(projectWorkspaces.companyId, scope.companyId),
+          eq(projectWorkspaces.projectId, scope.projectId),
+        )).for("update");
+        if (operation.action !== "register" || hostInput.action !== "inspect" || savedOperation.metadata?.digest !== digest
+          || current!.providerType !== "local_fs" || current!.strategyType !== "project_primary" || current!.providerRef !== null
+          || current!.projectWorkspaceId !== row.projectWorkspaceId || current!.cwd !== row.cwd
+          || current!.sourceIssueId !== row.sourceIssueId || current!.closedAt || ["archived", "cleanup_failed"].includes(current!.status)
+          || source?.sourceType !== "remote_managed" || source.cwd !== hostInput.sourceCwd || source.cwd !== current!.cwd
+          || source.metadata?.hostId !== managed.hostId || !managed.hostId
+          || (current!.metadata?.hostId != null && current!.metadata.hostId !== managed.hostId)) fail("worktree_registration_coordinates_conflict");
+        await assertLegacyRemoteAdoptionIdle(tx, current!);
+      }
       const phase = operation.action === "retire" ? "retired" : operation.action === "merge" ? "merged" : "open";
       const receipt = { workspaceId: row.id, operationId: operation.operationId, phase, generation: generation(row), host: result };
       await tx.update(executionWorkspaces).set({ metadata: { ...current!.metadata, [MAIN_MANAGED_WORKTREE_KEY]: {
         ...marker, phase, pendingOperationId: null, lastReceipt: { operationId: operation.operationId, head: result.head, targetHead: result.targetHead },
-      } }, ...(phase === "retired" ? { status: "archived", closedAt: new Date() } : {}), updatedAt: new Date() }).where(eq(executionWorkspaces.id, row.id));
+      } }, ...(normalizeRemoteProvider ? { providerType: "remote_managed" } : {}),
+        ...(phase === "retired" ? { status: "archived", closedAt: new Date() } : {}), updatedAt: new Date() }).where(eq(executionWorkspaces.id, row.id));
       await tx.update(workspaceOperations).set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date(),
-        metadata: { digest, action: operation.action, generation: generation(row), hostInput, receipt } }).where(eq(workspaceOperations.id, operation.operationId));
+        metadata: { ...savedOperation?.metadata, digest, action: operation.action, generation: generation(row), hostInput, receipt } }).where(eq(workspaceOperations.id, operation.operationId));
       await audit(tx, scope, operation, phase, generation(row));
       return receipt;
     });
@@ -263,6 +296,7 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           if (row && generation(row) !== operation.expectedGeneration) fail("worktree_generation_conflict");
           let managed = readMainManagedWorktree(row?.metadata);
           let excludedRoots: string[] | undefined;
+          let normalizeLegacyRemoteProvider = false;
           if (row && isMainManagedExecutionWorkspace(row) && !managed) fail("worktree_marker_unrecognized");
           if (managed?.pendingOperationId) fail("worktree_operation_reconciliation_required");
           if (["create", "register", "initialize"].includes(operation.action)) {
@@ -311,10 +345,19 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
                 sql`${executionWorkspaces.metadata} ? ${MAIN_MANAGED_WORKTREE_KEY}`));
             if (duplicates.some(other => other.id !== scope.workspaceId
               && (!readMainManagedWorktree(other.metadata) || readMainManagedWorktree(other.metadata)?.hostId === sourceHost))) fail("worktree_already_registered");
+            // Old project-primary Bridge rows used the local provider label even
+            // for an explicitly registered remote source. Only read-only register
+            // may adopt that exact source; publish the provider correction after
+            // its host has proved the Git identity, never during intent creation.
+            normalizeLegacyRemoteProvider = Boolean(row && operation.action === "register" && sourceHost
+              && row.providerType === "local_fs" && row.strategyType === "project_primary"
+              && row.providerRef === null && row.cwd === source!.cwd
+              && (row.metadata?.hostId == null || row.metadata.hostId === sourceHost));
             if (row && (row.cwd !== cwd || row.projectWorkspaceId !== source!.id
               || (row.branchName !== null && row.branchName !== operation.branch)
-              || (sourceHost ? row.providerType !== "remote_managed" : !["local_fs", "git_worktree"].includes(row.providerType))
+              || (sourceHost ? row.providerType !== "remote_managed" && !normalizeLegacyRemoteProvider : !["local_fs", "git_worktree"].includes(row.providerType))
               || row.closedAt || ["archived", "cleanup_failed"].includes(row.status))) fail("worktree_registration_coordinates_conflict");
+            if (normalizeLegacyRemoteProvider) await assertLegacyRemoteAdoptionIdle(tx, row!);
             managed = { schema: MAIN_MANAGED_WORKTREE_SCHEMA, kind, phase: "converging", sourceCwd: source!.cwd!, parentDir: parent,
               branch: operation.branch!, targetBranch: operation.targetBranch!, hostId: sourceHost as string | null, participants: {}, pendingOperationId: null };
             if (!row) {
@@ -351,7 +394,9 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
               break;
             }
             case "converge": if (next.phase !== "open") fail("worktree_phase_conflict"); next.phase = "converging"; break;
-            case "reopen": if (next.phase === "open") fail("worktree_phase_conflict"); next.phase = "open"; break;
+            case "reopen":
+              if (!next.lastReceipt) fail("worktree_registration_incomplete");
+              if (next.phase === "open") fail("worktree_phase_conflict"); next.phase = "open"; break;
             case "merge":
               if (next.kind === "repository_root") fail("repository_root_metadata_lifecycle_only");
               if (!["converging", "merged"].includes(next.phase)) fail("worktree_must_converge"); hostAction = "merge"; break;
@@ -381,7 +426,8 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
             updatedAt: new Date() }).where(eq(executionWorkspaces.id, row!.id)).returning();
           await tx.insert(workspaceOperations).values({ id: operation.operationId, companyId: scope.companyId, executionWorkspaceId: row!.id,
             heartbeatRunId: scope.actor.runId, issueId: operation.issueId, phase: "main_managed_worktree", status: hostAction ? "running" : "succeeded",
-            finishedAt: hostAction ? null : new Date(), metadata: { digest, action: operation.action, generation: nextGeneration, hostInput, receipt } });
+            finishedAt: hostAction ? null : new Date(), metadata: { digest, action: operation.action, generation: nextGeneration, hostInput, receipt,
+              ...(normalizeLegacyRemoteProvider ? { normalizeLegacyRemoteProvider: true } : {}) } });
           await audit(tx, scope, operation, next.phase, nextGeneration);
           return { replay: hostAction ? null : receipt, row: saved!, managed: next, hostInput };
         });
