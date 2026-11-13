@@ -11,15 +11,14 @@ import {
 import { BRIDGE_SESSION_ADAPTER } from "../explicit-native-continuation.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { publishLiveEvent as publishLiveEventDefault } from "../live-events.js";
-import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
-import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
 
 export { BRIDGE_UNDISPATCHED_STOP_PROOF, BRIDGE_UNDISPATCHED_STOP_RECEIPT_SCHEMA, hasVerifiedBridgeUndispatchedStop, isUndispatchedStopCandidate, validUndispatchedStopProof };
 export const BRIDGE_STOP_REVERIFICATION_PROOF = "bridge_session_reverified";
 export const BRIDGE_STOP_REVERIFICATION_SCHEMA = "ccpocket.bridge-stop-reverification.v1";
 
-/** At most one adapter re-check per run per interval. An acknowledged stop notifies deferred receipts. */
+/** At most one adapter re-check per run per interval. Liveness-first: this is
+ * background, record-only evidence. A terminal run is already released by
+ * stop-settlement; nothing waits on (or is woken by) these receipts. */
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -108,8 +107,9 @@ export function hasVerifiedBridgeTerminalStop(run: Pick<Run, "id" | "status" | "
 }
 
 /**
- * Compare-and-set validated stop evidence without changing a failed outcome or inventing cancellation.
- * The exact existing cancellation and both recorded session IDs must still match; otherwise nothing is written.
+ * Record validated stop evidence without changing a failed outcome or inventing cancellation. The exact
+ * existing cancellation (requested, or already acknowledged at terminal) and both recorded session IDs must
+ * still match; otherwise nothing is written. Record-only: no waiter is notified.
  */
 async function acknowledgeBridgeStop(
   db: Db,
@@ -123,27 +123,21 @@ async function acknowledgeBridgeStop(
     ? { executionStopVerification: { schema: "paperclip.bridge-terminal-stop.v1",
         verifiedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof } }
     : { executionCancellation: { ...existing, state: "acknowledged", forced: false,
-        acknowledgedAt: options.at.toISOString(), proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) } };
-  // Opening this gate must wake the deferred interrupt receipts in the same
-  // commit; a stop acknowledged without a signal used to strand them.
-  const acknowledged = await db.transaction(async tx => {
-    await notifyRunStopSettlement(tx, { companyId: run.companyId, runId: run.id });
-    await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
-    if (typeof run.resultJson?.workspaceRecoveryActionId === "string")
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, run.resultJson.workspaceRecoveryActionId);
-    return tx.update(heartbeatRuns).set({
+        acknowledgedAt: typeof existing.acknowledgedAt === "string" ? existing.acknowledgedAt : options.at.toISOString(),
+        proof: options.proofKind, bridgeStopProof: proof, ...(options.extra ?? {}) } };
+  const acknowledged = await db.update(heartbeatRuns).set({
       resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
       updatedAt: options.at,
     }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
       eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, run.status), eq(heartbeatRuns.runtimeMode, "legacy"),
       failedWithoutCancellation ? sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation', 'null'::jsonb) = 'null'::jsonb`
-        : and(sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'requested'`,
+        : and(sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' in ('requested', 'acknowledged')`,
+          sql`${heartbeatRuns.resultJson}->'executionCancellation'->'bridgeStopProof' is null`,
           sql`coalesce(${heartbeatRuns.resultJson}->'executionCancellation'->>'forced', 'false') <> 'true'`,
           sql`${heartbeatRuns.resultJson}->'executionCancellation' = ${JSON.stringify(existing)}::jsonb`),
       sql`${heartbeatRuns.resultJson}->>'bridgeSessionId' = ${proof.bridgeSessionId}`,
       sql`${heartbeatRuns.resultJson}->>'nativeSessionId' = ${proof.nativeSessionId}`))
       .returning();
-  });
   const stopped = acknowledged[0] ?? null;
   if (stopped) {
     options.publishLiveEvent({
@@ -166,12 +160,7 @@ async function recordUndispatchedStop(
 ): Promise<Run | null> {
   const patch = { executionStopVerification: { schema: BRIDGE_UNDISPATCHED_STOP_RECEIPT_SCHEMA,
     verifiedAt: options.at.toISOString(), proof: BRIDGE_UNDISPATCHED_STOP_PROOF, bridgeStopProof: proof } };
-  const updated = await db.transaction(async tx => {
-    await notifyRunStopSettlement(tx, { companyId: run.companyId, runId: run.id });
-    await notifyDeferredExecutionWork(tx, { companyId: run.companyId });
-    if (typeof run.resultJson?.workspaceRecoveryActionId === "string")
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, run.resultJson.workspaceRecoveryActionId);
-    return tx.update(heartbeatRuns).set({
+  const updated = await db.update(heartbeatRuns).set({
       resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
       updatedAt: options.at,
     }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
@@ -182,11 +171,16 @@ async function recordUndispatchedStop(
       sql`coalesce(${heartbeatRuns.resultJson}->'executionStopVerification', 'null'::jsonb) = 'null'::jsonb`,
       sql`coalesce(${heartbeatRuns.resultJson}->'bridgeSessionId', 'null'::jsonb) = 'null'::jsonb`,
       sql`coalesce(${heartbeatRuns.resultJson}->'nativeSessionId', 'null'::jsonb) = 'null'::jsonb`)).returning();
-  });
   const stopped = updated[0] ?? null;
   if (stopped) options.publishLiveEvent({ companyId: stopped.companyId, type: "heartbeat.run.status",
     payload: buildHeartbeatRunStatusLiveEventPayload(stopped) });
   return stopped;
+}
+
+/** An unforced cancellation that still lacks bridge evidence (requested, or acknowledged at terminal). */
+function awaitingBridgeProof(cancellation: Record<string, unknown>) {
+  return ["requested", "acknowledged"].includes(String(cancellation.state)) && cancellation.forced !== true &&
+    cancellation.bridgeStopProof == null;
 }
 
 export const BRIDGE_HANDOFF_SETTLED_PROOF = "bridge_handoff_settled";
@@ -195,8 +189,9 @@ export type BridgeHandoffSettlement = "acknowledged" | "unverified" | "skipped";
 /**
  * After a successor run that took over a busy bridge session ends, record the stop of the interrupted
  * predecessor only from the adapter's own observation (`resultJson.bridgeHandoff.proof`). The successor must
- * have been admitted with that exact handoff; the predecessor must still be the requested, unforced bridge
- * cancellation it named. Without valid proof the predecessor is left unchanged. Never throws.
+ * have been admitted with that exact handoff; the predecessor must still be the unforced bridge cancellation
+ * it named (requested, or acknowledged at terminal without bridge proof). Record-only; without valid proof the
+ * predecessor is left unchanged. Never throws.
  */
 export async function settleBridgeHandoff(
   db: Db,
@@ -213,7 +208,7 @@ export async function settleBridgeHandoff(
         eq(heartbeatRuns.agentId, successor.agentId))).limit(1);
     if (!predecessor || !["cancelled", "timed_out"].includes(predecessor.status) || predecessor.runtimeMode !== "legacy") return "skipped";
     const cancellation = parseObject(predecessor.resultJson?.executionCancellation);
-    if (cancellation.state !== "requested" || cancellation.forced === true) return "skipped";
+    if (!awaitingBridgeProof(cancellation)) return "skipped";
     if (predecessor.resultJson?.bridgeSessionId !== admitted.bridgeSessionId ||
         predecessor.resultJson?.nativeSessionId !== admitted.nativeSessionId) return "skipped";
     if (await historicalAdapterType(db, predecessor) !== BRIDGE_SESSION_ADAPTER) return "skipped";
@@ -241,12 +236,11 @@ export async function settleBridgeHandoff(
 }
 
 /**
- * Server-owned reconciliation of a CC Pocket bridge run whose Stop was requested
- * but never confirmed by the adapter. The bridge has no host PID, so the only
- * acceptable stop proof is the adapter's read-only bridge re-check. Verified
- * proof is persisted with a compare-and-set on the exact requested cancellation
- * and then published; anything else leaves the hold unchanged. Forced stops are
- * never acknowledged, and nothing is replayed.
+ * Background, record-only re-check of a terminal CC Pocket bridge run. The
+ * adapter's read-only bridge observation is attached as evidence with a
+ * compare-and-set on the exact cancellation; anything else leaves the row
+ * unchanged. Nothing waits on the result: the terminal run has already released
+ * every gate. Forced stops are never marked bridge-verified, and nothing is replayed.
  */
 export function createBridgeStopReverification(db: Db, deps: BridgeStopReverificationDependencies) {
   const now = deps.now ?? Date.now;
@@ -259,8 +253,9 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
   function candidate(run: Run | undefined, companyId: string): run is Run {
     if (!run || run.companyId !== companyId || !["cancelled", "timed_out", "failed", "interrupted"].includes(run.status) || run.runtimeMode !== "legacy") return false;
     const cancellation = parseObject(run.resultJson?.executionCancellation);
-    const requested = ["cancelled", "timed_out"].includes(run.status) && cancellation.state === "requested" && cancellation.forced !== true;
-    const failed = ["failed", "interrupted"].includes(run.status) && run.resultJson?.executionCancellation == null;
+    const requested = ["cancelled", "timed_out"].includes(run.status) && awaitingBridgeProof(cancellation);
+    const failed = ["failed", "interrupted"].includes(run.status) && run.resultJson?.executionCancellation == null &&
+      run.resultJson?.executionStopVerification == null;
     return (requested || failed) &&
       nonEmpty(run.resultJson?.bridgeSessionId) && nonEmpty(run.resultJson?.nativeSessionId);
   }
@@ -320,7 +315,7 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
     if (!proof) {
       deps.onUnverified?.(result.verified ? "invalid_proof" : result.reason);
       logger.info({ runId: run.id, companyId: run.companyId, reason: result.verified ? "invalid_proof" : result.reason },
-        "bridge undispatched-run check did not confirm the stop; the hold is retained");
+        "bridge undispatched-run check did not confirm the stop; recorded as missing evidence only");
       return "unverified";
     }
     if (deps.signal?.aborted || deps.isRunActive(run.id)) return "skipped";
@@ -353,7 +348,7 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
     if (!proof) {
       deps.onUnverified?.(result.verified ? "invalid_proof" : result.reason);
       logger.info({ runId: run.id, companyId, reason: result.verified ? "invalid_proof" : result.reason },
-        "bridge stop re-verification did not confirm the stop; the hold is retained");
+        "bridge stop re-verification did not confirm the stop; recorded as missing evidence only");
       return "unverified";
     }
     if (deps.signal?.aborted || deps.isRunActive(run.id)) return "skipped";
@@ -371,7 +366,7 @@ export function createBridgeStopReverification(db: Db, deps: BridgeStopReverific
     const running = inFlight.get(runId);
     if (running) return running;
     const next = attempt(runId, companyId).catch(error => {
-      logger.warn({ err: error, runId, companyId }, "bridge stop re-verification failed; the hold is retained");
+      logger.warn({ err: error, runId, companyId }, "bridge stop re-verification failed; evidence not recorded");
       return "unverified" as const;
     }).finally(() => inFlight.delete(runId));
     inFlight.set(runId, next);

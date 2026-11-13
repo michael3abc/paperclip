@@ -33,7 +33,13 @@ import {
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
-import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import {
+  PROCESS_LOST_ERROR_CODE,
+  SERVER_SHUTDOWN_INTERRUPTED_ERROR_CODE,
+  runFailureBackoffMs,
+} from "../recovery/failure-classification.js";
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -268,6 +274,9 @@ export const CANCELLABLE_HEARTBEAT_RUN_STATUSES = [
 
 const NATIVE_QUESTION_CANCELLATION_CONTEXT_KEY = "nativeQuestionCancellation";
 
+/** Transient failures have no attempt cap (liveness-first rule 4). */
+const UNLIMITED_TRANSIENT_RETRY_ATTEMPTS = Number.MAX_SAFE_INTEGER;
+
 export const HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "succeeded",
   "interrupted",
@@ -419,12 +428,16 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     // A second process-loss retry would compete for the same outbox input.
     if (run.contextSnapshot?.wakeReason === CHAT_COMPLETION_WAKE_REASON &&
         Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds)) return null;
-    // Native sessions have their own fenced same-run controller. Legacy
-    // bootstrap recovery shares the durable delay and incident counter with
-    // transient retries; process loss must not open a second retry budget.
-    if (run.runtimeMode === "native" || await legacyExecutionNeedsReconciliationWithEvidence(db, run))
-      return null;
-    const scheduled = await scheduleBoundedRetryForRun(run, agent, { now });
+    // Liveness-first rule 1: a lost process or server restart leaves the prior
+    // outcome unknown. The run was abandoned and its locks released; resend it.
+    // Process loss is transient: unlimited attempts, backoff keyed on the
+    // consecutive failures already spent by this retry chain.
+    const attempt = executionFailureRetryCount(run) + 1;
+    const scheduled = await scheduleBoundedRetryForRun(run, agent, {
+      now,
+      delayMs: runFailureBackoffMs(attempt),
+      maxAttempts: UNLIMITED_TRANSIENT_RETRY_ATTEMPTS,
+    });
     return scheduled.outcome === "scheduled" ? scheduled.run : null;
   }
 
@@ -1264,16 +1277,18 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
       const interruptedStatus = await setRunStatusIfRunning(
         run.id,
-        "interrupted",
+        // Liveness-first: a shutdown leaves the provider outcome unknown. The
+        // run fails as transient and is resent after restart; nothing holds it.
+        "failed",
         {
           finishedAt: now,
           error: message,
-          errorCode: "server_shutdown_interrupted",
+          errorCode: SERVER_SHUTDOWN_INTERRUPTED_ERROR_CODE,
           signal,
-          resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+          resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
             conversationContinuationEligible: await runUsedConversationAdapter(db, run),
             resultJson: persistedCancellationResult,
-            errorCode: "server_shutdown_interrupted",
+            errorCode: SERVER_SHUTDOWN_INTERRUPTED_ERROR_CODE,
             errorMessage: message,
           }),
         },
@@ -1334,7 +1349,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           },
         });
 
-        await finalizeAgentStatus(run.agentId, "interrupted", message, {
+        // A server shutdown is not an agent error; keep the agent idle.
+        await finalizeAgentStatus(run.agentId, "failed", message, {
+          keepIdleOnFailure: true,
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
       };
@@ -2511,10 +2528,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       const monitorNextCheckAt = monitorIssueId
         ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
         : undefined;
-      const monitorDispatchLostWithoutFutureWake =
+      // The next scheduled monitor wake is itself the resend of a lost check.
+      const futureMonitorWakeScheduled =
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
-        monitorNextCheckAt !== undefined &&
-        (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
+        !!monitorNextCheckAt &&
+        monitorNextCheckAt.getTime() > now.getTime();
       const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
       if (!revokedState) continue;
       // A legacy controller persists "dispatching" in the same lease renewal
@@ -2530,14 +2548,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         run.controllerBootId !== legacyControllerBootId &&
         !revokedState.processPid &&
         !revokedState.processGroupId;
+      // Liveness-first rule 1: the previous process is gone, so this run's
+      // outcome is unknown. Abandon it, release its locks and resend it with
+      // unlimited transient backoff. Only a durable case handoff (which owns
+      // the successor work) or a future monitor wake replaces the resend.
       const shouldRetry =
-        !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
-        (run.processLossRetryCount ?? 0) < 1 &&
-        ((tracksLegacyLocalChild &&
-          (!!run.processPid || !!run.processGroupId)) ||
-          restartInterruptedBeforeDispatch ||
-          monitorDispatchLostWithoutFutureWake);
+        !futureMonitorWakeScheduled &&
+        !await pendingCaseHandoffForRun(db, run.id, run.companyId);
       const baseMessage = buildProcessLossMessage(run);
+      const failureMessage = shouldRetry ? `${baseMessage}; retrying automatically` : baseMessage;
       const processLossDiagnostic = buildProcessLossDiagnostic({
         run,
         nowMs: Date.now(),
@@ -2552,8 +2571,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         "failed",
         ["running"],
         {
-          error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          errorCode: "process_lost",
+          error: failureMessage,
+          errorCode: PROCESS_LOST_ERROR_CODE,
           finishedAt: now,
           resultJson: (() => {
             const result = mergeRunStopMetadataForAgent(
@@ -2568,10 +2587,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                     ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
                     : {}),
                 },
-                errorCode: "process_lost",
-                errorMessage: shouldRetry
-                  ? `${baseMessage}; retrying once`
-                  : baseMessage,
+                errorCode: PROCESS_LOST_ERROR_CODE,
+                errorMessage: failureMessage,
               },
             );
             return result;
@@ -2583,7 +2600,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         failureWrite.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: failureMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;

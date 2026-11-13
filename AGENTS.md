@@ -2,27 +2,22 @@
 
 Guidance for human and AI contributors working in this repository.
 
-Cancellation revokes automatic retry authority. Recheck the durable source at
-scheduling, persisted retry promotion and queued dispatch; task reopening is not
-authority to replay a cancelled execution. Only matching historical system
-resource-wait receipts with providerWorkStarted=false retain their original wait
-lane, and Stop overrides those receipts. Fresh explicit comments retain their own
-input receipt and never merge into a prior retry/continuation envelope, including
-after the locked coalescing recheck. Unknown delivered input remains denied.
-Independent human/project-main input also supersedes automatic retry of a failed
-predecessor. Save comments and reopen atomically under the issue lock; scheduling,
-promotion and queued dispatch inspect the durable comment before its wake exists.
-Retry ancestry cannot reset the input epoch or erase an ancestor cancellation. Worker output and interaction answers
-are not new execution intent; never alter the failed source or replay old input.
-A historical queued authority rejection is non-delivery only with its exact
-server gate event and skipped wake plus no retained provider/resource evidence.
-It cannot hold a later independently authorized saved comment; preserve the old
-run/input and any separate unknown source incident without replay.
-Successful-source disposition repairs obey that same independent-input fence;
-repair wakes and fresh comments never coalesce in either direction. Exact Bridge
-undispatched proof may leave remote instruction copies pending cleanup without
-holding a later input; preserve the copy and original provider/source identity.
-See `doc/execution-semantics.md`.
+Execution is liveness-first (Owner 2026-11-13). The binding source is
+`/home/michael/services/docs/agents/liveness-first.md`; it supersedes every
+fail-closed rule in this repository's docs (stop proof, settlement ladders,
+never-replay of unknown input, session-authority CAS, workspace admission gates,
+system-set pause/`needs_attention`/`uncertain`). Historical runs and receipts stay
+unchanged. An unknown prior outcome abandons that run, releases every lock, claim,
+holder and slot, and resends in the original native session if it still exists,
+else a new one, prefixed 「上一次可能已部分執行，先檢查現況再做」. A terminal status
+releases every gate; stop evidence is background best-effort. Failures are
+transient (30s×2ⁿ backoff capped at 30 min, unlimited, one notice at the 5th
+consecutive failure), deterministic (no auto retry, one notice per issue and code)
+or unknown (3 transient retries, then deterministic); see
+`server/src/services/recovery/failure-classification.ts`. Owner Stop/cancel and
+manual pause still apply and revoke automatic retry. New human or project-main
+input supersedes automatic retry of a failed predecessor and keeps its own input
+receipt. See `docs/agents/execution-semantics.md`.
 
 ## 1. Purpose
 
@@ -135,8 +130,8 @@ including stale worker-role contexts; preserve execution-policy reviews in the P
 home with the PM's own model. A shared Claude or Codex worker may serve multiple
 projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
-hold when changing this topology or reuse another task's native session. An
-open registered Git directory may be shared through the normal workspace selection.
+hold when changing this topology or reuse another task's native session. Any
+directory may be shared; placement follows the workspace = directory rule below.
 2. Keep contracts synchronized.
 If you change schema/API behavior, update all impacted layers:
 - `packages/db` schema and exports
@@ -150,8 +145,9 @@ If you change schema/API behavior, update all impacted layers:
 - Approval gates for governed actions
 - Budget hard-stop auto-pause behavior
 - Activity logging for mutating actions
-- Stop requires execution evidence, not a terminal status alone; pre-dispatch rejection proof requires the complete server-owned trace and no execution identity, lease, or finalizer.
-- External Runner reads classified by the server must settle definite failures as tool errors. Unknown mutation outcomes stay unresolved and must never be replayed as a new operation.
+- A terminal run status releases every gate (workspace, holders, slots, retirement); stop evidence is collected best-effort in the background and never blocks admission or dispatch.
+- External Runner reads classified by the server settle definite failures as tool errors. An unknown mutation outcome does not block: the run is resent with the liveness-first prefix so the agent checks current state before repeating it.
+- The system never sets an agent pause, `needs_attention`, `uncertain` or an Owner-intervention requirement; only the Owner pauses or cancels.
 4. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
@@ -286,26 +282,28 @@ Runner capability source anchors when legacy definitions move, and verify both
 catalog surfaces without granting session-only tools to heartbeat clients.
 
 
-Workspace admission is cooperative. Main-managed linked trees allow concurrent
-runs/tasks without physical-path, writer, historical cleanup or lease exclusion.
-Cancel revokes run writes immediately; task authority, native-session order,
-unknown input/operation outcomes, permissions and Owner holds remain independent.
-Session cwd, including /home/michael, never creates a recursive occupancy scope.
-Use revision-checked selection and lifecycle generation/operation receipts. Recheck
-never resends Stop/input. Destructive linked-worktree retirement still requires
-actual liveness, backup and ancestry evidence; no force removal or invented stop
-proof. Repository-root retirement only unregisters execution metadata, without
-deleting the directory or requiring a merge.
-An exact .git/info/exclude-only directory is ignore metadata even at the selected
-workspace root. It must remain an ordinary canonical directory without requiring
-Git. Empty, partial, symlinked or additional local Git metadata still requires Git
-validation. Execution workspaces require a registered repository root or linked Git worktree;
-external non-Git directories remain session-only resources without path claims.
+Workspace = directory. The run cwd is the run-requested cwd, else the agent's fixed
+cwd, else the project default cwd, else `~/.paperclip/instances/default/workspaces/<agentId>`;
+it is created with `mkdir -p` (over ssh on remote hosts). Admission, registration,
+generation/operation receipts, shared-checkout claims, fixed/isolated conflicts and
+host inspection never fail a run; mismatches are logged only. Any number of runs may
+share a directory; the per-issue execution lock still keeps one run per issue. Main
+agents may still create a Git worktree explicitly with the worktree tool; non-Git
+directories are never Git-initialized for dispatch. Session authority is
+last-writer-wins: a claim by a running, uncancelled run of the same task takes over
+(generation+1, prior authority revoked, `takeoverFrom` recorded). 30 minutes without a
+run event interrupts it as `inactivity_timeout`; the server cancels runs silent for 35
+minutes. A per-host in-memory circuit breaker (`server/src/services/host-circuit-breaker.ts`)
+defers wakes for an unavailable host instead of failing them. One-time cleanup:
+`paperclip ops liveness-reset --dry-run|--apply --receipt <path>`. Worktree retirement
+never force-removes and never deletes a directory with dirty or ignored files;
+repository-root retirement only unregisters metadata.
 
 # Moved details (read the file when the task touches the topic)
 
-- `docs/agents/execution-semantics.md` — Run retry/cancel/stop settlement, session authority, non-delivery and input-receipt rules
-- `docs/agents/workspace-admission.md` — Shared/registered Git worktree admission, registration, lifecycle, finalizers and retirement details
+- `/home/michael/services/docs/agents/liveness-first.md` — Binding liveness-first policy (Owner 2026-11-13); wins over any conflicting rule below
+- `docs/agents/execution-semantics.md` — Liveness-first run retry/cancel, unknown-outcome resend, failure classes, inactivity, session authority, input receipts
+- `docs/agents/workspace-admission.md` — Workspace = directory resolution, explicit worktree creation and safe retirement
 - `docs/agents/pm-agents.md` — Zero-slot PM policy, bundle layout, dispatch, read scope, worker policy, watchdog, homes
 - `docs/agents/decisions-and-review.md` — PM decision authority, review decisions, decision delegation, secret delegation, review recovery
 - `docs/agents/ui-features.md` — Sidebar status, coordinator sidebar, PDF preview, live work cards, worker-card collapse UI

@@ -9,7 +9,13 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { boundRunIssueId } from "../run-task-binding.js";
-import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
+import {
+  RUN_FAILURE_BACKOFF_BASE_MS,
+  UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS,
+  classifyRunFailure,
+  runFailureBackoffMs,
+} from "./failure-classification.js";
+import { maybePostTransientFailureStreakNotice } from "./transient-failure-notice.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -31,7 +37,7 @@ import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
 } from "./legacy-continuation.js";
-import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
+import { hasLiveLegacyController, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
@@ -524,52 +530,11 @@ function isTerminalIssueRun(latestRun: LatestIssueRun) {
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
 }
 
-const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
-  "adapter_failed",
-  "codex_transient_upstream",
-  "codex_harness_crash",
-  "claude_transient_upstream",
-  "provider_quota",
-  "timeout",
-  // The host lost run ownership before dispatch; no provider work began.
-  CONTROLLER_LEASE_LOST_FAILURE_CODE,
-]);
-
-const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
-  "project_access_denied",
-
-  // External native-session ownership must be reconciled before any new input.
-  "manual_takeover", "input_source_unknown", "history_incomplete", "session_busy",
-  "bridge_update_required", "background_state_unknown", "stop_unconfirmed",
-  "unresolved_run", "execution_uncertain", "binding_changed", "stale_run",
-  "native_provider_model_rejected",
-  "provider_tool_definition_invalid",
-  "adapter_engine_unavailable",
-  "agent_not_invokable",
-  "agent_not_found",
-  "budget_blocked",
-  "budget_exhausted",
-  "issue_paused",
-  "issue_dependencies_blocked",
-  // This is the fail-closed fallback for exceptions raised before an adapter
-  // process starts. Known transient preflight failures use dedicated bounded
-  // retry paths instead of generic issue continuation recovery.
-  "setup_failed",
-  // Setup owns the shared durable retry budget for temporary Git scans.
-  // Generic continuation must not retry permanent failures or reset that budget.
-  "workspace_git_scan_timeout",
-  "workspace_git_scan_saturated",
-  "workspace_git_scan_cancelled",
-  "workspace_git_scan_output_limit",
-  "workspace_git_scan_failed",
-  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE,
-  "low_trust_isolation_unavailable",
-  "low_trust_requires_isolated_workspace",
-  "low_trust_boundary_mismatch",
-  "low_trust_requires_sandbox_environment",
-  "low_trust_runtime_services_denied",
-]);
-
+// Liveness-first (rule 4): continuation recovery shares the run failure
+// classification. Transient codes (including every former ccpocket
+// "uncertain" code) retry without limit; deterministic codes notify once;
+// unknown codes get three transient attempts before being treated as
+// deterministic.
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
 // issue has a real waiting target we convert it into a normal dependency wait rather
@@ -578,9 +543,9 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE =
   "issue_continuation_waiting_on_review";
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
-const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
-const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
-const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = Number.POSITIVE_INFINITY;
+const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS;
+const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = RUN_FAILURE_BACKOFF_BASE_MS;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -766,7 +731,8 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  if (isAiAuthenticationBlocked(latestRun) || (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode))) {
+  const failureClass = classifyRunFailure(errorCode);
+  if (isAiAuthenticationBlocked(latestRun) || failureClass === "deterministic") {
     return {
       kind: "non_retryable",
       maxAttempts: 0,
@@ -774,7 +740,7 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+  if (failureClass === "transient") {
     return {
       kind: "transient_infra",
       maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
@@ -785,7 +751,7 @@ export function classifyContinuationFailure(
   return {
     kind: "default",
     maxAttempts: CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS,
-    baseBackoffMs: 0,
+    baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
     errorCode,
   };
 }
@@ -5729,6 +5695,9 @@ export function recoveryService(
               classification.errorCode,
             );
           if (consecutive >= classification.maxAttempts) {
+            // Only unknown failure codes reach this point (transient codes have
+            // no attempt limit): after three transient attempts they are treated
+            // as deterministic and notified once.
             const attemptCopy =
               consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const updated = await escalateStrandedAssignedIssue({
@@ -5737,10 +5706,10 @@ export function recoveryService(
               latestRun,
               notice: {
                 body:
-                  "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
-                title: "No live execution path",
+                  "Paperclip automatically retried continuation for this assigned `in_progress` issue, but it kept " +
+                  `failing with an unrecognized error${attemptCopy}. ` +
+                  "Automatic retries stopped because a retry is unlikely to fix it.",
+                title: "Continuation failed",
                 tone: "danger",
               },
             });
@@ -5753,11 +5722,18 @@ export function recoveryService(
             continue;
           }
 
+          if (classification.kind === "transient_infra" && latestRun) {
+            await maybePostTransientFailureStreakNotice(db, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              run: latestRun,
+              consecutiveFailures: consecutive + 1,
+            });
+          }
+
           if (classification.baseBackoffMs > 0 && latestFinishedAt) {
             const elapsed = Date.now() - latestFinishedAt.getTime();
-            const requiredDelay =
-              classification.baseBackoffMs *
-              Math.pow(2, Math.max(0, consecutive - 1));
+            const requiredDelay = runFailureBackoffMs(consecutive);
             if (elapsed < requiredDelay) {
               opts?.onDeferredDeadline?.(latestFinishedAt.getTime() + requiredDelay);
               result.skipped += 1;
@@ -5789,10 +5765,10 @@ export function recoveryService(
         recoveryOutcome.retryExhausted &&
         !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
       ) {
-        // The failed run's bounded transient retries are all spent, so no
-        // successor will ever be queued for it. Escalate rather than skip
-        // on every sweep forever: the issue would otherwise stay
-        // `in_progress` with no run and no path until a person noticed.
+        // The failed run is deterministic (or an unknown code that already
+        // used its three transient attempts), so no successor will be queued.
+        // Notify once rather than skip on every sweep forever. Transient
+        // failures never reach this branch: their retries are unlimited.
         // The live-path re-read guards the `blocked` write against a run or
         // wake that started after the loop's check.
         const updated = await escalateStrandedAssignedIssue({
@@ -5801,10 +5777,9 @@ export function recoveryService(
           latestRun,
           notice: {
             body:
-              "Paperclip retried this issue's run after it ended without finishing, but the bounded retry budget " +
-              "is spent and it still has no live execution path. " +
-              "Moving it to `blocked` so it is visible for intervention.",
-            title: "No live execution path",
+              "Paperclip stopped retrying this issue's run because it failed with an error that a retry " +
+              `cannot fix (\`${latestRun?.errorCode ?? "unknown"}\`).`,
+            title: "Run failed",
             tone: "danger",
           },
         });

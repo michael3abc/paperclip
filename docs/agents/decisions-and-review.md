@@ -1,6 +1,6 @@
 # decisions-and-review
 
-Moved verbatim from `AGENTS.md` on 2026-11-13. These rules and records stay binding; read this file before acting on the topic. PM decision authority, review decisions, decision delegation, secret delegation, review recovery
+Moved from `AGENTS.md` on 2026-11-13; read this file before acting on the topic. `/home/michael/services/docs/agents/liveness-first.md` (Owner 2026-11-13) is binding and wins over any conflicting statement here. PM decision authority, review decisions, decision delegation, secret delegation, review recovery
 
 Owner-issued `project-pm-decision-authority` is separate from company delegation.
 Its revision and explicit project list authorize current project PMs to decide
@@ -20,10 +20,10 @@ approval cards. Generic status PATCH and board-only stalled-review APIs remain
 unavailable to PMs. During an execution-policy review, generic HTTP mutations
 are also denied; hiding create_task from the tool catalog alone is insufficient.
 If shutdown failure released the review lock, only the finalizer may settle its
-saved decision after workspace repair. Require the original failed assessment,
-unchanged stage/version/assignment, actual stop evidence, released leases, no
-successor run and no task/agent pause. Recheck in the commit transaction; never
-grant lock-free tool authority or rerun the provider to recover a saved decision.
+saved decision. Require the original failed assessment, unchanged
+stage/version/assignment, a terminal original run (stop evidence is not required),
+no successor run and no Owner task/agent pause. Recheck in the commit transaction;
+never grant lock-free tool authority or rerun the provider to recover a saved decision.
 Completion-review interactions keep their existing route. Formal delegated approval
 POSTs require a current assigned request revision, an evidence-linked decision note
 and the independent Owner grant; generic API access never bypasses those checks.

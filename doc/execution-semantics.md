@@ -1,5 +1,19 @@
 # Execution Semantics
 
+> **Liveness-first (Owner 2026-11-13).** The binding source is
+> `/home/michael/services/docs/agents/liveness-first.md`, summarized in
+> `docs/agents/execution-semantics.md` and `docs/agents/workspace-admission.md`. It
+> supersedes every fail-closed rule below: stop proof and settlement ladders as gates,
+> never-replay of unknown outcomes, uncertain/`needs_attention` handoffs,
+> `binding_reconciliation_required`, permanent `agent_run_superseded`, session-authority
+> CAS, workspace registration/admission/shared-checkout claims/generation receipts,
+> fixed/isolated conflicts, host inspection, the three-admission startup budget,
+> convergence as an execution gate and cutover quiescence. An unknown prior outcome is
+> abandoned, every lock/claim/holder/slot is released and the work is resent with
+> 「上一次可能已部分執行，先檢查現況再做」; a terminal status releases every gate. The
+> sections below remain as historical design notes; where they conflict, liveness-first
+> wins. Safe retirement (never delete dirty/ignored files, never force-remove) is kept.
+
 ## Completed Paperclip worker cards
 
 Card collapse is a client preference, enabled by default for workers only.
@@ -72,6 +86,9 @@ This document explains how Paperclip interprets issue assignment, issue status, 
 ## 1. Core Model
 
 ### Shared-worktree safety baseline (2026-11-12)
+
+> Liveness-first: the `mainManagedWorktree` marker only protects a tree from deletion;
+> it never rejects execution. Workspace = the resolved directory, created with `mkdir -p`.
 
 The Owner-selected successor contract separates session cwd, linked Git execution
 worktrees and external resources. Its rollout starts with a rollback-safe baseline.
@@ -554,6 +571,10 @@ saved messages through normal admission. This rule does not prove a dispatched
 provider has stopped or change native cancellation acknowledgement.
 
 ### Known execution waits at admission
+
+> Liveness-first: execution holds, no-replay holds and reconciliation holds no longer
+> gate admission. An unknown prior outcome is abandoned and resent with the prefix; only
+> the per-issue execution lock and Owner pause/cancel still prevent a run.
 
 A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
 
@@ -1400,6 +1421,10 @@ A `blocked` issue is stalled when the unresolved blocker leaf has no active run,
 
 ## 9. Crash and Restart Recovery
 
+> Liveness-first: on startup, runs left `running` by the previous process become
+> `failed`/`process_lost` (transient) and are retried with the shared backoff; shutdown
+> interruptions use `server_shutdown_interrupted`. No recovery path parks work for the Owner.
+
 Paperclip now treats crash/restart recovery as a stranded-assigned-work problem, not just a stranded-run problem.
 
 There are two distinct failure modes.
@@ -1673,6 +1698,10 @@ This bounds both failure modes: a failed restoration retries instead of going si
 Task watchdogs must not silently mark source work done from prose comments, must not duplicate child trees for the same accepted plan revision, and must not create another task-watchdog issue for the same source issue.
 
 ## 12. Silent Active-Run Watchdog
+
+> Liveness-first: 30 minutes without a run event makes the adapter interrupt the run as
+> `inactivity_timeout` (transient); the server cancels any run silent for 35 minutes. Watchdog
+> signals never create a decision the Owner must clear.
 
 An active run can still be unhealthy even when its process is `running`. Paperclip treats prolonged output silence as a watchdog signal, not as proof that the run is failed.
 
@@ -2476,6 +2505,10 @@ An upgrade may encounter an already-active agent-owned recovery action. Papercli
 Create an issue-backed recovery action only when a separate issue is the right execution object. In that fallback form, the source issue remains visible and is blocked on the recovery issue when blocking is necessary for correctness. The recovery owner must restore a live path, resolve the source issue manually, delegate real follow-up work, or record the reason the signal is a false positive.
 
 ### Human Escalation
+
+> Liveness-first: the system never escalates by itself (no pause, `needs_attention`,
+> `uncertain` or Owner-intervention state). Escalation below is an agent's or Owner's choice;
+> deterministic failures only notify once per (issue, code).
 
 Human escalation is required when the next safe action depends on board judgment, budget/approval policy, or information unavailable to the control plane.
 
@@ -3803,6 +3836,10 @@ flow can settle them. Other obsolete graph/liveness actions retain normal cleanu
 
 ### Cancelling a workspace wait or an unfinished Bridge cancellation
 
+> Liveness-first: workspace waits no longer exist, and a terminal status releases every gate
+> immediately. Stop verification below runs in the background and never blocks admission,
+> dispatch, retirement or another run. Owner Cancel still applies.
+
 The task header's waiting-workspace banner, composer monitor strip, scheduled retry
 card, run detail and main-agent activity panel expose
 **Cancel run** for scheduled attempts. Cancellation targets that exact run through
@@ -3877,6 +3914,11 @@ notifies the existing settlement coordinator without a recurring scan; historica
 workspace waits are reconciled under the cooperative contract below.
 
 ### Physical workspace admission
+
+> Liveness-first: workspace = directory (run cwd > agent fixed cwd > project default cwd >
+> `~/.paperclip/instances/default/workspaces/<agentId>`), created with `mkdir -p`. Registration,
+> admission, shared-checkout claims, host inspection and generation receipts below are
+> superseded as gates; mismatches are logged only. Main agents may still create worktrees explicitly.
 
 Session cwd, execution worktree and external resources are separate. New code
 execution selects a registered Git repository root or linked worktree; the project main chooses its

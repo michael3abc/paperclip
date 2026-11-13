@@ -99,15 +99,19 @@ The first-parent inventory below includes retained consolidation history; it is 
 
 - `672478c734` fix: authorize PM project reads and enforce decision boundaries
 - `18c527ba2d` feat(ui): show project PM working and needs-input status in the sidebar
+- liveness-first (branch `michael/liveness-first`, Owner 2026-11-13; binding source `/home/michael/services/docs/agents/liveness-first.md`): single failure classifier (transient backoff 30s×2ⁿ capped at 30 min, deterministic notify-once, unknown→3 retries); last-writer-wins Bridge session authority (generation+1, `takeoverFrom`); removal of stop settlement, workspace holders, shared-checkout claims, workspace binding, host inspection and execution-reconciliation gates (workspace = directory with `mkdir -p`); per-host circuit breaker; 30/35 min inactivity fallback; shutdown/startup `process_lost`; `paperclip ops liveness-reset` CLI; docs
+  <!-- liveness-first commit SHAs: filled at commit time -->
 
 ## Release
 
 Develop on `michael/<topic>` with exclusive use of the project development checkout; create an additional worktree only for parallel work or an independent version. Merge into `michael/main` before building.
 Run only related tests, with commit/baseline-bound selection; never fall back to a full suite.
 Use the managed build/cutover procedures in `/home/michael/services/README.md`: build integrity, DB backup/history, required isolated upgrade, owned cutover and readiness.
-Preserve prior release for rollback and historical tasks/sessions; new dispatch is not a retry of old work.
+Preserve prior release for rollback and historical tasks/sessions; new dispatch is not a retry of old work, but runs interrupted by cutover (preempt-restart, no idle-fleet quiescence) are resent under liveness-first rule 1.
 
 # Moved details (read the file when the task touches the topic)
+
+Liveness-first (`/home/michael/services/docs/agents/liveness-first.md`) supersedes the execution gates, stop proof, never-replay and Owner-escalation rules in the workspace, Bridge lifecycle, retry/recovery and PM/main-agent files below; their feature descriptions remain.
 
 - `docs/fork/workspace-git-admission.md` — Git workspace registration, shared worktree admission, fixed directories, placement
 - `docs/fork/bridge-run-lifecycle.md` — Bridge stop settlement/proof, interrupt handoff, resident authority, chat preemption

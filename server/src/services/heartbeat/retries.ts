@@ -26,6 +26,13 @@ import {
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
+import {
+  UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS,
+  classifyRunFailure,
+  runFailureBackoffMs,
+  shouldAutoRetryRunFailure,
+} from "../recovery/failure-classification.js";
+import { maybePostTransientFailureStreakNotice } from "../recovery/transient-failure-notice.js";
 import { createHash, randomUUID } from "node:crypto";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import {
@@ -379,6 +386,10 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
 
 export { normalizeAgentNameKey };
 
+function formatRetryLimit(maxAttempts: number) {
+  return Number.isFinite(maxAttempts) ? String(maxAttempts) : "unlimited";
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -451,14 +462,29 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(
-      0,
-      Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
-      ),
-    );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
+    // Liveness-first (rule 4): failure retries follow the shared failure
+    // classification. Transient codes retry without limit, unknown codes get
+    // three transient attempts (counted over consecutive same-code failures),
+    // deterministic codes get none. Explicit caps remain for resource-wait and
+    // productive-continuation lanes (AI subscription waits, max-turn).
+    const failureClassBudget =
+      opts?.maxAttempts == null &&
+      retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON;
+    const failureClass = failureClassBudget
+      ? classifyRunFailure(run.errorCode)
+      : null;
+    const maxAttempts = !failureClassBudget
+      ? Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS))
+      : failureClass === "transient"
+        ? Number.POSITIVE_INFINITY
+        : failureClass === "unknown"
+          ? (await countConsecutiveSameCodeFailures(run, UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS + 1)) <=
+              UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS
+            ? Number.POSITIVE_INFINITY
+            : 0
+          : 0;
     const computedBaseSchedule =
       opts?.delayMs != null
         ? nextAttempt <= maxAttempts
@@ -473,11 +499,19 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : null
         : nextAttempt <= maxAttempts
-          ? computeBoundedTransientHeartbeatRetrySchedule(
-              nextAttempt,
-              now,
-              opts?.random,
-            )
+          ? failureClassBudget
+            ? {
+                attempt: nextAttempt,
+                baseDelayMs: runFailureBackoffMs(nextAttempt),
+                delayMs: runFailureBackoffMs(nextAttempt),
+                dueAt: new Date(now.getTime() + runFailureBackoffMs(nextAttempt)),
+                maxAttempts,
+              }
+            : computeBoundedTransientHeartbeatRetrySchedule(
+                nextAttempt,
+                now,
+                opts?.random,
+              )
           : null;
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
@@ -508,7 +542,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: `Bounded retry exhausted after ${consumedAttempts} scheduled attempts; no further automatic retry will be queued`,
+        message: failureClassBudget
+          ? `No automatic retry: failure code ${run.errorCode ?? "(none)"} is not retryable (${failureClass === "unknown" ? "unknown code after three attempts" : "deterministic"})`
+          : `Bounded retry exhausted after ${consumedAttempts} scheduled attempts; no further automatic retry will be queued`,
         payload: exhaustion,
         retryExhaustion: exhaustion,
       });
@@ -1297,7 +1333,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: `Reused existing continuation retry ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
+        message: `Reused existing continuation retry ${retryRun.scheduledRetryAttempt}/${formatRetryLimit(schedule.maxAttempts)}`,
         payload: {
           retryRunId: retryRun.id,
           retryReason,
@@ -1321,7 +1357,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: `Scheduled bounded retry ${schedule.attempt}/${schedule.maxAttempts} for ${schedule.dueAt.toISOString()}`,
+      message: `Scheduled bounded retry ${schedule.attempt}/${formatRetryLimit(schedule.maxAttempts)} for ${schedule.dueAt.toISOString()}`,
       payload: {
         retryRunId: retryRun.id,
         retryReason,
@@ -1361,6 +1397,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       });
     }
 
+    if (failureClassBudget) {
+      // One informational notice per streak; it never blocks the retry.
+      await maybePostTransientFailureStreakNotice(db, {
+        companyId: run.companyId,
+        issueId: issueId ?? readNonEmptyString(contextSnapshot.issueId),
+        run,
+        consecutiveFailures: schedule.attempt,
+      });
+    }
+
     return {
       outcome: "scheduled" as const,
       run: retryRun,
@@ -1368,6 +1414,36 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       attempt: schedule.attempt,
       maxAttempts: schedule.maxAttempts,
     };
+  }
+
+  /**
+   * Counts consecutive failures with the same error code along the retry
+   * chain, starting at `run` (inclusive), stopping at `limit`.
+   */
+  async function countConsecutiveSameCodeFailures(
+    run: typeof heartbeatRuns.$inferSelect,
+    limit: number,
+  ) {
+    let count = 1;
+    let previousId = run.retryOfRunId ?? readNonEmptyString(parseObject(run.contextSnapshot).retryOfRunId);
+    const seen = new Set<string>([run.id]);
+    while (previousId && count < limit && !seen.has(previousId)) {
+      seen.add(previousId);
+      const [previous] = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, previousId)))
+        .limit(1);
+      if (!previous || previous.status === "succeeded" || (previous.errorCode ?? null) !== (run.errorCode ?? null)) break;
+      count += 1;
+      previousId = previous.retryOfRunId;
+    }
+    return count;
   }
 
   // Finds a running heartbeat run (other than the caller's) whose context

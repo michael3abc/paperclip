@@ -1,5 +1,13 @@
 # Automatic task recovery
 
+> Liveness-first (Owner 2026-11-13, binding source
+> `/home/michael/services/docs/agents/liveness-first.md`): unknown execution, missing stop or
+> cleanup proof and unsettled receipts no longer keep a request held. The prior run is
+> abandoned, every lock/claim/holder/slot is released and the work is resent with
+> 「上一次可能已部分執行，先檢查現況再做」; failures retry by class (see
+> `docs/agents/execution-semantics.md`). Operator Stop/cancel still prevents automatic resend,
+> and file preservation (never delete dirty or ignored files) is unchanged.
+
 Infrastructure recovery belongs to the system. A task shows one working state,
 one scheduled retry, or an ordinary **Retry** action. Approval, credentials,
 assignment, budget and deliberate pause remain separate user decisions.

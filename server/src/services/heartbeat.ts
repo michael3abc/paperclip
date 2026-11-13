@@ -103,7 +103,6 @@ import {
   createHeartbeatRecovery,
 } from "./heartbeat/recovery.js";
 import {
-  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   isWorkspaceBusyDeferral,
   createHeartbeatRetries,
 } from "./heartbeat/retries.js";
@@ -311,6 +310,7 @@ import {
   createAdapterExecutionControl,
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { shouldAutoRetryRunFailure } from "./recovery/failure-classification.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
@@ -1013,12 +1013,11 @@ export function heartbeatService(
       const result = await scheduleBoundedRetryForRun(run, agent);
       return result.outcome === "scheduled" ? result.run : null;
     },
-    // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
-    // or interrupted run that has already consumed every bounded transient
-    // attempt cannot be retried again through this lane.
+    // Mirrors scheduleBoundedRetryForRun's failure classification: transient
+    // failures retry without limit, so only deterministic codes (and unknown
+    // codes after three transient attempts) report a spent budget.
     transientRetryBudgetSpent: (run) =>
-      executionFailureRetryCount(run) >=
-      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+      !shouldAutoRetryRunFailure(run.errorCode, executionFailureRetryCount(run) + 1),
   });
   const runDispatch = createRunDispatch(db);
   const {
