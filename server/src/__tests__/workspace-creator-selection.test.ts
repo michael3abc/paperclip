@@ -95,7 +95,9 @@ describe("workspace creator repair selection through the public route", () => {
       const response = await request(f.app).post(url).send(body);
       const [task] = await db.select().from(issues).where(eq(issues.id, f.taskId));
       const action = await f.read();
-      if (kind === "session_only" || kind === "open") {
+      // Liveness-first: an unregistered or converging tree is a directory like
+      // any other; only foreign company/project selections still refuse.
+      if (kind === "session_only" || kind === "open" || kind === "converging" || kind === "unregistered") {
         expect(response.body.error ?? response.status).toBe(200);
         expect(task).toMatchObject({ status: "todo", workspaceBindingRevision: 1,
           workspacePendingSelection: { intent: { selection } } });
@@ -106,7 +108,7 @@ describe("workspace creator repair selection through the public route", () => {
         expect(conflicting.status).toBe(409);
         expect((await f.read()).evidence).toEqual(action.evidence);
       } else {
-        expect(response.status).toBe(kind === "converging" || kind === "unregistered" ? 409 : 403);
+        expect(response.status).toBe(403);
         expect(task).toMatchObject({ status: "blocked", workspaceBindingRevision: 0, workspacePendingSelection: null });
         expect(action.status).toBe("active");
         expect(creatorRecovery(action.evidence)?.repair).toBeUndefined();

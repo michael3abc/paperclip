@@ -445,7 +445,8 @@ describe("workspace creator recovery", () => {
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
     await workspaceCreatorDelivery(db, owner).check(f.action.id);
     expect(owner.cancelRun).not.toHaveBeenCalled();
-    expect(owner.wakeup).toHaveBeenCalledTimes(["acknowledged", "requested"].includes(stop) ? 1 : 0);
+    // Liveness-first: a forced stop acknowledged at terminal status is a stop too.
+    expect(owner.wakeup).toHaveBeenCalledTimes(["acknowledged", "requested", "forced"].includes(stop) ? 1 : 0);
   });
 
   it("shared-worktree rule: main working on another task is never preempted by recovery", async () => {
@@ -460,7 +461,9 @@ describe("workspace creator recovery", () => {
     expect(owner.cancelRun).not.toHaveBeenCalled(); expect(owner.wakeup).not.toHaveBeenCalled();
   });
 
-  it("admits at most three distinct failures across actions, counting pending and uncertain receipts", async () => {
+  // Liveness-first: no admission limit hands the task to the Owner; repeated
+  // repairs are spaced by the shared failure backoff from the last admission.
+  it("admits every distinct failure after backoff across actions, counting pending and uncertain receipts", async () => {
     const f = await fixture();
     let action = f.action, failedRunId = f.failedRunId;
     let priorActionId: string | null = null;
@@ -486,12 +489,17 @@ describe("workspace creator recovery", () => {
         await db.update(issueRecoveryActions).set({ evidence: { ...prior.evidence,
           creatorRecovery: { ...settled, repair: { ...settled.repair, status: "queued" } },
         } }).where(eq(issueRecoveryActions.id, priorActionId));
+        // A settled admission still waits out its backoff before the next repair.
+        expect(await routeWorkspaceToCreator(db, action, { requestKey: action.id })).toBeNull();
+        await db.update(issueRecoveryActions).set({ evidence: { ...prior.evidence,
+          creatorRecovery: { ...settled, repair: { ...settled.repair, status: "queued",
+            admittedAt: new Date(Date.now() - 60 * 60_000).toISOString() } },
+        } }).where(eq(issueRecoveryActions.id, priorActionId));
       }
       const routed = await db.transaction(async tx => {
         await tx.select().from(issues).where(eq(issues.id, f.taskId)).for("update");
         return routeWorkspaceToCreator(tx as unknown as typeof db, action, { requestKey: action.id });
       });
-      if (attempt === 4) { expect(routed).toBeNull(); break; }
       expect(routed).not.toBeNull();
       const body = { actionId: action.id, outcome: "restored", sourceIssueStatus: "todo", resolutionNote: "Repair evidence",
         workspaceRepair: { failedRunId, expectedBindingRevision: attempt - 1 } };
@@ -514,11 +522,13 @@ describe("workspace creator recovery", () => {
       priorActionId = action.id;
     }
     const notices = await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId));
-    expect(notices).toHaveLength(3);
-    expect(notices.map(n => n.body).join(" ")).toContain("3/3");
+    expect(notices).toHaveLength(4);
+    expect(notices.map(n => n.body).join(" ")).toContain("第 4 次自動修復");
+    expect(notices.map(n => n.body).join(" ")).not.toContain("交給 Owner");
     const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.taskId));
-    expect(actions.filter(a => creatorRecovery(a.evidence)?.repair)).toHaveLength(3);
-    expect(actions.find(a => a.id === action.id)?.ownerType).toBe("board");
+    expect(actions.filter(a => creatorRecovery(a.evidence)?.repair)).toHaveLength(4);
+    // The fourth failure is routed to the creator too, never left to the board.
+    expect(actions.find(a => a.id === action.id)?.ownerType).toBe("agent");
   });
 
   it("Owner changes and a consumed recovery cannot be overwritten by another repair", async () => {
@@ -660,7 +670,10 @@ describe("workspace creator recovery", () => {
     await expect(reconcileWorkspaceHolder(db, input, reverify, { observe: boot(3600), breaker })).rejects.toThrow(/holderless/);
   });
 
-  it("runs full failure, main-created linked worktree repair and original worker admission while preserving dirty files", async () => {
+  // Liveness-first (workspace = directory): a dirty shared checkout no longer
+  // fails preparation, so the worker runs in its configured source directly and
+  // no creator repair is needed; the other task's dirty files stay untouched.
+  it("runs the worker in a dirty shared checkout without a workspace repair while preserving dirty files", async () => {
     const f = await fixture(), root = await mkdtemp(join(tmpdir(), "workspace-admission-"));
     vi.stubEnv("PAPERCLIP_HOME", join(root, "home")); vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "false");
     const heartbeat = heartbeatService(db);
@@ -687,72 +700,24 @@ describe("workspace creator recovery", () => {
       await db.update(issues).set({ status: "todo", responsibleUserId: f.owner,
         workspaceSelection: { version: 1, source: "explicit", selection: { kind: "configured_source", projectWorkspaceId: f.workspace.id, mode: "shared" } },
       }).where(eq(issues.id, f.taskId));
-      const failed = await heartbeat.wakeup(f.workerId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: f.taskId } });
-      expect(failed).not.toBeNull();
-      await drainHeartbeatRunsToQuiescence(db, heartbeat);
-      expect(await heartbeat.getRun(failed!.id)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
-      expect(execute).not.toHaveBeenCalled();
-      await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.taskId });
-      const [action] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.taskId), eq(issueRecoveryActions.status, "active")));
-      expect(action).toBeDefined();
-      expect(action.evidence.workspaceCreatorCandidate).toBe(true);
-      expect(action.evidence.workspaceCreatorMaxRepairs).toBe(3);
-      expect(creatorRecovery(action.evidence)).toBeNull();
-      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.conversationId))).toHaveLength(0);
-      const delivery = workspaceCreatorDelivery(db, { wakeup: heartbeat.wakeup, cancelRun: heartbeat.cancelRun, schedulingSuppressed: async () => false });
       execute.mockImplementation(async input => {
         await input.onSessionAuthority({ hostId: "fixture-host", provider: "claude",
           nativeSessionId: "fixture-native-" + input.agent.id, bridgeSessionId: "fixture-bridge-" + input.agent.id,
           operationId: randomUUID(), expectedGeneration: 0, expectedPreviousRunId: null });
-        if (input.agent.id === f.mainId) {
-          const current = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0];
-          const state = creatorRecovery(current.evidence)!;
-          expect(input.context.issueId).toBe(f.conversationId);
-          expect(input.context.wakeCommentId).toBe(state.commentId);
-          const app = express(); app.use(express.json()); app.use((req,_res,next) => {
-            req.actor = { type: "agent", source: "agent_jwt", companyId: f.companyId, agentId: f.mainId, runId: input.runId }; next();
-          }); app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
-          const worktrees = mainManagedWorktreeService(db);
-          const scope = { companyId: f.companyId, projectId: f.projectId, workspaceId: selectedWorkspaceId,
-            actor: { type: "agent" as const, source: "agent_jwt" as const, companyId: f.companyId,
-              agentId: f.mainId, runId: input.runId, onBehalfOfUserId: f.owner } };
-          const expectedHead = execFileSync("git", ["-C", dirty, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-          await worktrees.operate(scope, { action: "create", operationId: randomUUID(), expectedGeneration: 0,
-            expectedHead, expectedTargetHead: expectedHead,
-            projectWorkspaceId: f.workspace.id, name: "repair", branch: "repair", targetBranch: "main" });
-          const [registered] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, selectedWorkspaceId));
-          await worktrees.operate(scope, { action: "set_default", operationId: randomUUID(),
-            expectedGeneration: Number(registered.metadata?.lifecycleGeneration ?? 0) });
-          const response = await request(app).post("/api/issues/" + f.taskId + "/recovery-actions/resolve").send({ actionId: action.id,
-            outcome: "restored", sourceIssueStatus: "todo", resolutionNote: "Select another authorized source; preserve existing draft.",
-            workspaceRepair: { failedRunId: failed!.id, expectedBindingRevision: 0,
-              selection: { kind: "existing", workspaceId: selectedWorkspaceId } } });
-          expect(response.body.error ?? response.status).toBe(200);
-        } else {
-          expect(input.context.managedWorktreeParticipation.workspaceId).toBe(selectedWorkspaceId);
-          expect(input.context.paperclipWorkspace.cwd).toBe(join(treeParent, "repair"));
-          await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.taskId));
-        }
-        return { exitCode: 0, signal: null, timedOut: false, resultJson: { nativeSessionId: "fixture-native-" + input.agent.id, bridgeSessionId: "fixture-bridge-" + input.agent.id,
-          nativeTurnId: input.runId, bridgeInputReceipt: { schema: "paperclip.bridge-input.v1", runId: input.runId,
-            nativeSessionId: "fixture-native-" + input.agent.id, bridgeSessionId: "fixture-bridge-" + input.agent.id,
-            clientMessageId: input.runId, acceptedSeq: 1 } } };
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.taskId));
+        return { exitCode: 0, signal: null, timedOut: false, resultJson: { nativeSessionId: "fixture-native-" + input.agent.id,
+          bridgeSessionId: "fixture-bridge-" + input.agent.id, nativeTurnId: input.runId } };
       });
-      await delivery.check(action.id);
-      if (!creatorRecovery((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].evidence)) await delivery.check(action.id);
+      const run = await heartbeat.wakeup(f.workerId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: f.taskId } });
+      expect(run).not.toBeNull();
       await drainHeartbeatRunsToQuiescence(db, heartbeat);
-      await delivery.check(action.id);
-      await drainHeartbeatRunsToQuiescence(db, heartbeat);
-      // Candidate routing, creator delivery and repair admission are separate
-      // durable coordinator events. Drain the repair intent after the main turn.
-      await delivery.check(action.id);
-      await drainHeartbeatRunsToQuiescence(db, heartbeat);
-      const task = (await db.select().from(issues).where(eq(issues.id, f.taskId)))[0];
-      const diagnostic = { action: (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0],
-        wakes: await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,f.companyId)),
-        runs: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.companyId))).map(r => ({ id:r.id, status:r.status, error:r.error, result:r.resultJson })) };
-      expect(task, JSON.stringify(diagnostic)).toMatchObject({ status: "done", assigneeAgentId: f.workerId, executionWorkspaceId: selectedWorkspaceId });
-      expect(execute.mock.calls.map(([input]) => input.agent.id)).toEqual([f.mainId, f.workerId]);
+      const finished = await heartbeat.getRun(run!.id);
+      expect(finished?.errorCode).not.toBe("workspace_validation_failed");
+      expect(execute.mock.calls.map(([input]) => input.agent.id)).toEqual([f.workerId]);
+      expect(await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.taskId),
+        eq(issueRecoveryActions.status, "active")))).toHaveLength(0);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.conversationId))).toHaveLength(0);
+      expect(selectedWorkspaceId).toBeTypeOf("string");
       expect(await readFile(join(dirty,"draft.txt"), "utf8")).toBe("another task's unchanged work");
     } finally {
       await drainHeartbeatRunsToQuiescence(db, heartbeat); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true });
