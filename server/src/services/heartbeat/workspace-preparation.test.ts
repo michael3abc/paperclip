@@ -13,6 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { heartbeatService } from "../heartbeat.js";
+import { issueService } from "../issues.js";
 import { registerServerAdapter, unregisterServerAdapter, findServerAdapter, getServerAdapter, type AdapterExecutionContext } from "../../adapters/index.js";
 import { environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { environmentService } from "../environments.js";
@@ -440,6 +441,84 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     }
     expect(await readIssue(issue.id)).toEqual(before);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workerWorkspace.id)))[0]).toEqual(workerWorkspace);
+  });
+
+  it("runs explicit session-only external work through create, persistence and provider without adopting the project source", async () => {
+    const { input, source, issue } = await fixture();
+    const userId = "external-owner-" + randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Owner", email: userId + "@example.test", createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: issue.companyId, principalId: userId, principalType: "user", membershipRole: "owner", status: "active" });
+    await db.update(companies).set({ defaultResponsibleUserId: userId, issueCounter: 1 }).where(eq(companies.id, issue.companyId));
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.run.id));
+    await db.update(agents).set({ status: "idle", runtimeConfig: { requireProjectWorkspace: true,
+      heartbeat: { enabled: false, wakeOnDemand: true } } }).where(eq(agents.id, input.agent.id));
+    // New contract: explicit external work does not require, repair or acquire a Git source.
+    await db.update(projectWorkspaces).set({ cwd: join(home, "unavailable-project-source") }).where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
+    const service = issueService(db);
+    await expect(service.create(issue.companyId, { projectId: issue.projectId, title: "Code without selection",
+      assigneeAgentId: input.agent.id, createdByUserId: userId })).rejects.toMatchObject({ details: { reason: "execution_worktree_required" } });
+    const created = await service.create(issue.companyId, { projectId: issue.projectId, title: "Read external research", status: "todo",
+      assigneeAgentId: input.agent.id, createdByUserId: userId, workspaceSelection: { kind: "session_only" },
+      workspaceSelectionActor: { type: "board", source: "session", userId } });
+    expect(await readIssue(created.id)).toMatchObject({ workspaceSelection: { source: "explicit", selection: { kind: "session_only" } },
+      executionWorkspaceSettings: { sessionOnly: true }, executionWorkspaceId: null, projectWorkspaceId: null });
+    const original = getServerAdapter("process");
+    const executed = vi.fn(async (execution: AdapterExecutionContext) => {
+      expect(execution.context.sessionOnly).toBe(true);
+      expect(execution.context.sharedCheckoutClaim).toBeUndefined();
+      expect(execution.context.managedWorktreeParticipation).toBeUndefined();
+      expect(execution.context.paperclipWorkspace).toMatchObject({ workspaceId: null, repoUrl: null, repoRef: null });
+      expect((execution.context.paperclipWorkspace as { cwd: string }).cwd).not.toBe(source);
+      expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.sourceIssueId, created.id))).toHaveLength(0);
+      await service.addComment(created.id, "External evidence inspected.", { agentId: input.agent.id, runId: execution.runId });
+      await service.update(created.id, { status: "done", actorAgentId: input.agent.id, actorRunId: execution.runId });
+      return { exitCode: 0, signal: null, timedOut: false, summary: "Read external evidence" };
+    });
+    registerServerAdapter({ ...original, supportsLocalAgentJwt: false, execute: executed });
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.wakeup(input.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+        requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: created.id }, contextSnapshot: { issueId: created.id } });
+      await heartbeat.drainActiveRunExecutions();
+      expect(run).not.toBeNull(); expect(await readRun(run!.id)).toMatchObject({ status: "succeeded", errorCode: null });
+      expect(executed).toHaveBeenCalledOnce();
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.issueId, created.id))).toEqual([{ id: run!.id }]);
+      expect((await readIssue(created.id)).executionWorkspaceId).toBeNull();
+      expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
+    } finally { await heartbeat.drainActiveRunExecutions(); registerServerAdapter(original); }
+  });
+
+  it.each(["missing_intent", "wake_only", "strict_worktree", "remote", "remote_missing_cwd", "low_trust", "native_bound"])("keeps explicit session-only admission scoped: %s", async kind => {
+    const { input, issue } = await fixture();
+    input.agent.runtimeConfig = { requireProjectWorkspace: true, ...(kind === "strict_worktree" ? { requireTaskWorktree: true } : {}) };
+    input.task.issueRef!.projectWorkspaceId = null;
+    input.task.workspaceSelection = { version: 1, source: "explicit", selection: { kind: "session_only" } };
+    input.policy.issueExecutionWorkspaceSettings = { sessionOnly: true, mode: "shared_workspace" };
+    if (kind === "missing_intent") input.task.workspaceSelection = null;
+    if (kind === "wake_only") { input.policy.issueExecutionWorkspaceSettings = null; input.task.context.sessionOnly = true; }
+    if (kind === "native_bound") input.reuse.persistedNativeExecutionInput = { binding: { executionWorkspaceId: randomUUID() } } as typeof input.reuse.persistedNativeExecutionInput;
+    if (kind === "low_trust") input.policy.trustPreset = { kind: "low_trust_review", preset: "low_trust_review", sourcePresets: {},
+      boundary: { mode: "low_trust_review", companyId: input.agent.companyId, rootIssueId: issue.id } };
+    if (kind.startsWith("remote")) {
+      input.agent.adapterType = "ccpocket_bridge";
+      input.agent.adapterConfig = { hostId: "shopee-e", provider: "codex", model: "shopee-e/codex/gpt-6-astra" };
+      input.config.mergedConfig = { ...input.agent.adapterConfig, ...(kind === "remote" ? { cwd: "/remote/session-home" } : {}) };
+    }
+    if (kind === "low_trust") {
+      const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun");
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("Low-trust execution requires an isolated execution workspace");
+      expect(resolve).not.toHaveBeenCalled();
+    } else if (kind === "remote") {
+      const result = await prepareHeartbeatWorkspace(db, input);
+      expect(result.executionWorkspace.cwd).toBe("/remote/session-home");
+      expect(result.persistedExecutionWorkspace).toBeNull();
+      expect(input.task.context.sharedCheckoutClaim).toBeUndefined();
+      expect((await readIssue(issue.id)).executionWorkspaceId).toBeNull();
+    } else {
+      const reason = kind === "strict_worktree" ? "shared_worker_requires_task_worktree"
+        : kind === "remote_missing_cwd" ? "remote_session_cwd_required" : "shared_worker_requires_project_workspace";
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ resultJson: { workspaceValidation: { reason } } });
+    }
   });
 
   it("uses the configured development checkout for a project-exclusive worker", async () => {

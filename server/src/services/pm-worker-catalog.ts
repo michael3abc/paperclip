@@ -3,7 +3,7 @@ import { agents, toolConnections, connectionGrants, toolConnectionInstalls, type
 import { aiConnectionBindingSchema, aiConnectionMetadataSchema, isAiConnectionCompatible, type AiConnectionBinding, type PmWorkerCatalogEntry } from "@paperclipai/shared";
 import { listAdapterModels } from "../adapters/registry.js";
 import { unprocessable } from "../errors.js";
-import { bridgeWorkerModelPrefix, bridgeWorkerProvider, workerModelChoices } from "./pm-worker-options.js";
+import { agentHost, bridgeWorkerModelPrefix, bridgeWorkerProvider, workerModelChoices } from "./pm-worker-options.js";
 
 type Worker = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "runtimeConfig"> & { adapterConfig?: Record<string, unknown> | null };
 /** Metadata only. Credential sharing is independently checked on save and every run. */
@@ -15,7 +15,7 @@ export async function pmWorkerModels(db: Db, worker: Worker, requested?: AiConne
     const provider = bridgeWorkerProvider(worker);
     const prefix = bridgeWorkerModelPrefix(worker);
     if (!provider || !prefix) return [];
-    return workerModelChoices(harness, (await listAdapterModels(harness)).filter(model => model.id.startsWith(prefix)), provider);
+    return workerModelChoices(harness, (await listAdapterModels(harness, { companyId: worker.companyId, hostId: agentHost(worker), provider })).filter(model => model.id.startsWith(prefix)), provider);
   }
   const raw = requested ?? worker.runtimeConfig?.aiConnection;
   if (!raw) return workerModelChoices(harness, await listAdapterModels(harness));

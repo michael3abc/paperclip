@@ -3928,6 +3928,17 @@ protection and the registered source/host boundary. Session-only uses the select
 worker's host without inventing a controller-host source. No selection grants
 authority to replay old input or bypass session, hold or permission checks.
 
+At preparation, a project-scoped worker's persisted session_only selection and
+matching sessionOnly settings satisfy requireProjectWorkspace for external work.
+Caller wake JSON or settings without the stored selection are insufficient.
+Strict requireTaskWorktree remains an independent Owner-managed restriction.
+Use the session cwd without adopting a project checkout, provisioning Git/remote
+storage, or persisting an ExecutionWorkspace/claim. A remote Bridge worker needs
+a canonical configured session cwd on its own host; absent configuration fails
+explicitly. Existing native execution bindings remain immutable during recovery.
+Creator recovery notices describe both registered repository roots (including
+unborn repositories) and linked worktrees; notices grant no new authority.
+
 Paths, aliases, parent/child overlaps and historical stop/lease/finalizer/export
 records never serialize ordinary admission. Cancellation revokes the original
 run's business-write authority at commit; provider stop and cleanup remain honest,
@@ -3968,6 +3979,12 @@ same-scope workspace IDs can be adopted without moving files or replacing their
 metadata. Cross-company/host scope and foreign nested project roots remain
 excluded; a broad same-company session/source ancestor does not occupy explicitly
 granted project sources beneath it. Aliases and Git administrative paths fail.
+The selected configured source may itself already be a linked worktree. Its
+read-only inspect uses the exact source cwd and still requires a Git admin file,
+a distinct linked Git directory under the common repository, the canonical root,
+worktree-list membership and the selected branch. Path equality alone is not a
+primary-checkout classification. Create/merge/retire do not gain authority to
+mutate the configured source; repository roots keep their explicit separate kind.
 Heartbeat rebuilds participation kind/sourceCwd, parentDir, cwd, host, project and
 generation from the admitted registration, discarding caller coordinates. The
 v1 marker originally represented linked worktrees only; an absent kind on a valid

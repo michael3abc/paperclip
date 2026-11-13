@@ -309,6 +309,15 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  /** Display-only billing/source label supplied by the owning adapter. */
+  source?: string;
+}
+
+/** Authorized company plus the current, possibly unsaved catalog selection. */
+export interface AdapterCatalogContext {
+  companyId: string;
+  hostId?: string;
+  provider?: string;
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -571,14 +580,15 @@ export interface ServerAdapterModule {
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  catalogScope?: "company";
+  listModels?: (context?: AdapterCatalogContext) => Promise<AdapterModel[]>;
   /**
    * Optional explicit refresh hook for model discovery.
    * Use this when the adapter caches discovered models and needs a bypass path
    * so the UI can fetch newly released models without waiting for cache expiry
    * or a Paperclip code update.
    */
-  refreshModels?: () => Promise<AdapterModel[]>;
+  refreshModels?: (context?: AdapterCatalogContext) => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).
@@ -606,7 +616,7 @@ export interface ServerAdapterModule {
    * Dynamic options (e.g. scanning a profiles directory) should be
    * resolved inside this method — the caller receives a fully hydrated schema.
    */
-  getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
+  getConfigSchema?: (context?: AdapterCatalogContext) => Promise<AdapterConfigSchema> | AdapterConfigSchema;
 
   // ---------------------------------------------------------------------------
   // Adapter capability flags

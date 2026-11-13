@@ -2,6 +2,12 @@
 
 Moved verbatim from `FORK.md` on 2026-11-13. These rules and records stay binding; read this file before acting on the topic. Git workspace registration, shared worktree admission, fixed directories, placement
 
+2026-11-13 exact linked-source inspection: an existing configured source can
+point at the linked worktree being registered. Permit only read-only inspect to
+reach its full Git identity checks in that case; preserve primary-checkout,
+alias, foreign-root and mutation guards. Both local and serialized remote helpers
+use the same code, and remote adoption still waits for host proof.
+
 2026-11-13 host-recheck safety: preserve missing mutation receipts as unknown
 outcomes, retaining the original pending operation rather than granting no-effect
 status. Only original read-only inspect failures are intrinsically harmless.
@@ -154,3 +160,17 @@ focused replacements retain authority, cancellation and separate-lease assertion
 - The fixed-directory policy rejects only strategies that would apply. A project's
   unused worker worktree default no longer blocks a main agent's shared fixed run;
   explicit task, environment, storage-provider and merged strategies still do.
+
+### 2026-11-13 — Explicit external-resource worker session admission
+
+- Preserve explicit session_only from task creation through provider preparation;
+  requireProjectWorkspace no longer contradicts external-resource dispatch.
+- Use session cwd without adopting/provisioning project Git, remote storage or
+  a workspace claim; require persisted intent and preserve strict worktree and
+  native recovery restrictions. Remote hosts require a configured session cwd.
+- Creator guidance includes repository roots and unborn repositories. Validation
+  covers HTTP persistence, actual heartbeat/provider execution and negative gates.
+
+- Company model picker: scoped adapter discovery/schema context, company-bound
+  Bridge hosts, native model order and short names with source badges. Release
+  with the paired CC Pocket adapter company-model-picker change; no DB migration.

@@ -3789,6 +3789,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       storageProviderPluginId?: string | null;
       executionEnvironmentConfig?: Record<string, unknown> | null;
       anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
+      skipReferencedWorkspaces?: boolean;
     },
   ): Promise<ResolvedWorkspaceForRun> {
     const anchor = opts?.anchorWorkspace ?? await resolveAnchorWorkspaceForRun(
@@ -3798,7 +3799,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       opts,
     );
     // Referenced projects are controller-local trees; a remote Bridge worker sees only its host's source.
-    if (!isMultiProjectWorkspaceSyncEnabled() || remoteBridgeWorkerHost(agent)) {
+    if (opts?.skipReferencedWorkspaces || !isMultiProjectWorkspaceSyncEnabled() || remoteBridgeWorkerHost(agent)) {
       return {
         ...anchor,
         additionalWorkspaces: [],

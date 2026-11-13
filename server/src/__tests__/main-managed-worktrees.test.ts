@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { hostname } from "node:os";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { hostname, tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces,
   workspaceOperations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { readMainManagedWorktree } from "@paperclipai/shared";
-import type { ManagedWorktreeHostInput, ManagedWorktreeHostResult } from "@paperclipai/adapter-utils/managed-worktree-host";
+import { managedWorktreeHostOperation, type ManagedWorktreeHostInput, type ManagedWorktreeHostResult } from "@paperclipai/adapter-utils/managed-worktree-host";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { mainManagedWorktreeService } from "../services/main-managed-worktrees.js";
 import { claimAdapterSessionAuthority } from "../services/adapter-session-authority.js";
@@ -20,9 +24,10 @@ const support = await getEmbeddedPostgresTestSupport();
     database = await startEmbeddedPostgresTestDatabase("managed-worktrees-"); db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end({ timeout: 0 }); await database?.cleanup(); });
-  async function fixture(remote = false) {
+  async function fixture(remote = false, coordinates?: { sourceCwd: string; parentDir: string }) {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), sourceId = randomUUID(), workspaceId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
-    const sourceCwd = "/fixture/" + projectId + "/source", parentDir = "/fixture/" + projectId + "/trees";
+    const sourceCwd = coordinates?.sourceCwd ?? "/fixture/" + projectId + "/source";
+    const parentDir = coordinates?.parentDir ?? "/fixture/" + projectId + "/trees";
     await db.insert(companies).values({ id: companyId, name: "Managed tree fixture", issuePrefix: "MW" + companyId.slice(0, 7) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Main", role: "engineer", adapterType: "ccpocket_bridge",
       adapterConfig: { role: "main", projectId, cwd: sourceCwd }, status: "running" });
@@ -94,8 +99,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host).toHaveBeenCalledTimes(1);
   });
 
-  async function legacyRemoteFixture() {
-    const f = await fixture(true), sourceIssueId = randomUUID();
+  async function legacyRemoteFixture(coordinates?: { sourceCwd: string; parentDir: string }) {
+    const f = await fixture(true, coordinates), sourceIssueId = randomUUID();
     await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, projectId: f.projectId,
       title: "Original stopped task", status: "blocked", assigneeAgentId: f.agentId, executionWorkspaceId: null });
     await db.insert(executionWorkspaces).values({ id: f.workspaceId, companyId: f.companyId, projectId: f.projectId,
@@ -125,6 +130,36 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host).toHaveBeenCalledTimes(1);
     await expect(restarted.recheck(f.scope, f.registration.operationId, 0)).rejects.toThrow("worktree_generation_conflict");
     await expect(f.service.operate(f.scope, { ...f.registration, branch: "other" })).rejects.toThrow("worktree_operation_conflict");
+  });
+
+  it("registers an exact linked source through the real host inspector before adopting its remote provider", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "managed-exact-source-"));
+    const repository = path.join(root, "repository"), parentDir = path.join(root, "trees"), cwd = path.join(parentDir, "batch");
+    const exec = promisify(execFile);
+    const git = async (directory: string, ...args: string[]) => (await exec("git", ["-c", "core.hooksPath=/dev/null",
+      "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-C", directory, ...args],
+    { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } })).stdout.trim();
+    try {
+      await fs.mkdir(repository); await fs.mkdir(parentDir);
+      await git(repository, "init", "--initial-branch=michael/main");
+      await git(repository, "commit", "--allow-empty", "-m", "base");
+      await git(repository, "worktree", "add", "-b", "michael/batch", cwd);
+      await fs.mkdir(path.join(cwd, ".lmas")); await fs.writeFile(path.join(cwd, ".lmas/checkpoint"), "preserve");
+      const f = await legacyRemoteFixture({ sourceCwd: cwd, parentDir }), before = await f.row();
+      const registration = { ...f.registration, kind: "linked_worktree" as const };
+      f.host.mockImplementation(async (hostId, input) => {
+        expect(hostId).toBe("fixture-remote");
+        expect(input).toMatchObject({ action: "inspect", sourceCwd: cwd, cwd, kind: "linked_worktree" });
+        return managedWorktreeHostOperation(input); // Keep the actual filesystem/Git guard.
+      });
+      const receipt = await f.service.operate(f.scope, registration);
+      expect(receipt).toMatchObject({ phase: "open", host: { commonDir: path.join(repository, ".git"), branch: "michael/batch", dirty: true } });
+      expect(await f.row()).toMatchObject({ id: before.id, sourceIssueId: before.sourceIssueId, cwd, providerType: "remote_managed",
+        metadata: { historicalReceipt: { original: true }, mainManagedWorktree: { phase: "open", sourceCwd: cwd, pendingOperationId: null } } });
+      expect(await fs.readFile(path.join(cwd, ".lmas/checkpoint"), "utf8")).toBe("preserve");
+      expect(await f.service.operate(f.scope, registration)).toEqual(receipt);
+      expect(f.host).toHaveBeenCalledTimes(1);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it.each(["host_failure", "wrong_branch", "source_changed", "active_during_inspect"])(

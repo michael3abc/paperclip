@@ -13,6 +13,10 @@ Registered main-managed Git directories finalize through their registered host's
 read-only inspector, including repository roots. Verify receipt/run identity,
 branch and commit evidence; never fall back to controller paths or auto-repair
 a collaborator's branch. See `doc/execution-semantics.md`.
+An explicitly configured source may itself be the selected linked worktree.
+Read-only inspect accepts that exact canonical path only after the existing Git
+admin-file/common-directory/worktree-list/branch checks. It does not relabel a
+primary checkout or authorize create/merge/retire against the source itself.
 Missing host-operation receipts do not prove no effect. Recheck must keep
 initialize/create/merge/retire pending until their original outcome is known;
 only the original read-only inspect action can release its no-effect failure.
@@ -81,3 +85,16 @@ Warm sandbox adoption requires the actual exported source digest to equal the
 final host digest. A merged host may contain collaborator-only files; its hash
 alone never certifies the remote baseline. Missing or partial export proof makes
 a new turn seed the current host; same-run recovery retains its original baseline.
+
+Explicit session-only worker work retains its persisted task selection and uses
+only the worker session cwd, without Git/source provisioning or workspace claims.
+Require the stored selection and matching settings; wake JSON cannot waive
+requireProjectWorkspace. Keep strict requireTaskWorktree and native recovery
+bindings intact. Remote session-only work needs the worker's configured host cwd.
+See doc/execution-semantics.md.
+
+Company-scoped adapter catalogs declare catalogScope=company. Model discovery and
+config-schema requests require authorized companyId plus the unsaved host/provider
+selection. Never serve these from global schema caches or declared fallback lists.
+Keep qualified model IDs in persistence; names and source badges are display only.
+Bridge host companyIds live in the external host registry. See doc/DEVELOPING.md.
