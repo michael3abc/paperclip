@@ -13073,10 +13073,13 @@ export function issueRoutes(
         },
       };
       const createAcceptedIssue = (data: typeof createInput) => {
-        if (actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? "")) {
+        const revalidateDispatch = res.locals.revalidateWorkerDispatch as
+          ((tx: Db, body: Record<string, unknown>) => Promise<unknown>) | undefined;
+        if (!revalidateDispatch && (actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? ""))) {
           return svc.create(companyId, data);
         }
         return db.transaction(async tx => {
+        await revalidateDispatch?.(tx as unknown as Db, data);
         const created = await svc.create(companyId, data, tx);
         if (!deduplicationReason && !isOnboardingFirstTask && actor.actorType === "user" && created.assigneeAgentId && !["backlog", "done", "cancelled"].includes(created.status)) {
           await enqueueFastResponse(tx as unknown as Db, { companyId, issueId: created.id, agentId: created.assigneeAgentId,

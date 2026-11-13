@@ -1,3 +1,4 @@
+import { seedManagedDispatchWorkspace } from "./helpers/managed-dispatch-workspace.js";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -32,7 +33,8 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
   const companyId = randomUUID(), projectId = randomUUID(), otherProjectId = randomUUID(), pmId = randomUUID(), workerId = randomUUID(), userId = randomUUID();
   const issueId = randomUUID(), otherIssueId = randomUUID(), runId = randomUUID(), legacyRunId = randomUUID(), otherRunId = randomUUID(), choiceId = randomUUID();
   const sourceId = randomUUID();
-  const workspaceSelection = { kind: "configured_source", projectWorkspaceId: sourceId, mode: "managed_isolated" } as const;
+  const workspaceId = randomUUID();
+  const workspaceSelection = { kind: "existing", workspaceId } as const;
   const actor = { type: "board" as const, userId, source: "session" as const };
   const policy: PmWorkerPolicy = { version: 2, defaultSelectionId: choiceId, workers: [{ agentId: workerId, harness: "codex_local",
     selections: [{ id: choiceId, model: "gpt-6.1-sol", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "一般 coding agent" }] }] };
@@ -51,6 +53,7 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     execFileSync("git", ["init", repo], { stdio: "ignore" });
     execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "Fixture"], { stdio: "ignore" });
     await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Owned Git source", cwd: repo, isPrimary: true });
+    await seedManagedDispatchWorkspace(db, { id: workspaceId, companyId, projectId, sourceId, cwd: repo });
     root = resolveManagedInstructionsRoot({ id: pmId, companyId, name: "PM", adapterConfig: {} });
     await db.insert(agents).values([
       { id: pmId, companyId, name: "PM", status: "active", adapterType: "claude_local",
@@ -239,13 +242,17 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).rejects.toThrow("unavailable");
   });
 
-  it("offers remote Bridge workers only on their own host and dispatches them only to that host's sources", async () => {
-    const remoteId = randomUUID(), remoteSourceId = randomUUID(), unhostedSourceId = randomUUID();
+  it("offers remote Bridge workers only on their own host and dispatches to registered directories or session-only", async () => {
+    const remoteId = randomUUID(), remoteSourceId = randomUUID(), unhostedSourceId = randomUUID(), remoteWorkspaceId = randomUUID(), unhostedWorkspaceId = randomUUID();
     await db.insert(agents).values({ id: remoteId, companyId, name: "Shopee-E Codex", status: "active", adapterType: "ccpocket_bridge",
       adapterConfig: { hostId: "shopee-e", provider: "codex", model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" }, runtimeConfig: { requireProjectWorkspace: true } });
     await db.insert(projectWorkspaces).values([
       { id: remoteSourceId, companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd: "/home/yoyo/Projects/Fixture", metadata: { hostId: "shopee-e" } },
       { id: unhostedSourceId, companyId, projectId, name: "Unhosted remote source", sourceType: "remote_managed", cwd: "/home/yoyo/Projects/Unknown" }]);
+    await seedManagedDispatchWorkspace(db, { id: remoteWorkspaceId, companyId, projectId, sourceId: remoteSourceId,
+      cwd: "/home/yoyo/Projects/Fixture", hostId: "shopee-e" });
+    await seedManagedDispatchWorkspace(db, { id: unhostedWorkspaceId, companyId, projectId, sourceId: unhostedSourceId,
+      cwd: "/home/yoyo/Projects/Unknown", hostId: "shopee-e" });
     const choice = randomUUID();
     const remote: PmWorkerPolicy = { version: 2, defaultSelectionId: choice, workers: [{ agentId: remoteId, harness: "ccpocket_bridge",
       selections: [{ id: choice, model: "shopee-e/codex/gpt-6-astra", thinking: "high", permission: "full-access", speed: "standard" }] }] };
@@ -262,18 +269,25 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
       expect(onHost.catalog.map(item => item.agentId)).toEqual([remoteId]);
       expect(onHost.catalog[0]).toMatchObject({ provider: "codex", hostId: "shopee-e", models: [{ id: "shopee-e/codex/gpt-6-astra" }] });
       await svc.save(companyId, pmId, { policy: remote, baseRevision: onHost.revision, baseHash: onHost.documentHash }, actor);
-      const shared = (projectWorkspaceId: string) => ({ kind: "configured_source", projectWorkspaceId, mode: "shared" }) as const;
-      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: shared(remoteSourceId), projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId,
+      const existing = (workspaceId: string) => ({ kind: "existing", workspaceId }) as const;
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId,
         assigneeAdapterOverrides: { workerSelectionId: choice, adapterConfig: { model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" } } });
-      for (const selection of [shared(sourceId), shared(unhostedSourceId)]) {
+      for (const selection of [existing(workspaceId), existing(unhostedWorkspaceId)]) {
         await expect(assertPmDispatch(db, await scope(), { workspaceSelection: selection, projectId }))
           .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
       }
-      // Without a configured source the dispatch is refused before any host is chosen.
-      await expect(assertPmDispatch(db, await scope(), { projectId })).rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_PROJECT_WORKSPACE_REQUIRED" }) });
+      // External-resource tasks stay on the Owner-selected remote worker without a fake local source.
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
+        .resolves.toMatchObject({ assigneeAgentId: remoteId });
+      await expect(assertPmDispatch(db, await scope(), { executionWorkspaceSettings: { sessionOnly: true }, projectId }))
+        .resolves.toMatchObject({ assigneeAgentId: remoteId });
+      // No explicit workspace and no project default remains a configuration error.
+      await expect(assertPmDispatch(db, await scope(), { projectId })).rejects.toMatchObject({ details: expect.objectContaining({ code: "configuration_required" }) });
       // Moving the worker to another host invalidates the saved choice instead of dispatching across hosts.
       await db.update(agents).set({ adapterConfig: { hostId: "shopee-d", provider: "codex", permissionMode: "fullAccess" } }).where(eq(agents.id, remoteId));
-      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: shared(remoteSourceId), projectId })).rejects.toThrow();
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
+        .rejects.toMatchObject({ details: { code: "PM_WORKER_HOST_MISMATCH" } });
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId })).rejects.toThrow();
     } finally {
       await db.update(agents).set({ adapterType: original.adapterType, adapterConfig: original.adapterConfig }).where(eq(agents.id, pmId));
       await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, remoteId));

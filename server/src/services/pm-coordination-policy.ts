@@ -1,14 +1,17 @@
 import { pmInstructionLayout, type PmInstructionLayoutVersion, aiConnectionBindingSchema } from "@paperclipai/shared";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
-import { workerPolicyLayout } from "./main-agent-workers.js";
+import { mainAgentDispatchScope, workerPolicyLayout } from "./main-agent-workers.js";
 import { isDeepStrictEqual } from "node:util";
 import { agentHost, DEFAULT_BRIDGE_HOST, isPmWorkerAgent, projectSourceHost, workerSelectionOverrides, workerPermissionChoices, validateWorkerChoices } from "./pm-worker-options.js";
 import { pmWorkerPolicySchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { agents, issues, issueApprovals, heartbeatRuns, projectWorkspaces, executionWorkspaces, type Db } from "@paperclipai/db";
 import { z } from "zod";
-import { forbidden, unprocessable } from "../errors.js";
-import { agentProjectPmWorkspaceBindingSchema, issueExecutionPolicySchema, taskWorkspaceSelectionSchema } from "@paperclipai/shared";
+import { conflict, forbidden, unprocessable } from "../errors.js";
+import { agentProjectPmWorkspaceBindingSchema, issueExecutionPolicySchema, taskWorkspaceSelectionSchema, readMainManagedWorktree } from "@paperclipai/shared";
+import { resolveCooperativeTaskWorkspace } from "./cooperative-task-workspace.js";
+import type { AuthorizationActor } from "./authorization.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
 
 /** A platform capability boundary, independent of prompts and provider approvals. */
 export const PM_COORDINATION_VERSION = 2 as const;
@@ -110,15 +113,20 @@ export function assertPmWorkerSelection(scope: PmCoordinationScope, agentId: unk
 export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input: {
   projectId?: unknown; assigneeAgentId?: unknown; assigneeUserId?: unknown; assigneeAdapterOverrides?: unknown;
   executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown; workspaceSelection?: unknown;
-}, options: { existingTask?: boolean } = {}) {
+  parentId?: string | null; executionPolicy?: unknown;
+}, options: { existingTask?: boolean; actor?: AuthorizationActor } = {}) {
   if (!options.existingTask && scope.delegation?.version !== 2) throw unprocessable("Configure PM worker settings before new dispatch; historical worker lists are not a dispatch fallback", { code: "PM_WORKER_MIGRATION_REQUIRED" });
   if (input.projectId !== scope.projectId || input.assigneeUserId != null) throw forbidden("PM execution tasks must remain in their project and use a shared worker", { code: "PM_DISPATCH_DENIED" });
-  if (!options.existingTask) assertPmDispatchWorkspace(input);
+  if (!options.existingTask) await assertPmDispatchWorkspace(db, scope, input);
   const overrides = assertPmWorkerSelection(scope, input.assigneeAgentId, input.assigneeAdapterOverrides);
+  const [owner] = await db.select().from(agents).where(and(eq(agents.id, scope.agentId), eq(agents.companyId, scope.companyId)));
+  if (!owner) throw forbidden("Dispatch owner is unavailable");
+  const currentScope = pmCoordinationScope(owner) ?? mainAgentDispatchScope(owner);
+  if (!currentScope || currentScope.projectId !== scope.projectId) throw forbidden(
+    "The dispatch owner's project binding changed; read current settings before dispatch", { code: "PM_PROJECT_DENIED" });
   if (scope.delegation?.version === 2) {
     const { agentInstructionsService } = await import("./agent-instructions.js");
-    const [owner] = await db.select().from(agents).where(and(eq(agents.id, scope.agentId), eq(agents.companyId, scope.companyId)));
-    if (!owner || !isDeepStrictEqual(owner.runtimeConfig?.pmDelegation, scope.delegation)) throw forbidden("PM worker policy changed; read current settings before dispatch");
+    if (!isDeepStrictEqual(owner.runtimeConfig?.pmDelegation, scope.delegation)) throw forbidden("PM worker policy changed; read current settings before dispatch");
     const layout = workerPolicyLayout(owner);
     const document = await agentInstructionsService(db).readFile(owner, layout.workerDocumentPath);
     if (pmWorkerManagedBlock(document.content ?? "") !== renderPmWorkerPolicy(scope.delegation, layout.version)) throw unprocessable(`${layout.workerDocumentPath} and worker policy are out of sync; save the policy before dispatch`, { code: "PM_WORKER_DOCUMENT_OUT_OF_SYNC" });
@@ -127,10 +135,8 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     input.assigneeAdapterOverrides = overrides;
   }
 
-  if (input.executionWorkspaceSettings != null && Object.keys(input.executionWorkspaceSettings).some(key => !["mode", "sharedWorkspaceConcurrency"].includes(key))) {
-    throw forbidden("PM dispatch may select a configured workspace, but cannot change runtime, environment or network grants", { code: "PM_WORKSPACE_POLICY_DENIED" });
-  }
   let sourceHost: string | null | undefined;
+  let selectedWorkspaceMode: string | undefined;
   if (input.workspaceSelection != null) {
     const selected = taskWorkspaceSelectionSchema.parse(input.workspaceSelection);
     if (selected.kind === "configured_source") {
@@ -141,9 +147,29 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
         "This source serves production. Select the project's fixed development checkout.", { code: "PM_DEVELOPMENT_SOURCE_REQUIRED" });
       sourceHost = projectSourceHost(source);
     } else if (selected.kind === "existing") {
-      const [workspace] = await db.select({ projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
+      const [workspace] = await db.select().from(executionWorkspaces)
         .where(and(eq(executionWorkspaces.id, selected.workspaceId), eq(executionWorkspaces.companyId, scope.companyId))).limit(1);
       if (workspace?.projectId !== scope.projectId) throw forbidden("Workspace is outside this PM's project", { code: "PM_PROJECT_DENIED" });
+      const managed = readMainManagedWorktree(workspace.metadata);
+      if (!managed) throw conflict("Register this Git directory through the project main before dispatch.", { code: "configuration_required" });
+      const [source] = workspace.projectWorkspaceId ? await db.select().from(projectWorkspaces).where(and(
+        eq(projectWorkspaces.id, workspace.projectWorkspaceId), eq(projectWorkspaces.companyId, scope.companyId),
+        eq(projectWorkspaces.projectId, scope.projectId),
+      )).limit(1) : [];
+      sourceHost = managed.hostId === null ? DEFAULT_BRIDGE_HOST : managed.hostId;
+      if (!source || !sourceHost || projectSourceHost(source) !== sourceHost) throw unprocessable(
+        "The registered workspace host no longer matches its source; ask its main to reconcile the registration.", { code: "PM_WORKER_HOST_MISMATCH" });
+      if (source.metadata?.usage === "production" && (workspace.cwd === source.cwd || workspace.cwd === managed.sourceCwd)) {
+        throw unprocessable("This directory serves production. Select a registered development worktree.", { code: "PM_DEVELOPMENT_SOURCE_REQUIRED" });
+      }
+      selectedWorkspaceMode = workspace.mode;
+      // Defaults and explicit selections retain source/retained-task privacy and trust checks.
+      await executionWorkspaceService(db).validateSelection({ companyId: scope.companyId,
+        actor: options.actor ?? { type: "agent", agentId: scope.agentId, companyId: scope.companyId }, selection: selected,
+        projectId: scope.projectId, assigneeAgentId: String(input.assigneeAgentId),
+        taskCreation: { projectId: scope.projectId, parentIssueId: input.parentId,
+          assigneeAgentId: String(input.assigneeAgentId), executionPolicy: input.executionPolicy },
+      });
     }
   }
   const [worker] = await db.select().from(agents).where(and(eq(agents.id, String(input.assigneeAgentId)), eq(agents.companyId, scope.companyId))).limit(1);
@@ -153,11 +179,11 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   }
   // A Bridge worker runs on its own host and can only open a source that lives on that host.
   const workerHost = agentHost(worker);
-  if (sourceHost !== undefined ? sourceHost !== workerHost : workerHost !== DEFAULT_BRIDGE_HOST) {
+  if (workerHost !== agentHost(owner) || (sourceHost !== undefined && sourceHost !== workerHost)) {
     throw unprocessable("The selected worker runs on a different host than this task's configured source; choose a worker on the source's host.",
       { code: "PM_WORKER_HOST_MISMATCH", workerHost, sourceHost: sourceHost ?? null });
   }
-  if (worker.runtimeConfig?.requireTaskWorktree === true && (input.workspaceSelection as { mode?: string })?.mode === "shared") {
+  if (worker.runtimeConfig?.requireTaskWorktree === true && (selectedWorkspaceMode === "shared_workspace" || (input.workspaceSelection as { mode?: string })?.mode === "shared")) {
     throw unprocessable("This worker still requires isolated worktrees; its Owner-managed workspace policy has not been changed.", { code: "PM_WORKER_WORKSPACE_POLICY_CONFLICT" });
   }
   if (scope.delegation?.version === 2) {
@@ -176,22 +202,39 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
   return { assigneeAgentId: String(input.assigneeAgentId), assigneeAdapterOverrides: overrides };
 }
 
-/** Reject unlaunchable new dispatches before saving a task or waking a worker. */
-export function assertPmDispatchWorkspace(input: { workspaceSelection?: unknown; executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown }) {
-  const selected = taskWorkspaceSelectionSchema.safeParse(input.workspaceSelection);
+/** Use the same registered-directory/session-only contract as task creation. */
+export async function assertPmDispatchWorkspace(db: Db, scope: PmCoordinationScope, input: {
+  workspaceSelection?: unknown; executionWorkspaceSettings?: unknown; executionWorkspacePreference?: unknown;
+}) {
   const settings = input.executionWorkspaceSettings as Record<string, unknown> | null | undefined;
-  if (!selected.success || selected.data.kind !== "configured_source") {
-    throw unprocessable("Select this project's configured_source development repository; PM homes and another task's worktree are not dispatch sources.", { code: "PM_PROJECT_WORKSPACE_REQUIRED" });
+  if (settings && Object.keys(settings).some(key => !["sessionOnly", "mode", "sharedWorkspaceConcurrency"].includes(key))) {
+    throw forbidden("PM dispatch cannot change runtime, environment or network grants", { code: "PM_WORKSPACE_POLICY_DENIED" });
   }
-  const mode = selected.data.mode === "managed_isolated" ? "isolated_workspace" : "shared_workspace";
+  const selected = input.workspaceSelection == null ? null : taskWorkspaceSelectionSchema.parse(input.workspaceSelection);
+  if (selected && selected.kind !== "existing" && selected.kind !== "session_only") {
+    throw conflict("Select an existing main-managed Git directory, or choose session-only for external-resource work.",
+      { code: "configuration_required", reason: "execution_worktree_required" });
+  }
+  if ((selected?.kind === "session_only" && settings?.sessionOnly === false)
+    || (selected?.kind === "existing" && settings?.sessionOnly === true)) {
+    throw conflict("session_only_workspace_conflict", { code: "session_only_workspace_conflict" });
+  }
+  const workspace = await resolveCooperativeTaskWorkspace(db, {
+    companyId: scope.companyId, projectId: scope.projectId,
+    executionWorkspaceId: selected?.kind === "existing" ? selected.workspaceId : null,
+    executionWorkspaceSettings: { ...settings, ...(selected?.kind === "session_only" ? { sessionOnly: true } : {}) },
+  });
+  const resolvedSettings: Record<string, unknown> = workspace.executionWorkspaceSettings;
+  const mode = resolvedSettings.sessionOnly ? "shared_workspace" : resolvedSettings.mode;
   if ((settings?.mode != null && settings.mode !== mode)
-    || (input.executionWorkspacePreference != null && input.executionWorkspacePreference !== mode)
-    || settings?.sharedWorkspaceConcurrency === "allow") {
-    throw unprocessable("Workspace settings conflict with the selected source. A shared checkout permits one writer; additional writers wait. Select managed_isolated only for parallel work or an independent version.", { code: "PM_WORKSPACE_POLICY_CONFLICT" });
+    || (input.executionWorkspacePreference != null && input.executionWorkspacePreference !== workspace.executionWorkspacePreference)) {
+    throw unprocessable("Workspace settings conflict with the selected workspace.", { code: "PM_WORKSPACE_POLICY_CONFLICT" });
   }
-  input.workspaceSelection = selected.data;
-  input.executionWorkspaceSettings = { ...settings, mode, sharedWorkspaceConcurrency: "serialize" };
-
+  // Cooperative admission owns concurrency; legacy per-task writer settings grant nothing.
+  const { sharedWorkspaceConcurrency: _legacyConcurrency, ...normalized } = resolvedSettings;
+  input.workspaceSelection = workspace.workspaceSelection.selection;
+  input.executionWorkspaceSettings = { ...normalized, mode };
+  input.executionWorkspacePreference = workspace.executionWorkspacePreference;
 }
 
 /** Preserve source gates; PM-provided workflow settings cannot grant execution authority. */
