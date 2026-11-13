@@ -75,6 +75,11 @@ describe("host subscription quotas", () => {
     await expect(fetchHostSubscriptionQuotas("home")).rejects.toThrow("maintenance");
     expect(mocks.codex).not.toHaveBeenCalled();
     stopTaskDrain();
+    const interrupted = fetchHostSubscriptionQuotas("home");
+    startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    await expect(interrupted).rejects.toThrow("maintenance");
+    expect(mocks.codex).not.toHaveBeenCalled();
+    stopTaskDrain();
     let settle!: (value: unknown) => void;
     mocks.codex.mockImplementation(() => new Promise((resolve) => { settle = resolve; }));
     const reading = fetchHostSubscriptionQuotas("home");

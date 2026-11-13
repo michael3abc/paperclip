@@ -75,6 +75,8 @@ export async function fetchHostSubscriptionQuotas(companyId: string): Promise<Pr
   if (!hostSubscriptionQuotasEnabled()) return [];
   if (isIdleTaskDrainActive()) throw new Error("Subscription quota refresh is paused for maintenance.");
   const source = await sourceForCompany(companyId);
+  // Source configuration is asynchronous; maintenance may start during the read.
+  if (isIdleTaskDrainActive()) throw new Error("Subscription quota refresh is paused for maintenance.");
   const key = JSON.stringify([companyId, source]);
   const hit = cached.get(key);
   if (hit && hit.expiresAt > Date.now()) return hit.accounts;
