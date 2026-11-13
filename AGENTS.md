@@ -870,3 +870,10 @@ Warm sandbox adoption requires the actual exported source digest to equal the
 final host digest. A merged host may contain collaborator-only files; its hash
 alone never certifies the remote baseline. Missing or partial export proof makes
 a new turn seed the current host; same-run recovery retains its original baseline.
+
+Explicit session-only worker work retains its persisted task selection and uses
+only the worker session cwd, without Git/source provisioning or workspace claims.
+Require the stored selection and matching settings; wake JSON cannot waive
+requireProjectWorkspace. Keep strict requireTaskWorktree and native recovery
+bindings intact. Remote session-only work needs the worker's configured host cwd.
+See doc/execution-semantics.md.

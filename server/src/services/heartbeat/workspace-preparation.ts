@@ -233,6 +233,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const managedWorkspace = isMainManagedExecutionWorkspace(input.reuse.reusableExistingExecutionWorkspace)
     ? input.reuse.reusableExistingExecutionWorkspace : null;
   const managedMarker = readMainManagedWorktree(managedWorkspace?.metadata);
+  const explicitSessionOnly = Boolean(issueId && issueRef?.projectId
+    && input.task.workspaceSelection?.selection.kind === "session_only"
+    && issueExecutionWorkspaceSettings?.sessionOnly === true
+    && !input.reuse.persistedNativeExecutionInput?.binding.executionWorkspaceId);
   const sessionOnly = !managedWorkspace && (issueExecutionWorkspaceSettings?.sessionOnly === true
     || Boolean(context.paperclipPmWorkspace)
     || (isMainAgent(agent) && (!issueRef || issueRef.conversationAgentId === agent.id)));
@@ -274,13 +278,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       { reason: "shared_worker_requires_task_worktree" },
     );
   }
-  if (!managedWorkspace && agent.runtimeConfig?.requireProjectWorkspace === true && (
+  if (!managedWorkspace && !explicitSessionOnly && agent.runtimeConfig?.requireProjectWorkspace === true && (
     !issueId || !issueRef?.projectId || !issueRef.projectWorkspaceId || fixedBinding || !runtimeWorkspaceSelectionEnabled ||
     !["shared_workspace", "isolated_workspace"].includes(effectiveExecutionWorkspaceMode) ||
     (effectiveExecutionWorkspaceMode === "shared_workspace" && resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "project_primary")
   )) throw new WorkspaceValidationFailure("This shared worker requires a configured project development checkout or an explicitly isolated task worktree.",
     { reason: "shared_worker_requires_project_workspace" });
-  if (!managedWorkspace && remoteWorkerHost && (fresh || useIsolatedTaskDirectory || !issueId || !issueRef?.projectWorkspaceId ||
+  if (!managedWorkspace && !explicitSessionOnly && remoteWorkerHost && (fresh || useIsolatedTaskDirectory || !issueId || !issueRef?.projectWorkspaceId ||
     effectiveExecutionWorkspaceMode !== "shared_workspace" || input.task.context.paperclipPmWorkspace ||
     resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "project_primary")) {
     throw new WorkspaceValidationFailure(`This worker runs on Bridge host ${remoteWorkerHost} and works only in the task's shared project source registered on that host.`,
@@ -306,7 +310,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   // It is not a repository source and must not pass through Git copy admission.
   const controllerOnly = isDotRun || providerApiPlacement !== null;
   if (!managedWorkspace && !sessionOnly && !controllerOnly && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId)
-    throw new WorkspaceValidationFailure("Select a linked Git worktree registered by the project main, or explicitly select session-only for external-resource work.",
+    throw new WorkspaceValidationFailure("Select a Git repository root or linked worktree registered by the project main, or explicitly select session-only for external-resource work.",
       { reason: "configuration_required" });
   const freshNeedsSeed = fresh && !controllerOnly && !useIsolatedTaskDirectory &&
     !(nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId);
@@ -328,7 +332,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     }
   }
   const enrolledRemoteAuthority = readRemoteWorkspaceAuthority((reusableExistingExecutionWorkspace ?? existingExecutionWorkspace)?.metadata) !== null;
-  let remoteAuthority = !managedWorkspace && !controllerOnly && !remoteWorkerHost && shouldUseRemoteWorkspaces({
+  let remoteAuthority = !sessionOnly && !managedWorkspace && !controllerOnly && !remoteWorkerHost && shouldUseRemoteWorkspaces({
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     experimentalEnabled: (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" || resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled) && Boolean(issueId && issueRef)
@@ -422,6 +426,27 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           executionEnvironmentDriver: selectedEnvironmentForConfig?.driver,
           executionEnvironmentConfig: selectedEnvironmentForConfig?.config,
         });
+      }
+      if (explicitSessionOnly && !fixedBinding) {
+        if (fresh || useIsolatedTaskDirectory) throw new WorkspaceValidationFailure(
+          "Session-only external-resource work cannot request a fresh task checkout.", { reason: "session_only_workspace_conflict" });
+        if (remoteWorkerHost) {
+          const cwd = readNonEmptyString(mergedConfig.cwd);
+          if (!cwd || !path.posix.isAbsolute(cwd) || path.posix.normalize(cwd) !== cwd)
+            throw new WorkspaceValidationFailure("This remote session-only worker needs an absolute session cwd in its adapter settings.",
+              { reason: "remote_session_cwd_required" });
+          return { cwd, source: "task_session" as const, projectId: issueRef!.projectId, workspaceId: null,
+            repoUrl: null, repoRef: null, workspaceHints: [], warnings: [], baseCwdFallback: false,
+            materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [], localPathOnlyWorkspace: true };
+        }
+        const workspace = await resolveWorkspaceForRun(agent, context, null, {
+          useProjectWorkspace: false, configuredCwd: readNonEmptyString(mergedConfig.cwd), storageProviderPluginId: null,
+          skipReferencedWorkspaces: true,
+          executionEnvironmentDriver: selectedEnvironmentForConfig?.driver,
+          executionEnvironmentConfig: selectedEnvironmentForConfig?.config,
+        });
+        return { ...workspace, projectId: issueRef!.projectId, workspaceId: null, repoUrl: null, repoRef: null,
+          additionalWorkspaces: [], referencedProjectFailures: [] };
       }
       if (remoteWorkerHost) {
         if (remoteAuthority || providerApiPlacement || controllerOnly) throw new WorkspaceValidationFailure(
@@ -640,7 +665,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           previousWorkspaceId: previousProviderWorkspaceId });
     }
   }
-  const pluginPrepared = managedWorkspace || controllerOnly || remoteAuthority || remoteWorkerHost ? null : await preparePluginWorkspace(db, input.services.workspaceWorkers, {
+  const pluginPrepared = sessionOnly || managedWorkspace || controllerOnly || remoteAuthority || remoteWorkerHost ? null : await preparePluginWorkspace(db, input.services.workspaceWorkers, {
     companyId: agent.companyId, projectId: resolvedWorkspace.projectId, projectWorkspaceId: resolvedWorkspace.workspaceId,
     issueId, runId: run.id, agentId: agent.id, responsibleUserId,
     existingWorkspaceId: providerFresh ? providerFresh.previousWorkspaceId : reusableExistingExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
@@ -663,7 +688,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         source: { projectId: resolvedWorkspace.projectId, projectWorkspaceId: resolvedWorkspace.workspaceId,
           repoUrl: resolvedWorkspace.repoUrl, baseRef: resolvedWorkspace.repoRef } }) : null;
   const freshTaskReservation = freshTaskReservationId ? await executionWorkspacesSvc.getStoredById(agent.companyId, freshTaskReservationId) : null;
-  const copyOnlyProvisioning = pluginPrepared || remoteAuthority || remoteWorkerHost ? true : await timeWorkspace("workspace_provision_policy", () => workspaceRequiresCopyOnlyProvisioning(db, {
+  const copyOnlyProvisioning = sessionOnly || pluginPrepared || remoteAuthority || remoteWorkerHost ? true : await timeWorkspace("workspace_provision_policy", () => workspaceRequiresCopyOnlyProvisioning(db, {
     companyId: agent.companyId,
     task: issueRef ? { ...issueRef, workspaceSelection: input.task.workspaceSelection } : null,
     sourceProjectId: resolvedWorkspace.projectId,

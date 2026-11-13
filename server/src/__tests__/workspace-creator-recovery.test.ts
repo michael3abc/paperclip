@@ -82,6 +82,8 @@ describe("workspace creator recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]).toMatchObject({ authorType: "system", authorUserId: null, origin: "workspace_recovery" });
     expect(comments[0].body).toContain("draft.txt");
+    expect(comments[0].body).toContain("repository root");
+    expect(comments[0].body).toContain("尚無 commit");
     expect((await db.select().from(issues).where(eq(issues.id, f.taskId)))[0].assigneeAgentId).toBe(f.workerId);
   });
 
