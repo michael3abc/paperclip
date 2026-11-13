@@ -73,8 +73,9 @@ interface SidebarNavItemProps {
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
   /**
-   * Project-level agent status: blue frame + "working", or orange frame +
-   * "needs input". Takes the place of the "N live" text and the live dot.
+   * Project-level agent status: blue frame + "working", orange frame +
+   * "needs input", or violet frame and tint + "waiting for task" (Coordinator
+   * chat rows). Takes the place of the "N live" text and the live dot.
    */
   status?: AgentSidebarStatus;
 }

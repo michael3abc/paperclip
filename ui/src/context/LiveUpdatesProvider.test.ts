@@ -34,6 +34,29 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["issues", "chat-handoffs"] });
     client.clear();
   });
+  it("refreshes the viewer's chat list when a chat task's run becomes live or ends", () => {
+    const client = new QueryClient();
+    const gate = { cooldownHits: new Map<string, number[]>(), suppressUntil: 0, observedRunOutcomes: new Set<string>() };
+    const mine = queryKeys.agentChats.list("company-1", "viewer");
+    const theirs = queryKeys.agentChats.list("company-1", "other-viewer");
+    const deliver = (type: "heartbeat.run.queued" | "heartbeat.run.status" | "heartbeat.run.log", payload: Record<string, unknown>, companyId = "company-1") => {
+      client.setQueryData(mine, [{ id: "chat-1" }]); client.setQueryData(theirs, []);
+      __liveUpdatesTestUtils.handleLiveEvent(client, "company-1", "/PAP/dashboard", {
+        id: 1, type, companyId, createdAt: "2026-11-13T00:00:00Z", payload: { runId: "run-1", agentId: "worker", ...payload },
+      }, () => null, gate, { userId: "viewer", agentId: null });
+      return client.getQueryState(mine)?.isInvalidated;
+    };
+    expect(deliver("heartbeat.run.queued", {})).toBe(true);
+    expect(deliver("heartbeat.run.status", { issueId: "task-1", status: "scheduled_retry" })).toBe(true);
+    expect(deliver("heartbeat.run.status", { issueId: "task-1", status: "succeeded" })).toBe(true);
+    expect(client.getQueryState(theirs)?.isInvalidated).toBe(false);
+    // Starting an already live run, the chat's own runs, logs and foreign companies do not refetch the list.
+    expect(deliver("heartbeat.run.status", { issueId: "task-1", status: "running" })).toBe(false);
+    expect(deliver("heartbeat.run.status", { issueId: "chat-1", status: "succeeded" })).toBe(false);
+    expect(deliver("heartbeat.run.log", { issueId: "task-1" })).toBe(false);
+    expect(deliver("heartbeat.run.status", { issueId: "task-1", status: "failed" }, "company-2")).toBe(false);
+    client.clear();
+  });
   it("refreshes mirrored replies on the bound conversation", () => {
     const client = new QueryClient();
     const own = queryKeys.issues.comments("chat-1"), other = queryKeys.issues.comments("chat-2");

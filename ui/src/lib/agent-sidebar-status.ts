@@ -1,4 +1,4 @@
-import type { AttentionItem, AttentionSourceKind, PmWorkspaceListing } from "@paperclipai/shared";
+import type { AttentionItem, AttentionSourceKind, Issue, PmWorkspaceListing } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
 
 /**
@@ -7,11 +7,14 @@ import type { LiveRunForIssue } from "../api/heartbeats";
  * - `needs_input`: a request is waiting on the human Owner personally.
  * - `working`: a task of the PM's project (subtasks included) is executing, or
  *   an opted-in agent (`selfRunAgentIds`) is executing its own run.
+ * - `waiting_for_task` (Coordinator chat rows only): the agent is not working
+ *   itself, but a task its chat created is still live
+ *   (see `deriveChatWaitingForTaskAgentIds`).
  *
  * `needs_input` outranks `working`: a person is the bottleneck, so that is the
- * signal worth interrupting the eye for.
+ * signal worth interrupting the eye for. Both outrank `waiting_for_task`.
  */
-export type AgentSidebarStatus = "working" | "needs_input";
+export type AgentSidebarStatus = "working" | "needs_input" | "waiting_for_task";
 
 /**
  * Execution phases that mean "work is actually happening now". Queued runs,
@@ -143,9 +146,30 @@ export function deriveProjectPmSidebarStatus({
 }
 
 /**
+ * Agents whose chat row shows `waiting_for_task`: the server says a task the
+ * chat created (current session) or a direct subtask has a queued, running or
+ * scheduled-retry run (`hasLiveChildTasks`), and the agent has no working run of
+ * its own. A working agent keeps its existing `working` indicator instead.
+ * Native subagents are not tracked server-side, so they are not part of this.
+ */
+export function deriveChatWaitingForTaskAgentIds({
+  chats,
+  liveRuns,
+}: {
+  chats: readonly Pick<Issue, "conversationAgentId" | "hasLiveChildTasks">[] | null | undefined;
+  liveRuns: readonly Pick<LiveRunForIssue, "agentId" | "status" | "execution">[] | null | undefined;
+}): Set<string> {
+  const working = new Set((liveRuns ?? []).flatMap(run => isWorkingLiveRun(run) ? [run.agentId] : []));
+  return new Set((chats ?? []).flatMap(chat =>
+    chat.hasLiveChildTasks === true && chat.conversationAgentId && !working.has(chat.conversationAgentId)
+      ? [chat.conversationAgentId] : []));
+}
+
+/**
  * Presentation classes shared by both sidebar row variants, so the two stay in
- * lockstep. Blue is reserved for `working` and orange for `needs_input`; no
- * other row state (selection, focus, hover) uses either hue.
+ * lockstep. Blue is reserved for `working`, orange for `needs_input` and the
+ * violet `--sidebar-waiting-*` tokens for `waiting_for_task`; no other row
+ * state (selection, focus, hover) uses these hues.
  */
 export interface AgentSidebarStatusStyle {
   /** Inset frame around the whole row. */
@@ -170,18 +194,30 @@ const STATUS_STYLES: Record<AgentSidebarStatus, AgentSidebarStatusStyle> = {
     text: "text-orange-600 dark:text-orange-400",
     dot: "bg-orange-500 dark:bg-orange-400",
   },
+  // A still dot: the chat itself is idle while its tasks run.
+  waiting_for_task: {
+    frame: "ring-1 ring-inset ring-(--sidebar-waiting-frame) bg-(--sidebar-waiting-background)",
+    text: "text-(--sidebar-waiting-accent)",
+    dot: "bg-(--sidebar-waiting-accent)",
+  },
 };
 
 export function agentSidebarStatusStyle(status: AgentSidebarStatus): AgentSidebarStatusStyle {
   return STATUS_STYLES[status];
 }
 
+const STATUS_LABELS: Record<AgentSidebarStatus, string> = {
+  working: "working",
+  needs_input: "needs input",
+  waiting_for_task: "waiting for task",
+};
+
 /** Visible label for a status. */
 export function agentSidebarStatusLabel(status: AgentSidebarStatus): string {
-  return status === "needs_input" ? "needs input" : "working";
+  return STATUS_LABELS[status];
 }
 
 /** Screen-reader phrase appended to the row's accessible name. */
 export function agentSidebarStatusAnnouncement(status: AgentSidebarStatus): string {
-  return status === "needs_input" ? "needs input" : "working";
+  return STATUS_LABELS[status];
 }
