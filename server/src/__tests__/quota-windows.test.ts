@@ -827,10 +827,41 @@ describe("mapCodexRpcQuota", () => {
         label: "Credits",
         usedPercent: null,
         resetsAt: null,
-        valueLabel: "$12.34 remaining",
+        valueLabel: "12.34 credits remaining",
         detail: null,
       },
     ]);
+  });
+
+  it("maps Business spend controls when ordinary windows and balance are absent", () => {
+    const limit = { limitId: "codex", primary: null, secondary: null,
+      credits: { hasCredits: true, unlimited: false, balance: null },
+      individualLimit: { limit: "1300.00", used: "806.5129164457321",
+        remainingPercent: 38, resetsAt: 1_796_083_200 }, planType: "ent26" };
+    const snapshot = mapCodexRpcQuota({ rateLimits: limit, rateLimitsByLimitId: { codex: limit } });
+    expect(snapshot.planType).toBe("ent26");
+    expect(snapshot.windows).toEqual([{ label: "Monthly credit limit", usedPercent: 62,
+      resetsAt: "2026-12-01T00:00:00.000Z", valueLabel: null,
+      detail: "806.5129164457321 of 1300.00 credits used" }]);
+  });
+
+  it.each([0, 100, -10, 110])("uses the reported monthly remaining percentage (%s)", (remainingPercent) => {
+    const snapshot = mapCodexRpcQuota({ rateLimits: { individualLimit: {
+      limit: "1300", used: "806", remainingPercent, resetsAt: 1_796_083_200,
+    } } });
+    expect(snapshot.windows[0].usedPercent).toBe(100 - Math.min(100, Math.max(0, remainingPercent)));
+  });
+
+  it("does not count metadata-only credits as reported quota", () => {
+    expect(mapCodexRpcQuota({ rateLimits: { credits: {
+      hasCredits: true, unlimited: false, balance: null,
+    } } }).windows).toEqual([]);
+    expect(mapCodexRpcQuota({ rateLimits: { credits: {
+      hasCredits: false, unlimited: false, balance: null,
+    } } }).windows).toEqual([]);
+    expect(mapCodexRpcQuota({ rateLimits: { credits: {
+      hasCredits: true, unlimited: true, balance: null,
+    } } }).windows).toMatchObject([{ label: "Credits", valueLabel: "Unlimited" }]);
   });
 });
 

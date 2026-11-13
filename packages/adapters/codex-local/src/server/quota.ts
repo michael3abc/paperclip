@@ -361,6 +361,12 @@ interface CodexRpcLimit {
   primary?: CodexRpcWindow | null;
   secondary?: CodexRpcWindow | null;
   credits?: CodexRpcCredits | null;
+  individualLimit?: {
+    limit: string;
+    used: string;
+    remainingPercent: number;
+    resetsAt: number;
+  } | null;
   planType?: string | null;
 }
 
@@ -409,12 +415,12 @@ function buildCodexRpcWindow(label: string, window: CodexRpcWindow | null | unde
 
 function parseCreditBalance(value: string | number | null | undefined): string | null {
   if (typeof value === "number" && Number.isFinite(value)) {
-    return `$${value.toFixed(2)} remaining`;
+    return `${value.toFixed(2)} credits remaining`;
   }
   if (typeof value === "string" && value.trim().length > 0) {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) {
-      return `$${parsed.toFixed(2)} remaining`;
+      return `${parsed.toFixed(2)} credits remaining`;
     }
     return value.trim();
   }
@@ -448,12 +454,28 @@ export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: Cod
     if (primary) windows.push(primary);
     const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, limit.secondary);
     if (secondary) windows.push(secondary);
-    if (limitId === "codex" && limit.credits && limit.credits.unlimited !== true) {
+    // Business/Enterprise accounts can expose only workspace spend controls,
+    // with no primary/secondary window or credit balance. These are credits,
+    // not dollars; use the provider percentage rather than rounding amounts.
+    const individual = limit.individualLimit;
+    if (individual) {
+      const remaining = normalizeCodexUsedPercent(individual.remainingPercent);
+      windows.push({
+        label: `${prefix}Monthly credit limit`,
+        usedPercent: remaining == null ? null : 100 - remaining,
+        resetsAt: unixSecondsToIso(individual.resetsAt),
+        valueLabel: null,
+        detail: `${individual.used} of ${individual.limit} credits used`,
+      });
+    }
+    const creditBalance = parseCreditBalance(limit.credits?.balance);
+    if (limitId === "codex" && limit.credits
+      && (limit.credits.unlimited === true || creditBalance != null)) {
       windows.push({
         label: "Credits",
         usedPercent: null,
         resetsAt: null,
-        valueLabel: parseCreditBalance(limit.credits.balance) ?? "N/A",
+        valueLabel: limit.credits.unlimited === true ? "Unlimited" : creditBalance,
         detail: null,
       });
     }

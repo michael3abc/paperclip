@@ -25,6 +25,7 @@ holding a later input; preserve the copy and original provider/source identity.
 See `doc/execution-semantics.md`.
 
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
+Codex Business/Enterprise monthly credit quotas come from RPC individualLimit; preserve its remaining percentage and reset. Metadata-only credits are not reported quota, and RPC credit amounts are not dollars.
 
 ## 1. Purpose
 

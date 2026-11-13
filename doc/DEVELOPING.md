@@ -58,7 +58,14 @@ keys cannot read the host's subscriptions. No database migration is required.
 
 The source is the company-selected host's existing CLI login, not an AI Connection or an
 agent's selected billing route. Codex reads account RPCs without creating a turn;
-its window labels use reported durations. Claude uses the existing local CLI
+its window labels use reported durations.
+Codex Business/Enterprise `individualLimit` maps to Monthly credit limit, using
+`100 - remainingPercent` for consumption and `resetsAt` for reset. Preserve
+`used`/`limit` as credit units in the detail; do not infer dollars or reconstruct
+the percentage from rounded amounts. Missing balances produce no placeholder
+quota row; `credits.unlimited` produces an explicit Unlimited value. This follows
+the native Codex app-server spend-control contract and also works when both
+ordinary windows are null. Claude uses the existing local CLI
 credential reader and subscription usage parser. Antigravity reads its existing
 antigravity-oauth-token under ~/.gemini/antigravity-cli and the native
 retrieveUserQuotaSummary endpoint with its product User-Agent. When expiry is

@@ -43,7 +43,11 @@ Never accept a client-selected host or fall back to local accounts after remote
 failure. Cache and in-flight requests are keyed by company plus source. Poll only
 while the Dashboard is visible, cache for 60 seconds, track provider work through
 maintenance admission, and preserve unknown values and provider failures. Codex
-window labels derive from durations, never primary/secondary position. Subscription
+window labels derive from durations, never primary/secondary position.
+Business/Enterprise Codex also reports `individualLimit`: show its monthly credit
+limit, provider-reported remaining percentage and reset even without ordinary
+windows. RPC credit amounts are credits, not currency; an absent balance never
+creates a successful `Credits: N/A` row. Unlimited credits remain explicit. Subscription
 bar fill, percentage labels and accessible values all show remaining quota; warning
 colors still reflect depletion. Other spending bars retain consumption semantics.
 Antigravity shows only its reported quota groups; never infer Gemini quota or enable credits.
