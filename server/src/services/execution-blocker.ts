@@ -117,10 +117,12 @@ export function executionReconciliationPredicate() {
         and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
         and coalesce(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
     ))`,
+    // Liveness-first (Owner 2026-11-13): only an open (active/escalated) hold
+    // blocks execution. A resolved action whose automatic replay was stopped is
+    // history; it no longer defers new input or Retry for the task.
     or(unreconciledNativeExportPredicate(), and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
-      or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+      inArray(issueRecoveryActions.status, ["active", "escalated"]),
     )),
   );
 }
