@@ -3783,13 +3783,22 @@ and original manual wake provenance. Supply a nonempty Owner-attributed handoff
 comment written by that run on the target task, `idempotencyKey`,
 `observedStatusVersion` and explicit `observedRunId` (including null). The server
 seals the request in the existing continuation receipt and rechecks its authority
-at queue admission. A newer Owner input, task instruction, binding, policy or hold
+at queue admission and before the first worker dispatch after capacity waiting
+or restart. A newer Owner input, task instruction, binding, policy or hold
 can invalidate it. A normally succeeded main run retains only its already committed
 operation; a completed run cannot create a new operation. Bare requests and changed
 same-key requests fail visibly. This grants neither Board identity nor permission
 to replay unknown delivered input. Existing reconciliation, pause, dependency,
 budget, review and worker admission checks still apply. Inspect the original receipt
 after an uncertain response rather than submitting another operation.
+An ordinary handoff comment and Continue may share the existing queued run. Before
+dispatch, validate Continue's own immutable wake receipt by key, company, agent and
+run; it need not be the wake that originally created the coalesced run. The same
+handoff is delivered to the provider once.
+Changing task status or assignment cannot settle unknown original input, provider
+effects or native-session ownership. Generic stale-recovery revalidation preserves
+those source-specific reconciliation actions; only their formal reconciliation
+flow can settle them. Other obsolete graph/liveness actions retain normal cleanup.
 
 
 ### Cancelling a workspace wait or an unfinished Bridge cancellation

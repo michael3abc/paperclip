@@ -706,6 +706,9 @@ original accepted Owner Chat input, using a current run credential, an unchanged
 Owner-attributed handoff comment, idempotency key and explicit task/run observations.
 An empty continue request grants nothing. Recheck current main/worker policy,
 conversation generation, latest Owner input and task instructions at admission.
+Recheck the original-main operation again before its first worker dispatch after
+capacity waiting or restart. Status/assignment changes never settle unknown input,
+provider effects or session ownership through generic stale-recovery cleanup.
 Normal main completion retains only an already committed operation; it cannot
 authorize another continuation. Preserve unknown delivery, human holds and original
 task/run history; registration alone is never authority to resume work.
