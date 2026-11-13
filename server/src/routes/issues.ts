@@ -13843,6 +13843,24 @@ export function issueRoutes(
     );
 
     const actor = getActorInfo(req);
+    // Liveness-first: on a task waiting only for its automatic retry, "Check now"
+    // starts that retry now instead of failing with "no scheduled monitor".
+    if (!issue.monitorNextCheckAt && req.actor.type === "board") {
+      const retried = await heartbeat.retryScheduledRetryNow({
+        issueId: issue.id, actor: { actorType: actor.actorType, actorId: actor.actorId },
+      });
+      if (retried.outcome !== "no_scheduled_retry") {
+        await logActivity(db, {
+          companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+          action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+          agentId: retried.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+          runId: retried.scheduledRetry?.runId ?? null,
+          details: { outcome: retried.outcome, message: retried.message, scheduledRetry: retried.scheduledRetry, via: "monitor_check_now" },
+        });
+        res.json({ ok: true, scheduledRetry: retried.scheduledRetry });
+        return;
+      }
+    }
     const result = await heartbeat.triggerIssueMonitor(issue.id, {
       actorType: actor.actorType,
       actorId: actor.actorId,

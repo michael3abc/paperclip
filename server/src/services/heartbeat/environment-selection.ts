@@ -153,12 +153,14 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     }
     existingExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, existingExecutionWorkspace.id);
   }
-  const retainedDirectory = input.task.freshWorkspace?.mode === "reuse_current_workspace" ? input.task.freshWorkspace : null;
+  let retainedDirectory = input.task.freshWorkspace?.mode === "reuse_current_workspace" ? input.task.freshWorkspace : null;
+  // Liveness-first rule 3 (workspace = directory): a Retry whose saved directory
+  // binding changed never fails; it runs in the normally resolved directory.
   if (retainedDirectory && (issueRef?.executionWorkspaceId !== retainedDirectory.workspaceId ||
       existingExecutionWorkspace?.id !== retainedDirectory.workspaceId || existingExecutionWorkspace.cwd !== retainedDirectory.cwd)) {
-    throw new WorkspaceValidationFailure("The saved Retry workspace binding changed.", {
-      workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
-    });
+    logger.warn({ issueId, reason: "isolated_task_directory_binding_mismatch" },
+      "saved Retry workspace binding changed; using the normally resolved directory");
+    retainedDirectory = null;
   }
   const nativeRecoveryExecutionWorkspaceId =
     resolveNativeRecoveryExecutionWorkspaceBinding({
@@ -445,9 +447,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     const strategy = parseObject(value);
     return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
   });
-  if (retainedDirectory && !boundTaskDirectory && !savedRecoveryDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
-    workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
-  });
+  if (retainedDirectory && !boundTaskDirectory && !savedRecoveryDirectory) {
+    // Liveness-first rule 3: an unavailable saved Retry directory is logged, never fatal.
+    logger.warn({ issueId, reason: "isolated_task_directory_binding_mismatch" },
+      "saved Retry task directory is unavailable; using the normally resolved directory");
+  }
   const useIsolatedTaskDirectory = !controllerOnly && issueRef !== null && (reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
     trustPreset: trustPreset.kind,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
