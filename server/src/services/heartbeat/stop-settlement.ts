@@ -14,8 +14,7 @@ import { publishLiveEvent } from "../live-events.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { createBridgeStopReverification, hasVerifiedBridgeTerminalStop } from "./bridge-stop-reverification.js";
 import { hasVerifiedBridgeUndispatchedStop } from "./bridge-undispatched-stop.js";
-import { historicalAdapterType } from "../conversation-continuation.js";
-import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop, verifyBridgeHostReboot } from "./stop-settlement-evidence.js";
+import { inspectStopResources, settleCancelledNativeFinalizer, verifyBridgeHostReboot, verifyNativeStop } from "./stop-settlement-evidence.js";
 import { registerWorkspaceWaitSettlement } from "./workspace-wait-settlement.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 
@@ -55,6 +54,14 @@ async function evidenceKey(db: Db, run: Run) {
     run.resultJson?.workspaceRestoreFailure, run.resultJson?.workspaceRestoreRecovery, rows[0]?.evidence])).digest("hex");
 }
 
+/** Latest launch generation (event seq) that stop evidence must cover. */
+async function launchGeneration(db: Db, runId: string) {
+  const [row] = await db.execute<{ seq: number | string | null }>(sql`select coalesce(max(seq), 0) as seq from heartbeat_run_events
+    where run_id = ${runId}::uuid and event_type in ('native.process_start_requested', 'native.process_identity_recorded',
+      'native.local_process_stopped', 'turn.started', 'session.resumed')`);
+  return Number(row?.seq ?? 0);
+}
+
 export function createRunStopSettlement(db: Db, deps: {
   getAdapter: (type: string) => Pick<ServerAdapterModule, "reverifyCancelledRunStop" | "reverifyUndispatchedRunStop"> | null | undefined;
   isRunActive: (id: string) => boolean;
@@ -65,8 +72,11 @@ export function createRunStopSettlement(db: Db, deps: {
     return (await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))))[0];
   }
 
-  /** Reserve before I/O. A crash consumes its attempt. All automatic and manual
-   * callers contend on this durable claim; provider Stop/replay are unavailable. */
+  /** Liveness-first rule 2: a terminal run releases every gate in the claim
+   * transaction (receipt `settled`, a requested cancellation acknowledged with
+   * proof `terminal_status`, waiters notified). Stop evidence and cleanup are
+   * best-effort background work recorded on the receipt; they never block,
+   * downgrade the state or ask for Owner intervention. */
   async function reconcile(runId: string, companyId: string, options: { manual?: boolean; signal?: AbortSignal } = {}) {
     if (options.signal?.aborted) return null;
     const claimed = await db.transaction(async transaction => {
@@ -76,115 +86,87 @@ export function createRunStopSettlement(db: Db, deps: {
       if (!run) return null;
       const previous = parseObject(run.resultJson?.stopSettlement);
       if (typeof previous.claimUntil === "string" && Date.parse(previous.claimUntil) > now()) return null;
-      const key = await evidenceKey(tx, run);
+      const at = new Date(now()).toISOString();
+      const cancellation = parseObject(run.resultJson?.executionCancellation);
+      const release = cancellation.state === "requested" ? { executionCancellation: { ...cancellation, state: "acknowledged",
+        forced: cancellation.forced === true, acknowledgedAt: at, proof: "terminal_status" } } : {};
+      const key = await evidenceKey(tx, { ...run, resultJson: { ...run.resultJson, ...release } });
+      const released = previous.schema === SCHEMA && previous.state === "settled" && previous.stopVerified === true;
       const changed = previous.evidenceKey !== key;
       const attempts = Number.isSafeInteger(previous.attempts) ? Number(previous.attempts) : 0;
       const due = typeof previous.nextCheckAt === "string" && Date.parse(previous.nextCheckAt) <= now();
-      if (!options.manual && !changed && !due && !previous.claimToken) return null;
+      if (released && !options.manual && !changed && !due && !previous.claimToken) return null;
       const inspect = Boolean(options.manual || changed || attempts < 4);
-      const receipt = { ...previous, schema: SCHEMA, state: "stopping", reason: "checking_stop",
+      const receipt = { ...previous, schema: SCHEMA, state: "settled", reason: released ? previous.reason ?? "terminal" : "terminal",
+        stopVerified: true, releasedAt: typeof previous.releasedAt === "string" ? previous.releasedAt : at,
         attempts: attempts + (inspect ? 1 : 0), checkedAt: previous.checkedAt ?? null, nextCheckAt: null,
         claimToken: randomUUID(), claimUntil: new Date(now() + CLAIM_MS).toISOString(), evidenceKey: key };
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.runStopSettlement, JSON.stringify({ companyId, runId }));
-      await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, stopSettlement: receipt } }).where(eq(heartbeatRuns.id, runId));
+      await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, ...release, stopSettlement: receipt } }).where(eq(heartbeatRuns.id, runId));
+      if (!released) {
+        await notifyDeferredExecutionWork(tx, { companyId });
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceWaitSettlement);
+        if (typeof run.resultJson?.workspaceRecoveryActionId === "string")
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceCreatorRecovery, run.resultJson.workspaceRecoveryActionId);
+        await appendHeartbeatRunEvent(tx, { companyId, runId, agentId: run.agentId, eventType: "execution.stop_settlement_checked",
+          stream: "system", payload: { schema: SCHEMA, state: "settled", reason: "terminal", stopVerified: true, manual: options.manual === true } });
+      }
       return { run, receipt, inspect };
     });
     if (!claimed) return read(runId, companyId);
-    let state: "stopping" | "cleaning" | "settled" = "stopping", reason = "inspection_interrupted";
-    let neverStarted = false, remoteHostStopped = false;
+    let evidence: string | null = null, cleanup: string | null = claimed.inspect ? "inspection_interrupted" : null;
+    let inspectedGeneration: number | null = null;
     try {
       if (claimed.inspect && !options.signal?.aborted) {
         let run = (await read(runId, companyId))!;
         if (deps.isRunActive(runId) || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > now()) {
-          reason = "controller_still_owned";
+          cleanup = "controller_still_owned";
         } else {
-          const cancellation = parseObject(run.resultJson?.executionCancellation);
-          let stopProof: string | null = null;
-          if (await isPreDispatchExecutionWaitVerified(db, run)) {
-            neverStarted = true; stopProof = "verified_pre_dispatch_wait";
-          } else if (run.runtimeMode === "native") stopProof = await verifyNativeStop(db, run);
-          else if (cancellation.forced === true) reason = "forced_stop_unverified";
-          else if (await verifyBridgeHostReboot(db, run)) {
-            remoteHostStopped = true; stopProof = "remote_host_reboot_receipt";
-          }
-          else if (hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_terminal_stop_receipt";
-          else if (hasVerifiedBridgeUndispatchedStop(run)) stopProof = "bridge_undispatched_stop_receipt";
-          else if (cancellation.state === "acknowledged") {
-            if (cancellation.proof === "verified_pre_dispatch_wait") reason = "pre_dispatch_evidence_invalidated";
-            // Stop acknowledgement and resource cleanup are separate facts.
-            // Requiring a released checkout here would deadlock cleanup itself.
-            if (cancellation.proof !== "verified_pre_dispatch_wait" && cancellation.forced === false && typeof cancellation.acknowledgedAt === "string" &&
-                Number.isFinite(Date.parse(cancellation.acknowledgedAt)) &&
-                await historicalAdapterType(db, run) === "ccpocket_bridge") stopProof = "recorded_stop_acknowledgement";
-          } else {
-            reason = "stop_unverified";
-            await createBridgeStopReverification(db, { ...deps, intervalMs: 0, signal: options.signal,
-              onUnverified: value => { reason = /^[a-z0-9_]+$/.test(value) ? value.slice(0, 160) : "stop_unverified"; },
-            }).reconcile(runId, companyId);
+          if (await isPreDispatchExecutionWaitVerified(db, run)) evidence = "verified_pre_dispatch_wait";
+          else if (run.runtimeMode === "native") evidence = await verifyNativeStop(db, run);
+          else if (await verifyBridgeHostReboot(db, run)) evidence = "remote_host_reboot_receipt";
+          else {
+            // Record-only: the adapter re-check adds evidence when available.
+            await createBridgeStopReverification(db, { ...deps, intervalMs: 0, signal: options.signal }).reconcile(runId, companyId);
             run = (await read(runId, companyId))!;
-            if (parseObject(run.resultJson?.executionCancellation).state === "acknowledged" || hasVerifiedBridgeTerminalStop(run)) stopProof = "bridge_stop_receipt";
-            else if (hasVerifiedBridgeUndispatchedStop(run)) stopProof = "bridge_undispatched_stop_receipt";
+            evidence = hasVerifiedBridgeTerminalStop(run) ? "bridge_terminal_stop_receipt"
+              : hasVerifiedBridgeUndispatchedStop(run) ? "bridge_undispatched_stop_receipt"
+              : parseObject(run.resultJson?.executionCancellation).bridgeStopProof ? "bridge_stop_receipt" : null;
           }
-          if (stopProof && !options.signal?.aborted) {
-            state = "cleaning";
+          if (!options.signal?.aborted) {
             await db.transaction(tx => notifyInstructionCollection(tx, { companyId, runId }));
             if (run.runtimeMode === "native") await settleCancelledNativeFinalizer(db, run, deps.isRunActive);
-            run = (await read(runId, companyId))!;
-            reason = await inspectStopResources(db, run) ?? "cleanup_complete";
-            if (reason === "cleanup_complete") state = "settled";
-          } else if (run.runtimeMode === "native") reason = "native_process_stop_unverified";
+            cleanup = await inspectStopResources(db, (await read(runId, companyId))!);
+            // Evidence covers the launches seen so far (including a stop it just recorded).
+            inspectedGeneration = await launchGeneration(db, runId);
+          }
         }
       }
     } catch (error) {
-      reason = "settlement_check_failed";
+      cleanup = "evidence_check_failed";
       const { logger } = await import("../../middleware/logger.js");
-      logger.warn({ err: error, runId }, "Run stop settlement remains pending");
+      logger.warn({ err: error, runId }, "Run stop evidence is incomplete; the terminal run is already released");
     }
     const result = await db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
       const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), candidate))
         .for("update");
       if (!current || parseObject(current.resultJson?.stopSettlement).claimToken !== claimed.receipt.claimToken) return null;
-      if (current.nativeSessionId !== claimed.run.nativeSessionId || current.runnerInstanceId !== claimed.run.runnerInstanceId ||
-          current.processStartedAt?.getTime() !== claimed.run.processStartedAt?.getTime() ||
-          current.resultJson?.bridgeSessionId !== claimed.run.resultJson?.bridgeSessionId ||
-          current.resultJson?.nativeSessionId !== claimed.run.resultJson?.nativeSessionId) {
-        state = "stopping"; reason = "execution_changed";
-      }
-      if (state !== "stopping" && (deps.isRunActive(runId) ||
-          neverStarted && !await isPreDispatchExecutionWaitVerified(tx, current) ||
-          remoteHostStopped && !await verifyBridgeHostReboot(tx, current) ||
-          current.runtimeMode === "native" && !await verifyNativeStop(tx, current))) {
-        state = "stopping"; reason = "execution_changed";
-      }
-      if (state === "settled") {
-        const blocker = await inspectStopResources(tx, current);
-        if (blocker) { state = "cleaning"; reason = blocker; }
-      }
-      const cancellation = parseObject(current.resultJson?.executionCancellation);
-      const nativeAck = (current.runtimeMode === "native" || neverStarted) && state !== "stopping" &&
-        cancellation.state === "requested" && cancellation.forced !== true
-        ? { executionCancellation: { ...cancellation, state: "acknowledged", forced: false,
-            acknowledgedAt: new Date(now()).toISOString(), proof: neverStarted ? "verified_pre_dispatch_wait" : "native_termination_reverified" } } : {};
       const attempts = claimed.receipt.attempts;
-      const nextCheckAt = state === "settled" || attempts >= 4 ? null : new Date(now() + STOP_CHECK_DELAYS[Math.max(0, attempts - 1)]!).toISOString();
-      const [generation] = await tx.execute(sql`select coalesce(max(seq), 0) as seq from heartbeat_run_events
-        where run_id = ${runId}::uuid and event_type in ('native.process_start_requested', 'native.process_identity_recorded',
-          'native.local_process_stopped', 'turn.started', 'session.resumed')`);
-      const receipt = { schema: SCHEMA, processGeneration: Number(generation?.seq ?? 0), state: state === "settled" ? state : nextCheckAt ? state : "needs_attention",
-        reason, attempts, checkedAt: new Date(now()).toISOString(), nextCheckAt,
-        evidenceKey: await evidenceKey(tx, { ...current, resultJson: { ...current.resultJson, ...nativeAck } }), stopVerified: state !== "stopping",
-        ...(neverStarted && state !== "stopping" ? { proof: "verified_pre_dispatch_wait" } : {}),
-        ...(remoteHostStopped && state !== "stopping" ? { proof: "remote_host_reboot_receipt" } : {}) };
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.runStopSettlement, JSON.stringify({ companyId, runId }));
+      // A launch recorded after the inspection makes its evidence stale (never the release).
+      const processGeneration = await launchGeneration(tx, runId);
+      if (claimed.inspect && processGeneration !== inspectedGeneration) evidence = null;
+      const pending = claimed.inspect && (cleanup !== null || evidence === null);
+      const nextCheckAt = !pending || attempts >= 4 ? null : new Date(now() + STOP_CHECK_DELAYS[Math.max(0, attempts - 1)]!).toISOString();
+      const { claimToken: _token, claimUntil: _until, ...settled } = claimed.receipt;
+      const receipt = { ...settled, reason: claimed.inspect ? cleanup ?? "cleanup_complete" : settled.reason,
+        ...(claimed.inspect ? { evidence, cleanup, processGeneration } : {}), checkedAt: new Date(now()).toISOString(), nextCheckAt,
+        evidenceKey: await evidenceKey(tx, current) };
+      if (nextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.runStopSettlement, JSON.stringify({ companyId, runId }));
       await notifyInstructionCollection(tx, { companyId, runId });
-      if (state === "settled") {
-        await notifyDeferredExecutionWork(tx, { companyId });
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceWaitSettlement);
-      }
-      const [updated] = await tx.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
-        || ${JSON.stringify({ ...nativeAck, stopSettlement: receipt })}::jsonb`, updatedAt: new Date(now()) }).where(eq(heartbeatRuns.id, runId)).returning();
-      await appendHeartbeatRunEvent(tx, { companyId, runId, agentId: current.agentId, eventType: "execution.stop_settlement_checked",
+      const [updated] = await tx.update(heartbeatRuns).set({ resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'stopSettlement')
+        || ${JSON.stringify({ stopSettlement: receipt })}::jsonb`, updatedAt: new Date(now()) }).where(eq(heartbeatRuns.id, runId)).returning();
+      if (claimed.inspect) await appendHeartbeatRunEvent(tx, { companyId, runId, agentId: current.agentId, eventType: "execution.stop_evidence_recorded",
         stream: "system", payload: { ...receipt, evidenceKey: undefined, manual: options.manual === true } });
       return updated;
     });

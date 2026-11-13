@@ -5,6 +5,7 @@ import { parseObject } from "../../adapters/utils.js";
 /**
  * Never-delivered stop proof for a cancelled CC Pocket run that recorded no session identity. Kept free of
  * database and adapter imports so both the continuation gate and the settlement flow can use it.
+ * Liveness-first: this is background, record-only evidence; a terminal run never waits for it.
  */
 type Run = typeof heartbeatRuns.$inferSelect;
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.length > 0;

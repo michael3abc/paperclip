@@ -21,6 +21,9 @@ import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } fr
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
+import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { isTransientRunFailureCode, shouldAutoRetryRunFailure } from "../recovery/failure-classification.js";
+import { hostCircuitBreaker, hostCircuitKeyForAgent } from "../host-circuit-breaker.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -331,6 +334,57 @@ export function isWorkspaceSyncConflictFailure(
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * The same eligibility as immediate release recovery: the run's issue is
+ * visible, open (todo or in_progress), agent-assigned and still assigned to
+ * the failed run's agent. Anything else is left to its current owner.
+ */
+async function issueAcceptsFailureRetry(db: Db, run: Run): Promise<boolean> {
+  const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  if (!issueId) return false;
+  const [issue] = await db
+    .select({
+      status: issues.status,
+      hiddenAt: issues.hiddenAt,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+    .limit(1);
+  return Boolean(issue && !issue.hiddenAt && !issue.assigneeUserId &&
+    issue.assigneeAgentId === run.agentId &&
+    (issue.status === "todo" || issue.status === "in_progress"));
+}
+
+/** A transient failure code carried by an error thrown during setup or dispatch. */
+function transientThrownErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as { code?: unknown; details?: unknown };
+  const details = record.details && typeof record.details === "object"
+    ? (record.details as { code?: unknown })
+    : null;
+  for (const candidate of [record.code, details?.code]) {
+    if (typeof candidate === "string" && isTransientRunFailureCode(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Feeds the per-host circuit breaker: host/Bridge unavailability opens it,
+ * a successful run closes it. Other outcomes leave it unchanged.
+ */
+function recordHostCircuitOutcome(
+  agent: { adapterType?: string | null; adapterConfig?: unknown },
+  outcome: RunSessionOutcome,
+  errorCode: string | null | undefined,
+) {
+  const key = hostCircuitKeyForAgent(agent);
+  if (!key) return;
+  if (outcome === "succeeded") hostCircuitBreaker.recordSuccess(key);
+  else if (errorCode) hostCircuitBreaker.recordFailure(key, errorCode);
 }
 
 // Keep the watchdog's closed cause and timings so the run and its failure
@@ -965,14 +1019,30 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ) {
         await scheduleBoundedRetryForRun(livenessRun, agent);
       } else if (
-        outcome === "failed" &&
+        (outcome === "failed" || outcome === "timed_out") &&
         !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
       ) {
-        await scheduleInteractionContinuationInfrastructureRetryIfEligible(
-          livenessRun,
-          agent,
-        );
+        const interactionRetry =
+          await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+            livenessRun,
+            agent,
+          );
+        // Liveness-first (rules 1 and 4): an issue run that failed with a
+        // retryable code is resent after backoff (30s x 2^n, capped at 30
+        // min) instead of being requeued immediately by release recovery or
+        // held for an operator. Deterministic codes are left to the notice.
+        if (
+          !interactionRetry &&
+          shouldAutoRetryRunFailure(
+            livenessRun.errorCode,
+            executionFailureRetryCount(livenessRun) + 1,
+          ) &&
+          (await issueAcceptsFailureRetry(db, livenessRun))
+        ) {
+          await scheduleBoundedRetryForRun(livenessRun, agent);
+        }
       }
+      recordHostCircuitOutcome(agent, outcome, livenessRun.errorCode);
       const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
         livenessRun,
         agent,
@@ -1371,6 +1441,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : null) ??
       recordedResponsibleUserDenialCode ??
       nonRetryablePreflightCode ??
+      transientThrownErrorCode(outerErr) ??
       "setup_failed";
     logger.error(
       { err: identityRedactor.redact({ message: outerErr instanceof Error ? outerErr.message : String(outerErr), stack: outerErr instanceof Error ? outerErr.stack : undefined }), runId },
@@ -1504,15 +1575,29 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           );
         }
         if (livenessRun.errorCode !== PROJECT_ACCESS_DENIED) {
-          await (isTransientWorkspacePreparationCode(livenessRun.errorCode)
-            ? scheduleBoundedRetryForRun(livenessRun, failedAgent)
-            : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
-          ).catch((retryError) => {
+          await (async () => {
+            if (isTransientWorkspacePreparationCode(livenessRun.errorCode)) {
+              await scheduleBoundedRetryForRun(livenessRun, failedAgent);
+              return;
+            }
+            const interactionRetry =
+              await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent);
+            // Liveness-first: retryable setup failures of issue runs are
+            // resent after backoff; deterministic ones are left to the notice.
+            if (
+              !interactionRetry &&
+              shouldAutoRetryRunFailure(livenessRun.errorCode, executionFailureRetryCount(livenessRun) + 1) &&
+              (await issueAcceptsFailureRetry(db, livenessRun))
+            ) {
+              await scheduleBoundedRetryForRun(livenessRun, failedAgent);
+            }
+          })().catch((retryError) => {
             logger.warn(
               { err: retryError, runId: livenessRun.id },
-              "failed to schedule interaction continuation retry after setup failure",
+              "failed to schedule retry after setup failure",
             );
           });
+          recordHostCircuitOutcome(failedAgent, "failed", livenessRun.errorCode);
         }
       }
       await releaseIssueExecutionAndPromote(livenessRun, {

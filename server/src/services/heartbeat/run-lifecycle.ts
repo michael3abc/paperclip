@@ -755,7 +755,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   }) {
     const errorCode = planApprovalResumeFailureErrorCode(input.run);
     if (input.status === "retrying") {
-      return `Agent failed to resume after approval: \`${errorCode}\` — retrying (attempt ${input.attempt}/${input.maxAttempts})`;
+      // Liveness-first: transient retries are unlimited (recorded as the
+      // schema cap of 100), so the cap is not shown as a limit.
+      return input.maxAttempts >= 100
+        ? `Agent failed to resume after approval: \`${errorCode}\` — retrying automatically (attempt ${input.attempt})`
+        : `Agent failed to resume after approval: \`${errorCode}\` — retrying (attempt ${input.attempt}/${input.maxAttempts})`;
     }
     return `Agent failed to resume after approval: \`${errorCode}\` — needs attention`;
   }

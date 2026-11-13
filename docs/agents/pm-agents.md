@@ -25,7 +25,7 @@ with their identical prior defaults. Retire redundant D workers only after
 confirming they have no assigned tasks or live work; retain their history.
 Main agents, nono, host logins and filesystem locations are unchanged.
 
-Moved verbatim from `AGENTS.md` on 2026-11-13. These rules and records stay binding; read this file before acting on the topic. Zero-slot PM policy, bundle layout, dispatch, read scope, worker policy, watchdog, homes
+Moved from `AGENTS.md` on 2026-11-13; read this file before acting on the topic. `/home/michael/services/docs/agents/liveness-first.md` (Owner 2026-11-13) is binding and wins over any conflicting statement here. Zero-slot PM policy, bundle layout, dispatch, read scope, worker policy, watchdog, homes
 
 Keep PM worker-policy and project execution-record OpenAPI operations aligned
 with mounted routes, shared policy validators and existing access controls.
@@ -54,11 +54,11 @@ source, workspace and review before waking that worker. Preserve source Owner ga
 Keep these dispatch fields in the live `protocol-actions/create-task.ts` schema
 as well as the documentation catalog. Test the exported provider catalog; a field
 present only in the documentation catalog is rejected before server authorization.
-New code dispatch requires the project's registered open Git execution workspace.
-Shared participants retain independent task/session authority and per-run copies.
-Cancelled runs leave admission immediately; provider stop and cleanup receipts
-remain truthful and govern only cleanup/reuse of their own resources and retirement.
-Main controls worktree lifecycle; terminal/idle reapers never delete managed trees.
+New code dispatch runs in the resolved directory (workspace = directory: task cwd >
+agent fixed cwd > project default cwd > per-agent default); main may point it at a
+worktree it created explicitly. Shared participants keep independent task sessions.
+A terminal run releases every gate; stop and cleanup receipts are background records.
+Terminal/idle reapers never delete managed trees or dirty/ignored files.
 PM
 `list_agents.dispatchReadiness` reports current policy/document/selection metadata;
 it is not provider acceptance. PMs may read their own project's tasks, recent/single comments, document revisions,
@@ -79,12 +79,10 @@ management configuration stays hidden. Captured responses and registered attachm
 are readable for the same project, including another task/worker's output; unbound
 assets and foreign project captures remain denied. PM
 review homes are run-scoped and must never replace a worker task workspace binding.
-Fixed project main agents also retain their registered home during a currently
-assigned formal review. Resolve that home on the configured host without a
-recursive path claim, and preserve the worker's selection, workspace row and
-binding revision.
-Non-review execution and stale/foreign review participants keep the fixed-source
-conflict guard; never infer reviewer authority from wake context alone.
+Fixed project main agents also retain their home during a currently assigned
+formal review. Resolve that home on the configured host without a path claim, and
+preserve the worker's own directory. Fixed/isolated mismatches are logged only;
+never infer reviewer authority from wake context alone.
 Workspace-only issue PATCHes preserve status, assignment and pending review state;
 maintenance cannot normalize a blocked task into review or wake its reviewer.
 Use `read_bundle_file` receipts and `write_bundle_file` CAS saves for PM support
@@ -106,7 +104,7 @@ join native runs through their recorded issue/project; Artifacts use registered
 issue documents, attachments and artifact work products, never path scanning.
 Retain separately labelled CC Pocket history and distinguish source errors from
 empty results. New UI settings do not activate agents or deploy changes.
-PM Retry may reuse its task-owned home only after a settled pre-provider setup failure and an unchanged zero-slot PM binding. Never reinterpret an explicit fresh-workspace request or relax worker isolation; preserve original failed runs and recheck trust and environment restrictions during preparation.
+PM Retry reuses its task-owned home. Never relax worker isolation; preserve original failed runs and recheck trust and environment restrictions during preparation.
 PM worker options may pin an existing explicit AI connection alongside their model.
 Worker catalogs use that connection's routed models, not a global official-provider
 catalog. Only connections already installed for the worker and available to the
@@ -135,19 +133,19 @@ with ordered watchdog locks and restart reconstruction of unconsumed events.
 Use the shared deadline scheduler, never a generic PM heartbeat or idle SQL polling.
 Only persisted watchdog provenance permits a zero-slot PM coordination child; execute
 it in PM home and preserve the original worker workspace. Continue requires current
-project/worker authority, an idempotency key and observed task/run versions. Unknown
-outcomes must inspect the original continuation receipt; a wake alone is not completion.
+project/worker authority, an idempotency key and observed task/run versions. An
+unknown continuation outcome follows the liveness-first resend rule; a wake alone is
+not completion.
 Project mains may continue their own project's existing worker tasks from the
 original accepted Owner Chat input, using a current run credential, an unchanged
 Owner-attributed handoff comment, idempotency key and explicit task/run observations.
 An empty continue request grants nothing. Recheck current main/worker policy,
 conversation generation, latest Owner input and task instructions at admission.
 Recheck the original-main operation again before its first worker dispatch after
-capacity waiting or restart. Status/assignment changes never settle unknown input,
-provider effects or session ownership through generic stale-recovery cleanup.
-Normal main completion retains only an already committed operation; it cannot
-authorize another continuation. Preserve unknown delivery, human holds and original
-task/run history; registration alone is never authority to resume work.
+capacity waiting or restart. Normal main completion retains only an already
+committed operation; it cannot authorize another continuation. Unknown input or
+provider outcomes are resent under the liveness-first rule, never held. Preserve
+human holds and original task/run history.
 Formal review retains current stage, participant and policy bindings. Keep human gates,
 manual holds and completed/cancelled work intact. Saved Recovery directory realization
 and ownership govern reuse, even for a configured non-Git source.

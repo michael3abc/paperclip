@@ -401,7 +401,9 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   });
 
   it.each(["active_lease", "pending_cleanup", "failed_cleanup", "unknown_cleanup", "local_provider_resource", "ssh_provider_mismatch", "cleanup_claim", "finalizer_owner", "workspace_owner"])(
-    "waits for native cleanup and finalizer ownership before recovering saved input (%s)", async kind => {
+    // Liveness-first (rule 2): native cleanup and finalizer ownership are
+    // background work; a terminal run's saved input is promoted immediately.
+    "does not wait for native cleanup or finalizer ownership before recovering saved input (%s)", async kind => {
       const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
       const issueId = await seedIssue({ companyId, status: "blocked", assigneeAgentId: agentId });
       const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
@@ -430,19 +432,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
       });
       const input = { companyId, runId, now: new Date(), suppressImmediateRecovery: true, resumeStrandedQueue: true };
-      const held = await release(input);
-      expect(held).toMatchObject({ outcome: { kind: "released" }, postCommitEffects: [] });
-      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
-        .toMatchObject({ executionRunId: runId, checkoutRunId: runId });
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0])
-        .toMatchObject({ status: "deferred_issue_execution", runId: null });
-      expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
-      if (lease) await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(), metadata: {} }).where(eq(environmentLeases.id, lease.id));
-      if (kind === "finalizer_owner") await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, runId));
-      if (kind === "workspace_owner") await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, runId));
       expect((await release(input)).outcome.kind).toBe("promoted");
       await release(input);
       expect(await db.select().from(heartbeatRuns)).toHaveLength(2);
+      if (lease) expect(lease.heartbeatRunId).toBe(runId);
       expect((await db.select().from(issueComments).where(eq(issueComments.id, comment.id)))[0].body).toBe(comment.body);
     },
   );
@@ -768,7 +761,9 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(wake.status).toBe("deferred_issue_execution");
   });
 
-  it.each(["clean", "launch", "cleanup"])("promotes saved input only after a verified pre-dispatch review wait (%s)", async evidence => {
+  // Liveness-first (rules 1 and 2): launch or cleanup evidence on the terminal
+  // review wait no longer holds saved input; it is promoted in every case.
+  it.each(["clean", "launch", "cleanup"])("promotes saved input after a terminal pre-dispatch review wait (%s)", async evidence => {
     const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
     const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId },
@@ -789,12 +784,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const result = await release({ companyId, runId, now: new Date() });
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
-    if (evidence !== "clean") {
-      expect(result.outcome.kind).toBe("released");
-      expect(runs).toHaveLength(1);
-      expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
-      return;
-    }
     expect(result.outcome.kind).toBe("promoted");
     expect(runs).toHaveLength(2);
     const successor = runs.find(run => run.status === "queued")!;

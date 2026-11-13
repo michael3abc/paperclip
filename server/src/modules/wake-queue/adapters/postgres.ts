@@ -2,6 +2,8 @@ import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-n
 import { wakeMustNotJoinActiveRun } from "../domain/context.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
+import { accountingForScheduledRetry, executionFailureRetryCount } from "../../../services/execution-recovery-attempt.js";
+import { isTransientRunFailureCode, runFailureBackoffMs } from "../../../services/recovery/failure-classification.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -712,6 +714,24 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       now,
     }) {
       await notifyChatRunMilestones(tx, { companyId, issueId: issue.id });
+      // Liveness-first (rule 4): immediate release recovery respects the same
+      // backoff as every other failure retry (30s x 2^n, capped at 30 min), so
+      // a repeatedly failing source no longer requeues every few seconds. The
+      // successor carries the failure accounting so the delay keeps growing.
+      const recoveryRetryReason = readNonEmptyString(contextSnapshot.retryReason) ?? "issue_continuation_needed";
+      const failureAttempt = executionFailureRetryCount(run) + 1;
+      const backoffMs = ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status)
+        ? runFailureBackoffMs(failureAttempt)
+        : 0;
+      const scheduledRetryAt = backoffMs > 0 ? new Date(now.getTime() + backoffMs) : null;
+      const recoverySnapshot: Record<string, unknown> = scheduledRetryAt
+        ? {
+            ...contextSnapshot,
+            executionRetryAccounting: accountingForScheduledRetry(run, recoveryRetryReason, failureAttempt),
+            scheduledRetryAttempt: failureAttempt,
+            scheduledRetryAt: scheduledRetryAt.toISOString(),
+          }
+        : contextSnapshot;
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -737,12 +757,19 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           agentId: recoveryAgent.id,
           invocationSource: "automation",
           triggerDetail: "system",
-          status: "queued",
+          status: scheduledRetryAt ? "scheduled_retry" : "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot,
+          contextSnapshot: recoverySnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
+          ...(scheduledRetryAt
+            ? {
+                scheduledRetryAt,
+                scheduledRetryAttempt: failureAttempt,
+                scheduledRetryReason: recoveryRetryReason,
+              }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -775,6 +802,10 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     issue.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(issue.status);
   if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
+  // Liveness-first (rules 1 and 4): a transient native failure is resent by
+  // release recovery with backoff; it no longer blocks the issue behind a
+  // board-owned reconciliation action.
+  if (isTransientRunFailureCode(run.errorCode)) return false;
 
   const existing = await tx
     .select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })

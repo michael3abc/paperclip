@@ -19,7 +19,7 @@ import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifec
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { mainAgentProjectId } from "./main-agent-workers.js";
-import { unsettledWorkspaceHolders } from "./heartbeat/shared-checkout.js";
+import { TERMINAL_RUN_STATUSES, unsettledWorkspaceHolders } from "./heartbeat/shared-checkout.js";
 import { logActivity } from "./activity-log.js";
 import { assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
 import { executionWorkspaceRepositoryService } from "./execution-workspace-repositories.js";
@@ -102,6 +102,10 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
     )).limit(1);
     if (active) fail("worktree_registration_active_run");
   }
+  /** Liveness-first rule 2: a terminal participant run is enough. Stop evidence,
+   * cleanup receipts and leases of terminal runs never block retirement. Live
+   * work (a non-terminal run, its unreleased lease, a running service) still does,
+   * and the host retire itself never force-removes or deletes dirty/ignored files. */
   async function assertRetirable(row: Workspace, managed: MainManagedWorktree) {
     const participants = Object.values(managed.participants);
     if (participants.some(value => !value.runId)) fail("retire_blocked_participants");
@@ -110,17 +114,19 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
       const runs = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.companyId, row.companyId), inArray(heartbeatRuns.id, runIds)));
       if (runs.length !== new Set(runIds).size) fail("retire_blocked_unknown_live");
-      if (runs.some(run => !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status))) fail("retire_blocked_participants");
+      if (runs.some(run => !(TERMINAL_RUN_STATUSES as readonly string[]).includes(run.status))) fail("retire_blocked_participants");
     }
-    const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-      eq(environmentLeases.companyId, row.companyId), eq(environmentLeases.executionWorkspaceId, row.id),
-      or(isNull(environmentLeases.releasedAt), eq(environmentLeases.cleanupStatus, "failed")),
-    )).limit(1);
+    const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId)).where(and(
+        eq(environmentLeases.companyId, row.companyId), eq(environmentLeases.executionWorkspaceId, row.id),
+        isNull(environmentLeases.releasedAt), not(inArray(heartbeatRuns.status, [...TERMINAL_RUN_STATUSES])),
+      )).limit(1);
     const [service] = await db.select({ id: workspaceRuntimeServices.id }).from(workspaceRuntimeServices).where(and(
       eq(workspaceRuntimeServices.companyId, row.companyId), eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
       not(inArray(workspaceRuntimeServices.status, ["stopped", "failed"])),
     )).limit(1);
     if (lease || service) fail("retire_blocked_live_resource");
+    // Only non-terminal runs in this tree are holders (shared-checkout settled == terminal).
     const holders = await unsettledWorkspaceHolders(db, { host: managed.hostId ? "ccpocket:" + managed.hostId : hostname(),
       path: row.cwd!, remote: managed.hostId !== null, first: true });
     if (holders.length) fail("retire_blocked_unknown_live");

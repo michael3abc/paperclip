@@ -11,6 +11,8 @@ import {
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { logActivity } from "../activity-log.js";
 import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
+import { hostCircuitBreaker, type HostCircuitBreaker } from "../host-circuit-breaker.js";
+import { logger } from "../../middleware/logger.js";
 import { record } from "./workspace-creator.js";
 
 /** Boot-time slack for the server clock reading around the remote uptime read. */
@@ -25,12 +27,19 @@ export interface RemoteHostRebootDeps {
   now?: () => number;
   /** True unless the local pid/process group is definitely absent (ESRCH). */
   processExists?: (id: number, group: boolean) => boolean;
+  /** Per-host circuit breaker; defaults to the process-wide one. */
+  breaker?: Pick<HostCircuitBreaker, "openUntil" | "recordFailure" | "recordSuccess">;
 }
 
 export type RemoteHolderReason =
   | "proven" | "holder_not_terminal" | "holder_controlled" | "holder_task_held" | "local_process_present"
   | "unsupported_environment" | "endpoint_mismatch" | "unsupported_execution" | "boot_not_after_finish"
-  | "other_settlement_pending";
+  | "other_settlement_pending" | "host_unavailable_deferred";
+
+/** Breaker key shared with dispatch (`hostCircuitKeyForAgent` for a CC Pocket host). */
+export function remoteHostCircuitKey(hostId: string) {
+  return `ccpocket_bridge:${hostId}`;
+}
 
 export interface RemoteHolderActor {
   type: string; agentId?: string | null; runId?: string | null; userId?: string | null;
@@ -53,10 +62,12 @@ function validObservation(value: AdapterRemoteHostBootObservation | null | undef
 
 /**
  * Holderless workspace waits (busy.holderRunId withheld or absent) on a non-shared
- * remote host. Discovers the unsettled owners through the same admission query and
- * may record one server-observed boot boundary per terminal owner: the remote
- * host's current boot began after the owner finished, so none of its processes can
- * still run. Never cancels, rewrites outcomes, removes claims or wakes work.
+ * remote host. Liveness-first: this is no longer a gate. Terminal runs are never
+ * holders (rule 2), so only live owners are listed. The remote host is probed
+ * through the per-host circuit breaker: while it is open, or when the probe fails,
+ * the check is deferred to the breaker's `openUntil` (a deferral, not a failure).
+ * A boot boundary observed after a holder finished is still recorded as diagnostic
+ * evidence. Never cancels, rewrites outcomes, removes claims or wakes work.
  */
 export async function reconcileRemoteHostRebootHolders(db: Db, input: {
   companyId: string; issueId: string; waitingRunId: string; expectedBindingRevision: number;
@@ -93,6 +104,7 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
     if (!workspace || workspace.sourceType !== "remote_managed" || typeof hostId !== "string" || !HOST_ID.test(hostId) ||
         typeof cwd !== "string" || !cwd.startsWith("/") || path.posix.normalize(cwd).replace(/(.)\/$/, "$1") !== cwd)
       throw conflict("Boot-boundary settlement is limited to a canonical remote-managed project workspace");
+    // Terminal runs are released (settled == terminal); only live owners remain.
     const holders = await unsettledWorkspaceHolders(db, { host: `ccpocket:${hostId}`, path: cwd, remote: true });
     return { task, workspace, hostId, cwd, holders };
   }
@@ -101,16 +113,32 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
   const results: { runId: string; issueId: string | null; state: "settled" | "unverified"; reason: RemoteHolderReason }[] = [];
   let undisclosedHolders = 0;
   let observation: { hostId: string; bootId: string; bootStartedAtLowerBound: string } | null = null;
+  let deferredUntil: Date | null = null;
+  const breaker = deps.breaker ?? hostCircuitBreaker;
+  const breakerKey = remoteHostCircuitKey(before.hostId);
+  const now = deps.now ?? Date.now;
+  let observed: AdapterRemoteHostBootObservation | null = null;
+  let sentAt = 0, receivedAt = 0;
   if (before.holders.length) {
-    const observe = deps.observe;
-    if (!observe) throw conflict("The registered host catalog cannot observe remote boot state");
-    const now = deps.now ?? Date.now;
-    const sentAt = now();
-    const observed = await observe(before.hostId);
-    const receivedAt = now();
-    if (!validObservation(observed, before.hostId)) throw conflict("The remote boot observation is invalid");
-    const lowerBound = sentAt - observed.uptimeSeconds * 1000 - REMOTE_BOOT_CLOCK_MARGIN_MS;
-    observation = { hostId: before.hostId, bootId: observed.bootId, bootStartedAtLowerBound: new Date(lowerBound).toISOString() };
+    deferredUntil = breaker.openUntil(breakerKey);
+    if (!deferredUntil) {
+      const observe = deps.observe;
+      if (!observe) throw conflict("The registered host catalog cannot observe remote boot state");
+      sentAt = now();
+      try { observed = await observe(before.hostId); receivedAt = now(); }
+      catch (error) {
+        // An unreachable host defers this check; it is never a run failure.
+        deferredUntil = breaker.recordFailure(breakerKey, "host_unavailable");
+        logger.info({ err: error, hostId: before.hostId, deferredUntil }, "remote host unavailable; holder check deferred by the host circuit breaker");
+      }
+      if (observed && !validObservation(observed, before.hostId)) throw conflict("The remote boot observation is invalid");
+      if (observed) breaker.recordSuccess(breakerKey);
+    }
+  }
+  if (observed) {
+    const seen = observed;
+    const lowerBound = sentAt - seen.uptimeSeconds * 1000 - REMOTE_BOOT_CLOCK_MARGIN_MS;
+    observation = { hostId: before.hostId, bootId: seen.bootId, bootStartedAtLowerBound: new Date(lowerBound).toISOString() };
     const after = await scope();
     if (after.hostId !== before.hostId || after.cwd !== before.cwd) throw conflict("The busy workspace changed during observation");
     const processExists = deps.processExists ?? defaultProcessExists;
@@ -136,8 +164,8 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
       else if (leases.some(lease => {
         if (lease.provider !== "ssh") return false;
         const remote = record(record(record(lease.metadata).workspaceRealization).remote);
-        return remote.host !== observed.endpoint.host || Number(remote.port) !== observed.endpoint.port
-          || remote.username !== observed.endpoint.username;
+        return remote.host !== seen.endpoint.host || Number(remote.port) !== seen.endpoint.port
+          || remote.username !== seen.endpoint.username;
       })) reason = "endpoint_mismatch";
       else if (adapterType !== "ccpocket_bridge" && !leases.some(lease => lease.provider === "ssh")) reason = "unsupported_execution";
       else if (holder.finishedAt.getTime() >= lowerBound) reason = "boot_not_after_finish";
@@ -149,7 +177,7 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
           const finishedAt = locked?.finished;
           if (!finishedAt) throw conflict("The holder changed during observation");
           const existing = await tx.execute(sql`select 1 from heartbeat_run_events where run_id = ${holder.id}::uuid
-            and event_type = ${REMOTE_HOST_REBOOT_EVENT} and payload->>'bootId' = ${observed.bootId}
+            and event_type = ${REMOTE_HOST_REBOOT_EVENT} and payload->>'bootId' = ${seen.bootId}
             and payload->>'runFinishedAt' = ${finishedAt} limit 1`);
           if (existing.length) return;
           await notifyRunStopSettlement(tx, { companyId: input.companyId, runId: holder.id });
@@ -158,9 +186,9 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
             stream: "system", level: "info",
             message: `Remote host ${before.hostId} booted after this run finished; no process from this run can remain.`,
             payload: {
-              schema: REMOTE_HOST_REBOOT_SCHEMA, hostId: before.hostId, bootId: observed.bootId,
+              schema: REMOTE_HOST_REBOOT_SCHEMA, hostId: before.hostId, bootId: seen.bootId,
               bootStartedAtLowerBound: observation!.bootStartedAtLowerBound, observedAt: new Date(sentAt).toISOString(),
-              runFinishedAt: finishedAt, endpoint: observed.endpoint, roundTripMs: Math.max(0, receivedAt - sentAt),
+              runFinishedAt: finishedAt, endpoint: seen.endpoint, roundTripMs: Math.max(0, receivedAt - sentAt),
               localProcess: holder.processPid != null || holder.processGroupId != null ? "absent" : "not_recorded",
               waitingRunId: input.waitingRunId, issueId: input.issueId,
             },
@@ -171,16 +199,24 @@ export async function reconcileRemoteHostRebootHolders(db: Db, input: {
       if (reason === "proven" && !settled) reason = "other_settlement_pending";
       results.push({ runId: owner.id, issueId, state: settled ? "settled" : "unverified", reason });
     }
+  } else if (deferredUntil) {
+    for (const owner of before.holders) {
+      if (owner.company_id !== input.companyId) { undisclosedHolders += 1; continue; }
+      results.push({ runId: owner.id, issueId: owner.issue_id ?? null, state: "unverified", reason: "host_unavailable_deferred" });
+    }
   }
   const remaining = (await scope()).holders;
   const settled = remaining.length === 0;
+  const state = settled ? "settled" as const : deferredUntil ? "deferred" as const : "unverified" as const;
   await logActivity(db, { companyId: input.companyId, actorType: "user", actorId: input.actor.userId ?? "board",
     action: "issue.workspace_holder_reconciled", entityType: "issue", entityId: input.issueId,
     details: { mode: "remote_host_reboot", waitingRunId: input.waitingRunId, projectWorkspaceId: before.workspace.id,
-      observation, holders: results, undisclosedHolders, settled } });
+      observation, holders: results, undisclosedHolders, settled, ...(deferredUntil ? { deferredUntil: deferredUntil.toISOString() } : {}) } });
   return {
-    holderRunId: null, state: settled ? "settled" as const : "unverified" as const, holders: results, undisclosedHolders, observation,
-    nextAction: settled ? "The original waiting task retains its scheduled admission; workspace checks still apply."
-      : "At least one workspace owner remains without stop and cleanup evidence. Owner intervention is required.",
+    holderRunId: null, state, holders: results, undisclosedHolders, observation,
+    ...(state === "deferred" ? { retryAt: deferredUntil!.toISOString() } : {}),
+    nextAction: state === "settled" ? "No live run holds this workspace; the waiting task is dispatched by its normal retry."
+      : state === "deferred" ? "The remote host is unavailable; the check is deferred until the host circuit breaker allows another probe."
+      : "A live run still uses this workspace; it is released automatically when that run ends.",
   };
 }

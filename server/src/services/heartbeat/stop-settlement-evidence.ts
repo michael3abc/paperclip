@@ -7,40 +7,76 @@ import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js"
 import { acknowledgedNativeApiStopExecutionHasStopped } from "../acknowledged-native-stop.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
-import { suppressedDispositionRepairPredicate } from "../pre-dispatch-execution-wait.js";
-import { verifiedBridgeHostRebootSql } from "./shared-checkout.js";
+import { REMOTE_HOST_REBOOT_EVENT, REMOTE_HOST_REBOOT_SCHEMA } from "./shared-checkout.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
-/** A server receipt is usable only for the execution generation it inspected. */
+/** Liveness-first rule 2: a terminal run releases every gate. Stop evidence is
+ * recorded in the background (stop-settlement.ts) and is never required here. */
 export async function hasCurrentStopVerification(db: Db, companyId: string, runId: string) {
   const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${runId}::uuid
-    and r.company_id = ${companyId}::uuid and r.status in ('cancelled', 'timed_out', 'failed', 'interrupted')
-    and (r.error_code IS DISTINCT FROM 'legacy_disposition_repair_suppressed' OR EXISTS (
-      select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = r.id and ${suppressedDispositionRepairPredicate()}))
-    and r.result_json#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
-    and r.result_json#>>'{stopSettlement,state}' in ('cleaning', 'needs_attention', 'settled')
-    and r.result_json#>>'{stopSettlement,stopVerified}' = 'true'
-    and (r.result_json#>>'{stopSettlement,proof}' IS DISTINCT FROM 'remote_host_reboot_receipt'
-      OR (${verifiedBridgeHostRebootSql}))
-    and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
-    and (r.result_json#>>'{stopSettlement,processGeneration}')::integer =
-      (select coalesce(max(e.seq), 0) from heartbeat_run_events e where e.run_id = r.id
-        and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
-          'native.local_process_stopped', 'turn.started', 'session.resumed'))`);
+    and r.company_id = ${companyId}::uuid
+    and r.status in ('succeeded', 'cancelled', 'timed_out', 'failed', 'interrupted')`);
   return rows.length === 1;
 }
+
+/** SQL (alias-free, on heartbeat_runs columns) for stop evidence actually recorded by
+ * the background stop-settlement inspection for the run's latest launch. Not a gate:
+ * only background consumers that read or save a run's own files (instruction copy
+ * collection) use it, so a writer that may still be active is never read as final. */
+export function recordedStopEvidencePredicate() {
+  return sql`(${heartbeatRuns.status} in ('succeeded', 'cancelled', 'timed_out', 'failed', 'interrupted')
+    and ${heartbeatRuns.resultJson}#>>'{stopSettlement,evidence}' is not null
+    and (${heartbeatRuns.controllerLeaseExpiresAt} is null or ${heartbeatRuns.controllerLeaseExpiresAt} <= now())
+    and (${heartbeatRuns.resultJson}#>>'{stopSettlement,processGeneration}')::integer =
+      (select coalesce(max(e.seq), 0) from heartbeat_run_events e where e.run_id = ${heartbeatRuns.id}
+        and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
+          'native.local_process_stopped', 'turn.started', 'session.resumed')))`;
+}
+
+export async function hasRecordedStopEvidence(db: Db, companyId: string, runId: string) {
+  const [row] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), recordedStopEvidencePredicate())).limit(1);
+  return Boolean(row);
+}
+
+/** Record-only evidence: an Owner-observed boot of the Bridge run's original host that
+ * began after the run finished, with no later launch. Alias r is the run row. */
+// Built lazily: shared-checkout constants must not be read during module initialization.
+const verifiedBridgeHostRebootSql = () => sql`r.runtime_mode = 'legacy'
+  and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
+  and r.process_pid is null and r.process_group_id is null and r.process_started_at is null
+  and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
+    and (l.company_id <> r.company_id or l.provider <> 'local' or l.released_at is null))
+  and exists (select 1 from heartbeat_run_events boot where boot.run_id = r.id
+    and boot.company_id = r.company_id and boot.agent_id = r.agent_id
+    and boot.event_type = ${REMOTE_HOST_REBOOT_EVENT} and boot.stream = 'system'
+    and boot.source_event_id is null and boot.source_instance_id is null
+    and boot.payload->>'schema' = ${REMOTE_HOST_REBOOT_SCHEMA}
+    and boot.payload->>'localProcess' in ('absent', 'not_recorded')
+    and (boot.payload->>'runFinishedAt')::timestamptz = r.finished_at
+    and (boot.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at
+    and boot.payload->>'hostId' = (select invoked.payload#>>'{context,hostId}'
+      from heartbeat_run_events invoked where invoked.run_id = r.id
+        and invoked.company_id = r.company_id and invoked.agent_id = r.agent_id
+        and invoked.event_type = 'adapter.invoke' and invoked.source_event_id is null
+        and invoked.payload->>'adapterType' = 'ccpocket_bridge'
+      order by invoked.seq desc limit 1)
+    and not exists (select 1 from heartbeat_run_events launched where launched.run_id = r.id
+      and launched.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded',
+        'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started')
+      and (launched.seq > boot.seq or launched.created_at >= (boot.payload->>'bootStartedAtLowerBound')::timestamptz)))`;
 
 export async function verifyBridgeHostReboot(db: Db, run: Run) {
   const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${run.id}::uuid
     and r.company_id = ${run.companyId}::uuid and r.status in ('cancelled', 'timed_out', 'failed', 'interrupted')
     and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
-    and (${verifiedBridgeHostRebootSql})`);
+    and (${verifiedBridgeHostRebootSql()})`);
   return rows.length === 1;
 }
 
-/** Stop and cleanup are independent. These checks never resume a provider or
- * infer process retirement from a terminal run, expired controller or missing PID. */
+/** Best-effort cleanup inspection, recorded for display only. Its result never
+ * gates admission, dispatch, retirement or another run. */
 export async function inspectStopResources(db: Db, run: Run, ignoreFinalizer = false): Promise<string | null> {
   if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt.getTime() > Date.now()) return "controller_still_owned";
   const [finalizer] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));

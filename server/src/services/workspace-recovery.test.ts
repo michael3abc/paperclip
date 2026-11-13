@@ -842,16 +842,12 @@ describe("automatic retained workspace recovery", () => {
       status: "coalesced", runId: successor.id, requestedByActorType: "user", requestedByActorId: "local-board",
       idempotencyKey: `task-retry:${randomUUID()}`, payload: { issueId, taskRetry: { schema: "paperclip.task-retry.v1",
         generationId: requestId, sourceRunId, actorId: "local-board", actorSource: "session", strategy: "evaluate" } } });
-    if (mode === "fixed") {
-      // The fixed contract wins over the failed directory; preparation runs in the session cwd.
-      expect(await readFreshWorkspaceReadiness(db, successor)).toBeNull();
-    } else {
-      // No implicit directory is chosen for a session the adapter pins elsewhere.
-      await expect(readFreshWorkspaceReadiness(db, successor)).rejects.toMatchObject({ code: "workspace_validation_failed",
-        resultJson: { workspaceValidation: { reason: "fixed_workspace_placement_required" } } });
-    }
+    // The fixed contract (or, liveness-first, the adapter's own session cwd when
+    // no binding is registered) wins over the failed directory; preparation runs
+    // in the session cwd and a missing registration is only logged.
+    expect(await readFreshWorkspaceReadiness(db, successor)).toBeNull();
     const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
-    expect((saved.payload?.taskRetry as { strategy: string }).strategy).toBe(mode === "fixed" ? "continue" : "evaluate");
+    expect((saved.payload?.taskRetry as { strategy: string }).strategy).toBe("continue");
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, companyId))).toHaveLength(1);
     expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("existing task work\n");
     expect((await run(sourceRunId)).status).toBe("failed");

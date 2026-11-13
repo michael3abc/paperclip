@@ -1,29 +1,65 @@
 import { and, eq, isNull, notInArray, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { ABANDONED_LIVENESS_RESET_ERROR_CODE, ABANDONED_PRIOR_ERROR_CODE, INACTIVITY_TIMEOUT_ERROR_CODE,
+  PROCESS_LOST_ERROR_CODE, SERVER_SHUTDOWN_INTERRUPTED_ERROR_CODE } from "./recovery/failure-classification.js";
 
-/** Cancellation ends automatic execution authority. Historical resource-wait
- * rows are the sole exception: matching receipts prove no provider work.
- * A fresh comment is a new admission, never authority to retry a cancelled run. */
+const ACTOR_TYPES = new Set(["user", "board", "agent"]);
+/** Error codes that only a person's (or an agent actor's) deliberate action produces. */
+const DELIBERATE_CANCELLATION_CODES = new Set(["operator_interrupted", "issue_reassigned", "issue_cancelled"]);
+
+/** True when a person (Owner/board user) or an agent actor deliberately stopped
+ * the run: Stop/cancel, a chat or queued-message interrupt, a withdrawn question,
+ * reassignment or task cancellation. Control-plane and other system stops are not. */
+export function isDeliberateRunCancellation(run: {
+  errorCode?: string | null; resultJson?: Record<string, unknown> | null;
+}): boolean {
+  const result = run.resultJson ?? {};
+  const actor = (value: unknown) => typeof value === "string" && ACTOR_TYPES.has(value);
+  const cancellation = result.cancellation as { initiator?: { type?: string }; source?: string } | undefined;
+  const startup = result.startupCancellation as { requestedBy?: { type?: string; userId?: unknown } } | undefined;
+  return actor(result.cancelledByActorType) || typeof result.cancelledByUserId === "string" ||
+    typeof result.cancelledByAgentId === "string" || actor(result.interruptedByActorType) ||
+    actor(result.withdrawnByActorType) || result.operatorInterrupted === true ||
+    typeof result.queuedCommentInterruptQueueId === "string" || Boolean(result.chatPreemption) ||
+    cancellation?.initiator?.type === "user" || cancellation?.initiator?.type === "agent" ||
+    cancellation?.source === "operator" || cancellation?.source === "queued_message" ||
+    actor(startup?.requestedBy?.type) || typeof startup?.requestedBy?.userId === "string" ||
+    (typeof run.errorCode === "string" && DELIBERATE_CANCELLATION_CODES.has(run.errorCode));
+}
+
+/** Liveness-first: only a deliberate Owner/user (or agent actor) cancellation ends
+ * automatic execution authority; manual Stop still applies and a fresh comment is
+ * a new admission. System-initiated cancellations (control plane, superseded or
+ * abandoned prior, inactivity, shutdown, lease loss, resource waits) never revoke
+ * automatic retry: their outcome is unknown and the retry is resent with a note.
+ * An unattributed Stop request (legacy rows, callers without attribution) is
+ * treated as a manual Stop, and a gate that suppressed the run keeps its decision. */
 export function cancelledRunRejectsAutomaticRetry(run: {
   status: string; errorCode?: string | null; resultJson?: Record<string, unknown> | null;
-}, retryReason: string | null | undefined): boolean {
+}, _retryReason?: string | null): boolean {
   if (run.status !== "cancelled") return false;
-  const cancellation = run.resultJson?.cancellation as { initiator?: { type?: string }; source?: string; expected?: boolean } | undefined;
-  // Stop dominates an earlier resource-wait receipt, even if its error code
-  // or no-provider fact was retained for audit.
-  if (run.resultJson?.executionCancellation || run.resultJson?.startupCancellation ||
-      run.resultJson?.cancelledByActorType || run.resultJson?.cancelledByUserId ||
-      run.resultJson?.interruptedByActorType || run.resultJson?.queuedCommentInterruptQueueId ||
-      (cancellation && (cancellation.source !== "control_plane" || cancellation.expected !== true || cancellation.initiator?.type !== "system"))) return true;
-  const recovery = run.resultJson?.executionRecovery;
-  if (!recovery || typeof recovery !== "object" || Array.isArray(recovery)) return true;
-  const proof = recovery as Record<string, unknown>;
-  if (proof.providerWorkStarted !== false) return true;
-  return !(
-    retryReason === "workspace_busy" && run.errorCode === "workspace_busy" && proof.kind === "workspace_wait" ||
-    retryReason === "ai_connection_busy" && run.errorCode === "ai_connection_busy" && proof.kind === "ai_connection_wait" ||
-    retryReason === "ai_connection_pool_wait" && run.errorCode === "ai_connection_pool_exhausted" && proof.kind === "ai_connection_wait"
-  );
+  if (isDeliberateRunCancellation(run)) return true;
+  if (isSystemRunCancellation(run)) return false;
+  const result = run.resultJson ?? {};
+  if (result.executionCancellation || result.startupCancellation) return true;
+  return typeof run.errorCode === "string" && GATE_SUPPRESSED_CODES.has(run.errorCode);
+}
+
+/** Codes only the system produces when it abandons or interrupts a run. */
+const SYSTEM_CANCELLATION_CODES = new Set([INACTIVITY_TIMEOUT_ERROR_CODE, ABANDONED_PRIOR_ERROR_CODE,
+  ABANDONED_LIVENESS_RESET_ERROR_CODE, PROCESS_LOST_ERROR_CODE, SERVER_SHUTDOWN_INTERRUPTED_ERROR_CODE, "controller_lease_lost"]);
+/** A gate decided this run must not proceed (or its chain/input was superseded);
+ * retrying it automatically would bypass that decision. */
+const GATE_SUPPRESSED_CODES = new Set(["legacy_disposition_repair_suppressed", "issue_disposition_repair_superseded",
+  "retry_source_cancelled", "retry_input_superseded"]);
+
+/** Explicit system markers: a liveness-first system code, or a server-written
+ * cancellation receipt whose initiator is the system or the provider. */
+function isSystemRunCancellation(run: { errorCode?: string | null; resultJson?: Record<string, unknown> | null }) {
+  if (typeof run.errorCode === "string" && SYSTEM_CANCELLATION_CODES.has(run.errorCode)) return true;
+  const cancellation = run.resultJson?.cancellation as { initiator?: { type?: string }; source?: string } | undefined;
+  return (cancellation?.initiator?.type === "system" || cancellation?.initiator?.type === "provider")
+    && cancellation.source !== "operator" && cancellation.source !== "queued_message";
 }
 
 /** Call inside the issue -> run admission transaction. addComment takes the

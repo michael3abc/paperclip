@@ -26,6 +26,14 @@ import {
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
+import {
+  UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS,
+  classifyRunFailure,
+  runFailureBackoffMs,
+  shouldAutoRetryRunFailure,
+} from "../recovery/failure-classification.js";
+import { maybePostTransientFailureStreakNotice } from "../recovery/transient-failure-notice.js";
+import { hostCircuitBreaker, hostCircuitKeyForAgent } from "../host-circuit-breaker.js";
 import { createHash, randomUUID } from "node:crypto";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import {
@@ -35,7 +43,6 @@ import {
   eq,
   inArray,
   ne,
-  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -158,18 +165,6 @@ export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 // informational output-silence warnings. Warning sooner must not let another
 // run overtake a quiet holder and mutate its shared workspace.
 export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = 60 * 60 * 1000;
-
-// Issue-level executionWorkspaceSettings.mode values that unambiguously opt an
-// issue's runs out of the shared project workspace, and therefore out of
-// shared-workspace serialization ("isolated" is the legacy alias
-// parseIssueExecutionWorkspaceSettings normalizes to isolated_workspace). Any
-// other value — including agent_default and an absent mode — may still resolve
-// to the shared workspace and counts as a holder.
-const ISOLATED_EXECUTION_WORKSPACE_MODES = [
-  "isolated_workspace",
-  "operator_branch",
-  "isolated",
-] as const;
 
 type CodexTransientFallbackMode =
   | "same_session"
@@ -379,6 +374,12 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
 
 export { normalizeAgentNameKey };
 
+const PLAN_APPROVAL_RESUME_COUNTER_CAP = 100;
+
+function formatRetryLimit(maxAttempts: number) {
+  return Number.isFinite(maxAttempts) ? String(maxAttempts) : "unlimited";
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -451,14 +452,31 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(
-      0,
-      Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
-      ),
-    );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
+    // Liveness-first (rule 4): failure retries follow the shared failure
+    // classification. Transient codes retry without limit, unknown codes get
+    // three transient attempts (counted over consecutive same-code failures),
+    // deterministic codes get none. Explicit caps remain for resource-wait and
+    // productive-continuation lanes (AI subscription waits, max-turn).
+    const failureClassBudget =
+      opts?.maxAttempts == null &&
+      retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON;
+    // A persisted transient error family (provider transient or quota) is
+    // transient even when the adapter recorded a generic or unknown code.
+    const failureClass = failureClassBudget
+      ? (readTransientRecoveryContractFromRun(run) ? "transient" : classifyRunFailure(run.errorCode))
+      : null;
+    const maxAttempts = !failureClassBudget
+      ? Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS))
+      : failureClass === "transient"
+        ? Number.POSITIVE_INFINITY
+        : failureClass === "unknown"
+          ? (await countConsecutiveSameCodeFailures(run, UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS + 1)) <=
+              UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS
+            ? Number.POSITIVE_INFINITY
+            : 0
+          : 0;
     const computedBaseSchedule =
       opts?.delayMs != null
         ? nextAttempt <= maxAttempts
@@ -473,11 +491,19 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : null
         : nextAttempt <= maxAttempts
-          ? computeBoundedTransientHeartbeatRetrySchedule(
-              nextAttempt,
-              now,
-              opts?.random,
-            )
+          ? failureClassBudget
+            ? {
+                attempt: nextAttempt,
+                baseDelayMs: runFailureBackoffMs(nextAttempt),
+                delayMs: runFailureBackoffMs(nextAttempt),
+                dueAt: new Date(now.getTime() + runFailureBackoffMs(nextAttempt)),
+                maxAttempts,
+              }
+            : computeBoundedTransientHeartbeatRetrySchedule(
+                nextAttempt,
+                now,
+                opts?.random,
+              )
           : null;
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
@@ -508,7 +534,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: `Bounded retry exhausted after ${consumedAttempts} scheduled attempts; no further automatic retry will be queued`,
+        message: failureClassBudget
+          ? `No automatic retry: failure code ${run.errorCode ?? "(none)"} is not retryable (${failureClass === "unknown" ? "unknown code after three attempts" : "deterministic"})`
+          : `Bounded retry exhausted after ${consumedAttempts} scheduled attempts; no further automatic retry will be queued`,
         payload: exhaustion,
         retryExhaustion: exhaustion,
       });
@@ -572,15 +600,24 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       }
     }
 
+    // An open host circuit defers the retry to its reopen time; the deferral
+    // is not counted as another failure.
+    const hostOpenUntil = failureClassBudget
+      ? hostCircuitBreaker.openUntil(hostCircuitKeyForAgent(agent))
+      : null;
+    const notBefore =
+      transientRetryNotBefore && hostOpenUntil
+        ? new Date(Math.max(transientRetryNotBefore.getTime(), hostOpenUntil.getTime()))
+        : (transientRetryNotBefore ?? hostOpenUntil);
     const schedule =
-      transientRetryNotBefore &&
-      transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
+      notBefore &&
+      notBefore.getTime() > baseSchedule.dueAt.getTime()
         ? {
             ...baseSchedule,
-            dueAt: transientRetryNotBefore,
+            dueAt: notBefore,
             delayMs: Math.max(
               0,
-              transientRetryNotBefore.getTime() - now.getTime(),
+              notBefore.getTime() - now.getTime(),
             ),
           }
         : baseSchedule;
@@ -1297,7 +1334,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         eventType: "lifecycle",
         stream: "system",
         level: "info",
-        message: `Reused existing continuation retry ${retryRun.scheduledRetryAttempt}/${schedule.maxAttempts}`,
+        message: `Reused existing continuation retry ${retryRun.scheduledRetryAttempt}/${formatRetryLimit(schedule.maxAttempts)}`,
         payload: {
           retryRunId: retryRun.id,
           retryReason,
@@ -1321,7 +1358,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: `Scheduled bounded retry ${schedule.attempt}/${schedule.maxAttempts} for ${schedule.dueAt.toISOString()}`,
+      message: `Scheduled bounded retry ${schedule.attempt}/${formatRetryLimit(schedule.maxAttempts)} for ${schedule.dueAt.toISOString()}`,
       payload: {
         retryRunId: retryRun.id,
         retryReason,
@@ -1351,13 +1388,27 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         run,
         issueId,
         retryRunId: retryRun.id,
-        attempt: schedule.attempt,
-        maxAttempts: schedule.maxAttempts,
+        // The confirmation result schema caps both counters at 100; an
+        // unlimited transient budget is recorded as that cap.
+        attempt: Math.min(schedule.attempt, PLAN_APPROVAL_RESUME_COUNTER_CAP),
+        maxAttempts: Number.isFinite(schedule.maxAttempts)
+          ? Math.min(schedule.maxAttempts, PLAN_APPROVAL_RESUME_COUNTER_CAP)
+          : PLAN_APPROVAL_RESUME_COUNTER_CAP,
       }).catch((error) => {
         logger.warn(
           { err: error, runId: run.id, issueId, retryRunId: retryRun.id },
           "failed to record plan-approval resume retry failure",
         );
+      });
+    }
+
+    if (failureClassBudget) {
+      // One informational notice per streak; it never blocks the retry.
+      await maybePostTransientFailureStreakNotice(db, {
+        companyId: run.companyId,
+        issueId: issueId ?? readNonEmptyString(contextSnapshot.issueId),
+        run,
+        consecutiveFailures: schedule.attempt,
       });
     }
 
@@ -1370,18 +1421,42 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
   }
 
-  // Finds a running heartbeat run (other than the caller's) whose context
-  // issue shares the same project workspace, i.e. the run that currently
-  // "holds" the shared working tree. Runs that have been silent past
-  // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS do not count — a zombie holder must
-  // not park other work forever. This cutoff is independent of informational
-  // silence warnings. When isolated workspaces are enabled, holders whose
-  // issue explicitly opted into an isolated workspace never touch the shared
-  // tree, so they are excluded; a NULL/agent_default mode may resolve to the
-  // shared tree and counts as a holder (over-serializing is the safe
-  // direction). When the isolated-workspaces experiment is off, every run
-  // resolves to the shared tree, so no holder is excluded.
-  async function findSharedWorkspaceHolder(input: {
+  /**
+   * Counts consecutive failures with the same error code along the retry
+   * chain, starting at `run` (inclusive), stopping at `limit`.
+   */
+  async function countConsecutiveSameCodeFailures(
+    run: typeof heartbeatRuns.$inferSelect,
+    limit: number,
+  ) {
+    let count = 1;
+    let previousId = run.retryOfRunId ?? readNonEmptyString(parseObject(run.contextSnapshot).retryOfRunId);
+    const seen = new Set<string>([run.id]);
+    while (previousId && count < limit && !seen.has(previousId)) {
+      seen.add(previousId);
+      const [previous] = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          retryOfRunId: heartbeatRuns.retryOfRunId,
+        })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, previousId)))
+        .limit(1);
+      if (!previous || previous.status === "succeeded" || (previous.errorCode ?? null) !== (run.errorCode ?? null)) break;
+      count += 1;
+      previousId = previous.retryOfRunId;
+    }
+    return count;
+  }
+
+  // Liveness-first (rule 3, workspace = directory): any number of runs may
+  // share a directory. Shared project and execution workspaces no longer have
+  // an exclusive holder, so these lookups never report one and the
+  // workspace-busy deferral path is no longer reached. The per-issue execution
+  // lock still keeps one run per issue. Signatures are kept for callers.
+  async function findSharedWorkspaceHolder(_input: {
     companyId: string;
     projectWorkspaceId: string;
     excludeIssueId: string;
@@ -1389,103 +1464,16 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     honorIsolatedWorkspaceModes: boolean;
     now?: Date;
   }): Promise<SharedWorkspaceHolder | null> {
-    const staleCutoff = new Date(
-      (input.now ?? new Date()).getTime() -
-        WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
-    );
-    return await db
-      .select({
-        runId: heartbeatRuns.id,
-        agentId: heartbeatRuns.agentId,
-        issueId: sql<string>`${issues.id}::text`,
-        issueIdentifier: issues.identifier,
-      })
-      .from(heartbeatRuns)
-      .innerJoin(
-        issues,
-        and(
-          eq(issues.companyId, heartbeatRuns.companyId),
-          sql`${issues.id}::text = ${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-        ),
-      )
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.status, "running"),
-          ne(heartbeatRuns.id, input.excludeRunId),
-          // Last observed activity: output beats start beats creation. A run
-          // that started recently but has not written output yet is live.
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
-          eq(issues.projectWorkspaceId, input.projectWorkspaceId),
-          ne(sql`${issues.id}::text`, input.excludeIssueId),
-          ...(input.honorIsolatedWorkspaceModes
-            ? [
-                or(
-                  // Covers both a NULL settings blob and a blob without a mode
-                  // key; either may still resolve to the shared workspace.
-                  sql`${issues.executionWorkspaceSettings} ->> 'mode' is null`,
-                  notInArray(
-                    sql`${issues.executionWorkspaceSettings} ->> 'mode'`,
-                    [...ISOLATED_EXECUTION_WORKSPACE_MODES],
-                  ),
-                ),
-              ]
-            : []),
-        ),
-      )
-      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+    return null;
   }
 
-  // Finds a running run (other than the caller's) on an issue bound to the
-  // same reused execution workspace, typically a parent run that is still
-  // active after delegating a child that inherited its workspace. Unlike
-  // findSharedWorkspaceHolder, a holder silent past
-  // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS is still returned (flagged stale):
-  // silence does not prove the holder stopped, so the caller must not treat
-  // the folder as free. A live holder is preferred over a stale one.
-  async function findExecutionWorkspaceHolder(input: {
+  async function findExecutionWorkspaceHolder(_input: {
     companyId: string;
     executionWorkspaceId: string;
     excludeRunId: string;
     now?: Date;
   }): Promise<ExecutionWorkspaceHolder | null> {
-    const staleCutoff = new Date(
-      (input.now ?? new Date()).getTime() -
-        WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
-    );
-    const lastActivityBefore = sql<boolean>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz`;
-    return await db
-      .select({
-        runId: heartbeatRuns.id,
-        agentId: heartbeatRuns.agentId,
-        issueId: sql<string>`${issues.id}::text`,
-        issueIdentifier: issues.identifier,
-        stale: lastActivityBefore,
-      })
-      .from(heartbeatRuns)
-      .innerJoin(
-        issues,
-        and(
-          eq(issues.companyId, heartbeatRuns.companyId),
-          eq(issues.executionWorkspaceId, input.executionWorkspaceId),
-          or(
-            eq(issues.executionRunId, heartbeatRuns.id),
-            sql`${issues.id}::text = coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
-          ),
-        ),
-      )
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.status, "running"),
-          ne(heartbeatRuns.id, input.excludeRunId),
-        ),
-      )
-      .orderBy(asc(lastActivityBefore), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+    return null;
   }
 
   // Credential rotation can briefly contend with a fresh runtime read. Keep
@@ -1576,7 +1564,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (!run.wakeupRequestId) return null;
     if (!isResolvedInteractionContinuationWakeContext(run.contextSnapshot))
       return null;
-    if (!isRetryableInteractionContinuationInfrastructureFailure(run)) {
+    // Liveness-first: infrastructure failures and every failure the shared
+    // classification still retries (transient, or unknown within its three
+    // attempts) are retried; only deterministic failures are notified.
+    if (
+      !isRetryableInteractionContinuationInfrastructureFailure(run) &&
+      !shouldAutoRetryRunFailure(run.errorCode, executionFailureRetryCount(run) + 1)
+    ) {
       const context = parseObject(run.contextSnapshot);
       const issueId = readNonEmptyString(context.issueId);
       await escalatePlanApprovalResumeFailureNeedsAttention({
@@ -1597,10 +1591,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       return null;
     }
 
+    // No explicit cap: the shared failure classification owns the budget
+    // (unlimited for transient and infrastructure codes, three for unknown).
     return scheduleBoundedRetryForRun(run, agent, {
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
-      maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
     });
   }
 

@@ -15,6 +15,12 @@ Use owned PostgreSQL and the release-bound related selector.
 
 ## Durable stop settlement
 
+> Liveness-first (Owner 2026-11-13, binding source
+> `/home/michael/services/docs/agents/liveness-first.md`): a terminal run status releases
+> every gate. Stop settlement, stop evidence and `workspace_busy` wait settlement below are
+> background best-effort records only; they never block admission, dispatch, retirement or
+> another run. See `docs/agents/execution-semantics.md`.
+
 `heartbeat/stop-settlement.ts` owns the original-run claim and bounded verification
 budget; `stop-settlement-evidence.ts` verifies termination and independent resource
 obligations. The existing delivery coordinator reconstructs persisted deadlines
@@ -4592,6 +4598,12 @@ on pull requests.
 
 ### Workspace feature checks (2026-10-09)
 
+> Liveness-first: workspace bootstrap failures fall back to the resolved cwd and are
+> classified by `server/src/services/recovery/failure-classification.ts`. Missing stop
+> evidence, the three-repair budget, unsettled repair receipts and "never resend an uncertain
+> wake" below no longer park work for the Owner; unknown outcomes are resent with
+> 「上一次可能已部分執行，先檢查現況再做」. The endpoints remain for historical receipts.
+
 Workspace bootstrap recovery uses `workspaceValidation` (`paperclip.workspace-validation/v1`).
 The recovery service verifies pre-provider execution, resource settlement, current worker, project lead,
 creator/origin-run and original Chat generation before assigning the existing action to the main agent.
@@ -4953,6 +4965,10 @@ from provider submission. Never claim end-to-end acceptance before this run.
 
 ### PM Retry workspace preparation
 
+> Liveness-first: `fixed_workspace_policy_conflict` no longer fails a run (mismatches are
+> logged only), so a PM Retry reuses its task-owned home without the settled pre-provider
+> condition below.
+
 A zero-slot PM retains its task-owned local home when a deliberate Retry follows
 a settled `fixed_workspace_policy_conflict` before any provider execution. The
 continuation resolver verifies current PM identity/home, task ownership, no provider
@@ -4980,6 +4996,11 @@ through the live protocol action schema. Keep that schema aligned with the seman
 action documentation catalog and test the actual exported provider catalog. These
 fields still pass the server's issue validators, PM worker selection, project/workspace
 scope and review enforcement; advertising them does not grant additional authority.
+
+> Liveness-first: the selection and shared-checkout rules in the next two paragraphs
+> are superseded as gates. Execution uses the resolved directory, missing selections fall
+> back to it, paths never serialize runs and unknown outcomes are resent; only the
+> per-issue execution lock remains.
 
 Under the 2026-11-12 feature contract, new project code tasks select an open,
 main-registered linked Git execution workspace, explicitly or through the project's
@@ -5267,6 +5288,12 @@ register_deliverable/paperclip_finish tools. Missing native tools do not require
 new credential or a worker-agent replacement in a legacy lane.
 
 ### Physical workspace admission
+
+> Liveness-first: workspace = directory (run cwd > agent fixed cwd > project default cwd >
+> `~/.paperclip/instances/default/workspaces/<agentId>`), created with `mkdir -p`.
+> Registration, admission rechecks, host inspection and "missing selection fails" below are
+> superseded as execution gates; mismatches are logged only. Main agents may still create
+> worktrees explicitly; non-Git directories are never Git-initialized.
 
 Every managed code task selects a registered Git repository root or linked
 worktree through `workspaceSelection: { kind: "existing", workspaceId }`, or

@@ -1,5 +1,12 @@
 # Native workspace finalization ownership and recovery
 
+> Liveness-first (Owner 2026-11-13, binding source
+> `/home/michael/services/docs/agents/liveness-first.md`): finalization owners, stop proof,
+> host inspection and copyback holds described below are background best-effort records.
+> They never hold dispatch or require Owner attestation to continue; a terminal status
+> releases every gate and unknown predecessor outcomes are resent with the liveness-first
+> prefix. Preserved files are still never deleted or overwritten.
+
 Main-managed Git directories are finalized through a read-only inspection on
 their registered host, with run/operation, cwd, branch and HEAD evidence retained
 in the workspace operation. Remote paths are never checked or repaired on the

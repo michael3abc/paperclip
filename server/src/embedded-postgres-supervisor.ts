@@ -8,6 +8,13 @@ export interface SupervisedEmbeddedPostgres {
 
 export interface EmbeddedPostgresSupervisor {
   current(): SupervisedEmbeddedPostgres;
+  /**
+   * Marks the server as shutting down without stopping PostgreSQL yet. Call it
+   * first in the process signal handlers: the service manager can deliver the
+   * same signal to the PostgreSQL child before server shutdown reaches
+   * `shutdown()`, and that exit must not start a replacement instance.
+   */
+  markShuttingDown(): void;
   shutdown(): Promise<void>;
   waitForRecovery(): Promise<void>;
 }
@@ -19,12 +26,19 @@ type Options = {
   restartDelaysMs?: number[];
   delay?: (milliseconds: number) => Promise<void>;
   onUnexpectedExit?: EmbeddedPostgresExitListener;
+  /** A SIGTERM or exit code 0 is a shutdown; no replacement is started. */
+  onOrderlyExit?: EmbeddedPostgresExitListener;
   onRestartAttemptFailed?: (error: unknown, attempt: number) => void;
   onRestarted?: (attempt: number) => void;
   onRecoveryExhausted?: (error: unknown) => void;
 };
 
 const defaultDelay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+/** A child stopped by SIGTERM or exiting cleanly was shut down, not lost. */
+export function isOrderlyEmbeddedPostgresExit(code: number | null, signal: NodeJS.Signals | null): boolean {
+  return signal === "SIGTERM" || code === 0;
+}
 
 export function createEmbeddedPostgresSupervisor(options: Options): EmbeddedPostgresSupervisor {
   const restartDelaysMs = options.restartDelaysMs ?? [0, 250, 1_000];
@@ -33,6 +47,7 @@ export function createEmbeddedPostgresSupervisor(options: Options): EmbeddedPost
   let activeInstanceExited = false;
   let shuttingDown = false;
   let recoveryPromise: Promise<void> | null = null;
+  let stopPromise: Promise<void> | null = null;
 
   const recover = async () => {
     let lastError: unknown = new Error("Embedded PostgreSQL exited unexpectedly");
@@ -73,6 +88,11 @@ export function createEmbeddedPostgresSupervisor(options: Options): EmbeddedPost
       if (activeInstance !== instance) return;
       activeInstanceExited = true;
       if (shuttingDown) return;
+      if (isOrderlyEmbeddedPostgresExit(code, signal)) {
+        shuttingDown = true;
+        options.onOrderlyExit?.(code, signal);
+        return;
+      }
       options.onUnexpectedExit?.(code, signal);
       recoveryPromise = recover().finally(() => { recoveryPromise = null; });
     });
@@ -82,11 +102,14 @@ export function createEmbeddedPostgresSupervisor(options: Options): EmbeddedPost
   return {
     current: () => activeInstance,
     waitForRecovery: async () => { await recoveryPromise; },
-    shutdown: async () => {
-      if (shuttingDown) return;
+    markShuttingDown: () => { shuttingDown = true; },
+    shutdown: () => {
       shuttingDown = true;
-      await recoveryPromise;
-      if (!activeInstanceExited) await activeInstance.stop();
+      stopPromise ??= (async () => {
+        await recoveryPromise;
+        if (!activeInstanceExited) await activeInstance.stop();
+      })();
+      return stopPromise;
     },
   };
 }

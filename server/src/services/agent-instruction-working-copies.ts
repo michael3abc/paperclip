@@ -27,7 +27,7 @@ import { agentInstructionRevisionService } from "./agent-instruction-revisions.j
 import { resolveInstructionActor } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionBytes, instructionPath, materializeInstructionBytes, MAX_INSTRUCTION_BYTES, readInstructionBytes, instructionGitExcludeProgram } from "./agent-instruction-files.js";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
-import { hasCurrentStopVerification } from "./heartbeat/stop-settlement-evidence.js";
+import { hasRecordedStopEvidence, recordedStopEvidencePredicate } from "./heartbeat/stop-settlement-evidence.js";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
 import type { AuthorizationActor } from "./authorization.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
@@ -388,8 +388,12 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     return pending.length;
   }
 
-  /** Recover only the registered copy after independently recorded process-stop
-   * proof. Terminal run status is never a substitute for that proof. Remote
+  /** Background recovery of a terminal run's registered copy. Liveness-first rule 2:
+   * nothing waits on this collection (holders, retirement and dispatch use terminal
+   * status alone). It still reads a copy's files only after the writer's stop is
+   * recorded (copy receipt, native local stop, or stop-settlement evidence for the
+   * latest launch), so a possibly live writer, a warm copy awaiting adoption and
+   * uncollected local edits are never captured or discarded on a guess. Remote
    * receipts mean the environment is stopped; do not restart it just to read. */
   function collectionCandidate(row: Copy) {
     return !row.receipt?.retainedByRunId && (
@@ -403,21 +407,24 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
         OR (${copies.state} = 'preparing' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1')))
       OR (${copies.state} = 'unavailable' AND ${copies.processStoppedAt} IS NULL
         AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'
-        AND (${copies.location} LIKE 'remote:%' OR (
-          ${copies.location} = 'local' AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,stopVerified}' = 'true'
-          AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,state}' IN ('cleaning', 'needs_attention', 'settled')))))`,
+        AND (${copies.location} LIKE 'remote:%' OR (${copies.location} = 'local' AND ${recordedStopEvidencePredicate()}))))`,
       inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
-      // Exhausted stop verification has no new filesystem evidence to collect.
-      // A later proof or explicit recheck notifies this same collection worker.
-      sql`NOT coalesce(${heartbeatRuns.resultJson}#>>'{stopSettlement,state}' = 'needs_attention'
-        AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,stopVerified}' = 'false', false)`);
+      // Exhausted background stop checks bring no new filesystem evidence; a later
+      // recorded proof notifies this same worker. A copy with its own stop receipt is still collected.
+      sql`NOT (${copies.processStoppedAt} IS NULL AND coalesce(
+        (${heartbeatRuns.resultJson}#>>'{stopSettlement,state}' = 'needs_attention'
+          AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,stopVerified}' = 'false')
+        OR (${heartbeatRuns.resultJson}#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
+          AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,evidence}' IS NULL
+          AND ${heartbeatRuns.resultJson}#>>'{stopSettlement,nextCheckAt}' IS NULL
+          AND (${heartbeatRuns.resultJson}#>>'{stopSettlement,attempts}')::integer >= 4), false))`);
   }
   async function collectRecovered(row: Copy, runtimeMode: string | null) {
-    const verifiedLocalStop = row.location === "local" && (row.processStoppedAt ||
-      runtimeMode === "native" && await hasNativeLocalProcessStop(db, row.companyId, row.runId) ||
-      await hasCurrentStopVerification(db, row.companyId, row.runId));
+    const recordedStop = await hasRecordedStopEvidence(db, row.companyId, row.runId);
+    const verifiedLocalStop = row.location === "local" && (Boolean(row.processStoppedAt) ||
+      runtimeMode === "native" && await hasNativeLocalProcessStop(db, row.companyId, row.runId) || recordedStop);
     if (row.state === "unavailable" && isAgentDirectoryCopy(row) && row.location === "local") {
-      if (!verifiedLocalStop || !await hasCurrentStopVerification(db, row.companyId, row.runId)) return;
+      if (!verifiedLocalStop || !recordedStop) return;
       // The earlier unavailable result did not certify a stopped writer. Read
       // the retained files through the original CAS collector before cleanup.
       // Keep its failure in the run log; a successful later save cannot erase it.

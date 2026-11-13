@@ -260,23 +260,29 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       .toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_reassigned" });
   });
 
-  it("retains a no-replay hold after cleanup releases ownership", async () => {
+  it("abandons a no-replay hold once cleanup releases ownership and continues the same retry", async () => {
     const f = await seedCleanupRetry();
     const adapter = createPostgresRunDispatchAdapter(db);
-    await db.insert(issueRecoveryActions).values({
+    const [hold] = await db.insert(issueRecoveryActions).values({
       companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
       ownerType: "board", cause: "uncertain_external_action", status: "resolved",
       evidence: { automaticRecovery: { replay: "blocked" } }, fingerprint: f.sourceId,
       nextAction: "Verify the external action before continuing.",
-    });
+    }).returning();
+    // A live retained environment (ownership) still parks the same retry.
     expect(await adapter.promoteOrCancelDueRetry(f)).toMatchObject({ outcome: "not_promoted" });
     await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
       .where(eq(environmentLeases.id, f.leaseId));
     const now = new Date(f.now.getTime() + 60_000);
     expect(await adapter.promoteOrCancelDueRetry({ ...f, now })).toMatchObject({ outcome: "promoted" });
+    // Liveness-first rule 1: the unknown outcome is abandoned, not reconciled by the Owner.
     expect(await adapter.cancelStaleQueuedRun({ ...f, now, expectedStatus: "queued" }))
-      .toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
-    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ cause: "uncertain_external_action" });
+      .toMatchObject({ outcome: "not_stale" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const [closed] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id));
+    expect(closed).toMatchObject({ status: "cancelled", outcome: "cancelled", fingerprint: f.sourceId,
+      evidence: { automaticRecovery: { replay: "abandoned_prior" }, abandonedPrior: { byRunId: f.runId } } });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toMatchObject({ status: "queued" });
   });
 
   it.each(["native", "started", "non-conversation"])("does not park a %s run behind cleanup", async (mode) => {
@@ -1459,16 +1465,97 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       15_000,
     );
   });
-  it.each(["active", "resolved"])("blocks a generic retry after %s no-replay disposition", async status => {
+  it.each(["active", "resolved"])("abandons a %s no-replay disposition and dispatches the generic retry", async status => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Uncertain email", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "retry_failed_run" } });
-    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", cause: "uncertain_external_action", status, evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {}, fingerprint: runId, nextAction: "Verify whether email-1 was sent before continuing." });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", cause: "uncertain_external_action", status, evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {}, fingerprint: runId, nextAction: "Verify whether email-1 was sent before continuing." }).returning();
     expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "uncertain_external_action", nextAction: "Verify whether email-1 was sent before continuing." });
     expect(await getExecutionBlocker(db, randomUUID(), issueId)).toBeNull();
     const adapter = createPostgresRunDispatchAdapter(db);
-    await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "not_stale" });
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0])
+      .toMatchObject({ status: "cancelled", resolutionNote: expect.stringContaining("Liveness-first") });
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.filter(e => e.message?.includes("Closed an execution-reconciliation hold"))).toHaveLength(1);
+  });
+
+  describe("auto-abandon of the prior execution (liveness-first)", () => {
+    async function seedPriorHold(prior: { status: "running" | "queued" | "failed"; leaseUntil?: Date | null; restore?: boolean }) {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID(), priorRunId = randomUUID(), runId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await db.insert(heartbeatRuns).values([
+        { id: priorRunId, companyId, agentId, status: prior.status, startedAt: new Date(Date.now() - 3_600_000),
+          finishedAt: prior.status === "failed" ? new Date() : null, controllerLeaseExpiresAt: prior.leaseUntil ?? null,
+          contextSnapshot: { issueId }, resultJson: prior.restore ? { workspaceRestoreFailure: "restore_unsafe_archive" } : {} },
+        { id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "retry_failed_run" } },
+      ]);
+      if (prior.status !== "failed") await db.update(issues).set({ executionRunId: priorRunId, checkoutRunId: priorRunId,
+        executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+      const [hold] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+        ownerType: "board", cause: "uncertain_provider_action", status: "active", fingerprint: priorRunId,
+        evidence: { runId: priorRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+          ...(prior.restore ? { workspaceRestoreFailure: "restore_unsafe_archive" } : {}) },
+        nextAction: "Verify whether the previous run finished before continuing." }).returning();
+      return { companyId, agentId, issueId, priorRunId, runId, holdId: hold!.id };
+    }
+    const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+    const readIssue = async (id: string) => (await db.select().from(issues).where(eq(issues.id, id)))[0]!;
+
+    it.each([{ status: "running" as const, leaseUntil: null }, { status: "running" as const, leaseUntil: new Date(Date.now() - 60_000) },
+      { status: "queued" as const, leaseUntil: null }])(
+      "settles a stuck %o prior run as failed/abandoned_prior, moves the issue lock to this run and continues", async prior => {
+        const f = await seedPriorHold(prior);
+        const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: f.runId,
+          expectedStatus: "queued", now: new Date() });
+        expect(outcome).toMatchObject({ outcome: "not_stale" });
+        expect(await readRun(f.priorRunId)).toMatchObject({ status: "failed", errorCode: "abandoned_prior",
+          finishedAt: expect.any(Date), resultJson: { abandonedPrior: { byRunId: f.runId, previousStatus: prior.status,
+            recoveryActionId: f.holdId, cause: "uncertain_provider_action" } } });
+        // One run per issue: the execution lock now belongs to the dispatching run.
+        expect(await readIssue(f.issueId)).toMatchObject({ executionRunId: f.runId, checkoutRunId: null,
+          executionAgentNameKey: "codexcoder" });
+        expect(await readRun(f.runId)).toMatchObject({ status: "queued" });
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.holdId)))[0])
+          .toMatchObject({ status: "cancelled", outcome: "cancelled", evidence: { runId: f.priorRunId,
+            automaticRecovery: { replay: "abandoned_prior", actionOutcome: "unknown" }, abandonedPrior: { byRunId: f.runId } } });
+        expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+        const priorEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.priorRunId));
+        expect(priorEvents.filter(e => e.message?.includes("Abandoned prior run"))).toHaveLength(1);
+        // Idempotent: a second check finds nothing left to abandon.
+        expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: f.runId,
+          expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "not_stale" });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+      });
+
+    it("closes the hold of a terminal prior run without rewriting its outcome", async () => {
+      const f = await seedPriorHold({ status: "failed" });
+      await db.update(heartbeatRuns).set({ errorCode: "codex_transient_upstream" }).where(eq(heartbeatRuns.id, f.priorRunId));
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: f.runId,
+        expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "not_stale" });
+      expect(await readRun(f.priorRunId)).toMatchObject({ status: "failed", errorCode: "codex_transient_upstream" });
+      expect((await readRun(f.priorRunId)).resultJson).not.toHaveProperty("abandonedPrior");
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    });
+
+    it("leaves a live prior run (renewed controller lease) and its issue lock alone", async () => {
+      const f = await seedPriorHold({ status: "running", leaseUntil: new Date(Date.now() + 60_000) });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: f.runId,
+        expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+      expect(await readRun(f.priorRunId)).toMatchObject({ status: "running", errorCode: null });
+      expect(await readIssue(f.issueId)).toMatchObject({ executionRunId: f.priorRunId, checkoutRunId: f.priorRunId });
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.holdId)))[0]).toMatchObject({ status: "active" });
+    });
+
+    it("keeps a workspace-restore hold: unrestored files are never abandoned", async () => {
+      const f = await seedPriorHold({ status: "failed", restore: true });
+      expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId: f.companyId, runId: f.runId,
+        expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.holdId)))[0]).toMatchObject({ status: "active" });
+    });
   });
 
   it.each(["active", "resolved"])("allows a new message through a historical %s interruption hold", async status => {

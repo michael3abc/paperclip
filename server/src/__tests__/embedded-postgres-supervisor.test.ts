@@ -43,6 +43,101 @@ describe("embedded PostgreSQL supervisor", () => {
     expect(createReplacement).not.toHaveBeenCalled();
   });
 
+  it("does not restart PostgreSQL after markShuttingDown and still stops it on shutdown", async () => {
+    const initial = createInstance();
+    const createReplacement = vi.fn(() => createInstance().instance);
+    const onUnexpectedExit = vi.fn();
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: createReplacement,
+      restartDelaysMs: [0],
+      onUnexpectedExit,
+    });
+    supervisor.markShuttingDown();
+    await supervisor.shutdown();
+    expect(initial.instance.stop).toHaveBeenCalledOnce();
+    initial.process.emit("exit", 137, "SIGKILL");
+    await supervisor.waitForRecovery();
+    expect(createReplacement).not.toHaveBeenCalled();
+    expect(onUnexpectedExit).not.toHaveBeenCalled();
+  });
+
+  it("ignores a child exit once markShuttingDown was called", async () => {
+    const initial = createInstance();
+    const createReplacement = vi.fn(() => createInstance().instance);
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: createReplacement,
+      restartDelaysMs: [0],
+    });
+    supervisor.markShuttingDown();
+    initial.process.emit("exit", 1, null);
+    await supervisor.waitForRecovery();
+    expect(createReplacement).not.toHaveBeenCalled();
+    expect(supervisor.current()).toBe(initial.instance);
+    await supervisor.shutdown();
+    expect(initial.instance.stop).not.toHaveBeenCalled();
+  });
+
+  it("abandons an in-flight recovery once markShuttingDown is called", async () => {
+    const initial = createInstance();
+    const createReplacement = vi.fn(() => createInstance().instance);
+    let releaseDelay!: () => void;
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: createReplacement,
+      restartDelaysMs: [1_000],
+      delay: () => new Promise<void>((resolve) => { releaseDelay = resolve; }),
+    });
+    initial.process.emit("exit", 1, null);
+    supervisor.markShuttingDown();
+    releaseDelay();
+    await supervisor.waitForRecovery();
+    expect(createReplacement).not.toHaveBeenCalled();
+    await Promise.all([supervisor.shutdown(), supervisor.shutdown()]);
+    expect(initial.instance.stop).not.toHaveBeenCalled();
+  });
+
+  it("stops PostgreSQL only once when shutdown is requested repeatedly", async () => {
+    const initial = createInstance();
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: () => createInstance().instance,
+      restartDelaysMs: [0],
+    });
+    supervisor.markShuttingDown();
+    await Promise.all([supervisor.shutdown(), supervisor.shutdown()]);
+    await supervisor.shutdown();
+    expect(initial.instance.stop).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["SIGTERM", null, "SIGTERM"],
+    ["exit code 0", 0, null],
+  ] as const)("treats a child exit by %s as shutdown, not a crash", async (_label, code, signal) => {
+    const initial = createInstance();
+    const createReplacement = vi.fn(() => createInstance().instance);
+    const onUnexpectedExit = vi.fn();
+    const onOrderlyExit = vi.fn();
+    const onRecoveryExhausted = vi.fn();
+    const supervisor = createEmbeddedPostgresSupervisor({
+      initialInstance: initial.instance,
+      createInstance: createReplacement,
+      restartDelaysMs: [0],
+      onUnexpectedExit,
+      onOrderlyExit,
+      onRecoveryExhausted,
+    });
+    initial.process.emit("exit", code, signal);
+    await supervisor.waitForRecovery();
+    expect(createReplacement).not.toHaveBeenCalled();
+    expect(onUnexpectedExit).not.toHaveBeenCalled();
+    expect(onRecoveryExhausted).not.toHaveBeenCalled();
+    expect(onOrderlyExit).toHaveBeenCalledWith(code, signal);
+    await supervisor.shutdown();
+    expect(initial.instance.stop).not.toHaveBeenCalled();
+  });
+
   it("bounds recovery attempts and reports the final failure", async () => {
     const initial = createInstance();
     const failures = [new Error("first"), new Error("second"), new Error("third")];

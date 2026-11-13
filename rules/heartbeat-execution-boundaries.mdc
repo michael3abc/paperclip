@@ -73,48 +73,52 @@ ownership changes.
 
 ## Design principles
 
-- **Shared-worktree rollout is staged.** A `mainManagedWorktree` marker belongs to
-  the project main's lifecycle service. Legacy cleanup cannot consume it, even
-  after the origin task ends. Recheck under the workspace lifecycle lock before
-  destructive work. The safety baseline rejects unsupported execution explicitly;
-  it must never convert cooperative participation into an old exclusive holder.
-  The feature contract admits multiple tasks/runs to an open registered Git
-  directory (repository root or linked worktree). Explicit main-authorized code
-  initialization creates metadata only; external data/model/service directories
-  are never automatically initialized. Root retirement unregisters without deleting
-  files. Cancellation immediately removes workspace admission participation;
-  historical Stop, lease, finalizer, export and instruction cleanup remain
-  obligations of their own source, not locks on the tree. This describes the
-  feature branch, not a claim that the feature is deployed.
+- **Liveness first.** `/home/michael/services/docs/agents/liveness-first.md`
+  (Owner 2026-11-13) is binding and supersedes any fail-closed rule here. Work
+  must never stall waiting for evidence a human has to clear. An unknown prior
+  outcome abandons that run, releases every lock, claim, holder and slot, and
+  resends with the 「上一次可能已部分執行，先檢查現況再做」 prefix. Classify failures
+  only through `server/src/services/recovery/failure-classification.ts`; never
+  add a new pause, `needs_attention`, `uncertain` or Owner-intervention state.
+
+- **Workspace = directory.** Resolve the cwd (run-requested > agent fixed > project
+  default > `~/.paperclip/instances/default/workspaces/<agentId>`) and `mkdir -p`
+  it. Registration, admission, shared-checkout claims, holders, fixed/isolated
+  conflicts, host inspection and generation receipts must not fail or park a run;
+  log mismatches only. The per-issue execution lock remains. A `mainManagedWorktree`
+  marker only protects a tree from deletion: legacy cleanup never consumes it, and
+  no cleanup deletes dirty or ignored files or force-removes a worktree.
 
 - **Execution requires current authority.** Queue acceptance is not permission
   to execute indefinitely. Admission and dispatch must respect company scope,
-  responsible-user authority, budgets, pause/Stop, and task eligibility, including
-  when these change during preparation. Retries and recovery must not become
-  alternate paths around those controls.
+  responsible-user authority, budgets, Owner pause/Stop, and task eligibility,
+  including when these change during preparation. Retries and recovery must not
+  become alternate paths around those controls.
 - **Ownership must be explicit.** Every execution and resource needs an owner,
   a lifetime, and a defined handoff or release condition. These contracts must
   hold across service instances, cancellation, partial startup, and restart.
   Process-local coordination cannot establish authority over another process.
 - **Completion has several independent obligations.** A result being accepted,
   a provider stopping, a workspace being saved, and cleanup finishing are distinct
-  facts. Keep enough state to represent them honestly. Terminal status alone
-  never proves safe destruction or authorizes replay. Independently authorized
-  new input may pass while historical cleanup remains pending; retain task
-  authority, native-session ordering and unknown input/operation gates.
+  facts; record them honestly. A terminal status releases every gate at once;
+  stop evidence and cleanup are best-effort background work that never blocks
+  admission, dispatch, retirement or another run. Terminal status still never
+  authorizes deleting files.
 - **Recovery preserves intent and completed work.** Resume the admitted work
-  under its recorded execution contract. New configuration belongs to a new
-  admission decision, not a silent reinterpretation of an existing run. Repair
+  under its recorded execution contract. New configuration starts a new session
+  for the next run, not a silent reinterpretation of an existing run. Repair
   incomplete persistence or cleanup without repeating already completed provider
-  work. Automatic recovery should be bounded and safe to retry.
+  work. Automatic retry uses the shared transient backoff (30s×2ⁿ, capped at 30
+  minutes); deterministic failures notify once per (issue, code).
 - **Durable state governs competing effects.** Claims and transitions must remain
   correct when Stop, completion, and recovery race. A losing operation must respect
-  the winning outcome. Persist authoritative state before publishing notifications;
-  notification failures must not change the execution result or duplicate effects.
-- **Uncertainty stays visible.** Missing ownership or termination evidence must
-  remain pending, held, or explicitly failed for its original session/resource.
-  It must not become a recursive workspace occupancy claim. Preserve recoverable
-  work through failures. Keep security and sandbox requirements intact rather than
+  the winning outcome; session authority is last-writer-wins (generation+1,
+  `takeoverFrom` recorded). Persist authoritative state before publishing
+  notifications; notification failures must not change the execution result.
+- **Liveness over certainty.** Missing ownership or termination evidence is logged
+  and retried, never held for a human. Startup turns runs orphaned by the previous
+  process into `process_lost` (transient); runs silent for 35 minutes are cancelled
+  as `inactivity_timeout`. Keep security and sandbox requirements intact rather than
   silently choosing a weaker execution path. Optional diagnostics must not prevent
   essential settlement.
 
@@ -139,8 +143,9 @@ assembled-app journey for changes to dispatch, Stop, workspace recovery, or save
 agent files. Assert execution and persisted outcomes, not only helper calls.
 
 Flag changes that give one policy competing owners, hide lifecycle ordering,
-weaken execution authority, lose recoverable work, or confuse completion with
-resource settlement. Explain the violated principle and the responsible boundary.
+weaken execution authority, lose recoverable work, or reintroduce a fail-closed
+gate (a wait on stop evidence, a workspace claim, or a state only a human can
+clear). Explain the violated principle and the responsible boundary.
 Also flag substantial coordinator growth or modules collecting unrelated behavior;
 identify the existing owner or cohesive extraction that would keep the code
 tractable. Do not freeze current variable names or helper layouts as policy.

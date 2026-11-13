@@ -67,6 +67,8 @@ export type ScanSilentActiveRunsResult = {
   folded: number;
   snoozed: number;
   skipped: number;
+  /** Runs cancelled by the 35 minute inactivity fallback (`inactivity_timeout`). */
+  inactivityCancelled: number;
   evaluationIssueIds: string[];
 };
 

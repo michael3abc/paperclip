@@ -120,8 +120,9 @@ function cancelledScheduledWorkspaceRetryPredicate() {
  * copies still go through the original collector and all resource fences. */
 export function suppressedDispositionRepairPredicate() {
   // A remote instruction copy remains a cleanup obligation when Bridge proved
-  // this exact run never received input. This is not terminal/idle evidence:
-  // bind the retained receipt to the original successful source below.
+  // this exact run never received input. Bind the retained receipt to the
+  // original successful source below; a stop-settlement check is not required
+  // (liveness-first: terminal releases every gate).
   const remoteUndispatched = sql`coalesce(
     ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
     AND ${heartbeatRuns.resultJson}->'executionCancellation' IS NULL
@@ -140,10 +141,7 @@ export function suppressedDispositionRepairPredicate() {
       AND source.company_id = ${heartbeatRuns.companyId} AND source.agent_id = ${heartbeatRuns.agentId}
       AND source.context_snapshot->>'issueId' = ${heartbeatRuns.contextSnapshot}->>'issueId'
       AND source.result_json->>'nativeSessionId' = ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,nativeSessionId}'
-      AND source.id::text = ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,lastRecordedRunId}')
-    AND EXISTS (SELECT 1 FROM heartbeat_run_events e WHERE e.run_id = ${heartbeatRuns.id}
-      AND e.company_id = ${heartbeatRuns.companyId} AND e.source_event_id IS NULL AND e.stream = 'system'
-      AND e.event_type = 'execution.stop_settlement_checked' AND e.payload->'stopVerified' = 'true'::jsonb), false)`;
+      AND source.id::text = ${heartbeatRuns.resultJson}#>>'{executionStopVerification,bridgeStopProof,lastRecordedRunId}'), false)`;
   return sql`coalesce(
     ${heartbeatRuns.runtimeMode} = 'legacy' AND ${heartbeatRuns.status} = 'cancelled'
     AND ${heartbeatRuns.finishedAt} IS NOT NULL

@@ -27,9 +27,16 @@ describe("classifyAdapterFailureForRecovery", () => {
   });
   it("retries a continuation whose host lost the controller lease before dispatch", () => {
     expect(classifyContinuationFailure({ errorCode: "controller_lease_lost", error: "Legacy controller lease lost", resultJson: null } as never))
-      .toMatchObject({ kind: "transient_infra", maxAttempts: 3 });
-    expect(classifyContinuationFailure({ errorCode: "setup_failed", error: "Legacy controller lease lost", resultJson: null } as never).kind)
-      .toBe("non_retryable");
+      .toMatchObject({ kind: "transient_infra", maxAttempts: Number.POSITIVE_INFINITY });
+    // Liveness-first: an unrecognized setup failure gets three transient attempts.
+    expect(classifyContinuationFailure({ errorCode: "setup_failed", error: "Legacy controller lease lost", resultJson: null } as never))
+      .toMatchObject({ kind: "default", maxAttempts: 3 });
+  });
+  it("retries every former ccpocket uncertain code as transient without an attempt limit", () => {
+    for (const errorCode of ["manual_takeover", "execution_uncertain", "stop_unconfirmed", "session_busy", "bridge_unavailable", "inactivity_timeout"]) {
+      expect(classifyContinuationFailure({ errorCode, error: null, resultJson: null } as never))
+        .toMatchObject({ kind: "transient_infra", maxAttempts: Number.POSITIVE_INFINITY, baseBackoffMs: 30_000 });
+    }
   });
   it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
     const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });

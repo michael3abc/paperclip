@@ -46,26 +46,26 @@ describe("registered host finalization", () => {
   it.each([
     { operationId: "another-run" }, { action: "merge" }, { cwd: "/another-tree" },
     { branch: "another-branch" }, { head: null }, { head: "unverified" }, { targetHead: null },
-  ])("rejects a mismatched or unverifiable host receipt %j", async changed => {
+  ])("records a mismatched or unverifiable host receipt as advisory, never a run failure %j", async changed => {
     remoteHost({ ...receipt, ...changed });
     expect(await inspectMainManagedGitWorkspaceBranch({ workspace: registered(), operationId: "run-finalize" }))
-      .toMatchObject({ valid: false, reason: "worktree_host_receipt_mismatch" });
+      .toMatchObject({ valid: true, advisory: true, reason: "worktree_host_receipt_mismatch" });
   });
 
-  it("keeps transport failure bounded and never falls back to controller Git", async () => {
+  it("warns and continues on transport failure, bounded and never falling back to controller Git", async () => {
     remoteHost().mockRejectedValue(new Error("secret provider stderr"));
     const result = await inspectMainManagedGitWorkspaceBranch({ workspace: registered(), operationId: "run-finalize" });
-    expect(result).toMatchObject({ valid: false, reason: "worktree_host_inspection_failed" });
+    expect(result).toMatchObject({ valid: true, advisory: true, reason: "worktree_host_inspection_failed" });
     expect(JSON.stringify(result)).not.toContain("secret provider stderr");
   });
 
-  it("rejects unknown markers and inconsistent registration before contacting a host", async () => {
+  it("treats unknown markers and inconsistent registration as advisory without contacting a host", async () => {
     const operation = remoteHost(), workspace = registered();
     workspace.metadata.mainManagedWorktree.schema = "future-version";
     expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" }))
-      .toMatchObject({ valid: false, reason: "worktree_marker_unrecognized" });
+      .toMatchObject({ valid: true, advisory: true, reason: "worktree_marker_unrecognized" });
     expect(await inspectMainManagedGitWorkspaceBranch({ workspace: { ...registered(), branchName: "other" }, operationId: "run-finalize" }))
-      .toMatchObject({ valid: false, reason: "worktree_registration_mismatch" });
+      .toMatchObject({ valid: true, advisory: true, reason: "worktree_registration_mismatch" });
     expect(operation).not.toHaveBeenCalled();
   });
 
@@ -74,10 +74,12 @@ describe("registered host finalization", () => {
     const workspace = registered(worktree, null);
     Object.assign(workspace.metadata.mainManagedWorktree, { sourceCwd: repo, parentDir: root,
       targetBranch: (await exec("git", ["-C", repo, "branch", "--show-current"])).stdout.trim() });
-    expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" })).toMatchObject({ valid: true });
+    const clean = await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" });
+    expect(clean).toMatchObject({ valid: true });
+    expect(clean.advisory).toBeUndefined();
     await exec("git", ["-C", worktree, "switch", "-c", "collaborator"]);
     expect(await inspectMainManagedGitWorkspaceBranch({ workspace, operationId: "run-finalize" }))
-      .toMatchObject({ valid: false, reasonCode: "branch_mismatch" });
+      .toMatchObject({ valid: true, advisory: true, reasonCode: "branch_mismatch" });
     expect((await exec("git", ["-C", worktree, "branch", "--show-current"])).stdout.trim()).toBe("collaborator");
     expect(await fs.readFile(path.join(worktree, "retained.txt"), "utf8")).toBe("retained work\n");
   });

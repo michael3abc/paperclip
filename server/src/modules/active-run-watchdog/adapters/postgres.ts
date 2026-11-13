@@ -12,6 +12,7 @@ import {
   agents,
   agentWakeupRequests,
   activityLog,
+  heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
   environmentLeases,
@@ -150,6 +151,14 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
       .limit(1);
     return row ? toRunSnapshot(row) : null;
+  }
+
+  async function findLatestRunEventAt(companyId: string, runId: string): Promise<Date | null> {
+    const [row] = await db
+      .select({ at: sql<Date | null>`max(${heartbeatRunEvents.createdAt})`.mapWith(heartbeatRunEvents.createdAt) })
+      .from(heartbeatRunEvents)
+      .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId)));
+    return row?.at ?? null;
   }
 
   async function isRuntimeSettlementPending(companyId: string, runId: string): Promise<boolean> {
@@ -530,6 +539,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
   return {
     findCandidateSilentRuns,
     findRunForCompany,
+    findLatestRunEventAt,
     isRuntimeSettlementPending,
     findLatestDecision,
     findOpenStaleRunEvaluation,

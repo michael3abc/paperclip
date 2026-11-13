@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
 import { isPendingExecutionReviewForAgent } from "./issue-execution-policy.js";
 import { verifiedPmWatchdogSql } from "./task-watchdog-scope.js";
 
@@ -72,11 +73,14 @@ export function fixedBindingOnlyRevision(before: Record<string, unknown>, after:
   return isDeepStrictEqual(strip(before), strip(after));
 }
 
-export function workspaceBindingConflict(reason: string, message: string): never {
-  throw Object.assign(new Error(message), {
-    code: "workspace_validation_failed",
-    resultJson: { workspaceValidation: { reason: `fixed_workspace_${reason}` } },
-  });
+/**
+ * Liveness-first (Owner 2026-11-13, rule 3): a workspace mismatch never fails a
+ * run. It is logged and the run keeps its resolved directory. Returns the reason.
+ */
+export function workspaceBindingConflict(reason: string, message: string, details?: Record<string, unknown>): string {
+  const code = `fixed_workspace_${reason}`;
+  logger.warn({ ...details, workspaceValidation: { reason: code } }, `Workspace mismatch ignored: ${message}`);
+  return code;
 }
 
 function normalizedWorkspacePath(value: string) {
@@ -169,7 +173,10 @@ export function readWorkspaceBinding(
     if (record(runtimeConfig.workspaceBinding).mode === "project_pm") {
       projectPmConflict("invalid", "The project PM binding is invalid. Reconfigure it with an absolute worker root, a project and 0-4 worker slots.");
     }
+    // An unusable fixed binding is skipped: the run falls back to the project
+    // default directory or the agent home.
     workspaceBindingConflict("invalid", "Fixed working directory must be an absolute path with mode=fixed.");
+    return null;
   }
   if (parsed.data.mode === "fixed") return parsed.data;
   const pmContext = readPaperclipPmWorkspaceContext(context?.paperclipPmWorkspace);
@@ -449,74 +456,102 @@ export async function isExternalWorkspaceTask(db: Db, companyId: string, issueId
       select 1 from ${chatConversations} c where c.issue_id = ${issues.id} and c.company_id = ${companyId}
     )`,
   }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).limit(1);
-  if (!issue) workspaceBindingConflict("issue_unavailable", "Fixed workspace task is unavailable in this company.");
+  if (!issue) {
+    workspaceBindingConflict("issue_unavailable", "Fixed workspace task is unavailable in this company.", { issueId });
+    return false;
+  }
   return issue.external;
 }
 
-/** Reject isolation and provisioning requests before any workspace can be created. */
+/**
+ * Report isolation and provisioning mismatches of a fixed directory. Advisory
+ * only: each mismatch is logged and the fixed directory is still used.
+ */
 export function assertFixedWorkspacePolicy(input: {
   binding: FixedWorkspaceBinding; environment: { driver: string; config: Record<string, unknown> } | null;
   trustPreset: string; mode: string; external: boolean; isDot: boolean; strategies: unknown[];
-}): void {
+}): string[] {
+  const mismatches: string[] = [];
+  const note = (reason: string, message: string) =>
+    mismatches.push(workspaceBindingConflict(reason, message, { cwd: input.binding.cwd }));
   if (input.trustPreset === "low_trust_review" || input.external) {
-    workspaceBindingConflict("isolation_required", "External chat and low-trust tasks require isolation and cannot use an agent's fixed working directory.");
+    note("isolation_required", "External chat and low-trust tasks prefer isolation over an agent's fixed working directory.");
   }
   if (["isolated_workspace", "operator_branch"].includes(input.mode)) {
-    workspaceBindingConflict("policy_conflict", "This task requires an isolated workspace or branch, conflicting with the fixed working directory.");
+    note("policy_conflict", "This task requests an isolated workspace or branch, conflicting with the fixed working directory.");
   }
   const environment = input.environment;
   if (input.isDot || !environment || !["local", "ssh"].includes(environment.driver)) {
-    workspaceBindingConflict("environment_conflict", "The selected environment does not support fixed in-place execution.");
+    note("environment_conflict", "The selected environment does not support fixed in-place execution.");
   }
-  if (input.binding.projectPm && environment.driver !== "local") {
-    projectPmConflict("environment_conflict", "Project PM agents run on a local path only.");
+  if (input.binding.projectPm && environment && environment.driver !== "local") {
+    note("environment_conflict", "Project PM agents run on a local path only.");
   }
-  if (input.binding.hostId && environment.driver !== "local") {
-    workspaceBindingConflict("environment_conflict", "A remote-host fixed directory is reached through the CC Pocket host; select the local environment.");
+  if (input.binding.hostId && environment && environment.driver !== "local") {
+    note("environment_conflict", "A remote-host fixed directory is reached through the CC Pocket host; select the local environment.");
   }
-  if (environment.driver === "ssh" && (environment.config.workspaceMode !== "in_place" || environment.config.remoteWorkspacePath !== input.binding.cwd)) {
-    workspaceBindingConflict("environment_conflict", "SSH fixed execution requires in_place mode and the exact configured remote workspace path.");
+  if (environment?.driver === "ssh" && (environment.config.workspaceMode !== "in_place" || environment.config.remoteWorkspacePath !== input.binding.cwd)) {
+    note("environment_conflict", "SSH fixed execution expects in_place mode and the exact configured remote workspace path.");
   }
   for (const value of input.strategies) {
     if (!value || typeof value !== "object") continue;
     const strategy = value as Record<string, unknown>;
     if ((strategy.type && strategy.type !== "project_primary") ||
         ["provisionCommand", "runtimeProvisionCommand", "teardownCommand", "cleanupCommand"].some(key => strategy[key])) {
-      workspaceBindingConflict("provisioning_conflict", "Fixed working directories cannot use workspace provisioning, cleanup or worktree strategies.");
+      note("provisioning_conflict", "Fixed working directories do not use workspace provisioning, cleanup or worktree strategies.");
+      break;
     }
   }
+  return mismatches;
 }
 
-export function assertFixedProjectWorkspace(binding: FixedWorkspaceBinding, workspace: { cwd: string | null; sourceType?: string | null } | null, configured: boolean): void {
+/** Advisory: a project directory that differs from the fixed directory is logged only. */
+export function assertFixedProjectWorkspace(binding: FixedWorkspaceBinding, workspace: { cwd: string | null; sourceType?: string | null } | null, configured: boolean): string[] {
+  const mismatches: string[] = [];
   if (configured && (!workspace?.cwd || path.posix.normalize(workspace.cwd).replace(/\/$/, "") !== path.posix.normalize(binding.cwd).replace(/\/$/, ""))) {
-    workspaceBindingConflict("project_conflict", "The selected project's working directory differs from the agent's fixed working directory.");
+    mismatches.push(workspaceBindingConflict("project_conflict", "The selected project's working directory differs from the agent's fixed working directory.",
+      { cwd: binding.cwd, projectCwd: workspace?.cwd ?? null }));
   }
-  // A remote-host directory is only valid for a project source that is itself remote.
   if (binding.hostId && configured && workspace?.sourceType !== "remote_managed") {
-    workspaceBindingConflict("project_conflict", "A remote-host fixed directory requires the project's remote-managed source.");
+    mismatches.push(workspaceBindingConflict("project_conflict", "A remote-host fixed directory expects the project's remote-managed source.", { cwd: binding.cwd }));
   }
+  return mismatches;
 }
 
 /**
- * A remote-host fixed directory is never inspected on the controller: it must be
- * a canonical POSIX path, used by a CC Pocket agent on the same registry host.
+ * A remote-host fixed directory is never inspected on the controller; the CC
+ * Pocket host creates it. Adapter, host and path-shape mismatches are logged only.
  */
-export function assertRemoteFixedBinding(binding: FixedWorkspaceBinding, agent: { adapterType: string; adapterConfig: unknown }): void {
-  if (!binding.hostId) return;
-  if (agent.adapterType !== "ccpocket_bridge") workspaceBindingConflict("environment_conflict", "Remote-host fixed directories require the CC Pocket adapter.");
-  if (record(agent.adapterConfig).hostId !== binding.hostId) workspaceBindingConflict("environment_conflict", "The agent's CC Pocket host differs from its fixed directory's host.");
-  if (path.posix.normalize(binding.cwd) !== binding.cwd || binding.cwd.endsWith("/")) workspaceBindingConflict("path_alias", "Use the canonical absolute working directory on the remote host.");
+export function assertRemoteFixedBinding(binding: FixedWorkspaceBinding, agent: { adapterType: string; adapterConfig: unknown }): string[] {
+  if (!binding.hostId) return [];
+  const mismatches: string[] = [];
+  if (agent.adapterType !== "ccpocket_bridge") mismatches.push(workspaceBindingConflict("environment_conflict", "Remote-host fixed directories require the CC Pocket adapter.", { cwd: binding.cwd }));
+  if (record(agent.adapterConfig).hostId !== binding.hostId) mismatches.push(workspaceBindingConflict("environment_conflict", "The agent's CC Pocket host differs from its fixed directory's host.", { cwd: binding.cwd }));
+  if (path.posix.normalize(binding.cwd) !== binding.cwd || binding.cwd.endsWith("/")) mismatches.push(workspaceBindingConflict("path_alias", "The remote working directory is not canonical.", { cwd: binding.cwd }));
+  return mismatches;
 }
 
-export async function validateFixedLocalDirectory(binding: FixedWorkspaceBinding): Promise<void> {
+/**
+ * Create the fixed local directory when missing (`mkdir -p`). Returns false only
+ * when it cannot be used (for example the path is a file); the caller then falls
+ * back to the next directory. A symbolic alias is logged and still used.
+ */
+export async function ensureFixedLocalDirectory(binding: FixedWorkspaceBinding): Promise<boolean> {
+  if (!path.isAbsolute(binding.cwd)) {
+    workspaceBindingConflict("path_unavailable", "The fixed working directory is not an absolute path.", { cwd: binding.cwd });
+    return false;
+  }
   try {
-    if (!path.isAbsolute(binding.cwd) || !(await stat(binding.cwd)).isDirectory()) throw new Error("not a directory");
+    await mkdir(binding.cwd, { recursive: true });
+    if (!(await stat(binding.cwd)).isDirectory()) throw new Error("not a directory");
     if (await realpath(binding.cwd) !== path.resolve(binding.cwd)) {
-      workspaceBindingConflict("path_alias", "Use the canonical absolute working directory; symbolic path aliases are not accepted.");
+      workspaceBindingConflict("path_alias", "The fixed working directory is a symbolic path alias.", { cwd: binding.cwd });
     }
+    return true;
   } catch (error) {
-    if ((error as { code?: string }).code === "workspace_validation_failed") throw error;
-    workspaceBindingConflict("path_unavailable", "The fixed working directory does not exist or is not accessible on the selected host. No directory was created.");
+    workspaceBindingConflict("path_unavailable", "The fixed working directory could not be created or is not a directory.",
+      { cwd: binding.cwd, err: error });
+    return false;
   }
 }
 

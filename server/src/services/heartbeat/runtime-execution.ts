@@ -536,11 +536,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       && executionTarget?.kind !== "remote") {
       const launchCwd = nativeExecution && "cwd" in nativeExecution.workspace
         ? nativeExecution.workspace.cwd : executionWorkspace.cwd;
-      if (typeof directoryClaim.executionCwd !== "string" || typeof launchCwd !== "string"
-        || await realpath(launchCwd) !== await realpath(directoryClaim.executionCwd)
-        || await sharedCheckoutPath(launchCwd) !== directoryClaim.path) {
-        throw new WorkspaceValidationFailure("The provider working directory differs from the admitted workspace.",
-          { workspaceValidation: { reason: "workspace_binding_mismatch" } });
+      // Liveness-first: a launch directory that differs from the claim is logged, never a run failure.
+      const sameDirectory = typeof directoryClaim.executionCwd === "string" && typeof launchCwd === "string"
+        && await realpath(launchCwd).catch(() => launchCwd) === await realpath(directoryClaim.executionCwd).catch(() => directoryClaim.executionCwd)
+        && await sharedCheckoutPath(launchCwd).catch(() => null) === directoryClaim.path;
+      if (!sameDirectory) {
+        logger.warn({ runId: run.id, launchCwd, claimCwd: directoryClaim.executionCwd, workspaceValidation: { reason: "workspace_binding_mismatch" } },
+          "Workspace mismatch ignored: the provider working directory differs from the admitted workspace.");
       }
     }
     if (nativeRuntimeResolution.kind === "native") {

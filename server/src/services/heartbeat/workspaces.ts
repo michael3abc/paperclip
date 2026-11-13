@@ -14,7 +14,7 @@ import { sql } from "drizzle-orm";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { remoteBridgeWorkerHost, selectRemoteWorkerSource } from "./remote-bridge-worker.js";
 import { resolveInPlaceAnchor } from "@paperclipai/adapter-utils/ssh-in-place";
-import { assertFixedProjectWorkspace, assertRemoteFixedBinding, isFixedMainReview, readWorkspaceBinding, validateFixedLocalDirectory, workspaceBindingConflict } from "../agent-workspace-binding.js";
+import { assertFixedProjectWorkspace, assertRemoteFixedBinding, ensureFixedLocalDirectory, isFixedMainReview, readWorkspaceBinding, workspaceBindingConflict } from "../agent-workspace-binding.js";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
 import {
@@ -3546,20 +3546,24 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         if (fixedMainReview && !selected) workspaceBindingConflict("project_conflict", "The reviewer's fixed directory must be a registered source of this project on its configured host.");
         assertFixedProjectWorkspace(fixedBinding, selected ?? null, projectWorkspaceRows.length > 0 || Boolean(preferredProjectWorkspaceId));
       }
+      // Liveness-first rule 3: mismatches above are logged only. A local fixed
+      // directory is created when missing; only an unusable one (for example a
+      // file) falls through to the project default directory or the agent home.
+      let usable = true;
       if (opts?.executionEnvironmentDriver === "local") {
         if (fixedBinding.hostId) {
-          // A remote-host fixed directory exists only on its CC Pocket host; the adapter verifies it there.
+          // A remote-host fixed directory exists only on its CC Pocket host; the adapter creates it there.
           assertRemoteFixedBinding(fixedBinding, agent);
         } else if (fixedBinding.projectPm?.workerHostId) {
           if (agent.adapterType !== 'ccpocket_bridge') workspaceBindingConflict('environment_conflict', 'Remote PM workers require the CC Pocket adapter.');
-          // A native PM home exists only on the worker host; the adapter verifies it there.
-          if (fixedBinding.projectPm.role === 'pm' && !fixedBinding.projectPm.pmHome) await validateFixedLocalDirectory(fixedBinding);
-        } else await validateFixedLocalDirectory(fixedBinding);
+          // A native PM home exists only on the worker host; the adapter creates it there.
+          if (fixedBinding.projectPm.role === 'pm' && !fixedBinding.projectPm.pmHome) usable = await ensureFixedLocalDirectory(fixedBinding);
+        } else usable = await ensureFixedLocalDirectory(fixedBinding);
       }
       else if (opts?.executionEnvironmentDriver !== "ssh" || opts.executionEnvironmentConfig?.workspaceMode !== "in_place" || opts.executionEnvironmentConfig.remoteWorkspacePath !== fixedBinding.cwd) {
         workspaceBindingConflict("environment_conflict", "The selected environment does not match the fixed working directory.");
       }
-      return { cwd: fixedBinding.cwd, source: "task_session", projectId: fixedBinding.projectPm?.projectId ?? resolvedProjectId,
+      if (usable) return { cwd: fixedBinding.cwd, source: "task_session", projectId: fixedBinding.projectPm?.projectId ?? resolvedProjectId,
         workspaceId: selected?.id ?? null, repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
         workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [], localPathOnlyWorkspace: true };
     }

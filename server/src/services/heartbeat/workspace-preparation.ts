@@ -47,6 +47,7 @@ import { getStartupTracer } from "../../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "../duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
 import { logger } from "../../middleware/logger.js";
+import { HttpError } from "../../errors.js";
 import { createGitRemoteAuthProvider } from "../git-credentials.js";
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd } from "../native-runtime/index.js";
 import { parseObject } from "../../adapters/utils.js";
@@ -175,6 +176,19 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Liveness-first (rule 3): joining a main-managed tree never fails on its
+ * registration generation, phase, pending operation, host receipt or host
+ * inspection. Authorization still does: a revoked, cancelled or paused run, a
+ * held agent or project, a closed task, or missing project/repository access.
+ */
+function isManagedAdmissionAuthorityFailure(error: unknown): boolean {
+  if (!(error instanceof HttpError)) return false;
+  if ([401, 403, 404].includes(error.status)) return true;
+  const details = parseObject(error.details);
+  return details.code === "worktree_run_no_longer_admitted";
+}
+
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   if (isMainManagedExecutionWorkspace(input.reuse.reusableExistingExecutionWorkspace ?? input.reuse.existingExecutionWorkspace)) {
     return prepareHeartbeatWorkspaceLocked(db, input);
@@ -250,45 +264,56 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   }
   let managedAdmission: Awaited<ReturnType<ReturnType<typeof mainManagedWorktreeService>["prepareRun"]>> | null = null;
   if (managedWorkspace) {
+    // Liveness-first: the main-managed marker only means "do not delete"; admission,
+    // generation, receipt and host checks are advisory and never fail the run.
+    const warnManaged = (reason: string, message: string, error?: unknown) => logger.warn({ runId: run.id, agentId: agent.id,
+      workspaceId: managedWorkspace.id, workspaceValidation: { reason }, err: error }, `Managed worktree mismatch ignored: ${message}`);
     if (!managedMarker || !issueId || managedWorkspace.projectId !== issueRef?.projectId)
-      throw new WorkspaceValidationFailure("The managed worktree binding is invalid.", { reason: "worktree_marker_unrecognized" });
+      warnManaged("worktree_marker_unrecognized", "the managed worktree binding is invalid.");
     const bridgeHost = typeof mergedConfig.hostId === "string" ? mergedConfig.hostId : fixedBinding?.hostId ?? remoteWorkerHost;
     if (fresh || useIsolatedTaskDirectory || preserveTaskWorkspace || input.reuse.isDotRun || providerApiPlacement
       || (selectedEnvironmentForConfig && selectedEnvironmentForConfig.driver !== "local")
-      || (managedMarker.hostId && (agent.adapterType !== "ccpocket_bridge" || bridgeHost !== managedMarker.hostId)))
-      throw new WorkspaceValidationFailure("The selected runtime cannot execute in this registered worktree on its owning host.", { reason: "worktree_host_capability_unavailable" });
+      || (managedMarker?.hostId && (agent.adapterType !== "ccpocket_bridge" || bridgeHost !== managedMarker.hostId)))
+      warnManaged("worktree_host_capability_unavailable", "the selected runtime does not match the registered worktree host.");
     await controllerLease.assertOwned();
-    managedAdmission = await mainManagedWorktreeService(db).prepareRun({ companyId: agent.companyId, projectId: managedWorkspace.projectId!,
-      workspaceId: managedWorkspace.id, actor: { type: "agent", source: "agent_jwt", companyId: agent.companyId, agentId: agent.id,
-        runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId } }, issueId,
-      Number(managedWorkspace.metadata?.lifecycleGeneration ?? 0));
-    context.managedWorktreeParticipation = { workspaceId: managedWorkspace.id, generation: managedAdmission.generation,
+    if (managedMarker && issueId && managedWorkspace.projectId) {
+      managedAdmission = await mainManagedWorktreeService(db).prepareRun({ companyId: agent.companyId, projectId: managedWorkspace.projectId,
+        workspaceId: managedWorkspace.id, actor: { type: "agent", source: "agent_jwt", companyId: agent.companyId, agentId: agent.id,
+          runId: run.id, onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId } }, issueId,
+        Number(managedWorkspace.metadata?.lifecycleGeneration ?? 0)).catch(error => {
+        // Current authority still applies: a revoked, paused or unauthorized run
+        // fails here. Generation, phase, pending-operation, receipt and host
+        // inspection results are advisory and only skip participant registration.
+        if (isManagedAdmissionAuthorityFailure(error)) throw error;
+        warnManaged("worktree_admission_skipped", "participant registration failed; running in the directory anyway.", error);
+        return null;
+      });
+    }
+    if (managedMarker) context.managedWorktreeParticipation = { workspaceId: managedWorkspace.id,
+      generation: managedAdmission?.generation ?? Number(managedWorkspace.metadata?.lifecycleGeneration ?? 0),
       cwd: managedWorkspace.cwd, hostId: managedMarker.hostId, branch: managedMarker.branch,
       // Valid v1 registrations without kind predate repository-root support and denote linked trees.
       kind: managedMarker.kind ?? "linked_worktree", sourceCwd: managedMarker.sourceCwd,
       parentDir: managedMarker.parentDir, projectId: managedWorkspace.projectId };
   }
+  const warnWorkspace = (reason: string, message: string) => logger.warn({ runId: run.id, agentId: agent.id, issueId,
+    workspaceValidation: { reason } }, `Workspace mismatch ignored: ${message}`);
   if (!managedWorkspace && agent.runtimeConfig?.requireTaskWorktree === true && (
     !issueId || !issueRef?.projectId || fixedBinding || !runtimeWorkspaceSelectionEnabled ||
     effectiveExecutionWorkspaceMode !== "isolated_workspace" ||
     resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "git_worktree"
   )) {
-    throw new WorkspaceValidationFailure(
-      "This shared worker requires a project task with an isolated Git worktree. Select the task's repository; shared directories and agent-home execution are not allowed.",
-      { reason: "shared_worker_requires_task_worktree" },
-    );
+    warnWorkspace("shared_worker_requires_task_worktree", "the shared worker prefers an isolated Git worktree; using the resolved directory.");
   }
   if (!managedWorkspace && !explicitSessionOnly && agent.runtimeConfig?.requireProjectWorkspace === true && (
     !issueId || !issueRef?.projectId || !issueRef.projectWorkspaceId || fixedBinding || !runtimeWorkspaceSelectionEnabled ||
     !["shared_workspace", "isolated_workspace"].includes(effectiveExecutionWorkspaceMode) ||
     (effectiveExecutionWorkspaceMode === "shared_workspace" && resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "project_primary")
-  )) throw new WorkspaceValidationFailure("This shared worker requires a configured project development checkout or an explicitly isolated task worktree.",
-    { reason: "shared_worker_requires_project_workspace" });
+  )) warnWorkspace("shared_worker_requires_project_workspace", "the shared worker prefers a project checkout or isolated worktree; using the resolved directory.");
   if (!managedWorkspace && !explicitSessionOnly && remoteWorkerHost && (fresh || useIsolatedTaskDirectory || !issueId || !issueRef?.projectWorkspaceId ||
     effectiveExecutionWorkspaceMode !== "shared_workspace" || input.task.context.paperclipPmWorkspace ||
     resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig) !== "project_primary")) {
-    throw new WorkspaceValidationFailure(`This worker runs on Bridge host ${remoteWorkerHost} and works only in the task's shared project source registered on that host.`,
-      { reason: "remote_worker_requires_shared_source" });
+    warnWorkspace("remote_worker_requires_shared_source", `the worker on Bridge host ${remoteWorkerHost} uses the task's shared project source on that host.`);
   }
   const {
     requestedShouldReuseExisting,
@@ -303,15 +328,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   if (!managedWorkspace && (agent.runtimeConfig?.requireTaskWorktree === true ||
       (agent.runtimeConfig?.requireProjectWorkspace === true && reusableExistingExecutionWorkspace?.mode !== "shared_workspace")) && reusableExistingExecutionWorkspace &&
       reusableExistingExecutionWorkspace.sourceIssueId !== issueId) {
-    throw new WorkspaceValidationFailure("A shared worker must reuse only this task's own worktree.",
-      { reason: "shared_worker_worktree_owner_mismatch" });
+    warnWorkspace("shared_worker_worktree_owner_mismatch", "the reused worktree belongs to another task.");
   }
   // An ordinary clean task directory already has a new per-attempt identity.
   // It is not a repository source and must not pass through Git copy admission.
   const controllerOnly = isDotRun || providerApiPlacement !== null;
-  if (!managedWorkspace && !sessionOnly && !controllerOnly && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId)
-    throw new WorkspaceValidationFailure("Select a Git repository root or linked worktree registered by the project main, or explicitly select session-only for external-resource work.",
-      { reason: "configuration_required" });
   const freshNeedsSeed = fresh && !controllerOnly && !useIsolatedTaskDirectory &&
     !(nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId);
   const {
@@ -332,7 +353,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     }
   }
   const enrolledRemoteAuthority = readRemoteWorkspaceAuthority((reusableExistingExecutionWorkspace ?? existingExecutionWorkspace)?.metadata) !== null;
-  let remoteAuthority = !sessionOnly && !managedWorkspace && !controllerOnly && !remoteWorkerHost && shouldUseRemoteWorkspaces({
+  // Liveness-first (rule 3): an agent's fixed directory wins over remote storage.
+  let remoteAuthority = !sessionOnly && !managedWorkspace && !controllerOnly && !remoteWorkerHost && !fixedBinding && shouldUseRemoteWorkspaces({
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     experimentalEnabled: (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" || resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled) && Boolean(issueId && issueRef)
@@ -409,11 +431,15 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           workspaceId: managedWorkspace.projectWorkspaceId, repoUrl: managedWorkspace.repoUrl, repoRef: managedWorkspace.baseRef,
           workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
       }
-      if (fixedBinding) {
-        if (fresh || remoteAuthority || providerApiPlacement) {
-          throw new WorkspaceValidationFailure("Fixed working directories cannot replace a fresh, remote-storage, or provider-owned workspace.",
-            { reason: "fixed_workspace_policy_conflict" });
-        }
+      // A provider-owned workspace has no local directory, so a fixed binding does not apply to it.
+      if (fixedBinding && providerApiPlacement) {
+        warnWorkspace("fixed_workspace_policy_conflict", "the provider-owned workspace ignores the fixed working directory.");
+      }
+      if (fixedBinding && !providerApiPlacement) {
+        // A run-requested fresh attempt still wins (rule 3: run-requested > agent fixed);
+        // remote storage does not apply to a fixed directory.
+        if (fresh) warnWorkspace("fixed_workspace_policy_conflict", "the requested fresh attempt is seeded from the fixed working directory.");
+        if (enrolledRemoteAuthority) warnWorkspace("fixed_workspace_policy_conflict", "the fixed working directory replaces remote workspace storage.");
         assertFixedWorkspacePolicy({
           binding: fixedBinding, environment: selectedEnvironmentForConfig,
           trustPreset: trustPreset.kind, mode: requestedExecutionWorkspaceMode, isDot: controllerOnly,
@@ -428,8 +454,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         });
       }
       if (explicitSessionOnly && !fixedBinding) {
-        if (fresh || useIsolatedTaskDirectory) throw new WorkspaceValidationFailure(
-          "Session-only external-resource work cannot request a fresh task checkout.", { reason: "session_only_workspace_conflict" });
+        if (fresh || useIsolatedTaskDirectory) warnWorkspace("session_only_workspace_conflict",
+          "session-only work ignores the requested fresh task checkout.");
         if (remoteWorkerHost) {
           const cwd = readNonEmptyString(mergedConfig.cwd);
           if (!cwd || !path.posix.isAbsolute(cwd) || path.posix.normalize(cwd) !== cwd)
@@ -537,9 +563,16 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           });
         } catch (error) {
           if (!reusableExistingExecutionWorkspace) throw error;
-          throw new WorkspaceValidationFailure("The existing execution workspace is not this task's isolated directory.", {
-            workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issueRef.id },
-          });
+          // Liveness-first: the saved binding no longer matches. Keep using the saved
+          // directory when its path is still this task's own directory, otherwise use
+          // the task's directory (created if missing); never fail the run.
+          warnWorkspace("isolated_task_directory_binding_mismatch", "the saved task directory binding changed; using the task's own directory.");
+          const savedCwd = !fresh && reusableExistingExecutionWorkspace.cwd
+            ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId: issueRef.id,
+              reuseCwd: reusableExistingExecutionWorkspace.cwd }).catch(() => null)
+            : null;
+          cwd = savedCwd ?? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId: issueRef.id,
+            ...(fresh ? { attemptId: run.id } : {}) });
         }
         return resolveWorkspaceForRun(agent, context, previousSessionParams, {
           executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
@@ -921,7 +954,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     policy: resolvedWorkspaceReusePolicy,
   } = managedWorkspace ? {
     executionWorkspace: { ...executionWorkspaceBase, strategy: "git_worktree" as const, cwd: managedWorkspace.cwd!,
-      branchName: managedMarker!.branch, worktreePath: managedWorkspace.cwd!, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
+      branchName: managedMarker?.branch ?? managedWorkspace.branchName, worktreePath: managedWorkspace.cwd!, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
     reusedExecutionWorkspace: true,
     policy: { ...workspaceReuseProvisioningPolicy, shouldRestoreExistingWorkspace: true, shouldRefreshWorkspaceConfigSnapshot: false,
       shouldPersistLatestWorkspaceConfigMetadata: false },
@@ -1049,15 +1082,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     && executionWorkspace.strategy !== "git_worktree" && !fresh && !useIsolatedTaskDirectory
     && executionWorkspace.cwd === executionWorkspaceBase.baseCwd
     && executionWorkspace.source !== "task_session") {
-    throw new WorkspaceValidationFailure("The isolated selection did not create an independent workspace. Select a supported isolated source or register the existing worktree as its own source.",
-      { workspaceValidation: { reason: "isolated_workspace_not_realized" } });
+    warnWorkspace("isolated_workspace_not_realized", "the isolated selection reuses the base directory.");
   }
   if (!managedWorkspace && agent.runtimeConfig?.requireTaskWorktree === true && (
     executionWorkspace.strategy !== "git_worktree" || !executionWorkspace.worktreePath ||
     executionWorkspace.cwd === executionWorkspaceBase.baseCwd
   )) {
-    throw new WorkspaceValidationFailure("The shared worker did not obtain an isolated Git worktree; execution is refused.",
-      { reason: "shared_worker_worktree_not_realized" });
+    warnWorkspace("shared_worker_worktree_not_realized", "the shared worker runs without an isolated Git worktree.");
   }
   if (!remoteAuthority && input.task.freshWorkspace?.mode === "fresh_isolated_workspace" && issueId) {
     const recoveredFiles = providerFresh ? providerFresh.recoverySnapshots.map(snapshot => ({
@@ -1256,7 +1287,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       if (!persistedExecutionWorkspace?.cwd) throw new Error("remote_workspace_reservation_missing");
       executionWorkspace.cwd = persistedExecutionWorkspace.cwd;
       resolvedWorkspace.cwd = executionWorkspace.cwd;
-    } else persistedExecutionWorkspace = sessionOnly ? null : managedAdmission ? managedAdmission.workspace as ExecutionWorkspace :
+    } else persistedExecutionWorkspace = sessionOnly ? null : managedWorkspace ? (managedAdmission?.workspace ?? managedWorkspace) as ExecutionWorkspace :
       pluginPrepared ? await executionWorkspacesSvc.update(pluginPrepared.id, { metadata: nextExecutionWorkspaceMetadata }) :
       freshTaskReservation ? await executionWorkspacesSvc.update(freshTaskReservation.id, { metadata: nextExecutionWorkspaceMetadata }) :
       resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace &&

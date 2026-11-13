@@ -42,7 +42,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Experimental voice transport | Speko browser voice can create or resume a task through the existing chat-connection delivery/publication pipeline. The selected Paperclip agent retains execution authority. Phone support remains gated on live continuation qualification. |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree; for issue-thread interaction resolution it is an ordinary agent subject to the same audience and containment checks, not board authority, active-run output monitoring, or general liveness recovery. |
-| Recovery | Liveness/watchdog recovery preserves explicit ownership: continue interrupted local conversations with bounded fresh turns and preserved history, never replay tool calls automatically; retain native ownership and real execution gates; preserve verified stop evidence as a separate cleanup/resource obligation and reconsider independently authorized saved user messages without historical workspace-cleanup exclusion; unknown delivery and native-session ownership remain scoped gates; otherwise open visible source-scoped recovery actions by default, use issue-backed recovery only for independent repair work, or require human escalation (see `doc/execution-semantics.md`) |
+| Recovery | Liveness-first (Owner 2026-11-13, binding source `/home/michael/services/docs/agents/liveness-first.md`): an unknown prior outcome abandons the run, releases every lock/claim/holder/slot and resends in the original native session (else a new one) prefixed 「上一次可能已部分執行，先檢查現況再做」; a terminal status releases every gate and stop evidence is background best-effort; failures are transient (30s×2ⁿ backoff capped at 30 min, unlimited), deterministic (no auto retry, one notice per issue and code) or unknown (3 transient retries, then deterministic); 30 minutes without run events interrupts as `inactivity_timeout`; the system never sets pause, `needs_attention` or Owner-intervention states; Owner pause/cancel still apply (see `docs/agents/execution-semantics.md`) |
 | Agent adapters | Built-in `process`, `http`, local CLI/session adapters, and OpenClaw gateway support; external adapters can also be loaded through the adapter plugin flow |
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
@@ -81,13 +81,13 @@ Telemetry and infrastructure tracing.
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
 - Heartbeat invocation, status tracking, and cancellation
-- Main-managed linked-worktree rollout starts with a cleanup-safe baseline:
-  protected metadata fences legacy archive, compaction, expiration and rehome,
-  including stale candidates. Baseline execution rejects marked workspaces
-  explicitly until cooperative admission is available (see `doc/execution-semantics.md`).
-- Automatic bounded stop settlement separates termination from resource cleanup,
-  preserves original receipts and same-row workspace waits, and exposes terminal
-  Recheck without provider replay (see `doc/execution-semantics.md`).
+- Main-managed worktree metadata only protects a tree from legacy archive,
+  compaction, expiration and rehome; it never rejects execution. The workspace is
+  the resolved directory (run cwd > agent fixed cwd > project default cwd >
+  per-agent default), created if missing (liveness-first rule 3).
+- Stop verification separates termination from resource cleanup as background,
+  best-effort records; a terminal status releases every gate and nothing waits on
+  stop evidence (liveness-first rule 2).
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
@@ -1824,13 +1824,11 @@ Behavior:
 
 ## 11.5 Recovery Work Classes
 
-Proven pre-provider workspace failures can assign their existing recovery action to the original
-same-project main agent. A system notice targets the original creator Chat through durable
-delivery, preserving the worker, model and review policy. A revision-bound workspace repair
-authorizes at most one original-worker admission; a repeated failure, human gate or missing
-evidence returns responsibility to Owner. Historical failures require explicit Owner forwarding.
-Terminal workspace-holder reconciliation verifies real stop and resource settlement; idle or
-terminal status alone grants no cancellation or force-unlock authority.
+Under liveness-first, workspace preparation failures fall back to the resolved cwd instead of
+opening a recovery action, and failures are retried by class (transient backoff or one
+deterministic notice) without returning responsibility to the Owner. Historical failures still
+require explicit Owner forwarding. Workspace holders no longer gate runs; a terminal status
+releases them, but idle or terminal status never authorizes deleting files.
 
 Status-only recovery coordination must include guard context that prevents deliverable work and document or plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`). Recovery work classes do not select or change the agent model.
 

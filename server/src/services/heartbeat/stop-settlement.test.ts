@@ -13,13 +13,16 @@ import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { bridgeSessionStopAcknowledged } from "../explicit-native-continuation.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
-import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { seedSuppressedDisposition } from "../../__tests__/helpers/suppressed-disposition.js";
 import { hasCurrentStopVerification } from "./stop-settlement-evidence.js";
 import { reconcileWorkspaceWaits, nextWorkspaceWaitLeaseExpiry } from "./workspace-wait-settlement.js";
 
+// Liveness-first rule 2: a terminal run releases every gate at once (receipt
+// `settled`, `stopVerified`). Stop evidence and cleanup are collected in the
+// background, recorded on the receipt, bounded to four checks, and never
+// downgrade the state or ask for Owner intervention.
 const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported)("durable run stop settlement", () => {
+describe.skipIf(!support.supported)("durable run stop settlement (terminal releases every gate)", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-stop-settlement-"); db = createDb(database.connectionString); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
@@ -43,7 +46,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     runId, bridgeSessionId: "bridge", nativeSessionId: "native", acceptedSeq: 1, resultSeq: 2,
     checkedAt: new Date().toISOString(), background: { known: true as const, active: [] } } });
 
-  it("settles cleanup independently, reconsiders the same waiting row once, and stops all scheduled scans", async () => {
+  it("releases at the terminal transition, reconsiders the waiting row once, records cleanup later and stops all scans", async () => {
     const f = await seed();
     await db.insert(agentInstructionWorkingCopies).values({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
       responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test",
@@ -51,6 +54,9 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     const [waiter] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
       status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: null,
       resultJson: { workspaceBusy: { holderKey: createHash("sha256").update(f.run.id).digest("hex") } } }).returning();
+    // The gates read the terminal status directly, before any receipt exists.
+    expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(true);
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     const hook = vi.fn(async () => proof(f.run.id));
     const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
     const onError = vi.fn((error: unknown) => { console.error(error); });
@@ -58,9 +64,11 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     const worker = service.register(coordinator, () => true);
     try {
       await worker.ready;
-      await vi.waitFor(async () => expect(await receipt(f.run.id)).toMatchObject({ state: "cleaning", stopVerified: true }));
+      // Settled even though cleanup is still pending: cleanup never blocks release.
+      await vi.waitFor(async () => expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true,
+        cleanup: "instruction_cleanup_pending", evidence: "bridge_stop_receipt" }));
       await vi.waitFor(async () => expect((await read(waiter.id)).scheduledRetryAt).toBeInstanceOf(Date));
-      expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+      expect((await read(f.run.id)).resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", forced: false });
       await db.transaction(async tx => {
         // Upstream producers pass richer inputs, including a circular DB handle.
         const producer = { companyId: f.company.id, runId: f.run.id, db: tx };
@@ -69,7 +77,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
           .where(eq(agentInstructionWorkingCopies.runId, f.run.id));
       });
       await vi.waitFor(async () => {
-        expect(await receipt(f.run.id)).toMatchObject({ state: "settled" });
+        expect(await receipt(f.run.id)).toMatchObject({ state: "settled", reason: "cleanup_complete", cleanup: null, nextCheckAt: null });
         expect((await read(waiter.id)).scheduledRetryAt).toBeInstanceOf(Date);
         expect(coordinator.nextWakeAt()).toBeNull();
       }, { timeout: 5000 });
@@ -88,14 +96,14 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     } finally { vi.useRealTimers(); await worker.stop(); await coordinator.stop(); }
   });
 
-  it.each(["reconsider", "superseded", "needs_reconciliation"] as const)("migrates a historical workspace wait as %s after its actual controller lease expires", async disposition => {
+  it.each(["reconsider", "superseded", "resend"] as const)("migrates a historical workspace wait as %s after its actual controller lease expires", async disposition => {
     const f = await seed();
     const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Saved pending input", status: "todo",
       assigneeAgentId: f.agent.id }).returning();
     const leaseUntil = new Date(Date.now() + 60_000);
     const [waiter] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, issueId: issue.id,
       status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: null,
-      controllerLeaseExpiresAt: leaseUntil, nativeSessionId: disposition === "needs_reconciliation" ? randomUUID() : null,
+      controllerLeaseExpiresAt: leaseUntil, nativeSessionId: disposition === "resend" ? randomUUID() : null,
       contextSnapshot: { issueId: issue.id }, resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
         workspaceBusy: { holderKey: createHash("sha256").update(f.run.id).digest("hex") } } }).returning();
     await db.update(issues).set({ executionRunId: disposition === "superseded" ? f.run.id : waiter.id }).where(eq(issues.id, issue.id));
@@ -106,13 +114,11 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     await reconcileWorkspaceWaits(db);
     const after = await read(waiter.id);
     expect(after.resultJson).toMatchObject({ workspaceWaitMigration: { disposition } });
-    expect(after.scheduledRetryAt instanceof Date).toBe(disposition === "reconsider");
+    expect(after.scheduledRetryAt instanceof Date).toBe(disposition !== "superseded");
     if (disposition === "superseded") expect(after.status).toBe("cancelled");
-    if (disposition === "needs_reconciliation") {
-      expect(after.errorCode).toBe("delivery_unknown");
-      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id)))
-        .toMatchObject([{ cause: "delivery_unknown", evidence: { sourceRunId: waiter.id, mainBlockerPolicy: 1 } }]);
-    }
+    else expect(after.status).toBe("scheduled_retry");
+    // No Owner reconciliation is ever requested.
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id))).toEqual([]);
     await reconcileWorkspaceWaits(db);
     expect(await read(waiter.id)).toEqual(after);
     expect(await nextWorkspaceWaitLeaseExpiry(db)).toBeNull();
@@ -121,7 +127,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       eq(heartbeatRunEvents.eventType, "workspace.wait_migrated")))).toHaveLength(1);
   });
 
-  it.each(["provider_event", "native_input", "bridge_input"] as const)("does not migrate unverified old workspace input into dispatch: %s", async retained => {
+  it.each(["provider_event", "native_input", "bridge_input"] as const)("resends old workspace input with unknown delivery instead of parking it: %s", async retained => {
     const f = await seed();
     const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Saved input with conflicting proof",
       status: "todo", assigneeAgentId: f.agent.id }).returning();
@@ -137,12 +143,12 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       runId: waiter.id, eventType: "provider.event", stream: "system", payload: { type: "turn.started" } });
     await reconcileWorkspaceWaits(db);
     const after = await read(waiter.id);
-    // Shared worktrees remove cleanup exclusion, never proof of non-delivery.
-    expect(after.scheduledRetryAt).toBeNull();
-    expect(after.errorCode).toBe("delivery_unknown");
-    expect(after.resultJson).toMatchObject({ workspaceWaitMigration: { disposition: "needs_reconciliation" } });
-    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id)))
-      .toMatchObject([{ cause: "delivery_unknown", evidence: { sourceRunId: waiter.id } }]);
+    // Liveness-first rule 1: the unknown earlier delivery is resent through normal dispatch.
+    expect(after.scheduledRetryAt).toBeInstanceOf(Date);
+    expect(after.status).toBe("scheduled_retry");
+    expect(after.errorCode).not.toBe("delivery_unknown");
+    expect(after.resultJson).toMatchObject({ workspaceWaitMigration: { disposition: "resend" } });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issue.id))).toEqual([]);
     await reconcileWorkspaceWaits(db);
     expect(await read(waiter.id)).toEqual(after);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId, issue.id))).toHaveLength(1);
@@ -156,7 +162,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
     await service.reconcile(f.run.id, f.company.id);
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "original_adapter_failure",
-      resultJson: { originalFailure: "retained", stopSettlement: { state: "settled" },
+      resultJson: { originalFailure: "retained", stopSettlement: { state: "settled", evidence: "bridge_terminal_stop_receipt" },
         executionStopVerification: { schema: "paperclip.bridge-terminal-stop.v1" } } });
     expect((await read(f.run.id)).resultJson?.executionCancellation).toBeUndefined();
     expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
@@ -164,25 +170,13 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     expect(hook).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["valid", "wrong_host", "wrong_finish", "old_boot", "provider_receipt", "new_launch",
-    "live_lease", "remote_lease", "local_process", "forced"])(
-    "uses the original server-observed Bridge boot boundary for cleanup only (%s)", async evidence => {
+  it.each(["no_evidence", "live_lease", "remote_lease", "local_process", "forced", "new_launch"])(
+    "releases a terminal Bridge run whatever its stop or resource evidence (%s)", async evidence => {
       const f = await seed();
-      const finished = new Date(Date.now() - 5000);
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "original_adapter_failure", finishedAt: finished,
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "original_adapter_failure",
         resultJson: { bridgeSessionId: "bridge", nativeSessionId: "native",
           ...(evidence === "forced" ? { executionCancellation: { forced: true, state: "requested" } } : {}) }
       }).where(eq(heartbeatRuns.id, f.run.id));
-      const invoked = await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
-        eventType: "adapter.invoke", stream: "system", payload: { adapterType: "ccpocket_bridge", context: { hostId: "remote-e" } } });
-      await db.update(heartbeatRunEvents).set({ createdAt: new Date(finished.getTime() - 1000) }).where(eq(heartbeatRunEvents.id, invoked.row.id));
-      const boot = await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
-        eventType: "workspace.remote_host_rebooted", stream: "system", payload: {
-          schema: "paperclip.remote-host-boot-boundary.v1", hostId: evidence === "wrong_host" ? "other-host" : "remote-e",
-          bootId: randomUUID(), localProcess: "not_recorded",
-          runFinishedAt: new Date(finished.getTime() + (evidence === "wrong_finish" ? 1 : 0)).toISOString(),
-          bootStartedAtLowerBound: new Date(finished.getTime() + (evidence === "old_boot" ? -1000 : 1000)).toISOString() } });
-      if (evidence === "provider_receipt") await db.update(heartbeatRunEvents).set({ sourceEventId: randomUUID() }).where(eq(heartbeatRunEvents.id, boot.row.id));
       if (evidence === "new_launch") await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "turn.started" });
       if (["live_lease", "remote_lease"].includes(evidence)) await db.insert(environmentLeases).values({ companyId: f.company.id, heartbeatRunId: f.run.id,
         provider: evidence === "remote_lease" ? "ssh" : "local", releasedAt: evidence === "live_lease" ? null : new Date() });
@@ -190,25 +184,23 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       const hook = vi.fn(async () => ({ verified: false as const, reason: "result_not_recorded" }));
       const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
       await service.reconcile(f.run.id, f.company.id);
-      expect(await receipt(f.run.id)).toMatchObject({ stopVerified: evidence === "valid" });
+      expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
       expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "original_adapter_failure" });
-      if (evidence !== "forced") expect((await read(f.run.id)).resultJson?.executionCancellation).toBeUndefined();
-      if (evidence === "valid") {
-        expect(await receipt(f.run.id)).toMatchObject({ state: "settled", proof: "remote_host_reboot_receipt" });
-        expect(hook).not.toHaveBeenCalled();
-        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
-        await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke",
-          payload: { adapterType: "ccpocket_bridge", context: { hostId: "remote-e" } } });
-        expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(false);
-        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
-        await service.reconcile(f.run.id, f.company.id, { manual: true });
-        expect(await receipt(f.run.id)).toMatchObject({ stopVerified: false });
-        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
-      }
+      if (evidence === "forced") expect((await read(f.run.id)).resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", forced: true });
+      else expect((await read(f.run.id)).resultJson?.executionCancellation).toBeUndefined();
+      expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(true);
+      expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
+      // A later launch event or an explicit recheck never reverts the release.
+      await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke",
+        payload: { adapterType: "ccpocket_bridge", context: { hostId: "remote-e" } } });
+      await service.reconcile(f.run.id, f.company.id, { manual: true });
+      expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+      expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(true);
+      expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     });
 
   it.each(["unstarted", "started", "launch", "foreign_parent", "wrong_child", "missing_wake", "instruction_copy"])(
-    "verifies the original scheduling trace of a historical cancelled workspace retry (%s)", async evidence => {
+    "verifies the original scheduling trace of a historical cancelled workspace retry as evidence only (%s)", async evidence => {
       const f = await seed();
       const [parent] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
         issueId: f.issue.id, contextSnapshot: { issueId: f.issue.id }, status: "cancelled", errorCode: "workspace_busy", finishedAt: new Date() }).returning();
@@ -226,16 +218,11 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       if (evidence === "missing_wake") await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, f.run.id));
       if (evidence === "instruction_copy") await db.insert(agentInstructionWorkingCopies).values({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
         responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test", location: "local", state: "unchanged" });
-      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.issue.id, kind: "execution_reconciliation",
-        cause: "legacy_execution_requires_reconciliation", fingerprint: f.run.id, nextAction: "Verify original execution", evidence: { runId: f.run.id } });
       expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(evidence === "unstarted");
       const hook = vi.fn();
       await createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false }).reconcile(f.run.id, f.company.id);
-      expect(await receipt(f.run.id)).toMatchObject({ stopVerified: evidence === "unstarted" });
-      if (evidence === "unstarted") {
-        expect(await receipt(f.run.id)).toMatchObject({ state: "settled" });
-        expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).toBeNull();
-      } else expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).not.toBeNull();
+      expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true,
+        evidence: evidence === "unstarted" ? "verified_pre_dispatch_wait" : null });
       expect(hook).not.toHaveBeenCalled();
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(2);
     });
@@ -257,7 +244,7 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
 
   it.each(["valid", "missing_trace", "provider_event", "provider_identity", "accounting_started",
     "wake_mismatch", "source_mismatch", "live_lease", "remote_lease", "active_controller", "retained_copy"])(
-    "settles only a fully evidenced undispatched disposition repair (%s)", async evidence => {
+    "releases a suppressed disposition repair at once and records its never-dispatched proof only when complete (%s)", async evidence => {
       const f = await seed();
       const s = await seedSuppressedDisposition(db, f.run);
       const copy = { runId: f.run.id, companyId: f.company.id, agentId: f.agent.id, responsibleUserId: "test-owner",
@@ -278,19 +265,18 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
       expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(evidence === "valid");
       await service.reconcile(f.run.id, f.company.id);
-      expect(await receipt(f.run.id)).toMatchObject({ stopVerified: evidence === "valid" });
-      expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+      expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+      expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
       if (evidence === "valid") {
-        expect(await receipt(f.run.id)).toMatchObject({ state: "cleaning", reason: "instruction_process_stop_unverified" });
+        expect(await receipt(f.run.id)).toMatchObject({ evidence: "verified_pre_dispatch_wait", cleanup: "instruction_process_stop_unverified" });
         await db.update(agentInstructionWorkingCopies).set({ state: "unchanged", processStoppedAt: new Date(),
           receipt: { ...copy.receipt, cleanupPending: false } }).where(eq(agentInstructionWorkingCopies.runId, f.run.id));
         await service.reconcile(f.run.id, f.company.id);
-        expect(await receipt(f.run.id)).toMatchObject({ state: "settled", proof: "verified_pre_dispatch_wait" });
-        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
-        // A dispatch event must invalidate the proof even before the next stop check.
+        expect(await receipt(f.run.id)).toMatchObject({ state: "settled", reason: "cleanup_complete", evidence: "verified_pre_dispatch_wait" });
+        // A later dispatch event changes the evidence, never the release.
         await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id, eventType: "adapter.invoke" });
-        expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(false);
-        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+        expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(true);
+        expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
       }
       expect(hook).not.toHaveBeenCalled();
       expect((await read(f.run.id)).errorCode).toBe("legacy_disposition_repair_suppressed");
@@ -302,22 +288,21 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     const hook = vi.fn();
     const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
     expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(true);
-    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, await read(f.run.id))).toBe(false);
     expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).toBeNull();
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
-    expect((await read(f.run.id)).resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", proof: "verified_pre_dispatch_wait" });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "verified_pre_dispatch_wait" });
+    expect((await read(f.run.id)).resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", forced: false, proof: "terminal_status" });
     expect(hook).not.toHaveBeenCalled();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
-    // A newer launch invalidates both settlement and the recovery exemption.
+    // A newer launch changes only the recorded evidence; the terminal run stays released.
     await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
       eventType: "turn.started", stream: "system", payload: {} });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", stopVerified: false });
-    expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).not.toBeNull();
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: null });
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
   });
 
-  it.each(["missing_trace", "provider_identity", "checkout_claim", "instruction_copy"])("retains a cancelled workspace wait with contradictory %s evidence", async conflict => {
+  it.each(["missing_trace", "provider_identity", "checkout_claim", "instruction_copy"])("does not treat a cancelled workspace wait with contradictory %s evidence as never dispatched", async conflict => {
     const f = await parkedCancellation();
     if (conflict === "missing_trace") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id));
     if (conflict === "provider_identity") await db.update(heartbeatRuns).set({ resultJson: { ...(await read(f.run.id)).resultJson, bridgeSessionId: "live" } }).where(eq(heartbeatRuns.id, f.run.id));
@@ -325,32 +310,35 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     if (conflict === "instruction_copy") await db.insert(agentInstructionWorkingCopies).values({ runId: f.run.id, companyId: f.company.id, agentId: f.agent.id,
       responsibleUserId: "test-owner", entryFile: "AGENTS.md", baseHash: "a".repeat(64), localRoot: "/test", executionRoot: "/test", location: "local", state: "unavailable" });
     expect(await isPreDispatchExecutionWaitVerified(db, await read(f.run.id))).toBe(false);
-    expect(await getExecutionBlocker(db, f.company.id, f.issue.id)).not.toBeNull();
+    // Still released for holders and stop gates.
+    expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(true);
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
   });
 
-  it("persists four checks with completion-relative deadlines across restart, then stays quiet until explicit recheck", async () => {
+  it("bounds background evidence to four completion-relative checks and never escalates to needs_attention", async () => {
     const f = await seed(); let clock = Date.now();
     const hook = vi.fn(async () => ({ verified: false as const, reason: "bridge_unavailable" }));
     const make = () => createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false, now: () => clock });
     for (let n = 1; n <= 4; n++) {
       await make().reconcile(f.run.id, f.company.id);
-      expect((await receipt(f.run.id)).attempts).toBe(n);
+      expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, attempts: n, evidence: null });
       const next = (await receipt(f.run.id)).nextCheckAt;
       expect(next).toBe(n === 4 ? null : new Date(clock + STOP_CHECK_DELAYS[n - 1]!).toISOString());
       await make().reconcile(f.run.id, f.company.id);
       expect(hook).toHaveBeenCalledTimes(n);
       if (next) clock = Date.parse(String(next));
     }
-    expect(await receipt(f.run.id)).toMatchObject({ state: "needs_attention", reason: "bridge_unavailable", attempts: 4 });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, attempts: 4, nextCheckAt: null });
+    expect(await hasCurrentStopVerification(db, f.company.id, f.run.id)).toBe(true);
     clock += 86400_000;
     await make().reconcile(f.run.id, f.company.id);
     expect(hook).toHaveBeenCalledTimes(4);
     await make().reconcile(f.run.id, f.company.id, { manual: true });
     expect(hook).toHaveBeenCalledTimes(5);
-    expect((await receipt(f.run.id)).nextCheckAt).toBeNull();
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", nextCheckAt: null });
   });
 
-  it("settles a cancelled Bridge run that never recorded a session, after its exhausted checks, only from never-delivered proof", async () => {
+  it("releases a cancelled Bridge run that never recorded a session at once and records never-delivered proof when it arrives", async () => {
     const f = await seed();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "cancelled", runtimeMode: "legacy",
       issueId: f.issue.id, startedAt: new Date(Date.now() - 600_000), finishedAt: new Date(Date.now() - 590_000), errorCode: "operator_interrupted",
@@ -361,13 +349,14 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       runId: input.runId, bridgeSessionId: "bridge", nativeSessionId: "native", recordedInputs: 3, lastRecordedRunId: f.run.id,
       checkedAt: new Date().toISOString(), background: { known: true as const, active: [] } } } : { verified: false as const, reason: "history_incomplete" });
     const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyUndispatchedRunStop: hook }), isRunActive: () => false, now: () => clock });
-    for (let n = 1; n <= 4; n++) { await service.reconcile(run.id, f.company.id, { manual: true }); clock += 400_000; }
-    expect(await receipt(run.id)).toMatchObject({ state: "needs_attention", reason: "history_incomplete", attempts: 4, stopVerified: false });
-    expect(bridgeSessionStopAcknowledged(await read(run.id))).toBe(false);
+    await service.reconcile(run.id, f.company.id, { manual: true });
+    expect(await receipt(run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: null });
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, run.id)).toBe(true);
+    clock += 400_000;
     verified = true;
     await service.reconcile(run.id, f.company.id, { manual: true });
     const settled = await read(run.id);
-    expect(await receipt(run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await receipt(run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "bridge_undispatched_stop_receipt" });
     expect(settled.resultJson?.executionCancellation).toBeUndefined();
     expect(settled.resultJson?.executionStopVerification).toMatchObject({ schema: "paperclip.bridge-undispatched-stop.v1", proof: "bridge_undispatched_reverified" });
     expect(settled).toMatchObject({ status: "cancelled", errorCode: "operator_interrupted" });
@@ -375,18 +364,21 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]?.status).toBe("blocked");
   });
 
-  it("serializes concurrent automatic/manual checks and settles a late Bridge stop without task replay", async () => {
+  it("serializes concurrent automatic/manual checks and records a late Bridge stop without task replay", async () => {
     const f = await seed(); let complete!: () => void;
     const gate = new Promise<void>(resolve => { complete = resolve; });
     const hook = vi.fn(async () => { await gate; return proof(f.run.id); });
     const owner = () => createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
     const first = owner().reconcile(f.run.id, f.company.id);
     await vi.waitFor(() => expect(hook).toHaveBeenCalledTimes(1));
+    // Released before the adapter answers.
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     await owner().reconcile(f.run.id, f.company.id, { manual: true });
     expect(hook).toHaveBeenCalledTimes(1); complete(); await first;
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", attempts: 1 });
-    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
-    expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: { originalFailure: "retained", executionCancellation: { state: "acknowledged" } } });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", attempts: 1, evidence: "bridge_stop_receipt" });
+    expect(await read(f.run.id)).toMatchObject({ status: "cancelled", resultJson: { originalFailure: "retained",
+      executionCancellation: { state: "acknowledged", bridgeStopProof: { runId: f.run.id } } } });
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]?.status).toBe("blocked");
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
   });
@@ -402,7 +394,8 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     } } }).where(eq(heartbeatRuns.id, f.run.id));
     clock += 1001; await service.reconcile(f.run.id, f.company.id);
     expect(hook).toHaveBeenCalledTimes(1);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "needs_attention", attempts: 4, nextCheckAt: null });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, attempts: 4, nextCheckAt: null });
+    expect(await receipt(f.run.id)).not.toHaveProperty("claimToken");
   });
 
   it("reconstructs the latest local launch after its turn starts, using host-bound process evidence", async () => {
@@ -414,10 +407,10 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
       eventType: "turn.started", stream: "system", payload: {} });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "local_process_stop_receipt" });
   });
 
-  it("binds remote termination to the latest launch, accepting only a newer provider receipt", async () => {
+  it("records remote termination evidence bound to the latest launch without delaying the release", async () => {
     const f = await seed(true);
     const service = createRunStopSettlement(db, { getAdapter: () => undefined, isRunActive: () => false });
     const leaseId = randomUUID();
@@ -431,13 +424,13 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
     await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
       eventType: "turn.started", stream: "system", payload: {} });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", stopVerified: false });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: null });
     await db.update(environmentLeases).set({ metadata: proof(new Date().toISOString()) }).where(eq(environmentLeases.id, leaseId));
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "provider_termination_receipt" });
   });
 
-  it.each(["turn.started", "session.resumed"])("invalidates a settled receipt on newer %s evidence", async eventType => {
+  it.each(["turn.started", "session.resumed"])("keeps a terminal run released on newer %s evidence", async eventType => {
     const f = await seed(true);
     const service = createRunStopSettlement(db, { getAdapter: () => undefined, isRunActive: () => false });
     const stopped = () => appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
@@ -445,15 +438,15 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       payload: { processPid: 2147483000, processGroupId: 2147483000, processStartedAt: "2026-01-01T00:00:00.000Z" } });
     await stopped();
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "local_process_stop_receipt" });
     await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
       eventType, stream: "system", payload: {} });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", stopVerified: false });
-    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: null });
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     await stopped();
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "local_process_stop_receipt" });
   });
 
   it("retires only a cancelled observed native finalizer after independent process proof, preserving holds and failures", async () => {
@@ -462,21 +455,21 @@ describe.skipIf(!support.supported)("durable run stop settlement", () => {
       phase: "observed", recoveryState: "resuming_session", failureCode: "original_failure" });
     const service = createRunStopSettlement(db, { getAdapter: () => undefined, isRunActive: () => false });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", reason: "native_process_stop_unverified" });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: null, cleanup: "finalizer_unsettled" });
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     const pid = 2147483000;
     await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
       eventType: "native.local_process_stopped", stream: "system", payload: { processPid: pid, processGroupId: pid, processStartedAt: "2026-01-01T00:00:00.000Z" } });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true });
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: "local_process_stop_receipt", cleanup: null });
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0])
       .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked", failureCode: "original_failure" });
-    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
-    // New launch invalidates the old proof even if the mutable PID was cleared.
+    // A new launch changes the recorded evidence only.
     await appendHeartbeatRunEvent(db, { companyId: f.company.id, runId: f.run.id, agentId: f.agent.id,
       eventType: "native.process_start_requested", stream: "system", payload: { hostname: hostname(), targetKind: "local" } });
     await service.reconcile(f.run.id, f.company.id);
-    expect(await receipt(f.run.id)).toMatchObject({ state: "stopping", reason: "native_process_stop_unverified" });
-    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(false);
+    expect(await receipt(f.run.id)).toMatchObject({ state: "settled", stopVerified: true, evidence: null });
+    expect(await sharedCheckoutHolderSettled(db, f.company.id, f.run.id)).toBe(true);
     const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.run.id), eq(heartbeatRunEvents.eventType, "execution.cancelled_cleanup_settled")));
     expect(events).toHaveLength(1);
   });

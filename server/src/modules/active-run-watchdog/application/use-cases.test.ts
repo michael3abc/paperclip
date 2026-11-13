@@ -38,6 +38,7 @@ describe("application", () => {
     return {
       findCandidateSilentRuns: async () => [],
       findRunForCompany: async () => null,
+      findLatestRunEventAt: async () => null,
       isRuntimeSettlementPending: async () => false,
       findLatestDecision: async () => ({ quietUntilDecision: null, dismissedFalsePositive: false }),
       findOpenStaleRunEvaluation: async () => null,
@@ -514,6 +515,77 @@ describe("application", () => {
       const result = await scanSilentActiveRuns({ now: new Date("2026-01-01T05:00:00.000Z") });
 
       expect(result).toMatchObject({ scanned: 1, folded: 1, skipped: 0 });
+    });
+
+    describe("liveness-first 35 minute inactivity fallback", () => {
+      const INACTIVITY_MS = 35 * 60_000;
+      const start = new Date("2026-01-01T00:00:00.000Z");
+
+      function scanWith(reader: WatchdogRunReader, cancelled: string[]) {
+        return createScanSilentActiveRuns({
+          reader,
+          foldSourceResolvedRun: makeScanFoldUseCase(),
+          suspicionThresholdMs: SUSPICION_THRESHOLD_MS,
+          inactivityCancelMs: INACTIVITY_MS,
+          cancelInactiveRun: async (run, details) => {
+            cancelled.push(`${run.id}:${details.silenceAgeMs}`);
+            return true;
+          },
+        });
+      }
+
+      it("cancels a run with no output and no run event for 35 minutes", async () => {
+        const run = makeRun({ processStartedAt: start, startedAt: start, createdAt: start });
+        const cancelled: string[] = [];
+        const reader = makeReader({ findCandidateSilentRuns: async () => [run] });
+        const result = await scanWith(reader, cancelled)({ now: new Date(start.getTime() + INACTIVITY_MS) });
+        expect(result).toMatchObject({ scanned: 1, inactivityCancelled: 1, created: 0, escalated: 0 });
+        expect(cancelled).toEqual([`${run.id}:${INACTIVITY_MS}`]);
+      });
+
+      it("keeps a run alive whose latest run event is recent and re-arms at its deadline", async () => {
+        const run = makeRun({ processStartedAt: start, startedAt: start, createdAt: start });
+        const cancelled: string[] = [];
+        const eventAt = new Date(start.getTime() + 20 * 60_000);
+        const reader = makeReader({
+          findCandidateSilentRuns: async () => [run],
+          findLatestRunEventAt: async () => eventAt,
+        });
+        const deadlines: number[] = [];
+        const result = await scanWith(reader, cancelled)({
+          now: new Date(start.getTime() + 40 * 60_000),
+          onDeferredDeadline: (at) => deadlines.push(at),
+        });
+        expect(cancelled).toEqual([]);
+        expect(result.inactivityCancelled).toBe(0);
+        expect(deadlines).toContain(eventAt.getTime() + INACTIVITY_MS);
+      });
+
+      it("does not cancel at the 5 or 15 minute levels and never creates evaluation work", async () => {
+        const run = makeRun({ processStartedAt: start, startedAt: start, createdAt: start });
+        const cancelled: string[] = [];
+        const reader = makeReader({ findCandidateSilentRuns: async () => [run] });
+        for (const minutes of [5, 15, 34]) {
+          const result = await scanWith(reader, cancelled)({ now: new Date(start.getTime() + minutes * 60_000) });
+          expect(result).toMatchObject({ inactivityCancelled: 0, created: 0, escalated: 0 });
+        }
+        expect(cancelled).toEqual([]);
+      });
+
+      it("respects an explicit snooze decision while it lasts", async () => {
+        const run = makeRun({ processStartedAt: start, startedAt: start, createdAt: start });
+        const cancelled: string[] = [];
+        const reader = makeReader({
+          findCandidateSilentRuns: async () => [run],
+          findLatestDecision: async () => ({
+            quietUntilDecision: { decision: "snooze", snoozedUntil: new Date(start.getTime() + 60 * 60_000) },
+            dismissedFalsePositive: false,
+          }),
+        });
+        const result = await scanWith(reader, cancelled)({ now: new Date(start.getTime() + 40 * 60_000) });
+        expect(result).toMatchObject({ snoozed: 1, inactivityCancelled: 0 });
+        expect(cancelled).toEqual([]);
+      });
     });
   });
 });

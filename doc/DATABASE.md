@@ -205,8 +205,9 @@ claim token/expiry. Claims consume attempts before external I/O, and a row-locke
 token/version check protects completion. Launch-event generation invalidates old
 stop evidence. Existing cancellation and finalization receipts remain authoritative.
 Public list/detail/live projections expose only bounded state/reason/timestamps.
-Workspace contention keeps the original row and wake request; a null retry time
-parks it until a holder-settlement notification. The holder digest does not grant
+Under liveness-first this state is a background best-effort record: a terminal
+status releases every gate and no wake waits on it. Historical workspace-contention
+rows keep their original wake request; new contention no longer parks a run. The holder digest does not grant
 cross-project visibility. All wake hints are registered in producer transactions.
 
 Settled native process release locks run identity, terminal state, process

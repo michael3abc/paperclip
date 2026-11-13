@@ -94,7 +94,7 @@ describe.skipIf(!support.supported)("bridge undispatched stop re-verification", 
     expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("skipped");
   });
 
-  it("wakes deferred receipts on proof and not when the adapter cannot confirm", async () => {
+  it("records proof without waking waiters, and leaves the row unchanged when the adapter cannot confirm", async () => {
     const wakes: number[] = [];
     const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, () => { wakes.push(Date.now()); });
     try {
@@ -106,7 +106,9 @@ describe.skipIf(!support.supported)("bridge undispatched stop re-verification", 
       expect((await read(held.run.id)).resultJson).toEqual(held.run.resultJson);
       const f = await seed();
       expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("acknowledged");
-      expect(wakes).toHaveLength(1);
+      // Record-only: the terminal run released its waiters when it became terminal.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(wakes).toHaveLength(0);
     } finally { unsubscribe(); }
   });
 

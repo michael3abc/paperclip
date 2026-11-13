@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agentTaskSessions, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { agentTaskSessions, agents, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { ADAPTER_SESSION_AUTHORITY, claimAdapterSessionAuthority, adapterSessionWriteAllowed,
   lockAdapterSessionAuthority, mergeProtectedSessionParams } from "../services/adapter-session-authority.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 
+// Liveness-first (rule 1): session authority is last-writer-wins. A running,
+// uncancelled run of the same task always takes over; CAS fields are ignored.
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("resident adapter session authority", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -28,29 +30,66 @@ const support = await getEmbeddedPostgresTestSupport();
       return { companyId, agentId, taskKey: key, runId };
     }
     const first = await run();
-    const claim = { hostId: "fixture-host", provider: "codex", nativeSessionId: randomUUID(), bridgeSessionId: randomUUID(),
+    const claim = { hostId: "fixture-host", provider: "codex", nativeSessionId: randomUUID() as string | null, bridgeSessionId: randomUUID(),
       operationId: randomUUID(), expectedPreviousRunId: null as string | null, expectedGeneration: 0 };
     return { companyId, agentId, taskKey, first, claim, run };
   }
-  it("preserves terminal helper authority until a successor commits, then rejects late publication", async () => {
+
+  it("takes over from the previous owner, records takeoverFrom and rejects late publication", async () => {
     const f = await fixture();
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
     const first = await claimAdapterSessionAuthority(db, f.first, f.claim);
+    expect(first.generation).toBe(1);
+    expect(await claimAdapterSessionAuthority(db, f.first, f.claim)).toEqual(first);
     await db.update(heartbeatRuns).set({ status: "timed_out" }).where(eq(heartbeatRuns.id, f.first.runId));
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
-    expect(await claimAdapterSessionAuthority(db, f.first, f.claim)).toEqual(first);
     const next = await f.run();
-    const claim = { ...f.claim, operationId: randomUUID(), expectedPreviousRunId: f.first.runId, expectedGeneration: first.generation };
-    const second = await claimAdapterSessionAuthority(db, next, claim);
-    expect(second.generation).toBe(first.generation + 1);
+    // Stale CAS fields are ignored.
+    const second = await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(),
+      expectedPreviousRunId: randomUUID(), expectedGeneration: 42 });
+    expect(second).toMatchObject({ generation: 2, previousRunId: f.first.runId, previousGeneration: 1,
+      takeoverFrom: { runId: f.first.runId, generation: 1, taskKey: f.taskKey } });
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
     expect(await adapterSessionWriteAllowed(db, next)).toBe(true);
+    // A terminal run can never claim again.
     await expect(claimAdapterSessionAuthority(db, f.first, f.claim)).rejects.toThrow("no longer owns");
     const [row] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
     expect(mergeProtectedSessionParams(row.sessionParamsJson, { nativeSessionId: "late" }, f.first.runId)).toBeUndefined();
     expect(mergeProtectedSessionParams(row.sessionParamsJson, { nativeSessionId: f.claim.nativeSessionId,
       [ADAPTER_SESSION_AUTHORITY]: { runId: f.first.runId } }, next.runId)?.[ADAPTER_SESSION_AUTHORITY]).toEqual(second);
   });
+
+  it("lets a running predecessor be taken over without any CAS and the latest writer win", async () => {
+    const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
+    const next = await f.run();
+    const second = await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(), expectedGeneration: 0 });
+    expect(second.generation).toBe(2);
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
+    const third = await claimAdapterSessionAuthority(db, f.first, { ...f.claim, operationId: randomUUID() });
+    expect(third).toMatchObject({ generation: 3, takeoverFrom: { runId: next.runId, generation: 2 } });
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
+    expect(await adapterSessionWriteAllowed(db, next)).toBe(false);
+  });
+
+  it("only rejects runs that are not running, cancel-requested or bound to another task", async () => {
+    const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
+    const cancelRequested = await f.run();
+    await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, cancelRequested.runId));
+    await expect(claimAdapterSessionAuthority(db, cancelRequested, { ...f.claim, operationId: randomUUID() })).rejects.toThrow("no longer owns");
+    const cancelled = await f.run();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, cancelled.runId));
+    await expect(claimAdapterSessionAuthority(db, cancelled, { ...f.claim, operationId: randomUUID() })).rejects.toThrow("no longer owns");
+    const otherTask = randomUUID();
+    await db.insert(issues).values({ id: otherTask, companyId: f.companyId, title: "Other task" });
+    const foreign = await f.run(otherTask);
+    await expect(claimAdapterSessionAuthority(db, { ...foreign, taskKey: f.taskKey }, { ...f.claim, operationId: randomUUID() }))
+      .rejects.toMatchObject({ details: { code: "session_task_mismatch" } });
+    await expect(claimAdapterSessionAuthority(db, f.first, { ...f.claim, hostId: " " }))
+      .rejects.toMatchObject({ details: { code: "session_identity_invalid" } });
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
+  });
+
   it("cancellation revokes writes immediately without requiring stop or cleanup receipts", async () => {
     const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
     await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: { executionCancellation: { state: "requested" } } })
@@ -58,221 +97,85 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(db.transaction(tx => assertAgentRunWriteAllowed(tx as unknown as typeof db, f.companyId, f.first)))
       .rejects.toThrow("cancelled");
     const next = await f.run();
-    await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(), expectedPreviousRunId: f.first.runId, expectedGeneration: 1 });
+    await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID() });
     expect(await adapterSessionWriteAllowed(db, next)).toBe(true);
   });
-  it("rejects stale generations, mismatched native owners and cancelled claims", async () => {
-    const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
-    const next = await f.run();
-    for (const patch of [{ expectedGeneration: 0 }, { expectedPreviousRunId: randomUUID() }]) {
-      await expect(claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(),
-        expectedPreviousRunId: f.first.runId, expectedGeneration: 1, ...patch })).rejects.toThrow();
-    }
-    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, next.runId));
-    await expect(claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(),
-      expectedPreviousRunId: f.first.runId, expectedGeneration: 1 })).rejects.toThrow();
-    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
-  });
-  it("does not infer a legacy owner from lastRunId or terminal status", async () => {
+
+  it("binds over a pre-authority session index without legacy proof", async () => {
     const f = await fixture();
     await db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: f.agentId, adapterType: "ccpocket_bridge",
       taskKey: f.taskKey, lastRunId: f.first.runId, sessionParamsJson: { hostId: f.claim.hostId, provider: f.claim.provider, nativeSessionId: f.claim.nativeSessionId } });
     const next = await f.run();
-    await expect(claimAdapterSessionAuthority(db, next, { ...f.claim, expectedPreviousRunId: f.first.runId }))
-      .rejects.toThrow("needs reconciliation");
-    await db.update(heartbeatRuns).set({ status: "failed", resultJson: { nativeSessionId: f.claim.nativeSessionId,
-      bridgeSessionId: f.claim.bridgeSessionId } }).where(eq(heartbeatRuns.id, f.first.runId));
-    await claimAdapterSessionAuthority(db, next, { ...f.claim, expectedPreviousRunId: f.first.runId });
-    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
-  });
-  async function missingLegacyFixture() {
-    const f = await fixture();
-    await db.update(heartbeatRuns).set({ status: "succeeded", resultJson: { nativeSessionId: f.claim.nativeSessionId,
-      bridgeSessionId: f.claim.bridgeSessionId } }).where(eq(heartbeatRuns.id, f.first.runId));
-    const [event] = await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId,
-      runId: f.first.runId, seq: 1, eventType: "adapter.invoke", payload: { adapterType: "ccpocket_bridge",
-        context: { hostId: f.claim.hostId, provider: f.claim.provider, bridgeSessionId: f.claim.bridgeSessionId } } }).returning();
-    const next = await f.run();
-    return { ...f, next, event, recovery: { ...f.claim, operationId: randomUUID(), bridgeSessionId: randomUUID(),
-      expectedPreviousRunId: f.first.runId } };
-  }
-  it("recovers a missing legacy Chat index from original invocation and result receipts with CAS", async () => {
-    const f = await missingLegacyFixture();
-    const receipt = await claimAdapterSessionAuthority(db, f.next, f.recovery);
+    const receipt = await claimAdapterSessionAuthority(db, next, { ...f.claim, expectedPreviousRunId: f.first.runId });
     expect(receipt.generation).toBe(1);
-    expect(await claimAdapterSessionAuthority(db, f.next, f.recovery)).toEqual(receipt);
-    const [row] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    expect(row.sessionParamsJson?.adapterSessionAuthority).toMatchObject({ legacySessionRecovery: {
-      sourceRunId: f.first.runId, sourceEventId: f.event.id } });
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
-    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(true);
-    const rival = await f.run();
-    await expect(claimAdapterSessionAuthority(db, rival, { ...f.recovery, operationId: randomUUID() })).rejects.toThrow();
+    expect(await adapterSessionWriteAllowed(db, next)).toBe(true);
   });
-  it("missing legacy index rejects absent or mismatched invocation and result identity", async () => {
-    for (const mismatch of ["host", "provider", "bridge", "native", "absent"]) {
-      const f = await missingLegacyFixture();
-      if (mismatch === "native") await db.update(heartbeatRuns).set({ resultJson: {
-        nativeSessionId: randomUUID(), bridgeSessionId: f.claim.bridgeSessionId } }).where(eq(heartbeatRuns.id, f.first.runId));
-      else if (mismatch === "absent") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, f.event.id));
-      else await db.update(heartbeatRunEvents).set({ payload: { adapterType: "ccpocket_bridge", context: {
-        hostId: mismatch === "host" ? "foreign-host" : f.claim.hostId,
-        provider: mismatch === "provider" ? "claude" : f.claim.provider,
-        bridgeSessionId: mismatch === "bridge" ? randomUUID() : f.claim.bridgeSessionId } } }).where(eq(heartbeatRunEvents.id, f.event.id));
-      await expect(claimAdapterSessionAuthority(db, f.next, f.recovery)).rejects.toThrow("needs reconciliation");
-      expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey))).toHaveLength(0);
-    }
-  });
-  it("missing legacy index rejects foreign tasks, changed generations and existing native owners", async () => {
-    for (const mismatch of ["task", "generation", "owner"]) {
-      const f = await missingLegacyFixture();
-      if (mismatch === "task") {
-        const otherTask = randomUUID();
-        await db.insert(issues).values({ id: otherTask, companyId: f.companyId, title: "Foreign task" });
-        f.next = await f.run(otherTask);
-      }
-      if (mismatch === "generation") await db.update(heartbeatRuns).set({ contextSnapshot: { conversationSessionGeneration: 1 } }).where(eq(heartbeatRuns.id, f.first.runId));
-      if (mismatch === "owner") await db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: f.agentId,
-        taskKey: randomUUID(), adapterType: "ccpocket_bridge", sessionParamsJson: { nativeSessionId: f.claim.nativeSessionId,
-          hostId: f.claim.hostId, provider: f.claim.provider } });
-      await expect(claimAdapterSessionAuthority(db, f.next, f.recovery)).rejects.toThrow("needs reconciliation");
-    }
-  });
-  it("missing legacy index cannot resurrect a deleted feature-era authority", async () => {
-    const f = await missingLegacyFixture();
-    await claimAdapterSessionAuthority(db, f.next, f.recovery);
+
+  it("a deleted session index (reset conversation or changed adapter) yields a fresh binding", async () => {
+    const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
     await db.delete(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    const later = await f.run();
-    await expect(claimAdapterSessionAuthority(db, later, { ...f.recovery, operationId: randomUUID() })).rejects.toThrow("needs reconciliation");
-    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(false);
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
+    const next = await f.run();
+    const fresh = await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(),
+      expectedPreviousRunId: f.first.runId, expectedGeneration: 1 });
+    expect(fresh.generation).toBe(1);
+    expect(fresh.takeoverFrom).toBeUndefined();
+    expect(await adapterSessionWriteAllowed(db, next)).toBe(true);
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
   });
-  it("one native identity cannot keep authority in two task rows", async () => {
+
+  it("one native identity keeps authority in only one task row", async () => {
     const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
     const otherTask = randomUUID();
     await db.insert(issues).values({ id: otherTask, companyId: f.companyId, title: "Other task", status: "in_progress", assigneeAgentId: f.agentId });
     const next = await f.run(otherTask);
-    await expect(claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID() })).rejects.toThrow();
-    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
-    await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID(),
-      expectedPreviousRunId: f.first.runId, expectedGeneration: 1 });
+    const moved = await claimAdapterSessionAuthority(db, next, { ...f.claim, operationId: randomUUID() });
+    expect(moved).toMatchObject({ generation: 2, takeoverFrom: { runId: f.first.runId, taskKey: f.taskKey } });
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
     expect(await adapterSessionWriteAllowed(db, next)).toBe(true);
     const returning = await f.run();
-    const receipt = await claimAdapterSessionAuthority(db, returning, { ...f.claim, operationId: randomUUID(),
-      expectedPreviousRunId: next.runId, expectedGeneration: 2 });
+    const receipt = await claimAdapterSessionAuthority(db, returning, { ...f.claim, operationId: randomUUID() });
     expect(receipt.generation).toBe(3);
     expect(await adapterSessionWriteAllowed(db, next)).toBe(false);
     expect(await adapterSessionWriteAllowed(db, returning)).toBe(true);
   });
-  it("a reset or deletion cannot leave an old helper authorized", async () => {
-    const f = await fixture(); await claimAdapterSessionAuthority(db, f.first, f.claim);
-    await db.delete(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
-    await expect(claimAdapterSessionAuthority(db, f.first, f.claim)).rejects.toThrow();
-  });
-  it("binds a new Claude card before its first native identity exists, then upgrades on its successor", async () => {
+
+  it("binds a new Claude card before its native identity exists and lets a successor replace the card", async () => {
     const f = await fixture();
     const first = await claimAdapterSessionAuthority(db, f.first, { ...f.claim, nativeSessionId: null });
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
     const next = await f.run();
-    const successor = { ...f.claim, expectedPreviousRunId: f.first.runId, expectedGeneration: first.generation, operationId: randomUUID() };
-    await expect(claimAdapterSessionAuthority(db, next, { ...successor, bridgeSessionId: randomUUID() })).rejects.toThrow();
-    await claimAdapterSessionAuthority(db, next, successor);
+    const successor = await claimAdapterSessionAuthority(db, next, { ...f.claim, bridgeSessionId: randomUUID(), operationId: randomUUID() });
+    expect(successor).toMatchObject({ generation: first.generation + 1, takeoverFrom: { runId: f.first.runId } });
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
     expect(await adapterSessionWriteAllowed(db, next)).toBe(true);
   });
-  async function restoredBootstrapFixture(provider = "antigravity") {
-    const f = await fixture();
-    f.claim.provider = provider;
-    const bootstrap = await claimAdapterSessionAuthority(db, f.first, { ...f.claim, nativeSessionId: null });
-    const result = { nativeSessionId: f.claim.nativeSessionId, bridgeSessionId: f.claim.bridgeSessionId,
-      bridgeInputReceipt: { schema: "paperclip.bridge-input.v1", runId: f.first.runId,
-        nativeSessionId: f.claim.nativeSessionId, bridgeSessionId: f.claim.bridgeSessionId,
-        acceptedSeq: 3, clientMessageId: randomUUID() } };
-    await db.update(heartbeatRuns).set({ status: "succeeded", resultJson: result }).where(eq(heartbeatRuns.id, f.first.runId));
-    const [row] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    const params = mergeProtectedSessionParams(row.sessionParamsJson, { hostId: f.claim.hostId, provider,
-      nativeSessionId: f.claim.nativeSessionId, bridgeSessionId: f.claim.bridgeSessionId }, f.first.runId)!;
-    await db.update(agentTaskSessions).set({ sessionParamsJson: params }).where(eq(agentTaskSessions.id, row.id));
-    const [event] = await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId,
-      runId: f.first.runId, seq: 1, eventType: "adapter.invoke", payload: { adapterType: "ccpocket_bridge",
-        context: { hostId: f.claim.hostId, provider, bridgeSessionId: f.claim.bridgeSessionId } } }).returning();
-    const next = await f.run();
-    return { ...f, bootstrap, params, result, event, next, restored: { ...f.claim, bridgeSessionId: randomUUID(),
-      operationId: randomUUID(), expectedPreviousRunId: f.first.runId, expectedGeneration: bootstrap.generation } };
-  }
-  it.each(["claude", "antigravity"])("restores %s bootstrap authority using published native identity and original input proof", async provider => {
-    const f = await restoredBootstrapFixture(provider);
-    const receipt = await claimAdapterSessionAuthority(db, f.next, f.restored);
-    expect(receipt).toMatchObject({ generation: 2, bootstrapNativeRecovery: {
-      sourceRunId: f.first.runId, sourceEventId: f.event.id } });
-    expect(await claimAdapterSessionAuthority(db, f.next, f.restored)).toEqual(receipt);
-    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
-    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(true);
-    const [row] = await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    expect(mergeProtectedSessionParams(row.sessionParamsJson, f.params, f.first.runId)).toBeUndefined();
-    await expect(claimAdapterSessionAuthority(db, f.first, { ...f.claim, nativeSessionId: null }))
-      .rejects.toThrow("no longer owns");
-  });
-  it.each(["generation", "previous-run", "host", "provider", "native", "publication", "input",
-    "input-run", "input-native", "input-bridge", "input-sequence", "result", "invocation", "cancelled",
-    "revoked", "prior-authority"])("restored bootstrap rejects mismatched %s without transferring authority", async mismatch => {
-    const f = await restoredBootstrapFixture();
-    if (mismatch === "generation") f.restored.expectedGeneration = 0;
-    if (mismatch === "previous-run") f.restored.expectedPreviousRunId = randomUUID();
-    if (mismatch === "host") f.restored.hostId = "foreign-host";
-    if (mismatch === "provider") f.restored.provider = "codex";
-    if (mismatch === "native") f.restored.nativeSessionId = randomUUID();
-    if (mismatch === "publication") await db.update(agentTaskSessions).set({ sessionParamsJson: { ...f.params, nativeSessionId: randomUUID() } })
-      .where(eq(agentTaskSessions.taskKey, f.taskKey));
-    if (mismatch.startsWith("input") || mismatch === "result") {
-      const receipt: Record<string, unknown> = { ...f.result.bridgeInputReceipt };
-      if (mismatch === "input") receipt.schema = "unknown";
-      if (mismatch === "input-run") receipt.runId = randomUUID();
-      if (mismatch === "input-native") receipt.nativeSessionId = randomUUID();
-      if (mismatch === "input-bridge") receipt.bridgeSessionId = randomUUID();
-      if (mismatch === "input-sequence") receipt.acceptedSeq = null;
-      await db.update(heartbeatRuns).set({ resultJson: { ...f.result, bridgeInputReceipt: receipt,
-        ...(mismatch === "result" ? { nativeSessionId: randomUUID() } : {}) } }).where(eq(heartbeatRuns.id, f.first.runId));
-    }
-    if (mismatch === "invocation") await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, f.event.id));
-    if (mismatch === "cancelled") await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.next.runId));
-    if (mismatch === "revoked") await db.update(agentTaskSessions).set({ sessionParamsJson: { ...f.params,
-      [ADAPTER_SESSION_AUTHORITY]: { ...f.params[ADAPTER_SESSION_AUTHORITY] as object, revoked: true } } }).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    if (mismatch === "prior-authority") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge" },
-      [ADAPTER_SESSION_AUTHORITY]: { ...f.params[ADAPTER_SESSION_AUTHORITY] as object, operationId: randomUUID() } } }).where(eq(heartbeatRuns.id, f.first.runId));
-    await expect(claimAdapterSessionAuthority(db, f.next, f.restored)).rejects.toThrow("no longer owns");
-    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(false);
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.next.runId));
-    expect(run.runnerProfileJson?.[ADAPTER_SESSION_AUTHORITY]).toBeUndefined();
-  });
-  it("restored bootstrap cannot use late publication to overtake the successor or reset a deleted binding", async () => {
-    const f = await restoredBootstrapFixture();
-    await claimAdapterSessionAuthority(db, f.next, f.restored);
-    const rival = await f.run();
-    await expect(claimAdapterSessionAuthority(db, rival, { ...f.restored, operationId: randomUUID() })).rejects.toThrow();
-    await db.delete(agentTaskSessions).where(eq(agentTaskSessions.taskKey, f.taskKey));
-    await expect(claimAdapterSessionAuthority(db, rival, { ...f.restored, operationId: randomUUID() })).rejects.toThrow();
-    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(false);
-    expect(await adapterSessionWriteAllowed(db, f.next)).toBe(false);
-    expect(await adapterSessionWriteAllowed(db, rival)).toBe(false);
-  });
-  it("contention fails explicitly without retry or waiting behind reversed business locks", async () => {
+
+  it("contention waits for the holder instead of failing", async () => {
     const f = await fixture(); const receipt = await claimAdapterSessionAuthority(db, f.first, f.claim);
     let release!: () => void, acquired!: () => void;
     const ready = new Promise<void>(resolve => { acquired = resolve; });
     const wait = new Promise<void>(resolve => { release = resolve; });
     const holder = db.transaction(async tx => { await lockAdapterSessionAuthority(tx as unknown as typeof db, [receipt.bindingKey]); acquired(); await wait; });
     await ready;
-    try { await expect(db.transaction(tx => assertAgentRunWriteAllowed(tx as unknown as typeof db, f.companyId, f.first))).rejects.toThrow("authority is changing"); }
-    finally { release(); await holder; }
+    let settled = false;
+    const writer = db.transaction(tx => assertAgentRunWriteAllowed(tx as unknown as typeof db, f.companyId, f.first))
+      .then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(settled).toBe(false);
+    release(); await holder; await writer;
+    expect(settled).toBe(true);
     expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
   });
-  it("unknown authority formats cannot be erased by an adapter or silently reenrolled", async () => {
+
+  it("an unknown authority format is replaced by a running claim but never by a late publisher", async () => {
     const f = await fixture();
     await db.insert(agentTaskSessions).values({ companyId: f.companyId, agentId: f.agentId, taskKey: f.taskKey,
       adapterType: "ccpocket_bridge", sessionParamsJson: { [ADAPTER_SESSION_AUTHORITY]: { schema: "future" } } });
-    await expect(claimAdapterSessionAuthority(db, f.first, f.claim)).rejects.toThrow("Unrecognized server binding");
     expect(mergeProtectedSessionParams({ [ADAPTER_SESSION_AUTHORITY]: { schema: "future" } }, {}, f.first.runId)).toBeUndefined();
+    const receipt = await claimAdapterSessionAuthority(db, f.first, f.claim);
+    expect(receipt.generation).toBe(1);
+    expect(await adapterSessionWriteAllowed(db, f.first)).toBe(true);
   });
 });

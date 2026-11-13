@@ -643,12 +643,13 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   });
   it.each([
     { name: "acknowledged bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", admitted: true },
-    { name: "forced bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", forced: true, admitted: false },
+    // Liveness-first: a forced stop acknowledged at terminal status is a stop.
+    { name: "forced bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", forced: true, admitted: true },
     { name: "unacknowledged bridge stop", current: "ccpocket_bridge", historical: "ccpocket_bridge", state: "requested", admitted: false },
     { name: "failed bridge run", current: "ccpocket_bridge", historical: "ccpocket_bridge", status: "failed", admitted: false },
     { name: "bridge receipt on a local run", current: "claude_local", historical: "ccpocket_bridge", admitted: false },
     { name: "local run moved to the bridge", current: "ccpocket_bridge", historical: "claude_local", admitted: false },
-  ])("a CC Pocket chat interrupt accepts only the bridge's unforced stop receipt: $name", async scenario => {
+  ])("a CC Pocket chat interrupt accepts only the bridge's acknowledged stop receipt: $name", async scenario => {
     const f = await seed();
     await db.update(agents).set({ adapterType: scenario.current }).where(eq(agents.id, f.agentId));
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
@@ -1154,8 +1155,13 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(receipts.find(row => row.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
     await db.update(heartbeatRuns).set({ status: "timed_out", errorCode: "timeout", startedAt: nextNow,
       finishedAt: nextNow }).where(eq(heartbeatRuns.id, second.run.id));
-    expect(await heartbeat.scheduleBoundedRetry(second.run.id, { now: nextNow })).toMatchObject({ outcome: "retry_exhausted" });
-    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toHaveLength(3);
+    // Liveness-first: a transient timeout keeps retrying past the old cap.
+    expect(await heartbeat.scheduleBoundedRetry(second.run.id, { now: nextNow }))
+      .toMatchObject({ outcome: "scheduled", attempt: 3, run: { retryOfRunId: second.run.id } });
+    // The third retry adds its own receipt; earlier receipts are untouched.
+    const finalReceipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(finalReceipts).toHaveLength(4);
+    expect(finalReceipts.find(row => row.id === f.receipt.id)?.evidence).toEqual(f.receipt.evidence);
   });
 
   it.each(["valid", "receipt_removed", "comment_changed", "different_wake", "injected_comment"] as const)(

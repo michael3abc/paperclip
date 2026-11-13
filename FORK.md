@@ -103,6 +103,13 @@ The first-parent inventory below includes retained consolidation history; it is 
 
 - `672478c734` fix: authorize PM project reads and enforce decision boundaries
 - `18c527ba2d` feat(ui): show project PM working and needs-input status in the sidebar
+- liveness-first (branch `michael/liveness-first`, Owner 2026-11-13; binding source `/home/michael/services/docs/agents/liveness-first.md`): single failure classifier (transient backoff 30s×2ⁿ capped at 30 min, deterministic notify-once, unknown→3 retries); last-writer-wins Bridge session authority (generation+1, `takeoverFrom`); removal of stop settlement, workspace holders, shared-checkout claims, workspace binding, host inspection and execution-reconciliation gates (workspace = directory with `mkdir -p`); per-host circuit breaker; 30/35 min inactivity fallback; shutdown/startup `process_lost`; `paperclip ops liveness-reset` CLI; docs
+  Commits: 53c1616a33 (WIP snapshot: classifier, gates, shutdown, docs), 5f5df1bfd4 (classification-driven retries and backoff),
+  22738ede57 (liveness-reset service and CLI), 42205503bd (last-writer-wins session authority), 889d27e32e (shutdown marking,
+  process-loss resend), 0886b8c497 (adapter 0.5.0 codes), 360318e5b6 (35 min inactivity fallback), 082787a058, 72b66c6c53,
+  f8c6f832dd, 63d74fb700 (terminal releases every gate, abandon unknown priors), 9a7dd08744, 86932dd82f, c7a4743d3b,
+  760f585562 (workspace = directory), d67e998d07 (workspace repair backoff, Retry placement); this list is updated by the
+  commit that adds it.
 
 ## Release
 
@@ -114,9 +121,11 @@ and Bridge task/session identities remain unchanged (docs/agents/pm-agents.md).
 Develop on `michael/<topic>` with exclusive use of the project development checkout; create an additional worktree only for parallel work or an independent version. Merge into `michael/main` before building.
 Run only related tests, with commit/baseline-bound selection; never fall back to a full suite.
 Use the managed build/cutover procedures in `/home/michael/services/README.md`: build integrity, DB backup/history, required isolated upgrade, owned cutover and readiness.
-Preserve prior release for rollback and historical tasks/sessions; new dispatch is not a retry of old work.
+Preserve prior release for rollback and historical tasks/sessions; new dispatch is not a retry of old work, but runs interrupted by cutover (preempt-restart, no idle-fleet quiescence) are resent under liveness-first rule 1.
 
 # Moved details (read the file when the task touches the topic)
+
+Liveness-first (`/home/michael/services/docs/agents/liveness-first.md`) supersedes the execution gates, stop proof, never-replay and Owner-escalation rules in the workspace, Bridge lifecycle, retry/recovery and PM/main-agent files below; their feature descriptions remain.
 
 - `docs/fork/workspace-git-admission.md` — Git workspace registration, shared worktree admission, fixed directories, placement
 - `docs/fork/bridge-run-lifecycle.md` — Bridge stop settlement/proof, interrupt handoff, resident authority, chat preemption

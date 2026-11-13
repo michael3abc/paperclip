@@ -5,7 +5,6 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { noRetainedProviderExecutionPredicate } from "../pre-dispatch-execution-evidence.js";
 
 const waiting = () => and(eq(heartbeatRuns.status, "scheduled_retry"),
@@ -13,9 +12,12 @@ const waiting = () => and(eq(heartbeatRuns.status, "scheduled_retry"),
   sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
   sql`${heartbeatRuns.resultJson}->'workspaceWaitMigration' is null`);
 
-/** The holder key is an opaque digest; foreign company/task identifiers and
- * paths never enter the waiting run's public JSON. Normal dispatch rechecks all
- * authority and filesystem claims after this event merely makes it eligible. */
+/** Liveness-first migration of historical workspace waits: a terminal holder has
+ * already released the workspace, so every parked wait becomes eligible at once
+ * (or is cancelled when superseded). Nothing waits on stop evidence. The holder
+ * key is an opaque digest; foreign company/task identifiers and paths never enter
+ * the waiting run's public JSON. Normal dispatch rechecks all authority after this
+ * event merely makes it eligible. */
 export function registerWorkspaceWaitSettlement(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   canRun: () => boolean) {
   return registerDeadlineWork(coordinator, DELIVERY_QUEUES.workspaceWaitSettlement, {
@@ -54,27 +56,22 @@ export async function reconcileWorkspaceWaits(db: Db, signal?: AbortSignal, canR
               || (!run.startedAt && !run.runtimeModeResolvedAt));
           const superseded = issue && (["done", "cancelled"].includes(issue.status)
             || (issue.executionRunId !== null && issue.executionRunId !== run.id));
-          const disposition = !noExecution ? "needs_reconciliation" : superseded ? "superseded" : "reconsider";
+          // Liveness-first rule 1: an unknown earlier delivery is resent (the normal
+          // dispatcher rechecks authority), never parked for Owner reconciliation.
+          const disposition = superseded ? "superseded" : !noExecution ? "resend" : "reconsider";
           const at = new Date();
-          const after = disposition === "reconsider" ? { scheduledRetryAt: at }
-            : disposition === "superseded" ? { status: "cancelled", finishedAt: at, errorCode: "workspace_wait_superseded" }
-            : { errorCode: "delivery_unknown", error: "Reconcile the original execution receipt before sending this input again" };
+          const after = disposition === "superseded" ? { status: "cancelled", finishedAt: at, errorCode: "workspace_wait_superseded" }
+            : { scheduledRetryAt: at };
           await notifyScheduledRetryDispatch(tx);
           await tx.update(heartbeatRuns).set({ ...after, updatedAt: at, resultJson: { ...run.resultJson, workspaceWaitMigration: {
             schema: "paperclip.shared-worktree-wait.v1", disposition, at: at.toISOString(),
             before: { status: run.status, errorCode: run.errorCode, scheduledRetryAt: run.scheduledRetryAt },
-            after: { ...after, scheduledRetryAt: disposition === "reconsider" ? at.toISOString() : null },
+            after: { ...after, scheduledRetryAt: disposition === "superseded" ? null : at.toISOString() },
           } } }).where(eq(heartbeatRuns.id, run.id));
           await appendHeartbeatRunEvent(tx as unknown as Db, { companyId: run.companyId, agentId: run.agentId, runId: run.id,
             eventType: "workspace.wait_migrated", stream: "system", level: "info",
-            message: "Reconciled the original workspace wait under cooperative admission.", payload: { disposition } });
-          if (disposition === "needs_reconciliation" && issue) await issueRecoveryActionService(tx).upsertSourceScoped({
-            companyId: run.companyId, sourceIssueId: issue.id, kind: "active_run_watchdog", ownerType: "board",
-            returnOwnerAgentId: issue.assigneeAgentId, cause: "delivery_unknown", fingerprint: `workspace-wait:${run.id}`,
-            evidence: { sourceRunId: run.id, runId: run.id, deliveryState: "unknown" },
-            nextAction: "Reconcile the original input receipt; do not resend it", maxAttempts: 0,
-            preserveExistingOwner: true, supersedeOnIdentityChange: true,
-          });
+            message: disposition === "resend" ? "Released the original workspace wait; its earlier delivery is unknown, so it is resent with a check-first note."
+              : "Reconciled the original workspace wait under cooperative admission.", payload: { disposition } });
         });
       }
 }

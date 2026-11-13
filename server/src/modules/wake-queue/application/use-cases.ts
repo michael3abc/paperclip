@@ -34,6 +34,9 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
+// Pure helpers shared with the heartbeat retry lanes (no I/O).
+import { executionFailureRetryCount } from "../../../services/execution-recovery-attempt.js";
+import { shouldAutoRetryRunFailure } from "../../../services/recovery/failure-classification.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
@@ -616,10 +619,15 @@ async function runReleaseRecoveryTail(
       isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
       isConfigurationIncompleteFailedRun:
         isConfigurationIncompleteFailedRun(run),
-      automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(
-        run,
-        expectedRetryReason,
-      ),
+      // Liveness-first (rule 4): a failed automatic recovery only stops
+      // further automatic recovery when its failure is not retryable
+      // (deterministic, or unknown after three attempts).
+      automaticRecoveryAlreadyFailed:
+        didAutomaticRecoveryFail(run, expectedRetryReason) &&
+        !shouldAutoRetryRunFailure(
+          run.errorCode,
+          executionFailureRetryCount(run) + 1,
+        ),
       sourceRequiresExplicitRecovery,
     },
     shared: {

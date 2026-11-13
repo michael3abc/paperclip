@@ -167,15 +167,16 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it.each(["workspace", "connection"] as const)("settles the agent after a %s deferral cannot keep its issue lock", async (kind) => {
+  // Liveness-first: workspace holders no longer exist, so only the AI
+  // connection deferral can still reach this settle path.
+  it("settles the agent after a connection deferral cannot keep its issue lock", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
     const run = { ...unitRun(), status: "cancelled" };
     deps.setRunStatusIfRunning.mockResolvedValue({ updated: true, run });
     deps.releaseIssueExecutionAndPromote.mockRejectedValue(new Error("release failed"));
     const retries = extracted.createHeartbeatRetries(database.db, deps);
-    if (kind === "workspace") await retries.finalizeWorkspaceBusyDeferral(run, deferral());
-    else await expect(retries.finalizeAiConnectionBusyDeferral(run, new HttpError(409, "busy"), true)).rejects.toThrow("release failed");
+    await expect(retries.finalizeAiConnectionBusyDeferral(run, new HttpError(409, "busy"), true)).rejects.toThrow("release failed");
     expect(deps.setWakeupStatus).toHaveBeenCalledWith("wake", "cancelled", expect.any(Object));
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(run);
     expect(deps.finalizeAgentStatus).toHaveBeenCalledWith("agent", "cancelled", null, { wasFirstHeartbeat: true });

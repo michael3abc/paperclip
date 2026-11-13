@@ -210,9 +210,8 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
         eq(agents.companyId, run.companyId), eq(agents.id, run.agentId),
       ));
       const configured = agent?.runtimeConfig?.workspaceBinding as Record<string, unknown> | undefined;
-      if (configured?.mode === "fixed") {
-        const binding = readWorkspaceBinding(agent?.runtimeConfig ?? undefined);
-        if (!binding) throw new Error("Fixed retry workspace binding is unavailable");
+      // Retry continues in the agent's fixed directory (liveness-first rule 3).
+      const continueInFixedDirectory = async (cwd: string, hostId: string | null) => {
         await db.transaction(async tx => {
           const changed = await tx.update(agentWakeupRequests).set({
             payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"continue"'::jsonb)`,
@@ -221,15 +220,27 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
           if (changed.length) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
             actorType: "system", actorId: "task-recovery", action: "issue.retry_fixed_workspace_selected",
             entityType: "issue", entityId: issueId, runId: run.id,
-            details: { retryIntentId: wake.id, sourceRunId: source.id, cwd: binding.cwd, hostId: binding.hostId ?? null } });
+            details: { retryIntentId: wake.id, sourceRunId: source.id, cwd, hostId } });
         });
+      };
+      if (configured?.mode === "fixed") {
+        const binding = readWorkspaceBinding(agent?.runtimeConfig ?? undefined);
+        if (binding) {
+          await continueInFixedDirectory(binding.cwd, binding.hostId ?? null);
+          return null;
+        }
+        // An unusable fixed binding is logged; placement falls through to the
+        // next directory in the resolution order instead of failing Retry.
+        workspaceBindingConflict("binding_unavailable", "Fixed retry workspace binding is unavailable");
+      }
+      // A CC Pocket session cwd without a matching server binding is logged
+      // only; Retry continues in the adapter's own session directory.
+      const bridgeConflict = agent ? bridgeFixedBindingConflict(agent) : null;
+      if (bridgeConflict) {
+        workspaceBindingConflict("placement_required", bridgeConflict.message, { cwd: bridgeConflict.cwd });
+        await continueInFixedDirectory(bridgeConflict.cwd, null);
         return null;
       }
-      // A CC Pocket session cwd without the server binding is a configuration
-      // error, not a reason to invent an isolated directory the adapter rejects.
-      // Fail before allocating anything and name the missing registration.
-      const bridgeConflict = agent ? bridgeFixedBindingConflict(agent) : null;
-      if (bridgeConflict) workspaceBindingConflict("placement_required", bridgeConflict.message);
       const workspace = run.contextSnapshot?.previousRunId === source.id
         ? await reusableDirectoryAfterPreparationFailure(db, source, issueId) : null;
       if (workspace?.cwd) {
