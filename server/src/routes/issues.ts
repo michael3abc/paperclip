@@ -34,6 +34,7 @@ import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { currentPmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { assertPmContinuation, issueContinuationService } from "../services/issue-continuations.js";
+import { mainAgentDispatchScope } from "../services/main-agent-workers.js";
 import {
   childCreatedByRequest,
   loadCreationSourceAgent,
@@ -4451,6 +4452,12 @@ export function issueRoutes(
           )
         : input.activeRecoveryAction;
     if (!activeRecoveryAction) return null;
+
+    // Task status/assignment changes are not evidence that an original input,
+    // provider effect or session owner was reconciled. Only its source-specific
+    // reconciliation service may settle this responsibility. In particular,
+    // blocked -> todo must not remove the gate immediately before /continue.
+    if (requiresExecutionReconciliation(activeRecoveryAction.cause)) return activeRecoveryAction;
 
     if (await hasUnverifiedNativeWorkspaceFinalizationOwner(db, activeRecoveryAction)) {
       return activeRecoveryAction;
@@ -19209,12 +19216,15 @@ export function issueRoutes(
       const body = req.body as import("@paperclipai/shared").ContinueIssue;
       const pm = req.actor.type === "agent" && req.actor.agentId && req.actor.companyId
         ? await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId }) : null;
+      const [mainAgent] = req.actor.type === "agent" && !pm && req.actor.agentId
+        ? await db.select().from(agents).where(and(eq(agents.id, req.actor.agentId), eq(agents.companyId, issue.companyId))) : [];
+      const main = mainAgent && mainAgentDispatchScope(mainAgent);
       if (req.actor.type === "agent") {
         const runId = requireAgentRunId(req, res);
         if (!runId) return;
         const actorAgentId = req.actor.agentId;
         if (pm) await assertPmContinuation(db, pm, issue.id, body, runId);
-        if (!actorAgentId || (!pm && actorAgentId !== issue.assigneeAgentId)) {
+        if (!actorAgentId || (!pm && !main && actorAgentId !== issue.assigneeAgentId)) {
           res.status(403).json({
             error: "Only the issue's assignee agent or a board user can continue this issue",
             details: { issueId: issue.id, assigneeAgentId: issue.assigneeAgentId, actorAgentId: actorAgentId ?? null },
@@ -19263,7 +19273,8 @@ export function issueRoutes(
         }
       }
       const continuation = issueContinuationService(db);
-      const operation = await continuation.begin(issue, req.actor.agentId ?? req.actor.userId ?? "local-board", body, req.actor.runId ?? null);
+      const operation = await continuation.begin(issue, req.actor.agentId ?? req.actor.userId ?? "local-board", body, req.actor.runId ?? null,
+        main ? req.actor : undefined);
       if (operation.replay) { res.json(await continuation.inspect(operation.receipt.id)); return; }
       const receiptId = operation.receipt.id;
       const pause = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
@@ -19281,7 +19292,7 @@ export function issueRoutes(
       }
       // Same gate as a comment with `resume: true`: low-trust actors, subtree
       // pause holds, unresolved blockers and non-resumable statuses are refused.
-      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true, authorizedPmId: pm?.agentId }))) {
+      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true, authorizedPmId: pm?.agentId ?? main?.agentId }))) {
         await continuation.settle(receiptId, { status: issue.status as IssueContinueResult["status"], runId: null, outcome: "blocked", reason: "Current resume admission refused this operation" });
         return;
       }
