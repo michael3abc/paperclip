@@ -150,11 +150,10 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
   const digest = createHash("sha256").update(JSON.stringify(originalInput)).digest("hex");
   try {
     if (recheckOnly) {
-      // The receipt directory is created before any Git mutation, so its absence proves
-      // the original request never started: report it as a definite no-effect failure.
-      if (!await exists(operation)) throw Object.assign(new Error("worktree_operation_receipt_missing"), {
-        code: "worktree_operation_receipt_missing", worktreeEffectStarted: false,
-      });
+      // Absence is not a no-effect receipt: the original host request may still
+      // arrive, or its receipt storage may be unavailable/replaced. Keep mutation
+      // outcomes unknown; only the original read-only inspect action is harmless.
+      if (!await exists(operation)) fail("worktree_operation_receipt_missing");
       throw Object.assign(new Error("read original"), { code: "EEXIST" });
     }
     await fs.mkdir(operation, { mode: 0o700 });
@@ -164,7 +163,7 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
     const receipt = JSON.parse(await fs.readFile(path.join(operation, "receipt.json"), "utf8"));
     if (receipt.digest !== digest) fail("worktree_operation_conflict");
     if (receipt.state === "complete") return receipt.result;
-    if (receipt.effectStarted === false) throw Object.assign(new Error(receipt.code ?? "worktree_operation_not_applied"), {
+    if (receipt.state === "failed" && receipt.effectStarted === false) throw Object.assign(new Error(receipt.code ?? "worktree_operation_not_applied"), {
       code: receipt.code ?? "worktree_operation_not_applied", worktreeEffectStarted: false,
     });
     fail("worktree_operation_reconciliation_required");

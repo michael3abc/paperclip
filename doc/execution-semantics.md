@@ -3906,6 +3906,15 @@ tree with a concrete reason. Merge and deletion are separate operations.
 Checked-out target preflight includes ignored untracked files because Git may
 otherwise overwrite them. A known refusal before shared mutation records
 effectStarted=false, permitting an explicit repair/reopen with a new operation ID.
+Missing receipt directories are not such a refusal: an original host request may
+still arrive after transport loss, or its receipt storage may have changed.
+Recheck of initialize/create/merge/retire returns worktree_operation_receipt_missing
+without no-effect proof and preserves pendingOperationId; it never resubmits Git
+commands. Only an original read-only inspect action is intrinsically free of Git
+mutation and can release its failed pending operation without a mutation receipt.
+An existing started receipt is still in flight even when effectStarted=false;
+only a terminal failed receipt with that flag proves a known no-effect refusal.
+Complete receipts retain their original result without repeating the operation.
 
 The same lifecycle API accepts kind=repository_root or linked_worktree. register
 takes an explicit complete canonical cwd, including existing paperclip/task-id

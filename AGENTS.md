@@ -41,6 +41,12 @@ Registered main-managed Git directories finalize through their registered host's
 read-only inspector, including repository roots. Verify receipt/run identity,
 branch and commit evidence; never fall back to controller paths or auto-repair
 a collaborator's branch. See `doc/execution-semantics.md`.
+Missing host-operation receipts do not prove no effect. Recheck must keep
+initialize/create/merge/retire pending until their original outcome is known;
+only the original read-only inspect action can release its no-effect failure.
+A delayed host request or changed receipt storage cannot authorize resubmission.
+An existing started receipt also remains unknown; no-effect proof requires the
+original terminal failed receipt with effectStarted=false.
 
 Worker-card collapse is presentation only. The session-bridge proof endpoint
 requires the current main's project/worker policy and issue read permission,
