@@ -265,6 +265,7 @@ suite("project PM role and workspace at claim", () => {
   }, 60_000);
 
   it("runs D and E through one shared worker with independent capacity and pinned remote cwd", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Shared remote company", issuePrefix: `S${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
@@ -274,11 +275,12 @@ suite("project PM role and workspace at claim", () => {
         heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 2 } }, permissions: {} });
     const tasks: Array<{ id: string; hostId: string; cwd: string }> = [];
     for (const hostId of ["shopee-d", "shopee-d", "shopee-e"]) {
-      const id = randomUUID(), projectId = randomUUID(), cwd = `/remote-only/${companyId}/${projectId}`;
-      await db.insert(projects).values({ id: projectId, companyId, name: id, status: "in_progress" });
-      await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd,
+      const id = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), cwd = `/remote-only/${companyId}/${projectId}`;
+      await db.insert(projects).values({ id: projectId, companyId, name: id, status: "in_progress",
+        executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", workspaceStrategy: { type: "project_primary" } } });
+      await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd,
         metadata: { hostId }, remoteWorkspaceRef: `${hostId}:${cwd}`, isPrimary: true });
-      await db.insert(issues).values({ id, companyId, projectId, title: id, status: "todo", assigneeAgentId: agentId,
+      await db.insert(issues).values({ id, companyId, projectId, projectWorkspaceId: sourceId, title: id, status: "todo", assigneeAgentId: agentId,
         assigneeAdapterOverrides: { adapterConfig: { model: `${hostId}/codex/task-model` } } });
       tasks.push({ id, hostId, cwd });
     }
