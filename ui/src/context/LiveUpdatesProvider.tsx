@@ -1359,6 +1359,28 @@ function applyRunLifecycleToCompanyLiveRuns(
   return present;
 }
 
+/**
+ * A run of a task a chat created changes that chat's `hasLiveChildTasks`
+ * ("waiting for task") in the viewer's chat list. The chat's own runs do not
+ * (live runs present those), and `running` keeps an already live run live, so
+ * neither refetches the list. Runs start as queued or scheduled retries.
+ */
+function invalidateAgentChatTaskState(
+  queryClient: QueryClient,
+  companyId: string,
+  eventType: string,
+  payload: Record<string, unknown>,
+  currentActor: { userId: string | null; agentId: string | null },
+) {
+  if (eventType === "heartbeat.run.status" && readString(payload.status) === "running") return;
+  const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
+  const chats = queryClient.getQueryData<Issue[]>(chatListKey);
+  if (!chats) return;
+  const issueId = readString(payload.issueId);
+  if (issueId && chats.some(chat => chat.id === issueId)) return;
+  void queryClient.invalidateQueries({ queryKey: chatListKey });
+}
+
 function invalidateHeartbeatQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -1980,6 +2002,7 @@ function handleLiveEvent(
     }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     queryClient.invalidateQueries({ queryKey: ["issues", "chat-handoffs"] });
+    invalidateAgentChatTaskState(queryClient, expectedCompanyId, event.type, payload, currentActor);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast && event.toastEligible === true && !suppressRunToast) {
@@ -2111,6 +2134,7 @@ export const __liveUpdatesTestUtils = {
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
   invalidateHeartbeatQueries,
+  invalidateAgentChatTaskState,
   invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
   readRunLiveStatusPatchFromPayload,

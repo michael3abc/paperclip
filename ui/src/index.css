@@ -337,6 +337,13 @@
   --status-agent-running: #2563eb;
   --status-agent-paused: #f59e0b;
   --status-agent-error: #dc2626;
+  /* Agent Chat sidebar row "waiting for task": the chat is not running itself
+     but a task it created is still live. Violet, kept apart from the blue
+     working and orange needs-input row states; frame and tint derive from the
+     accent. The `.dark` block overrides all three. */
+  --sidebar-waiting-accent: oklch(54.1% 0.281 293.009);
+  --sidebar-waiting-frame: color-mix(in oklab, var(--sidebar-waiting-accent) 60%, transparent);
+  --sidebar-waiting-background: color-mix(in oklab, var(--sidebar-waiting-accent) 8%, transparent);
   /* Dashboard agent card: translucent running treatment from the Paper design. */
   --dashboard-run-accent: oklch(62.3% 0.214 259.815);
   --dashboard-run-background: color-mix(in oklab, var(--dashboard-run-accent) 4%, transparent);
@@ -695,6 +702,10 @@
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
+  /* Lighter violet keeps the "waiting for task" label legible on the dark sidebar. */
+  --sidebar-waiting-accent: oklch(70.2% 0.183 293.541);
+  --sidebar-waiting-frame: color-mix(in oklab, var(--sidebar-waiting-accent) 60%, transparent);
+  --sidebar-waiting-background: color-mix(in oklab, var(--sidebar-waiting-accent) 12%, transparent);
 }
 
 .streamlined-task-detail-surface {

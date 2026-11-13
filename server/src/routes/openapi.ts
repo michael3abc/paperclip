@@ -4304,7 +4304,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/chats",
   tags: ["issues"],
   summary: "List the current board user's agent conversations",
-  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user.",
+  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user. hasLiveChildTasks is true while a readable task the chat created in its current session, or a direct subtask, has a queued, running or scheduled-retry run.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

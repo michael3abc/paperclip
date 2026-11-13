@@ -14,6 +14,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSha
 import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useProjectPmSidebarStatus } from "@/hooks/useProjectPmSidebarStatus";
+import { deriveChatWaitingForTaskAgentIds } from "@/lib/agent-sidebar-status";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation } from "@/lib/router";
 import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
@@ -118,10 +119,16 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   // run marks them working. PM-bound agents keep the project rules.
   const listedAgentIds = useMemo(() => listedAgents.map(agent => agent.id), [listedAgents]);
   const pmStatusByAgent = useProjectPmSidebarStatus(companyId, userId, liveRuns.data, { selfRunAgentIds: listedAgentIds });
+  // Purple "waiting for task": the chat list (refreshed by run lifecycle events)
+  // says a task this chat created is still live, and the agent is not working
+  // itself. Working and needs-input keep their existing indicators.
+  const waitingAgentIds = useMemo(() => deriveChatWaitingForTaskAgentIds({ chats: chats.data, liveRuns: liveRuns.data }),
+    [chats.data, liveRuns.data]);
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
-    return listedAgents.map(agent => ({ agent, unread: unreadAgentIds.has(agent.id), status: pmStatusByAgent.get(agent.id) }));
-  }, [listedAgents, chats.data, pmStatusByAgent]);
+    return listedAgents.map(agent => ({ agent, unread: unreadAgentIds.has(agent.id),
+      status: pmStatusByAgent.get(agent.id) ?? (waitingAgentIds.has(agent.id) ? "waiting_for_task" as const : undefined) }));
+  }, [listedAgents, chats.data, pmStatusByAgent, waitingAgentIds]);
   const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
   const agentsFailed = agents.isError;
   const agentsLoading = agents.isPending && agents.fetchStatus === "fetching";

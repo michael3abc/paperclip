@@ -3,6 +3,7 @@ import {
   agentSidebarStatusAnnouncement,
   agentSidebarStatusLabel,
   agentSidebarStatusStyle,
+  deriveChatWaitingForTaskAgentIds,
   deriveProjectPmSidebarStatus,
   isOwnerInputRequest,
   isWorkingLiveRun,
@@ -478,5 +479,45 @@ describe("agent sidebar status presentation", () => {
   it("pulses only the working dot", () => {
     expect(agentSidebarStatusStyle("working").pulse).toContain("animate-pulse");
     expect(agentSidebarStatusStyle("needs_input").pulse).toBeUndefined();
+    expect(agentSidebarStatusStyle("waiting_for_task").pulse).toBeUndefined();
+  });
+
+  it("frames and tints waiting for task with the violet sidebar tokens only", () => {
+    expect(agentSidebarStatusLabel("waiting_for_task")).toBe("waiting for task");
+    expect(agentSidebarStatusAnnouncement("waiting_for_task")).toBe("waiting for task");
+    const waiting = agentSidebarStatusStyle("waiting_for_task");
+    expect(waiting.frame).toBe("ring-1 ring-inset ring-(--sidebar-waiting-frame) bg-(--sidebar-waiting-background)");
+    expect(waiting.text).toBe("text-(--sidebar-waiting-accent)");
+    expect(waiting.dot).toBe("bg-(--sidebar-waiting-accent)");
+    for (const value of [waiting.frame, waiting.text, waiting.dot]) {
+      expect(value).not.toMatch(/blue-|orange-|\[/);
+    }
+  });
+});
+
+describe("deriveChatWaitingForTaskAgentIds", () => {
+  const chat = (conversationAgentId: string | null, hasLiveChildTasks?: boolean) => ({ conversationAgentId, hasLiveChildTasks });
+
+  it("marks agents whose chat has live tasks", () => {
+    expect([...deriveChatWaitingForTaskAgentIds({
+      chats: [chat("main-a", true), chat("main-b", false), chat("main-c"), chat(null, true)],
+      liveRuns: [],
+    })]).toEqual(["main-a"]);
+  });
+
+  it("keeps the working indicator while the agent itself works", () => {
+    const chats = [chat("main-a", true)];
+    expect(deriveChatWaitingForTaskAgentIds({ chats, liveRuns: [run({ agentId: "main-a" })] }).size).toBe(0);
+    // A queued own run, or one waiting for an answer, is not work: the chat still waits for its task.
+    for (const own of [run({ agentId: "main-a", status: "queued" }), run({ agentId: "main-a", execution: { phase: "waiting_for_answer" } })]) {
+      expect([...deriveChatWaitingForTaskAgentIds({ chats, liveRuns: [own] })]).toEqual(["main-a"]);
+    }
+    // Workers running the chat's tasks never suppress it.
+    expect([...deriveChatWaitingForTaskAgentIds({ chats, liveRuns: [run({ agentId: "worker-1" })] })]).toEqual(["main-a"]);
+  });
+
+  it("tolerates missing chats and live runs", () => {
+    expect(deriveChatWaitingForTaskAgentIds({ chats: undefined, liveRuns: undefined }).size).toBe(0);
+    expect([...deriveChatWaitingForTaskAgentIds({ chats: [chat("main-a", true)], liveRuns: null })]).toEqual(["main-a"]);
   });
 });

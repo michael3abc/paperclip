@@ -15,7 +15,7 @@ import { PrimaryAgentPresentationProvider } from "./primary-agent/PrimaryAgentPr
 type FixtureAgent = { id: string; name: string; role: "ceo" | "pm" | "engineer" | "general"; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), liveRuns: vi.fn(), openWork: vi.fn(), pathname: "/COO/issues", collapsed: false, userId: "reviewer",
   pmWorkspaces: vi.fn(), preferences: vi.fn(), pushToast: vi.fn(),
-  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string }>,
+  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string; hasLiveChildTasks?: boolean }>,
   primaryAgentId: null as string | null, primaryCompanyId: "company",
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
@@ -324,6 +324,20 @@ describe("Coordinator agents section", () => {
       expect(byLabel("amy").getAttribute("data-agent-status")).toBeNull();
     });
 
+    it("lets PM needs input and working outrank waiting for task", async () => {
+      fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", hasLiveChildTasks: true }];
+      fixture.attention.mockResolvedValue(feed([request]));
+      await renderSidebar(); await settle();
+      expect(status()).toBe("needs_input");
+      fixture.attention.mockResolvedValue(feed([]));
+      await act(async () => { await client.invalidateQueries({ queryKey: coordinatorAttentionQueryKey("company") }); }); await settle();
+      expect(status()).toBe("working");
+      // A queued project run is not work, so the chat shows it is waiting for its task.
+      fixture.liveRuns.mockResolvedValue([{ id: "run-1", agentId: "shared-worker", projectId: "project-z", status: "queued" }]);
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.liveRuns("company") }); }); await settle();
+      expect(status()).toBe("waiting_for_task");
+    });
+
     it("keeps unread and selected state on a working row without the legacy ring", async () => {
       fixture.pathname = "/COO/chats/zed";
       fixture.chats = [{ id: "chat-zed", isUnreadForMe: true, conversationAgentId: "a-zed" }];
@@ -442,6 +456,37 @@ describe("Coordinator agents section", () => {
       await renderSidebar(); await settle();
       expect(section()?.querySelector("[data-agent-status]")).toBeNull();
       expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ dedupeKey: "sidebar-pm-status-preference:company" }));
+    });
+
+    it("frames a chat waiting for its tasks in violet until they finish, without changing the row", async () => {
+      // The main agent ended its own turn; a task it created runs on a shared worker.
+      fixture.liveRuns.mockResolvedValue([{ id: "run-worker", agentId: "a-worker", status: "running", projectId: "project-a" }]);
+      fixture.chats = [{ id: "chat-main", isUnreadForMe: true, conversationAgentId: "a-main", hasLiveChildTasks: true }];
+      fixture.pathname = "/COO/chats/all-set";
+      await renderSidebar(); await settle();
+      const row = byLabel("All-Set");
+      expect(row.getAttribute("data-agent-status")).toBe("waiting_for_task");
+      expect(row.textContent).toContain("waiting for task");
+      expect(row.className).toContain("ring-(--sidebar-waiting-frame)");
+      expect(row.getAttribute("href")).toBe("/chats/all-set");
+      expect(row.querySelector('[aria-label="1 unread chat"]')).not.toBeNull();
+      expect(byLabel("momo").getAttribute("data-agent-status")).toBeNull();
+      fixture.chats = [{ id: "chat-main", isUnreadForMe: false, conversationAgentId: "a-main", hasLiveChildTasks: false }];
+      fixture.pathname = "/COO/issues";
+      await renderSidebar(); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBeNull();
+      expect(byLabel("All-Set").className).not.toContain("sidebar-waiting");
+      expect(byLabel("All-Set").textContent).toBe("All-Set");
+    });
+
+    it("tints an unselected waiting row and keeps the working indicator while the main agent runs itself", async () => {
+      fixture.chats = [{ id: "chat-main", isUnreadForMe: false, conversationAgentId: "a-main", hasLiveChildTasks: true }];
+      await renderSidebar(); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBe("working");
+      fixture.liveRuns.mockResolvedValue([]);
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.liveRuns("company") }); }); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBe("waiting_for_task");
+      expect(byLabel("All-Set").className).toContain("bg-(--sidebar-waiting-background)");
     });
 
     it("clears when the main agent's run fails or waits for an answer", async () => {

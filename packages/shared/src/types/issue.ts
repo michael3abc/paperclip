@@ -978,6 +978,13 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  /**
+   * Agent Chat list only: a task this chat created in its current session, or a
+   * direct subtask, has a queued, running or scheduled-retry run that the viewer
+   * can read. Presentation only ("waiting for task"); native subagents are not
+   * included.
+   */
+  hasLiveChildTasks?: boolean;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
   archivedByAgentId?: string | null;

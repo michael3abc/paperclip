@@ -69,6 +69,19 @@ loaded list claim no PM status and report the failure through the existing error
 a failed refetch keeps the list already loaded. The column is additive (`NOT NULL`
 default `[]`) so the previous release still runs on the new schema.
 
+Coordinator Agents rows also show a presentation-only violet frame, tint and
+`waiting for task` label (`--sidebar-waiting-*` tokens in `ui/src/index.css`) when the
+viewer's chat with that agent reports `hasLiveChildTasks` from
+`GET /companies/:id/chats` and the agent has no working run of its own. The server
+sets it when a readable, unhidden task that chat created in its current session
+(`chat_task_handoffs`) or a direct subtask of the chat has a `queued`, `running` or
+`scheduled_retry` run (`server/src/services/agent-chat-live-tasks.ts`). Working and
+needs input outrank it; it is computed from runs, not chat state, and does not read
+the PM status exclusion list. Native subagents exist only in run transcripts and are
+not included. Run lifecycle live events (queued, and every status except `running`)
+refetch the viewer's chat list unless the run belongs to the chat itself; there is
+no polling. Classic SidebarAgents rows are not chats and are unchanged.
+
 PDF attachment opens use the shared PdfPreviewProvider under BrowserRouter.
 Its local-state dialog keeps Back, Open original and Download visible without
 changing task history, location state or scroll; a route change closes it.

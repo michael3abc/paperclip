@@ -25,6 +25,7 @@ import { listIssueSummaries } from "../services/issue-summaries.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
+import { conversationsWithLiveChildTasks } from "../services/agent-chat-live-tasks.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
 import { enqueueFastResponse } from "../services/fast-responses.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
@@ -19169,8 +19170,12 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
     if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
-    const conversations = await svc.listConversations(companyId, req.actor.userId);
-    res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
+    const conversations = await filterIssuesForActor(req, await svc.listConversations(companyId, req.actor.userId));
+    const [withReadState, waiting] = await Promise.all([
+      withConversationReadState(db, companyId, req.actor.userId, conversations),
+      conversationsWithLiveChildTasks(db, companyId, req.actor, conversations),
+    ]);
+    res.json(withReadState.map(chat => ({ ...chat, hasLiveChildTasks: waiting.has(chat.id) })));
   });
 
   // GET stays read-only. POST resolves the single chat on explicit add or first send/upload.
