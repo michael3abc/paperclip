@@ -64,6 +64,7 @@ import { ensureAgyApiKeySettings } from "./credentials.js";
 import { prepareAgyLocalRunMcpHome } from "./mcp.js";
 import {
   DEFAULT_AGY_LOCAL_MODEL,
+  normalizeAgyModelId,
   resolveAgyModelEffort,
   SANDBOX_INSTALL_COMMAND,
 } from "../index.js";
@@ -179,14 +180,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "agy");
-  const model = asString(config.model, DEFAULT_AGY_LOCAL_MODEL).trim();
+  const model = normalizeAgyModelId(asString(config.model, DEFAULT_AGY_LOCAL_MODEL));
   const effort = asString(config.effort, "").trim();
   // When unset, omit --mode so Antigravity runs in default edit mode (matching test.ts probe)
   const mode = asString(config.mode, "").trim();
   const agentPersona = asString(config.agent ?? config.agentPersona, "").trim();
   const jsonSchema = asString(config.jsonSchema ?? config.json_schema, "").trim();
   const sandbox = Boolean(config.sandbox);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
+  // CC Pocket Bridge task settings (`permissionMode: "fullAccess"`, bypass flag)
+  // carried over after a worker switched to agy mean the same Full access.
+  const dangerouslySkipPermissions = config.dangerouslySkipPermissions !== undefined
+    ? asBoolean(config.dangerouslySkipPermissions, false)
+    : config.permissionMode === "fullAccess" || config.dangerouslyBypassApprovalsAndSandbox === true;
   if (mode === "auto" || (mode === "plan" && dangerouslySkipPermissions)) {
     throw new Error("Antigravity supports edit or plan mode; plan cannot skip permissions.");
   }

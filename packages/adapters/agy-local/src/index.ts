@@ -46,11 +46,23 @@ export function modelHasEffortSuffix(model: string): boolean {
  * if the resulting model ID is a recognized valid model. Otherwise, we keep the original model
  * without emitting an invalid model ID or conflicting CLI flags.
  */
+/**
+ * Accept a CC Pocket Bridge selector (`<host>/antigravity/<model>`) or a bare
+ * `antigravity/<model>` for the same Antigravity model: tasks and worker
+ * policies created while a worker ran through the Bridge keep that form after
+ * the worker is switched to the local agy harness.
+ */
+export function normalizeAgyModelId(model: string): string {
+  const trimmed = (model || "").trim();
+  const match = /^(?:[^/\s]+\/)?antigravity\/([^/\s]+)$/i.exec(trimmed);
+  return match ? match[1] : trimmed;
+}
+
 export function resolveAgyModelEffort(
   model: string,
   effort?: string | null,
 ): { model: string; effort: string | null; warning: string | null } {
-  const trimmedModel = (model || "").trim();
+  const trimmedModel = normalizeAgyModelId(model);
   const trimmedEffort = (effort || "").trim().toLowerCase();
 
   if (!trimmedEffort) {
