@@ -1,4 +1,5 @@
 import { prepareBridgeWorkerRoute } from "./heartbeat/bridge-worker-routing.js";
+import { expandStoredWorkerSelection } from "./worker-selection-expansion.js";
 import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
 import { registerWorkspaceCreatorRecovery, workspaceCreatorDelivery } from "./recovery/workspace-creator-delivery.js";
 import { registerOriginalMainBlockers } from "./recovery/main-blocker.js";
@@ -2312,6 +2313,18 @@ export function heartbeatService(
               issueContext.assigneeAdapterOverrides,
             )
           : null;
+      if (!issueAssigneeOverrides?.adapterConfig && issueContext && issueContext.assigneeAgentId === agent.id
+          && !isPendingExecutionReviewForAgent(issueContext, agent.id)) {
+        const expanded = await expandStoredWorkerSelection(db, agent, issueContext.assigneeAdapterOverrides).catch(() => null);
+        if (expanded) {
+          issueAssigneeOverrides = {
+            adapterConfig: expanded.adapterConfig,
+            useProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+            ...(issueAssigneeOverrides?.aiConnection ? { aiConnection: issueAssigneeOverrides.aiConnection }
+              : expanded.aiConnection ? { aiConnection: expanded.aiConnection as NonNullable<typeof issueAssigneeOverrides>["aiConnection"] } : {}),
+          };
+        }
+      }
       const experimentalInstanceSettings =
         await instanceSettings.getExperimental();
       const isolatedWorkspacesEnabled =
