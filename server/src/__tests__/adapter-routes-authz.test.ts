@@ -469,7 +469,12 @@ describe('company-scoped adapter schemas', () => {
     }
     expect(getConfigSchema).toHaveBeenCalledTimes(2);
     const adminApp = createApp(instanceAdmin);
-    await requestApp(adminApp, base => request(base).get(endpoint).query({ companyId: 'other-company', hostId: 'three', provider: 'codex' }));
+    const adminWithoutMembership = await requestApp(adminApp, base => request(base).get(endpoint).query({ companyId: 'other-company', hostId: 'three', provider: 'codex' }));
+    expect(adminWithoutMembership.status).toBe(403);
+    expect(getConfigSchema).toHaveBeenCalledTimes(2);
+    const authorizedAdminApp = createApp({ ...instanceAdmin, companyIds: ['other-company'] });
+    const adminResult = await requestApp(authorizedAdminApp, base => request(base).get(endpoint).query({ companyId: 'other-company', hostId: 'three', provider: 'codex' }));
+    expect(adminResult.status, JSON.stringify(adminResult.body)).toBe(200);
     expect(getConfigSchema).toHaveBeenLastCalledWith({ companyId: 'other-company', hostId: 'three', provider: 'codex' });
   });
 });

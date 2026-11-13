@@ -4007,7 +4007,7 @@ function ExperimentalBadge() {
 }
 
 function ModelSource({ source }: { source: string }) {
-  return <span className="ml-2 inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">{source}</span>;
+  return <span className="ml-2 inline-block rounded-full border border-border px-1.5 py-0.5 text-(length:--text-nano) font-normal text-muted-foreground">{source}</span>;
 }
 
 export function ModelDropdown({
