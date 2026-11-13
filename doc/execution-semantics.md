@@ -3776,6 +3776,30 @@ name the gate. GET /api/issues/:id/continuations/:receiptId reads the original r
 without dispatch. A settled run exposes runStatus and current task status separately;
 run succeeded never implies task done. Same-key calls do not replay the mutation.
 
+The current project main may also use this route for its existing worker tasks.
+It must act through the original Chat's current standard run credential and the
+latest accepted Owner input, with matching responsible user, conversation generation
+and original manual wake provenance. Supply a nonempty Owner-attributed handoff
+comment written by that run on the target task, `idempotencyKey`,
+`observedStatusVersion` and explicit `observedRunId` (including null). The server
+seals the request in the existing continuation receipt and rechecks its authority
+at queue admission and before the first worker dispatch after capacity waiting
+or restart. A newer Owner input, task instruction, binding, policy or hold
+can invalidate it. A normally succeeded main run retains only its already committed
+operation; a completed run cannot create a new operation. Bare requests and changed
+same-key requests fail visibly. This grants neither Board identity nor permission
+to replay unknown delivered input. Existing reconciliation, pause, dependency,
+budget, review and worker admission checks still apply. Inspect the original receipt
+after an uncertain response rather than submitting another operation.
+An ordinary handoff comment and Continue may share the existing queued run. Before
+dispatch, validate Continue's own immutable wake receipt by key, company, agent and
+run; it need not be the wake that originally created the coalesced run. The same
+handoff is delivered to the provider once.
+Changing task status or assignment cannot settle unknown original input, provider
+effects or native-session ownership. Generic stale-recovery revalidation preserves
+those source-specific reconciliation actions; only their formal reconciliation
+flow can settle them. Other obsolete graph/liveness actions retain normal cleanup.
+
 
 ### Cancelling a workspace wait or an unfinished Bridge cancellation
 
@@ -3874,6 +3898,15 @@ host evidence fails visibly without controller-local fallback or provider replay
 Legacy branch restoration, forward reconciliation and quarantine never apply to
 main-managed trees, even when a collaborator changed the branch during a run.
 
+An explicit `register` operation can adopt a historical remote `project_primary`
+workspace labelled `local_fs` when its unchanged source already identifies that
+remote host and exact cwd. Preserve the row ID, task/source links and files. The
+owning host must inspect Git successfully before provider metadata changes and
+the workspace opens; recheck source/coordinates/generation and active runs in
+the completion transaction. Missing evidence, another provider or changed host
+fails explicitly. Failed inspection leaves registration closed, including to
+`reopen`; reconcile the original operation rather than fabricating a receipt.
+
 Issue executionWorkspaceSettings.sessionOnly=true explicitly selects external
 resource or existing-script work without an execution workspace. Resident Chats
 and main coordination default to session-only. Project policy may explicitly set
@@ -3882,6 +3915,18 @@ managed tree or defaultExecutionWorkspaceId. Missing configuration fails during
 creation/assignment as configuration_required. A session-only main must select
 and join a worktree before editing versioned code. Full-access native tools remain
 cooperative; this control plane contract is not an OS filesystem sandbox.
+
+New main/PM worker dispatch follows this same selection contract at both HTTP and
+Runner entry points. Explicit `existing` selects the project's open registered
+Git directory; explicit `session_only` selects external-resource work; an omitted
+selection resolves the current project default. Persist the normalized selection
+and revalidate it within task creation. Legacy `configured_source` is not a new
+dispatch requirement or a way to provision an unmanaged directory. The policy
+must not inject single-writer serialization. Preserve current worker/model grants,
+protected policy-document consistency, project/company access, production-source
+protection and the registered source/host boundary. Session-only uses the selected
+worker's host without inventing a controller-host source. No selection grants
+authority to replay old input or bypass session, hold or permission checks.
 
 Paths, aliases, parent/child overlaps and historical stop/lease/finalizer/export
 records never serialize ordinary admission. Cancellation revokes the original

@@ -288,13 +288,26 @@ projects: use issue-scoped model settings and task sessions,
 and route review to the issuing project's PM. Never resume an Owner replanning
 hold when changing this topology or reuse another task's native session. An
 open registered Git directory may be shared through the normal workspace selection.
-Shared workers select a main-registered Git repository root or linked worktree for code work. Multiple
-tasks/runs may join an open tree; canonical paths, aliases and parent/child overlap
+Shared workers select a main-registered Git repository root or linked worktree for code work.
+New main/PM worker dispatch uses the same cooperative selection contract as task
+creation: explicit registered `existing`, explicit `session_only` for external
+resources, or the project's current default. Never require `configured_source`
+or inject `sharedWorkspaceConcurrency=serialize` at the dispatch policy boundary.
+Normalize the selection into the actual HTTP/Runner create input and revalidate
+inside the creation transaction. Preserve worker-policy/document consistency,
+same-project access, source/registered-host provenance and production-source gates.
+Multiple tasks/runs may join an open tree; canonical paths, aliases and parent/child overlap
 are not exclusive writer locks. Session cwd and external data/model/service paths
 remain separate and are never initialized as Git for dispatch. New tasks require an
 explicit worktree or the project's open default; external-resource tasks may select
 sessionOnly. Main chooses reuse/create, converge, merge, reopen and retire through
 the generation/operation-receipt API. Missing configuration fails before dispatch.
+Explicit registration may adopt a legacy remote `project_primary` row incorrectly
+labelled `local_fs` only through its unchanged registered remote source and a
+successful owning-host Git inspection. Preserve the workspace ID, cwd, source/task
+history and files; normalize provider metadata only after the receipt commits.
+Revalidate coordinates, host and active runs; failed inspection cannot open the
+tree or be bypassed through reopen. This is a registration operation, not fallback.
 Read-only source tools share files; fixed-version reads never switch branch. Keep
 production sources, Owner holds, permissions and genuine provider capacity intact.
 
@@ -694,6 +707,17 @@ Only persisted watchdog provenance permits a zero-slot PM coordination child; ex
 it in PM home and preserve the original worker workspace. Continue requires current
 project/worker authority, an idempotency key and observed task/run versions. Unknown
 outcomes must inspect the original continuation receipt; a wake alone is not completion.
+Project mains may continue their own project's existing worker tasks from the
+original accepted Owner Chat input, using a current run credential, an unchanged
+Owner-attributed handoff comment, idempotency key and explicit task/run observations.
+An empty continue request grants nothing. Recheck current main/worker policy,
+conversation generation, latest Owner input and task instructions at admission.
+Recheck the original-main operation again before its first worker dispatch after
+capacity waiting or restart. Status/assignment changes never settle unknown input,
+provider effects or session ownership through generic stale-recovery cleanup.
+Normal main completion retains only an already committed operation; it cannot
+authorize another continuation. Preserve unknown delivery, human holds and original
+task/run history; registration alone is never authority to resume work.
 Formal review retains current stage, participant and policy bindings. Keep human gates,
 manual holds and completed/cancelled work intact. Saved Recovery directory realization
 and ownership govern reuse, even for a configured non-Git source.

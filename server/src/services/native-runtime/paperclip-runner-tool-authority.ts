@@ -489,7 +489,7 @@ export class PaperclipRunnerToolAuthority {
     if (call.tool === "set_task_title") recovered = await this.#setTaskTitle(input, true);
     else if (call.tool === "send_chat_message") recovered = await this.#sendChatMessage(input, this.#privacyActor(run), true);
     else if (call.tool === "submit_complaint" || call.tool === "submit_suggestion") recovered = await this.#submitCommentary(call.tool, input, true);
-    else if (call.tool === "create_task") recovered = await this.#createTask(input, null, true);
+    else if (call.tool === "create_task") recovered = await this.#createTask(input, null, true, this.#privacyActor(run), context.issue.conversationAgentId ? null : context.issue.id);
     else if (call.tool === "request_human_input") recovered = await this.#requestHumanInput(input, null, true);
     else if (call.tool === "reassign_task") recovered = await this.#reassignTask(input, true);
     else if (call.tool === "set_task_monitor") recovered = await this.#setTaskMonitor(input, true);
@@ -1123,7 +1123,8 @@ export class PaperclipRunnerToolAuthority {
       case "request_human_input": return this.#requestHumanInput(input,
         (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null);
       case "create_task": return this.#createTask(input,
-        (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null);
+        (await captureRunIdentity(this.db, this.binding, { readScope: "identity" })).context?.id ?? null,
+        false, this.#privacyActor(context.run), context.issue.conversationAgentId ? null : context.issue.id);
       case "reassign_task": return this.#reassignTask(input);
       case "set_task_title": return this.#setTaskTitle(input);
       case "set_task_monitor": return this.#setTaskMonitor(input);
@@ -1840,16 +1841,22 @@ export class PaperclipRunnerToolAuthority {
     if (!member) throw forbidden("Person is not an active company member");
   }
 
-  async #createTask(input: Record<string, unknown>, identityContextId: string | null, receiptOnly = false): Promise<unknown> {
+  async #createTask(input: Record<string, unknown>, identityContextId: string | null, receiptOnly = false, actor?: AuthorizationActor, parentId?: string | null): Promise<unknown> {
     const executionKeys = ["assigneeAdapterOverrides", "executionPolicy", "executionWorkspacePreference", "executionWorkspaceSettings", "workspaceSelection"];
     const executionOptions = createIssueInputSchema.pick({ assigneeAdapterOverrides: true, executionPolicy: true,
       executionWorkspacePreference: true, executionWorkspaceSettings: true, workspaceSelection: true }).partial()
       .parse(Object.fromEntries(executionKeys.filter(key => input[key] !== undefined).map(key => [key, input[key]])));
     const pm = await currentPmCoordinationScope(this.db, this.binding);
     if (pm && (typeof input.initialPlan !== "string" || !input.initialPlan.trim())) throw badRequest("PM dispatch requires the remaining plan in initialPlan");
-    const pmSelection = pm ? await assertPmDispatch(this.db, pm, { ...executionOptions, projectId: input.projectId ?? pm.projectId,
-      assigneeAgentId: input.assigneeActorId, assigneeUserId: input.assigneeUserId }) : null;
-    if (pmSelection) executionOptions.assigneeAdapterOverrides = pmSelection.assigneeAdapterOverrides;
+    const dispatchInput = { ...executionOptions, parentId, projectId: input.projectId ?? pm?.projectId,
+      assigneeAgentId: input.assigneeActorId, assigneeUserId: input.assigneeUserId };
+    const pmSelection = pm ? await assertPmDispatch(this.db, pm, dispatchInput, { actor }) : null;
+    if (pmSelection) Object.assign(executionOptions, {
+      assigneeAdapterOverrides: pmSelection.assigneeAdapterOverrides,
+      workspaceSelection: dispatchInput.workspaceSelection,
+      executionWorkspaceSettings: dispatchInput.executionWorkspaceSettings,
+      executionWorkspacePreference: dispatchInput.executionWorkspacePreference,
+    });
     const idempotencyKey = requiredString(input.idempotencyKey);
     if (input.status !== undefined && input.status !== "backlog" && input.status !== "todo") {
       throw new Error("paperclip_runner_tool_input_invalid");
@@ -1880,7 +1887,15 @@ export class PaperclipRunnerToolAuthority {
     }) => {
       const parentIssueId = context.issue.conversationAgentId ? null : context.issue.id;
       const projectId = nullableProviderId(input.projectId) ?? pm?.projectId ?? (parentIssueId ? context.issue.projectId : null);
-      if (pm) await assertPmDispatch(tx, pm, { ...executionOptions, projectId, assigneeAgentId, assigneeUserId });
+      if (pm) {
+        const currentDispatch = { ...executionOptions, projectId, assigneeAgentId, assigneeUserId, parentId: parentIssueId };
+        await assertPmDispatch(tx, pm, currentDispatch, { actor: this.#privacyActor(context.run) });
+        Object.assign(executionOptions, {
+          workspaceSelection: currentDispatch.workspaceSelection,
+          executionWorkspaceSettings: currentDispatch.executionWorkspaceSettings,
+          executionWorkspacePreference: currentDispatch.executionWorkspacePreference,
+        });
+      }
       if (this.binding.museRuntime && projectId) {
         const access = await authorizationService(tx).decide({ actor: this.#privacyActor(context.run), action: "project:read",
           resource: { type: "project", companyId: this.binding.companyId, projectId } });
@@ -2108,7 +2123,13 @@ export class PaperclipRunnerToolAuthority {
       if (!target) throw new Error("paperclip_runner_task_not_found");
       const pm = await currentPmCoordinationScope(tx, this.binding);
       if (pm) await assertPmDispatch(tx, pm, { projectId: target.projectId, assigneeAgentId, assigneeUserId,
-        assigneeAdapterOverrides: target.assigneeAdapterOverrides }, { existingTask: true });
+        assigneeAdapterOverrides: target.assigneeAdapterOverrides, parentId: target.parentId,
+        executionPolicy: target.executionPolicy,
+        workspaceSelection: target.executionWorkspaceId ? { kind: "existing", workspaceId: target.executionWorkspaceId }
+          : target.workspaceSelection?.selection ?? (target.executionWorkspaceSettings?.sessionOnly ? { kind: "session_only" } : undefined),
+        executionWorkspaceSettings: target.executionWorkspaceSettings,
+        executionWorkspacePreference: target.executionWorkspacePreference,
+      }, { existingTask: true, actor: this.#privacyActor(run) });
       const actor = this.#privacyActor(run);
       for (const action of ["issue:read", "tasks:assign"] as const) {
         const decision = await authorizationService(tx).decide({ actor, action, resource: {

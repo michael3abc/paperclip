@@ -118,6 +118,7 @@ import {
 } from "@paperclipai/db";
 import {
   conflict,
+  forbidden,
   HttpError,
   notFound,
 } from "../../errors.js";
@@ -1075,6 +1076,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       )).for("update") : [];
       const ownsIssue = owner?.assigneeAgentId === run.agentId &&
         context.wakeReason !== "source_scoped_recovery_action";
+      // Capacity waits and restart recovery must not outlive the original main
+      // handoff authority. Recheck under the issue lock before first dispatch.
+      if (!run.startedAt && context.continuationReceiptId) {
+        // A comment wake may already own this queued run. /continue can join
+        // that same input, but keeps its own immutable coalesced wake receipt.
+        const [continuationWake] = await tx.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.idempotencyKey, `issue-continue:${context.continuationReceiptId}`), eq(agentWakeupRequests.companyId, run.companyId),
+          eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+        ));
+        if (!continuationWake?.idempotencyKey?.startsWith("issue-continue:"))
+          throw forbidden("Continuation run has no original wake receipt");
+        await assertIssueContinuationWake(tx, { companyId: run.companyId, agentId: run.agentId, issueId,
+          key: continuationWake.idempotencyKey, actorType: continuationWake.requestedByActorType,
+          actorId: continuationWake.requestedByActorId, context, admittedRunId: run.id });
+      }
       const [handoff] = issueId ? await tx.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, run.companyId), eq(caseHandoffs.issueId, issueId),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))).limit(1) : [];
       if (handoff && (handoff.wakeupRequestId !== run.wakeupRequestId || handoff.state === "awaiting_release"))
@@ -3206,7 +3222,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
           const issueStateGuard = opts.issueStateGuard;
           await assertIssueContinuationWake(tx as unknown as Db, { companyId: agent.companyId, agentId, issueId: issue.id,
-            key: opts.idempotencyKey, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId });
+            key: opts.idempotencyKey, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId, context: enrichedContextSnapshot });
           const activeMonitorRun = issueStateGuard?.monitorNextCheckAt === undefined ? null
             : await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
               eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.nativeIssueId, issue.id),

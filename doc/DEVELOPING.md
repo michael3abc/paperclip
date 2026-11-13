@@ -5177,6 +5177,14 @@ relation rather than trusting contextSnapshot. Tests must use owned databases an
 join all scheduler work before teardown; advance fake deadlines separately from real
 PostgreSQL completion. Cover empty/terminal quiet, lost events, restart, drain, repeated
 faults, duplicate operations, current PM scope and formal review finalization.
+Project-main continuation additionally binds the original accepted Owner Chat
+message, manual wake, current native authority and conversation generation to a
+run-authored, Owner-attributed target-task handoff. Require the handoff comment,
+idempotency key and explicit observed task/run versions. A normal main completion
+can preserve an existing receipt, never create fresh authority. Exercise the actual
+HTTP route through the heartbeat queue, not only the authorization helper; reject
+superseding instructions, cancelled/superseded authority, cross-project targets,
+changed handoffs and uncertain input without creating a worker run.
 When pumping fake timers to settle PostgreSQL I/O, compare the saved absolute
 deadline after reconstruction instead of adding a fixed elapsed interval. Exercise
 delayed startup, retain exact-deadline assertions across restart, and observe both
@@ -5224,25 +5232,29 @@ new credential or a worker-agent replacement in a legacy lane.
 
 ### Physical workspace admission
 
-Every managed writing task keeps selection, provider cwd and ownership in one
-formal workspace binding. Preserve project defaults. Task prose is not a
-workspace selection: register an existing worktree through the project source
-API, then select it with workspaceSelection (configured_source/shared), or use
-a supported managed_isolated selection and bind its realized result. Remote
-worktrees are separate remote_managed sources on their own Bridge host. Shared
-means sharing that source directory, not locking an entire project/repository.
+Every managed code task selects a registered Git repository root or linked
+worktree through `workspaceSelection: { kind: "existing", workspaceId }`, or
+the project's open registered default. The main-managed lifecycle API owns
+registration; source registration alone does not create an ExecutionWorkspace.
+External-resource work explicitly selects `session_only`; it does not initialize
+Git. Session cwd remains separate from execution placement. Remote directories
+are inspected on their registered host.
 
-Admission serializes equal, symlink-aliased and parent/child physical paths,
-including registrations in different projects. Independent Git worktree roots
-remain concurrent even when they share Git objects. Worktree creation reserves
-the target before setup; it never claims the common Git directory. Native,
-local and Bridge tasks use the same host-path claims. Provider-managed storage
-uses its durable namespace/reference and retains runtime writer, lease,
-persistence and cleanup fences. GPU/capacity/deployment limits are independent.
-Invalid paths, mismatched bindings and unsupported isolation fail before
-provider launch, without a source-directory fallback. Existing admitted work
-keeps its contract until its next normal admission; terminal status alone is
-not stop or cleanup proof. Cross-scope holder details remain private.
+Main/PM new-worker dispatch, HTTP issue creation and Runner creation share this
+contract. Persist the normalized selection into the actual create input and
+recheck current policy and workspace admission inside its transaction. Dispatch
+diagnostics must describe `existing`/`session_only`/project-default placement,
+never the retired configured_source or exclusive-writer rule. Cover the actual
+create consumers, including policy changes between middleware and transaction;
+restoring an existing worker task does not prove new-task creation.
+
+Equal paths, aliases and parent/child overlaps permit cooperative participants.
+Main controls convergence, merge and retirement. Keep current worker/model grants,
+project/company access, source-host matching, production-root protection, Owner
+holds, native-session ordering and unknown-input fences. Historical cleanup is
+source-scoped and does not serialize new participants; terminal status alone
+is not stop, cleanup or retirement proof. GPU/capacity/deployment limits remain
+independent. Cross-scope diagnostic details remain private.
 
 Use GET/PUT /issues/:id/workspace with expectedBindingRevision and requestKey.
 Selection is persistent and applies at the next normal admission; it does not

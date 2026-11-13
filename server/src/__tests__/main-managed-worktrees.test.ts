@@ -94,6 +94,76 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host).toHaveBeenCalledTimes(1);
   });
 
+  async function legacyRemoteFixture() {
+    const f = await fixture(true), sourceIssueId = randomUUID();
+    await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, projectId: f.projectId,
+      title: "Original stopped task", status: "blocked", assigneeAgentId: f.agentId, executionWorkspaceId: null });
+    await db.insert(executionWorkspaces).values({ id: f.workspaceId, companyId: f.companyId, projectId: f.projectId,
+      projectWorkspaceId: f.sourceId, sourceIssueId, name: "Legacy remote primary", cwd: f.sourceCwd, branchName: null,
+      mode: "shared_workspace", strategyType: "project_primary", providerType: "local_fs",
+      metadata: { historicalReceipt: { original: true } } });
+    await db.update(issues).set({ executionWorkspaceId: f.workspaceId }).where(eq(issues.id, sourceIssueId));
+    return { ...f, sourceIssueId, registration: { ...f.registration, kind: "repository_root" as const, cwd: f.sourceCwd } };
+  }
+
+  it("adopts a legacy remote project-primary provider only after host proof and keeps the original identity", async () => {
+    const f = await legacyRemoteFixture(), before = await f.row();
+    f.host.mockImplementationOnce(async (hostId, input) => {
+      expect(hostId).toBe("fixture-remote");
+      expect(input).toMatchObject({ action: "inspect", cwd: f.sourceCwd, sourceCwd: f.sourceCwd });
+      expect(await f.row()).toMatchObject({ providerType: "local_fs", metadata: { mainManagedWorktree: { phase: "converging" } } });
+      return { ...f.response(input), dirty: true }; // Dirty files are observed, never rewritten.
+    });
+    const receipt = await f.service.operate(f.scope, f.registration);
+    expect(receipt).toMatchObject({ phase: "open", generation: 1 });
+    expect(await f.row()).toMatchObject({ id: before.id, cwd: before.cwd, projectWorkspaceId: before.projectWorkspaceId,
+      sourceIssueId: before.sourceIssueId, strategyType: "project_primary", providerType: "remote_managed",
+      openedAt: before.openedAt, createdAt: before.createdAt, metadata: { historicalReceipt: { original: true } } });
+    expect(await f.service.operate(f.scope, f.registration)).toEqual(receipt);
+    const restarted = mainManagedWorktreeService(db, { host: f.host });
+    expect(await restarted.recheck(f.scope, f.registration.operationId, 1)).toEqual(receipt);
+    expect(f.host).toHaveBeenCalledTimes(1);
+    await expect(restarted.recheck(f.scope, f.registration.operationId, 0)).rejects.toThrow("worktree_generation_conflict");
+    await expect(f.service.operate(f.scope, { ...f.registration, branch: "other" })).rejects.toThrow("worktree_operation_conflict");
+  });
+
+  it.each(["host_failure", "wrong_branch", "source_changed", "active_during_inspect"])(
+    "legacy remote adoption never opens or changes provider after %s", async reason => {
+      const f = await legacyRemoteFixture();
+      f.host.mockImplementationOnce(async (_host, input) => {
+        if (reason === "host_failure") throw new Error("worktree_repository_mismatch");
+        if (reason === "wrong_branch") return { ...f.response(input), branch: "foreign" };
+        if (reason === "source_changed") await db.update(projectWorkspaces).set({ metadata: { hostId: "foreign-host" } })
+          .where(eq(projectWorkspaces.id, f.sourceId));
+        if (reason === "active_during_inspect") await db.insert(heartbeatRuns).values({ companyId: f.companyId,
+          agentId: f.agentId, status: "running", issueId: f.sourceIssueId });
+        return f.response(input);
+      });
+      await expect(f.service.operate(f.scope, f.registration)).rejects.toThrow();
+      expect(await f.row()).toMatchObject({ providerType: "local_fs", sourceIssueId: f.sourceIssueId,
+        metadata: { historicalReceipt: { original: true }, mainManagedWorktree: { phase: "converging", pendingOperationId: null } } });
+      await expect(f.service.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_registration_incomplete");
+      expect(await f.service.recheck(f.scope, f.registration.operationId, 1)).toMatchObject({ status: "failed", pending: false });
+      expect(f.host).toHaveBeenCalledTimes(1);
+    });
+
+  it.each(["initialize", "provider", "provider_ref", "row_host", "source_host", "source", "cwd", "active_run"])(
+    "legacy remote adoption rejects %s before host inspection", async reason => {
+      const f = await legacyRemoteFixture();
+      if (reason === "provider") await db.update(executionWorkspaces).set({ providerType: "git_worktree" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (reason === "provider_ref") await db.update(executionWorkspaces).set({ providerRef: "another-provider" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (reason === "row_host") await db.update(executionWorkspaces).set({ metadata: { hostId: "foreign-host" } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (reason === "source_host") await db.update(projectWorkspaces).set({ metadata: { hostId: 42 } }).where(eq(projectWorkspaces.id, f.sourceId));
+      if (reason === "source") await db.update(executionWorkspaces).set({ projectWorkspaceId: null }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (reason === "cwd") await db.update(executionWorkspaces).set({ cwd: f.sourceCwd + "/nested" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (reason === "active_run") await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        status: "queued", contextSnapshot: { executionWorkspaceId: f.workspaceId } });
+      const before = await f.row();
+      await expect(f.service.operate(f.scope, { ...f.registration, ...(reason === "initialize" ? { action: "initialize" as const } : {}) })).rejects.toThrow();
+      expect(await f.row()).toEqual(before);
+      expect(f.host).not.toHaveBeenCalled();
+    });
+
   it("rejects foreign nested source scope and out-of-parent coordinates before host operations", async () => {
     const f = await fixture(), foreignProject = randomUUID();
     await db.insert(projects).values({ id: foreignProject, companyId: f.companyId, name: "Foreign" });

@@ -12,6 +12,7 @@ import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "..
 import { readNativeExecutionReviewAssignment } from "../services/native-runtime/native-execution-review.js";
 import { boundRunIssueIdSql } from "../services/run-task-binding.js";
 import { assertPmContinuation } from "../services/issue-continuations.js";
+import type { AuthorizationActor } from "../services/authorization.js";
 import { continueIssueSchema } from "@paperclipai/shared";
 
 // Explicit read routes: a new GET route is not automatically execution-free.
@@ -19,7 +20,7 @@ const ISSUE_READ_PATH = /^(?:|\/(?:recent-comments|comments(?:\/[^/]+)?|document
 
 /** Closed API surface shared by generic API calls and direct authenticated HTTP. */
 export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, request: {
-  method: string; path: string; query: Record<string, unknown>; body: Record<string, unknown>; runId?: string;
+  method: string; path: string; query: Record<string, unknown>; body: Record<string, unknown>; runId?: string; actor?: AuthorizationActor;
 }) {
   const { method, query, body } = request;
   const path = request.path.replace(/\/$/, "");
@@ -93,7 +94,7 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
       if (Object.keys(body).some(key => !fields.includes(key)) || ![undefined, "todo", "backlog"].includes(body.status as string | undefined)
         || typeof body.initialPlan !== "string" || !body.initialPlan.trim()) deny();
       if ((source.conversationAgentId && body.parentId != null) || (!source.conversationAgentId && body.parentId !== source.id)) deny();
-      await assertPmDispatch(db, pm, body);
+      await assertPmDispatch(db, pm, body, { actor: request.actor });
       if (body.parentId) await assertPmIssue(db, pm, String(body.parentId));
       body.executionPolicy = pmDispatchExecutionPolicy(pm, body.executionPolicy, source.executionPolicy);
       allowed = true; operation = "dispatch";
@@ -143,7 +144,8 @@ export async function assertPmApiRequest(db: Db, pm: PmCoordinationScope, reques
  * task creation by the main agent is unchanged.
  */
 export async function applyMainAgentDispatch(db: Db, identity: { agentId: string; companyId: string }, request: {
-  method: string; path: string; body: Record<string, unknown>;
+  method: string; path: string; body: Record<string, unknown>; actor?: AuthorizationActor;
+  onDispatch?: (scope: PmCoordinationScope) => void;
 }) {
   if (request.method !== "POST") return false;
   const match = request.path.replace(/\/$/, "").match(/^\/companies\/([^/]+)\/issues$/);
@@ -156,21 +158,30 @@ export async function applyMainAgentDispatch(db: Db, identity: { agentId: string
   const policyWorker = typeof body.assigneeAgentId === "string" && scope.delegation!.workers.some(worker => worker.agentId === body.assigneeAgentId);
   if (overrides?.workerSelectionId == null && !policyWorker) return false;
   body.projectId ??= scope.projectId;
-  await assertPmDispatch(db, scope, body);
+  await assertPmDispatch(db, scope, body, { actor: request.actor });
   body.executionPolicy = pmDispatchExecutionPolicy(scope, body.executionPolicy, null);
+  request.onDispatch?.(scope);
   return true;
 }
 
 export function pmCoordinationMiddleware(db: Db): RequestHandler {
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     try {
       if (req.actor.type === "agent" && req.actor.agentId && req.actor.companyId) {
         const pm = await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId });
-        if (pm) await assertPmApiRequest(db, pm, { method: req.method, path: req.path,
-          query: req.query, body: req.body ?? {}, runId: req.actor.runId });
+        const retainDispatchCheck = (scope: PmCoordinationScope) => {
+          // Server-only callback: the HTTP create transaction rechecks the admitted policy and workspace.
+          res.locals.revalidateWorkerDispatch = (tx: Db, body: Record<string, unknown>) =>
+            assertPmDispatch(tx, scope, body, { actor: req.actor });
+        };
+        if (pm) {
+          await assertPmApiRequest(db, pm, { method: req.method, path: req.path,
+            query: req.query, body: req.body ?? {}, runId: req.actor.runId, actor: req.actor });
+          if (req.method === "POST" && /^\/companies\/[^/]+\/issues\/?$/.test(req.path)) retainDispatchCheck(pm);
+        }
         else if (req.body && typeof req.body === "object") {
           const applied = await applyMainAgentDispatch(db, { agentId: req.actor.agentId, companyId: req.actor.companyId },
-            { method: req.method, path: req.path, body: req.body });
+            { method: req.method, path: req.path, body: req.body, actor: req.actor, onDispatch: retainDispatchCheck });
           if (req.actor.keyScope?.kind === "session_bridge" && req.method === "POST" && /^\/companies\/[^/]+\/issues\/?$/.test(req.path)
             && req.body.assigneeAgentId && req.body.assigneeAgentId !== req.actor.agentId && !applied)
             throw forbidden("Session bridge dispatch requires an approved worker selection");
