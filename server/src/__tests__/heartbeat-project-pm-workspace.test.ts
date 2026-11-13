@@ -290,12 +290,14 @@ suite("project PM role and workspace at claim", () => {
     try {
       const runs: string[] = [];
       for (const task of tasks) {
-        const wake = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "system", contextSnapshot: { issueId: task.id } });
+        const wake = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId: task.id } });
         runs.push(wake!.id);
       }
-      await vi.waitFor(() => {
-        expect(gates.has(runs[0]!)).toBe(true);
-        expect(gates.has(runs[2]!)).toBe(true);
+      await vi.waitFor(async () => {
+        for (const index of [0, 2]) {
+          const run = await heartbeat.getRun(runs[index]!);
+          expect(gates.has(runs[index]!), JSON.stringify({ status: run?.status, error: run?.error, code: run?.errorCode })).toBe(true);
+        }
       }, { timeout: 20_000 });
       expect((await heartbeat.getRun(runs[1]!))!.status).toBe("queued");
       for (const index of [0, 2]) {

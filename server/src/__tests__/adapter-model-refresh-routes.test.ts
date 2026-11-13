@@ -281,7 +281,7 @@ describe('company scoped model discovery', () => {
     const refreshModels = vi.fn(async () => { throw new Error('private transport detail'); });
     registerServerAdapter({ type: refreshableAdapterType, catalogScope: 'company', listModels, refreshModels,
       models: [{ id: 'global', label: 'global' }], execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
-      testEnvironment: async () => ({ adapterType: refreshableAdapterType, status: 'pass', checks: [] }) });
+      testEnvironment: async () => ({ adapterType: refreshableAdapterType, status: 'pass', checks: [], testedAt: new Date().toISOString() }) });
     const app = await createApp();
     const res = await requestApp(app, base => request(base).get('/api/companies/company-1/adapters/' + refreshableAdapterType + '/models?hostId=one&provider=claude'));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
