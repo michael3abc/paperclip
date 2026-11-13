@@ -88,16 +88,15 @@ function acceptsExplicitUserTurn(adapterType: string): boolean {
   return isConversationAdapter(adapterType) || adapterType === BRIDGE_SESSION_ADAPTER;
 }
 
-/** The bridge has no host PID. Its stop proof is the adapter's own receipt,
- * written only after the bridge confirmed the owned turn settled. A forced or
- * unconfirmed stop, or any other terminal state, retains the hold. */
+/** The bridge has no host PID. Its stop proof is the adapter's own receipt or
+ * the terminal stop settlement (liveness-first: a forced stop acknowledged at
+ * terminal status is also a stop; evidence is collected in the background). */
 export function bridgeSessionStopAcknowledged(run: Pick<Run, "id" | "status" | "runtimeMode" | "resultJson" | "nativeSessionId">): boolean {
   if (run.runtimeMode !== "legacy" || !["cancelled", "timed_out"].includes(run.status)) return false;
   // A cancelled run that never recorded a session is stopped only by the adapter's own never-delivered proof.
   if (hasVerifiedBridgeUndispatchedStop(run)) return true;
   const cancellation = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
-  return cancellation?.state === "acknowledged" && cancellation.forced === false &&
-    typeof cancellation.acknowledgedAt === "string";
+  return cancellation?.state === "acknowledged" && typeof cancellation.acknowledgedAt === "string";
 }
 
 /** A same-session handoff from a bridge turn whose interrupt was requested but
