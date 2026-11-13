@@ -56,7 +56,7 @@ requires an instance administrator (or local implicit board), existing company
 access and a real company before reading credentials. Other members and agent
 keys cannot read the host's subscriptions. No database migration is required.
 
-The source is this server host's existing CLI login, not an AI Connection or an
+The source is the company-selected host's existing CLI login, not an AI Connection or an
 agent's selected billing route. Codex reads account RPCs without creating a turn;
 its window labels use reported durations. Claude uses the existing local CLI
 credential reader and subscription usage parser. Antigravity reads its existing
@@ -68,8 +68,22 @@ copied into Paperclip, logged or returned, and AI credit overages stay unchanged
 The Claude and Antigravity service interfaces are native client interfaces;
 provider changes or refusals must remain visible failures, without a fallback.
 
+Set `PAPERCLIP_HOST_SUBSCRIPTION_QUOTA_SOURCES_FILE` to an external version-1 JSON
+file with `companies` keyed by verified company ID. Each entry has `hostId` and
+`kind: "local"` or `kind: "ssh"`; SSH entries additionally require a registered
+`sshAlias` and absolute `readerPath` to the sealed standalone `.mjs` collector.
+Home selects local `michael-server`; Shopee selects `shopee-e` / `Shopee-E`.
+Bundle `server/src/bin/host-subscription-quota-cli.ts` with the existing native
+provider readers and install the output in a remote immutable runtime directory.
+The collector runs on demand as the remote login user; credentials never leave
+that host. No Bridge restart, provider session or model inference is required.
+With a configured file, missing companies and invalid sources fail explicitly.
+Remote failures never fall back to this server's accounts. Without the optional
+file, the instance uses its local CLI accounts. See the managed service manifest
+for the installed collector and configuration paths.
+
 The visible page checks every 60 seconds and offers Refresh. Requests coalesce
-and cache for 60 seconds server-side, including failures; Refresh respects that
+and cache for 60 seconds per company and source, including failures; Refresh respects that
 cache. There is no timer/daemon or provider traffic when no page requests data.
 Provider reads are tracked until actual settlement and blocked under an idle
 maintenance drain. Subscription bars fill by the remaining percentage and expose

@@ -36,7 +36,11 @@ When your task produces a user-inspectable deliverable file, follow the Papercli
 Host subscription quotas are an explicit operator feature, enabled only with
 PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1. The dashboard endpoint requires instance
 admin and existing company access before any host login is read. Keep these
-snapshots separate from company-managed AI connections and billing. Poll only
+snapshots separate from company-managed AI connections and billing. Source selection
+is operator-owned and company-ID scoped: Home uses michael-server; Shopee uses
+shopee-e through its finite SSH collector, reading that host's CLI logins only.
+Never accept a client-selected host or fall back to local accounts after remote
+failure. Cache and in-flight requests are keyed by company plus source. Poll only
 while the Dashboard is visible, cache for 60 seconds, track provider work through
 maintenance admission, and preserve unknown values and provider failures. Codex
 window labels derive from durations, never primary/secondary position. Subscription
@@ -44,4 +48,3 @@ bar fill, percentage labels and accessible values all show remaining quota; warn
 colors still reflect depletion. Other spending bars retain consumption semantics.
 Antigravity shows only its reported quota groups; never infer Gemini quota or enable credits.
 See doc/DEVELOPING.md, Host subscription quota dashboard.
-

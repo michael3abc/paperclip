@@ -24,6 +24,8 @@ undispatched proof may leave remote instruction copies pending cleanup without
 holding a later input; preserve the copy and original provider/source identity.
 See `doc/execution-semantics.md`.
 
+Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.

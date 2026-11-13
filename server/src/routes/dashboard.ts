@@ -35,7 +35,7 @@ export function dashboardRoutes(db: Db) {
       return;
     }
     res.set("Cache-Control", "no-store");
-    res.json(await fetchHostSubscriptionQuotas());
+    res.json(await fetchHostSubscriptionQuotas(companyId));
   });
 
   router.get("/companies/:companyId/dashboard", async (req, res) => {

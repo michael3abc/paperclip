@@ -1,5 +1,9 @@
 # Paperclip fork
 
+Dashboard subscription quota sources are company-scoped operator configuration:
+Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
+cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
+
 Upstream reference: `upstream/master` (fetch-only). Recorded merge base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
