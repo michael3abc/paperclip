@@ -1,5 +1,18 @@
 # Developing
 
+## Shared Bridge workers across hosts
+
+Plain shared workers can set `runtimeConfig.bridgeWorkerHostCapacity` to an
+explicit host-to-concurrency map. Full task model IDs are required, such as
+`shopee-d/codex/gpt-6-astra`; the worker's default host/model is never a routing
+fallback. Catalog queries resolve the dispatch owner's host before probing.
+Routing and admission live in `services/bridge-worker-routing.ts` and
+`services/heartbeat/bridge-worker-routing.ts`; heartbeat only coordinates them.
+No schema migration or Bridge restart is required. Verify with the routing unit
+suite, PM worker policy/catalog suites and the assembled heartbeat project-PM
+workspace suite, including concurrent D/E tasks and per-host queue promotion.
+Use owned PostgreSQL and the release-bound related selector.
+
 ## Durable stop settlement
 
 `heartbeat/stop-settlement.ts` owns the original-run claim and bounded verification

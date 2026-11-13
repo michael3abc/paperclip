@@ -1,5 +1,30 @@
 # pm-agents
 
+Shared Bridge workers may serve several hosts with the Owner-owned
+`runtimeConfig.bridgeWorkerHostCapacity`, for example
+`{"shopee-d":4,"shopee-e":4}`. This opt-in applies only to plain provider
+workers, without a main role or workspace binding; fixed workers retain their
+existing behavior. Each main's catalog is scoped before discovery to its own
+host, using the same shared worker IDs but that host's complete model selectors.
+The server checks company, permitted host, selected source and provider; it
+persists `contextSnapshot.bridgeWorkerRoute` at claim and revalidates it before
+workspace preparation. Effective host configuration is per run, never a mutation
+of the shared worker. Queue admission holds the existing per-agent start lock
+and reserves independent per-host capacity, skipping a full host's queued tasks
+so another host can start. No remote probes occur in admission, and no offline
+host falls back to another host. Existing retry scheduling remains responsible
+for transient failures. Bridge task bindings already isolate company, agent,
+task, host and provider; changing the route never imports another native session.
+
+For Shopee consolidation, retain E worker IDs and their original sessions,
+rename them Shopee Shared Codex/Claude worker, and migrate the three main-agent
+worker policies with revision/document-hash checks. Preserve every model, effort,
+permission, speed, option ID and default; change only the D policies' worker IDs.
+Before opt-in, make any historical E task's implicit model settings explicit
+with their identical prior defaults. Retire redundant D workers only after
+confirming they have no assigned tasks or live work; retain their history.
+Main agents, nono, host logins and filesystem locations are unchanged.
+
 Moved verbatim from `AGENTS.md` on 2026-11-13. These rules and records stay binding; read this file before acting on the topic. Zero-slot PM policy, bundle layout, dispatch, read scope, worker policy, watchdog, homes
 
 Keep PM worker-policy and project execution-record OpenAPI operations aligned

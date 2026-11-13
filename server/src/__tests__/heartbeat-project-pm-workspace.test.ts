@@ -264,6 +264,54 @@ suite("project PM role and workspace at claim", () => {
     expect(work.calls[0]![0].config).toMatchObject({ cwd: pm.workerRoot, model: "task-worker-model", modelReasoningEffort: "xhigh" });
   }, 60_000);
 
+  it("runs D and E through one shared worker with independent capacity and pinned remote cwd", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Shared remote company", issuePrefix: `S${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Shared Codex", status: "idle", adapterType: "ccpocket_bridge",
+      adapterConfig: { provider: "codex", hostId: "shopee-e", model: "shopee-e/codex/default" },
+      runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 1, "shopee-e": 1 },
+        heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 2 } }, permissions: {} });
+    const tasks: Array<{ id: string; hostId: string; cwd: string }> = [];
+    for (const hostId of ["shopee-d", "shopee-d", "shopee-e"]) {
+      const id = randomUUID(), projectId = randomUUID(), cwd = `/remote-only/${companyId}/${projectId}`;
+      await db.insert(projects).values({ id: projectId, companyId, name: id, status: "in_progress" });
+      await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd,
+        metadata: { hostId }, remoteWorkspaceRef: `${hostId}:${cwd}`, isPrimary: true });
+      await db.insert(issues).values({ id, companyId, projectId, title: id, status: "todo", assigneeAgentId: agentId,
+        assigneeAdapterOverrides: { adapterConfig: { model: `${hostId}/codex/task-model` } } });
+      tasks.push({ id, hostId, cwd });
+    }
+    const gates = new Map<string, () => void>();
+    execute.mockImplementation(async (input: any) => {
+      await new Promise<void>(resolve => gates.set(input.runId, resolve));
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    try {
+      const runs: string[] = [];
+      for (const task of tasks) {
+        const wake = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "system", contextSnapshot: { issueId: task.id } });
+        runs.push(wake!.id);
+      }
+      await vi.waitFor(() => {
+        expect(gates.has(runs[0]!)).toBe(true);
+        expect(gates.has(runs[2]!)).toBe(true);
+      }, { timeout: 20_000 });
+      expect((await heartbeat.getRun(runs[1]!))!.status).toBe("queued");
+      for (const index of [0, 2]) {
+        const input = execute.mock.calls.find(([input]) => input.runId === runs[index])![0];
+        expect(input.config).toMatchObject({ hostId: tasks[index]!.hostId, model: `${tasks[index]!.hostId}/codex/task-model` });
+        expect(input.context.paperclipWorkspace).toMatchObject({ cwd: tasks[index]!.cwd, remoteHostId: tasks[index]!.hostId });
+        expect((await heartbeat.getRun(runs[index]!))!.contextSnapshot).toMatchObject({ bridgeWorkerRoute: { hostId: tasks[index]!.hostId } });
+      }
+      gates.get(runs[0]!)!();
+      await vi.waitFor(() => expect(gates.has(runs[1]!)).toBe(true), { timeout: 20_000 });
+      expect((await heartbeat.getRun(runs[2]!))!.status).toBe("running");
+    } finally {
+      for (const release of gates.values()) release();
+      execute.mockImplementation(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+    }
+  }, 60_000);
+
   it("delivers a native PM turn in its home on the worker host without probing that path locally", async () => {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID();
     const workerRoot = "/remote-only/" + companyId + "/repo", pmHome = "/remote-only/" + companyId + "/pm-home";

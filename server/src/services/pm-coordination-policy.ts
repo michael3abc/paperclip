@@ -1,3 +1,4 @@
+import { bridgeWorkerSupportsHost, resolveBridgeWorkerRoute } from "./bridge-worker-routing.js";
 import { pmInstructionLayout, type PmInstructionLayoutVersion, aiConnectionBindingSchema } from "@paperclipai/shared";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
 import { mainAgentDispatchScope, workerPolicyLayout } from "./main-agent-workers.js";
@@ -178,8 +179,8 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     throw forbidden("The selected shared worker is unavailable; inspect its recorded status", { code: "PM_WORKER_UNAVAILABLE" });
   }
   // A Bridge worker runs on its own host and can only open a source that lives on that host.
-  const workerHost = agentHost(worker);
-  if (workerHost !== agentHost(owner) || (sourceHost !== undefined && sourceHost !== workerHost)) {
+  const workerHost = resolveBridgeWorkerRoute(worker, overrides)?.hostId ?? agentHost(worker);
+  if (!bridgeWorkerSupportsHost(worker, workerHost) || workerHost !== agentHost(owner) || (sourceHost !== undefined && sourceHost !== workerHost)) {
     throw unprocessable("The selected worker runs on a different host than this task's configured source; choose a worker on the source's host.",
       { code: "PM_WORKER_HOST_MISMATCH", workerHost, sourceHost: sourceHost ?? null });
   }
@@ -193,7 +194,7 @@ export async function assertPmDispatch(db: Db, scope: PmCoordinationScope, input
     const parsedBinding = aiConnectionBindingSchema.safeParse(worker.runtimeConfig?.aiConnection).data;
     validateWorkerChoices({ version: 2, defaultSelectionId: choice.id, workers: [{ ...group, selections: [choice] }] }, [{
       agentId: worker.id, name: worker.name, harness: group.harness,
-      permissions: workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType), defaultAiConnection: parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding, models: await pmWorkerModels(db, worker, choice.aiConnection),
+      permissions: workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType), defaultAiConnection: parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding, models: await pmWorkerModels(db, worker, choice.aiConnection, workerHost),
     }]);
     if (group.harness !== worker.adapterType || !workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType).includes(choice.permission)) {
       throw forbidden("Shared worker harness or permission support changed; review its worker settings");

@@ -1,3 +1,4 @@
+import { bridgeWorkerSupportsHost } from "./bridge-worker-routing.js";
 import { aiConnectionBindingSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
@@ -23,9 +24,9 @@ export function pmWorkerPolicyRevision(value: unknown): string | null {
   return value == null ? null : createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
 
-export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string | null): Promise<PmWorkerCatalogEntry[]> {
+export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string | null, hostId?: string): Promise<PmWorkerCatalogEntry[]> {
   const workers = await db.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local", "ccpocket_bridge"])));
-  const eligible = workers.filter(worker => isPmWorkerAgent(worker) && (worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
+  const eligible = workers.filter(worker => (!hostId || bridgeWorkerSupportsHost(worker, hostId)) && isPmWorkerAgent(worker) && (worker.runtimeConfig?.requireTaskWorktree === true || worker.runtimeConfig?.requireProjectWorkspace === true)
     && !["paused", "terminated", "pending_approval"].includes(worker.status));
   const connectionService = aiConnectionService(db);
   const connections = userId ? await connectionService.list(companyId, userId) : [];
@@ -33,7 +34,7 @@ export async function pmWorkerCatalog(db: Db, companyId: string, userId?: string
     const harness = worker.adapterType as PmWorkerCatalogEntry["harness"];
     const permissions = workerPermissionChoices(worker.adapterConfig ?? {}, harness);
     if (harness === "ccpocket_bridge") return { agentId: worker.id, name: worker.name, harness, provider: bridgeWorkerProvider(worker)!,
-      hostId: agentHost(worker), permissions, models: await pmWorkerModels(db, worker) };
+      hostId: hostId ?? agentHost(worker), permissions, models: await pmWorkerModels(db, worker, undefined, hostId) };
     const parsedBinding = aiConnectionBindingSchema.safeParse(worker.runtimeConfig?.aiConnection).data;
     const defaultAiConnection = parsedBinding?.mode === "responsible_user" ? undefined : parsedBinding;
     const models = await pmWorkerModels(db, worker);
@@ -69,7 +70,10 @@ export function pmWorkerPolicyService(db: Db) {
   };
   return {
     read: async (companyId: string, agentId: string, actor: AuthorizationActor): Promise<PmWorkerPolicyView> => {
-      const fullCatalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
+      const [owner] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
+      if (!owner) throw forbidden("Worker policy owner is unavailable");
+      requirePm(owner);
+      const fullCatalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined, agentHost(owner));
       return files.locked(companyId, agentId, actor, false, async (_tx, agent, root) => {
         requirePm(agent);
         // Workers run on their own Bridge host; offer only those on the main agent's host.
@@ -103,8 +107,11 @@ export function pmWorkerPolicyService(db: Db) {
     save: async (companyId: string, agentId: string, input: SavePmWorkerPolicy, actor: AuthorizationActor) => {
       if (actor.type !== "board") throw forbidden("Only an Owner can change PM worker settings");
       const policy = pmWorkerPolicySchema.parse(input.policy);
-      const fullCatalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined);
-      validateWorkerChoices(policy, fullCatalog);
+      const [owner] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
+      if (!owner) throw forbidden("Worker policy owner is unavailable");
+      requirePm(owner);
+      const fullCatalog = await pmWorkerCatalog(db, companyId, actor.type === "board" ? actor.userId : undefined, agentHost(owner));
+      validateWorkerChoices(policy, fullCatalog, "PM_WORKER_HOST_MISMATCH");
       for (const worker of policy.workers) for (const choice of worker.selections) {
         if (choice.aiConnection) await aiConnectionService(db).select({ companyId, userId: actor.userId ?? null,
           agentId: worker.agentId, adapterType: worker.harness, model: choice.model, binding: choice.aiConnection });
@@ -119,7 +126,7 @@ export function pmWorkerPolicyService(db: Db) {
         // Recheck identity under the same transaction as the owner update.
         const selected = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, policy.workers.map(worker => worker.agentId))));
         if (policy.workers.some(worker => !selected.some(row => row.id === worker.agentId && row.adapterType === worker.harness && isPmWorkerAgent(row)
-          && agentHost(row) === agentHost(agent) && (row.runtimeConfig?.requireTaskWorktree === true || row.runtimeConfig?.requireProjectWorkspace === true) && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}, row.adapterType).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
+          && bridgeWorkerSupportsHost(row, agentHost(agent)) && (row.runtimeConfig?.requireTaskWorktree === true || row.runtimeConfig?.requireProjectWorkspace === true) && worker.selections.every(choice => workerPermissionChoices(row.adapterConfig ?? {}, row.adapterType).includes(choice.permission)) && !["paused", "terminated", "pending_approval"].includes(row.status)))) throw unprocessable("A selected worker changed while saving");
         const document = updatePmWorkerDocument(previous?.toString("utf8") ?? "", policy, layout.version);
         const bytes = Buffer.from(document);
         if (bytes.length > 1024 * 1024) throw unprocessable(`${layout.workerDocumentPath} exceeds 1 MiB`);

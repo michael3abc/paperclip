@@ -26,6 +26,7 @@ See `doc/execution-semantics.md`.
 
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
 Codex Business/Enterprise monthly credit quotas come from RPC individualLimit; preserve its remaining percentage and reset. Metadata-only credits are not reported quota, and RPC credit amounts are not dollars.
+Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host ID to independent concurrent-run limit). Task models retain full host/provider IDs; validate and pin their route before workspace preparation. Catalogs probe only the dispatch owner's host. Preserve historical worker/session identities and never fail over to another host. See docs/agents/pm-agents.md.
 
 ## 1. Purpose
 

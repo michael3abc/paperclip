@@ -106,6 +106,11 @@ The first-parent inventory below includes retained consolidation history; it is 
 
 ## Release
 
+Shopee shared worker consolidation adds opt-in per-host Bridge worker capacity,
+host-scoped discovery, and immutable task routes; implementation history is on
+`michael/shopee-shared-workers`, merged into `michael/main`. Existing fixed workers
+and Bridge task/session identities remain unchanged (docs/agents/pm-agents.md).
+
 Develop on `michael/<topic>` with exclusive use of the project development checkout; create an additional worktree only for parallel work or an independent version. Merge into `michael/main` before building.
 Run only related tests, with commit/baseline-bound selection; never fall back to a full suite.
 Use the managed build/cutover procedures in `/home/michael/services/README.md`: build integrity, DB backup/history, required isolated upgrade, owned cutover and readiness.

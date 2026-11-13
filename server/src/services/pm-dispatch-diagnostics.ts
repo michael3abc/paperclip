@@ -1,3 +1,4 @@
+import { resolveBridgeWorkerRoute } from "./bridge-worker-routing.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
 import { aiConnectionBindingSchema, pmWorkerManagedBlock, renderPmWorkerPolicy } from "@paperclipai/shared";
@@ -5,7 +6,7 @@ import { agentInstructionsService } from "./agent-instructions.js";
 import { pmWorkerPolicyRevision } from "./pm-worker-policy.js";
 import { workerPolicyLayout } from "./main-agent-workers.js";
 import { pmWorkerModels } from "./pm-worker-catalog.js";
-import { isPmWorkerAgent, validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
+import { isPmWorkerAgent, workerSelectionOverrides, validateWorkerChoices, workerPermissionChoices } from "./pm-worker-options.js";
 import { HttpError } from "../errors.js";
 import type { PmCoordinationScope } from "./pm-coordination-policy.js";
 
@@ -38,7 +39,7 @@ export async function pmDispatchDiagnostics(db: Db, scope: PmCoordinationScope) 
         validateWorkerChoices({ version: 2, defaultSelectionId: choice.id, workers: [{ ...group, selections: [choice] }] }, [{
           agentId: worker.id, name: worker.name, harness: group.harness,
           defaultAiConnection: binding?.mode === "responsible_user" ? undefined : binding,
-          permissions: workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType), models: await pmWorkerModels(db, worker, choice.aiConnection),
+          permissions: workerPermissionChoices(worker.adapterConfig ?? {}, worker.adapterType), models: await pmWorkerModels(db, worker, choice.aiConnection, resolveBridgeWorkerRoute(worker, { adapterConfig: workerSelectionOverrides(group.harness, choice) })?.hostId),
         }]);
       } catch (error) {
         if (!(error instanceof HttpError) || error.status < 400 || error.status >= 500) throw error;

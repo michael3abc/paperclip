@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import { agents, companies, projects, projectWorkspaces, issues, issueWorkProducts, issueExecutionDecisions, heartbeatRuns, authUsers, companyMemberships, principalPermissionGrants, createDb, toolApplications, toolConnections, connectionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { pmInstructionLayout, pmWorkerPolicySchema, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
-import { pmWorkerPolicyService } from "../services/pm-worker-policy.js";
+import { pmWorkerCatalog, pmWorkerPolicyService } from "../services/pm-worker-policy.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { agentFileStore } from "../services/agent-file-store.js";
 import * as instructionFiles from "../services/agent-instruction-files.js";
@@ -17,14 +17,16 @@ import { assertPmDispatch, pmCoordinationScope } from "../services/pm-coordinati
 import { projectSessionRecords, projectWorkProductRecords } from "../services/project-execution-records.js";
 import { agentService } from "../services/agents.js";
 
+const bridgeProbes = vi.hoisted(() => vi.fn());
 vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof import("../adapters/registry.js")>(),
-  listAdapterModels: async (type: string) => type === "ccpocket_bridge" ? [
+  listAdapterModels: async (type: string, context?: { hostId?: string }) => { bridgeProbes(context); return type === "ccpocket_bridge" ? [
     { id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", efforts: ["low", "high"] },
     { id: "michael-server/claude/compass-opus5.5", label: "Claude via Bridge", efforts: ["high"] },
     { id: "other-host/antigravity/gemini-test", label: "Another host", efforts: [] },
+    { id: "shopee-d/codex/gpt-6-astra", label: "Astra on shopee-d", efforts: ["high"] },
     { id: "shopee-e/codex/gpt-6-astra", label: "Astra on shopee-e", efforts: ["high"] },
     { id: "shopee-e/claude/opus", label: "Claude on shopee-e", efforts: ["high"] },
-  ] : [{ id: "gpt-6.1-sol", label: "Sol" }],
+  ] : [{ id: "gpt-6.1-sol", label: "Sol" }]; },
 }));
 
 describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with owned database and real files", (instructionLayout) => {
@@ -242,6 +244,30 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     await expect(assertPmDispatch(db, await scope(), { workspaceSelection, projectId })).rejects.toThrow("unavailable");
   });
 
+  it("offers one shared worker on D and E without probing the other host or another company", async () => {
+    const sharedId = randomUUID();
+    await db.insert(agents).values({ id: sharedId, companyId, name: "Shopee Shared Codex", status: "idle", adapterType: "ccpocket_bridge",
+      adapterConfig: { hostId: "shopee-e", provider: "codex" },
+      runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 4, "shopee-e": 4 } } });
+    try {
+      for (const hostId of ["shopee-d", "shopee-e"]) {
+        bridgeProbes.mockClear();
+        const catalog = await pmWorkerCatalog(db, companyId, undefined, hostId);
+        const shared = catalog.find(entry => entry.agentId === sharedId)!;
+        expect(shared).toMatchObject({ hostId, models: [{ id: `${hostId}/codex/gpt-6-astra` }] });
+        expect(bridgeProbes.mock.calls.every(([context]) => context?.hostId === hostId)).toBe(true);
+      }
+      bridgeProbes.mockImplementation(context => { if (context?.hostId === "shopee-d") throw new Error("D offline"); });
+      await expect(pmWorkerCatalog(db, companyId, undefined, "shopee-d")).rejects.toThrow("D offline");
+      await expect(pmWorkerCatalog(db, companyId, undefined, "shopee-e")).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ agentId: sharedId })]));
+      expect(await pmWorkerCatalog(db, randomUUID(), undefined, "shopee-e")).toEqual([]);
+      expect((await pmWorkerCatalog(db, companyId, undefined, "michael-server")).some(entry => entry.agentId === sharedId)).toBe(false);
+    } finally {
+      bridgeProbes.mockReset();
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, sharedId));
+    }
+  });
+
   it("offers remote Bridge workers only on their own host and dispatches to registered directories or session-only", async () => {
     const remoteId = randomUUID(), remoteSourceId = randomUUID(), unhostedSourceId = randomUUID(), remoteWorkspaceId = randomUUID(), unhostedWorkspaceId = randomUUID();
     await db.insert(agents).values({ id: remoteId, companyId, name: "Shopee-E Codex", status: "active", adapterType: "ccpocket_bridge",
@@ -288,6 +314,19 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
         .rejects.toMatchObject({ details: { code: "PM_WORKER_HOST_MISMATCH" } });
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId })).rejects.toThrow();
+      // Explicit multi-host opt-in permits the same worker ID on D, with D models only.
+      await db.update(agents).set({ adapterConfig: { hostId: "shopee-e", provider: "codex", permissionMode: "fullAccess" },
+        runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 4, "shopee-e": 4 } } }).where(eq(agents.id, remoteId));
+      await db.update(agents).set({ adapterConfig: { ...original.adapterConfig, hostId: "shopee-d", provider: "codex" } }).where(eq(agents.id, pmId));
+      const onD = await svc.read(companyId, pmId, actor);
+      expect(onD.catalog.find(entry => entry.agentId === remoteId)).toMatchObject({ hostId: "shopee-d", models: [{ id: "shopee-d/codex/gpt-6-astra" }] });
+      const dPolicy = structuredClone(remote);
+      dPolicy.workers[0]!.selections[0]!.model = "shopee-d/codex/gpt-6-astra";
+      await svc.save(companyId, pmId, { policy: dPolicy, baseRevision: onD.revision, baseHash: onD.documentHash }, actor);
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
+        .resolves.toMatchObject({ assigneeAgentId: remoteId, assigneeAdapterOverrides: { adapterConfig: { model: "shopee-d/codex/gpt-6-astra" } } });
+      await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId }))
+        .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
     } finally {
       await db.update(agents).set({ adapterType: original.adapterType, adapterConfig: original.adapterConfig }).where(eq(agents.id, pmId));
       await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, remoteId));

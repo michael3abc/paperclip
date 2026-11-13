@@ -1,3 +1,4 @@
+import { prepareBridgeWorkerRoute } from "./heartbeat/bridge-worker-routing.js";
 import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
 import { registerWorkspaceCreatorRecovery, workspaceCreatorDelivery } from "./recovery/workspace-creator-delivery.js";
 import { registerOriginalMainBlockers } from "./recovery/main-blocker.js";
@@ -2361,6 +2362,8 @@ export function heartbeatService(
       }
       const workspaceProjectContext = externalProvider ? null : executionProjectId === taskProjectId
         ? taskProjectContext : await loadProjectContext(executionProjectId);
+      agent = await prepareBridgeWorkerRoute(db, { agent, run, context, overrides: issueAssigneeOverrides,
+        projectId: executionProjectId ?? taskProjectId, projectWorkspaceId: issueContext?.projectWorkspaceId, workspace: boundSourceWorkspace });
       // Defence in depth: overrides written before the project listed its
       // workers, or by a path that skipped write-time validation, must not
       // choose a model the project does not allow or silently substitute one.

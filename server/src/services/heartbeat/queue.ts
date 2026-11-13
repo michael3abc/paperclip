@@ -1,3 +1,5 @@
+import { loadBridgeWorkerCapacity } from "./bridge-worker-routing.js";
+import { bridgeWorkerCapacities } from "../bridge-worker-routing.js";
 import { MAIN_BLOCKER_REASON, verifyMainBlockerWake } from "../recovery/main-blocker.js";
 import { findRetrySupersedingInput } from "../automatic-retry-authority.js";
 import { verifyWorkspaceRecoveryWake, WORKSPACE_CREATOR_REASON, WORKSPACE_REPAIR_REASON, WORKSPACE_RESUME_REASON } from "../recovery/workspace-creator.js";
@@ -1973,7 +1975,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(
         0,
-        policy.maxConcurrentRuns - runningCount,
+        (Object.values(bridgeWorkerCapacities(agent) ?? {}).reduce((sum, capacity) => sum + capacity, 0) || policy.maxConcurrentRuns) - runningCount,
       );
       if (availableSlots <= 0) return [];
 
@@ -2072,6 +2074,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const projectPmCapacity = projectPmBinding
         ? await loadProjectPmRoleCapacity(db, { agent, binding: projectPmBinding, queuedRuns })
         : null;
+      const bridgeCapacity = await loadBridgeWorkerCapacity(db, agent, queuedRuns);
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
@@ -2080,6 +2083,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         // claimed so executeRun cancels them terminally.
         const projectPmRole = projectPmCapacity?.roleOf(queuedRun) ?? null;
         if (projectPmCapacity && projectPmRole && !projectPmCapacity.hasRoom(projectPmRole)) continue;
+        const bridgeRoute = bridgeCapacity?.routeOf(queuedRun);
+        if (bridgeRoute && !bridgeCapacity!.hasRoom(bridgeRoute)) continue;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
           claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
@@ -2102,6 +2107,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             claimed,
             projectPmRole ? await projectPmCapacity.claimContext(claimed, projectPmRole) : null,
           );
+        }
+        if (claimed && bridgeRoute && claimed.status === "running") {
+          bridgeCapacity!.take(bridgeRoute);
+          const contextSnapshot = { ...claimed.contextSnapshot, bridgeWorkerRoute: bridgeRoute };
+          await db.update(heartbeatRuns).set({ contextSnapshot }).where(and(eq(heartbeatRuns.id, claimed.id), eq(heartbeatRuns.companyId, agent.companyId)));
+          claimed = { ...claimed, contextSnapshot };
         }
         if (claimed) claimedRuns.push(claimed);
       }
