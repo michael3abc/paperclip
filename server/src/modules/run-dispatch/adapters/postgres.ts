@@ -1239,11 +1239,13 @@ export function createPostgresRunDispatchAdapter(
     // lists (including adopted Retry receipts) are not comment input; single comments still need
     // their own receipt and proof this queued turn has never been delivered.
     if (!await hasQueuedRunInputAuthority(tx, run, issueId)) {
-      return { issueId, facts: null, executionBlocker: null, decision: { stale: true as const,
-        errorCode: "execution_reconciliation_required" as const,
-        reason: "Saved input authority could not be verified. Reconcile the original delivery receipts before sending.",
-        details: { issueId, reason: "delivery_unknown" },
-      } };
+      // Liveness-first (Owner 2026-11-13): an unverifiable saved-input receipt no
+      // longer cancels the run. It is recorded and the run continues; the agent
+      // reads the task's current state (and comments) itself.
+      await appendHeartbeatRunEvent(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+        eventType: "lifecycle", stream: "system", level: "warn",
+        message: "Saved input authority could not be verified; continuing under liveness-first",
+        payload: { issueId, reason: "delivery_unknown" } });
     }
     if (typeof contextSnapshot.workspaceReconstructionActionId === "string") {
       try {
