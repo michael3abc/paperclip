@@ -53,6 +53,7 @@ export interface AgentKey {
 export interface AdapterModel {
   id: string;
   label: string;
+  source?: string;
 }
 
 export interface DetectedAdapterModel {

@@ -449,7 +449,6 @@ describe("adapter management route authorization", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
     });
   });
-});
 
 describe('company-scoped adapter schemas', () => {
   it('requires company membership before discovery and never shares schemas between selections', async () => {
@@ -473,4 +472,6 @@ describe('company-scoped adapter schemas', () => {
     await requestApp(adminApp, base => request(base).get(endpoint).query({ companyId: 'other-company', hostId: 'three', provider: 'codex' }));
     expect(getConfigSchema).toHaveBeenLastCalledWith({ companyId: 'other-company', hostId: 'three', provider: 'codex' });
   });
+});
+
 });

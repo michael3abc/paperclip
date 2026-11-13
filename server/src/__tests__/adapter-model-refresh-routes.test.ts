@@ -273,7 +273,6 @@ describe("adapter model refresh route", () => {
     expect(res.body).toEqual([{ id: "dynamic-opencode-model", label: "dynamic-opencode-model" }]);
     expect(mockListOpenCodeModels).toHaveBeenCalledTimes(1);
   });
-});
 
 describe('company scoped model discovery', () => {
   it('passes only the authorized scope and does not replace empty or failed catalogs', async () => {
@@ -292,4 +291,6 @@ describe('company scoped model discovery', () => {
     expect(listModels).toHaveBeenCalledTimes(1);
     await unregisterTestAdapter(refreshableAdapterType);
   });
+});
+
 });
