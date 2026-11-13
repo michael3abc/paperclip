@@ -862,3 +862,7 @@ focused replacements retain authority, cancellation and separate-lease assertion
   native recovery restrictions. Remote hosts require a configured session cwd.
 - Creator guidance includes repository roots and unborn repositories. Validation
   covers HTTP persistence, actual heartbeat/provider execution and negative gates.
+
+- Company model picker: scoped adapter discovery/schema context, company-bound
+  Bridge hosts, native model order and short names with source badges. Release
+  with the paired CC Pocket adapter company-model-picker change; no DB migration.

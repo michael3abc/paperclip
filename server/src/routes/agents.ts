@@ -2442,6 +2442,15 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType && findServerAdapter(adapterType)?.catalogScope === "company") {
+      const models = await listAdapterModels(adapterType, { companyId,
+        hostId: asNonEmptyString(adapterConfig.hostId) ?? undefined,
+        provider: asNonEmptyString(adapterConfig.provider) ?? undefined });
+      if (!models.some(model => model.id === adapterConfig.model)) {
+        throw unprocessable("Select a model available to this company, host and executor");
+      }
+      return;
+    }
     if (adapterType === "paperclip_runner") {
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
@@ -3097,6 +3106,14 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
+    if (requireServerAdapter(type).catalogScope === "company") {
+      const context = { companyId, hostId: asNonEmptyString(req.query.hostId) ?? undefined,
+        provider: asNonEmptyString(req.query.provider) ?? undefined };
+      res.setHeader("Cache-Control", "no-store");
+      res.json(req.query.refresh === "1" || req.query.refresh === "true"
+        ? await refreshAdapterModels(type, context) : await listAdapterModels(type, context));
+      return;
+    }
     const pendingAcpxProfile = type === "paperclip_runner" && req.query.provider === "acpx"
       ? PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === req.query.acpxAgent && !profile.qualified)
       : undefined;

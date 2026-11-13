@@ -881,3 +881,9 @@ Require the stored selection and matching settings; wake JSON cannot waive
 requireProjectWorkspace. Keep strict requireTaskWorktree and native recovery
 bindings intact. Remote session-only work needs the worker's configured host cwd.
 See doc/execution-semantics.md.
+
+Company-scoped adapter catalogs declare catalogScope=company. Model discovery and
+config-schema requests require authorized companyId plus the unsaved host/provider
+selection. Never serve these from global schema caches or declared fallback lists.
+Keep qualified model IDs in persistence; names and source badges are display only.
+Bridge host companyIds live in the external host registry. See doc/DEVELOPING.md.

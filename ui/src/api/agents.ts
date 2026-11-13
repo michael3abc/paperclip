@@ -247,10 +247,11 @@ export const agentsApi = {
   adapterModels: (
     companyId: string,
     type: string,
-    options?: { refresh?: boolean; environmentId?: string | null; provider?: string; acpxAgent?: string; aiConnection?: import("@paperclipai/shared").AiConnectionBinding; agentId?: string; poolId?: string },
+    options?: { refresh?: boolean; hostId?: string; environmentId?: string | null; provider?: string; acpxAgent?: string; aiConnection?: import("@paperclipai/shared").AiConnectionBinding; agentId?: string; poolId?: string },
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
+    if (options?.hostId) params.set("hostId", options.hostId);
     if (options?.provider) params.set("provider", options.provider);
     if (options?.acpxAgent) params.set("acpxAgent", options.acpxAgent);
     if (options?.aiConnection) params.set("aiConnection", JSON.stringify(options.aiConnection));

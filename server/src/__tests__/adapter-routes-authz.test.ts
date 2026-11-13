@@ -450,3 +450,27 @@ describe("adapter management route authorization", () => {
     });
   });
 });
+
+describe('company-scoped adapter schemas', () => {
+  it('requires company membership before discovery and never shares schemas between selections', async () => {
+    const getConfigSchema = vi.fn(async context => ({ fields: [{ key: 'hostId', type: 'select', label: context.companyId, options: [] }] }));
+    registerServerAdapter({ ...createAdapter(), catalogScope: 'company', getConfigSchema });
+    const app = createApp(boardMember('operator'));
+    const endpoint = '/api/adapters/' + EXTERNAL_ADAPTER_TYPE + '/config-schema';
+    const missing = await requestApp(app, base => request(base).get(endpoint));
+    expect(missing.status).toBe(400);
+    const forbidden = await requestApp(app, base => request(base).get(endpoint + '?companyId=foreign'));
+    expect(forbidden.status).toBe(403);
+    expect(getConfigSchema).not.toHaveBeenCalled();
+    for (const hostId of ['one', 'two']) {
+      const result = await requestApp(app, base => request(base).get(endpoint).query({ companyId: 'company-1', hostId, provider: 'claude' }));
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.headers['cache-control']).toBe('no-store');
+      expect(getConfigSchema).toHaveBeenLastCalledWith({ companyId: 'company-1', hostId, provider: 'claude' });
+    }
+    expect(getConfigSchema).toHaveBeenCalledTimes(2);
+    const adminApp = createApp(instanceAdmin);
+    await requestApp(adminApp, base => request(base).get(endpoint).query({ companyId: 'other-company', hostId: 'three', provider: 'codex' }));
+    expect(getConfigSchema).toHaveBeenLastCalledWith({ companyId: 'other-company', hostId: 'three', provider: 'codex' });
+  });
+});

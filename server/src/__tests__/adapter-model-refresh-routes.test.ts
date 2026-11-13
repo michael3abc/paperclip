@@ -274,3 +274,22 @@ describe("adapter model refresh route", () => {
     expect(mockListOpenCodeModels).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('company scoped model discovery', () => {
+  it('passes only the authorized scope and does not replace empty or failed catalogs', async () => {
+    const { registerServerAdapter, listAdapterModels, refreshAdapterModels } = await import('../adapters/registry.js');
+    const listModels = vi.fn(async () => []);
+    const refreshModels = vi.fn(async () => { throw new Error('private transport detail'); });
+    registerServerAdapter({ type: refreshableAdapterType, catalogScope: 'company', listModels, refreshModels,
+      models: [{ id: 'global', label: 'global' }], execute: async () => ({ exitCode: 0, signal: null, timedOut: false }) });
+    const app = await createApp();
+    const res = await requestApp(app, base => request(base).get('/api/companies/company-1/adapters/' + refreshableAdapterType + '/models?hostId=one&provider=claude'));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(listModels).toHaveBeenLastCalledWith({ companyId: 'company-1', hostId: 'one', provider: 'claude' });
+    await expect(listAdapterModels(refreshableAdapterType)).rejects.toThrow('Select a company');
+    await expect(refreshAdapterModels(refreshableAdapterType, { companyId: 'company-1' })).rejects.toThrow('無法更新');
+    expect(listModels).toHaveBeenCalledTimes(1);
+    await unregisterTestAdapter(refreshableAdapterType);
+  });
+});

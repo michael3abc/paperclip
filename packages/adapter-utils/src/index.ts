@@ -27,6 +27,7 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
+  AdapterCatalogContext,
   HireApprovedPayload,
   HireApprovedHookResult,
   ConfigFieldOption,

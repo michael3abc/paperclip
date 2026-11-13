@@ -751,13 +751,16 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
 async function assertKnownBuiltInAgentModel(
   definition: BuiltInAgentDefinition,
   input: BuiltInAgentProvisionInput,
+  companyId: string,
 ) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
   const adapterConfig = input.adapterConfig ?? definition.defaultAdapterConfig ?? {};
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
-  const models = await listAdapterModels(agentHarnessType(adapterType, adapterConfig));
+  const models = await listAdapterModels(agentHarnessType(adapterType, adapterConfig), { companyId,
+    hostId: typeof adapterConfig.hostId === "string" ? adapterConfig.hostId : undefined,
+    provider: typeof adapterConfig.provider === "string" ? adapterConfig.provider : undefined });
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
@@ -1751,7 +1754,7 @@ export function builtInAgentService(db: Db) {
         ? { ...input, adapterType: existing.adapterType, adapterConfig: existing.adapterConfig }
         : await defaultProvisionInput(companyId, definition, input);
     if (!existingPendingApproval && !preserveExistingAdapter) {
-      await assertKnownBuiltInAgentModel(definition, resolvedInput);
+      await assertKnownBuiltInAgentModel(definition, resolvedInput, companyId);
     }
     if (existing) {
       const patch: Partial<typeof agents.$inferInsert> = {
@@ -1876,7 +1879,7 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input, { createdByUserId: actor.requestedByUserId ?? null }), approval: null };
     }
-    await assertKnownBuiltInAgentModel(definition, input);
+    await assertKnownBuiltInAgentModel(definition, input, companyId);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {

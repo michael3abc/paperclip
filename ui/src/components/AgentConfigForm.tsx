@@ -1034,14 +1034,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Computer"
       : "Local";
 
-  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
+  const isBridgeCatalog = adapterType === "ccpocket_bridge";
+  const catalogHostId = isBridgeCatalog ? String(effectiveConfig.hostId ?? "") : undefined;
+  const modelProvider = isBridgeCatalog ? String(effectiveConfig.provider ?? "codex") : adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
     (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
     ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
-  const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
+  const modelCacheIdentity = isBridgeCatalog ? JSON.stringify([catalogHostId, modelProvider]) : accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
@@ -1058,11 +1060,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, modelAdapterType, {
       environmentId: currentDefaultEnvironmentId || null,
       provider: modelProvider,
+      hostId: catalogHostId,
       acpxAgent: runnerAcpxAgent,
       aiConnection: modelAiBinding,
       agentId: isCreate ? undefined : props.agent.id,
     }),
-    ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    ...(accountBoundCatalog || isBridgeCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
   });
   const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
@@ -1071,7 +1074,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
-  const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
+  const models = isBridgeCatalog ? (fetchedModelsError || refreshModelsError ? [] : fetchedModels ?? []) : connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
   const modelError = connectionModels ? connectionModels.error : fetchedModelsError;
   const adapterCommandField = "command";
   const {
@@ -1127,7 +1130,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Section toggle state — advanced always starts collapsed
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
-  const configSchema = useConfigSchema(adapterType);
+  const configSchema = useConfigSchema(adapterType, isBridgeCatalog ? { companyId: selectedCompanyId ?? "", hostId: catalogHostId, provider: modelProvider } : undefined);
   const renderAdapterFields = (section: AdapterConfigSection) => (
     <>
       {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
@@ -1438,7 +1441,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, hostId: catalogHostId, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -2025,6 +2028,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   if (isCreate) {
                     set!({
                       model: v,
+                      ...(isBridgeCatalog ? { adapterSchemaValues: { ...val!.adapterSchemaValues, model: v } } : {}),
                       ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
                     });
                     return;
@@ -2037,14 +2041,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner" && !isCursorCloudRunner}
-                required={adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
+                allowDefault={!isBridgeCatalog && adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner" && !isCursorCloudRunner}
+                required={isBridgeCatalog || adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
-                preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
-                creatable
+                preserveOrder={isBridgeCatalog || Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
+                creatable={!isBridgeCatalog}
+                catalogOnly={isBridgeCatalog}
                 detectedModel={connectionModels ? undefined : detectedModel}
                 detectedModelCandidates={[]}
-                onDetectModel={connectionModels || adapterType === "opencode_local" || adapterType === "paperclip_runner"
+                onDetectModel={isBridgeCatalog || connectionModels || adapterType === "opencode_local" || adapterType === "paperclip_runner"
                   ? undefined
                   : async () => {
                       const result = await refetchDetectedModel();
@@ -2059,6 +2064,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 detectModelLabel="Detect model"
                 emptyDetectHint="No model detected. Select or enter one manually."
               />
+              {isBridgeCatalog && !fetchingModels && currentModelId && !models.some(model => model.id === currentModelId) && (
+                <p role="alert" className="text-xs text-destructive">目前模型不適用於所選公司、主機或執行器，請重新選擇。</p>
+              )}
               {(refreshModelsError || modelError) && (
                 <p className="text-xs text-destructive">
                   {refreshModelsError
@@ -3998,6 +4006,10 @@ function ExperimentalBadge() {
   );
 }
 
+function ModelSource({ source }: { source: string }) {
+  return <span className="ml-2 inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">{source}</span>;
+}
+
 export function ModelDropdown({
   models,
   value,
@@ -4019,6 +4031,7 @@ export function ModelDropdown({
   emptyDetectHint,
   defaultLabel,
   presentation = "searchable",
+  catalogOnly = false,
 }: {
   models: AdapterModel[];
   value: string;
@@ -4041,6 +4054,7 @@ export function ModelDropdown({
   emptyDetectHint?: string;
   defaultLabel?: string;
   presentation?: "searchable" | "native";
+  catalogOnly?: boolean;
 }) {
   const [modelSearch, setModelSearch] = useState("");
   const [enteringCustomModel, setEnteringCustomModel] = useState(false);
@@ -4157,7 +4171,8 @@ export function ModelDropdown({
     <Field label="Model" hint={help.model}>
       <SelectPopover aria-label="Model" value={value}
         displayValue={<span className={cn("truncate", !value && "text-muted-foreground")}>
-          {selected?.label ?? (value || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model"))}
+          {selected?.label ?? ((!catalogOnly && value) || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model"))}
+          {selected?.source && <ModelSource source={selected.source} />}
         </span>}
         open={open}
         onOpenChange={(nextOpen) => {
@@ -4221,7 +4236,7 @@ export function ModelDropdown({
               {refreshingModels ? "Refreshing..." : "Refresh models"}
             </button>
           )}
-          {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
+          {!catalogOnly && value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
             <button
               type="button"
               role="option" aria-selected
@@ -4341,6 +4356,7 @@ export function ModelDropdown({
                   >
                     <span className="block w-full text-left truncate" title={m.id}>
                       {groupByProvider ? extractModelName(m.id) : m.label}
+                      {m.source && <ModelSource source={m.source} />}
                     </span>
                   </button>
                 ))}
