@@ -19,6 +19,34 @@ function onlyRecordedComment(context: Record<string, unknown>, commentId: string
     (context.wakeCommentId === commentId || context.commentId === commentId);
 }
 
+function runCommentIds(context: Record<string, unknown>) {
+  const ids = new Set(queuedCommentIdsFromRunContext(context));
+  for (const key of ["wakeCommentId", "commentId", "latestCommentId"]) {
+    const id = readNonEmptyString(context[key]);
+    if (id) ids.add(id);
+  }
+  for (const key of ["wakeCommentIds", "commentIds"]) {
+    const list = context[key];
+    if (Array.isArray(list)) for (const id of list) if (typeof id === "string" && id.trim()) ids.add(id);
+  }
+  return ids;
+}
+
+/** True when `run` is an automatic transient retry whose comment input is a subset
+ * of its source run's comment input for the same company, agent and issue. */
+export async function retryCarriesSourceComments(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string,
+  context: Record<string, unknown> = parseObject(run.contextSnapshot)) {
+  if (!run.retryOfRunId || context.wakeReason !== "transient_failure_retry") return false;
+  const [source] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.id, run.retryOfRunId),
+  ));
+  if (!source) return false;
+  const sourceContext = parseObject(source.contextSnapshot);
+  if (sourceContext.issueId !== issueId) return false;
+  const carried = runCommentIds(context), admitted = runCommentIds(sourceContext);
+  return carried.size > 0 && [...carried].every(id => admitted.has(id));
+}
+
 /** A scheduler/system label never grants input authority. These server-owned
  * notice lanes and bounded explicit retries need their exact durable receipt;
  * ordinary saved-user recovery remains human-only. Caller holds run/issue. */
@@ -32,10 +60,17 @@ export async function hasQueuedRunInputAuthority(db: Db, run: typeof heartbeatRu
   const hasComment = queuedCommentIdsFromRunContext(context).length > 0 ||
     Boolean(readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId));
   if (!originalMain && !workspaceNotice && !explicitRetry) {
-    return !hasComment || Boolean(await readQueuedCommentRunAuthority(db, run, issueId, {
+    if (!hasComment) return true;
+    if (await readQueuedCommentRunAuthority(db, run, issueId, {
       requireUnstarted: run.status === "queued",
       mode: context.explicitUserContinuation ? "saved_user_input" : "ordinary_input",
-    }));
+    })) return true;
+    // Liveness-first (Owner 2026-11-13): an automatic transient retry is woken by
+    // the system, so its own wake never carries user/agent comment authority. It
+    // may re-carry exactly the comments its source run carried; the source was
+    // admitted with them. Without this, every retry of a comment-triggered run
+    // was refused forever as execution_reconciliation_required.
+    return retryCarriesSourceComments(db, run, issueId, context);
   }
   if (!run.wakeupRequestId) return false;
   if (run.status === "queued") {
