@@ -13,8 +13,16 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { sharedCheckoutHolderSettled } from "../services/heartbeat/shared-checkout.js";
+import { seedManagedDispatchWorkspace } from "./helpers/managed-dispatch-workspace.js";
 
 const execute = vi.hoisted(() => vi.fn(async (_input: any) => ({ exitCode: 0, signal: null, timedOut: false })));
+vi.mock("../adapters/registry.js", () => ({
+  getServerAdapter: () => ({ managedWorktreeOperation: async ({ operation }: any) => ({
+    schema: "paperclip.managed-worktree-host.v1", action: operation.action, operationId: operation.operationId,
+    cwd: operation.cwd, branch: operation.branch, head: "a".repeat(40), targetHead: null,
+    commonDir: operation.cwd + "/.git", dirty: false, merged: false,
+  }) }),
+}));
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({ type: "codex_local", execute, supportsLocalAgentJwt: false }),
   findActiveServerAdapter: () => ({ type: "codex_local", execute, supportsLocalAgentJwt: false }),
@@ -280,7 +288,11 @@ suite("project PM role and workspace at claim", () => {
         executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", workspaceStrategy: { type: "project_primary" } } });
       await db.insert(projectWorkspaces).values({ id: sourceId, companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd,
         metadata: { hostId }, remoteWorkspaceRef: `${hostId}:${cwd}`, isPrimary: true });
-      await db.insert(issues).values({ id, companyId, projectId, projectWorkspaceId: sourceId, title: id, status: "todo", assigneeAgentId: agentId,
+      const executionWorkspaceId = randomUUID();
+      await seedManagedDispatchWorkspace(db, { id: executionWorkspaceId, companyId, projectId, sourceId, cwd, hostId, kind: "repository_root" });
+      await db.insert(issues).values({ id, companyId, projectId, projectWorkspaceId: sourceId, executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
+        title: id, status: "todo", assigneeAgentId: agentId,
         assigneeAdapterOverrides: { adapterConfig: { model: `${hostId}/codex/task-model` } } });
       tasks.push({ id, hostId, cwd });
     }
@@ -311,6 +323,13 @@ suite("project PM role and workspace at claim", () => {
       gates.get(runs[0]!)!();
       await vi.waitFor(() => expect(gates.has(runs[1]!)).toBe(true), { timeout: 20_000 });
       expect((await heartbeat.getRun(runs[2]!))!.status).toBe("running");
+      for (const release of gates.values()) release();
+      await vi.waitFor(async () => {
+        for (const id of runs) {
+          const run = await heartbeat.getRun(id);
+          expect({ status: run?.status, error: run?.error }).toEqual({ status: "succeeded", error: null });
+        }
+      }, { timeout: 20_000 });
     } finally {
       for (const release of gates.values()) release();
       execute.mockImplementation(async () => ({ exitCode: 0, signal: null, timedOut: false }));
