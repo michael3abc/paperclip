@@ -15,6 +15,9 @@ import { notifyScheduledRetryCancellation } from "../../../services/scheduled-re
 import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { ABANDONED_PRIOR_ERROR_CODE } from "../../../services/recovery/failure-classification.js";
+import { normalizeAgentNameKey } from "../../../services/agent-name-key.js";
+import { notifyRunStopSettlement } from "../../../services/run-stop-settlement-notifications.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
@@ -93,6 +96,17 @@ import type {
 import { RunDispatchApplicationError } from "../application/types.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
+type ExecutionBlockerView = NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>;
+const TERMINAL_RUN_STATUSES: readonly string[] = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
+
+/** Holds that liveness-first abandons at dispatch: a recovery action naming an
+ * unknown prior outcome. Workspace file holds (unrestored or unreconciled files)
+ * and live execution ownership (no recovery action) are not abandoned here. */
+function isAbandonablePriorExecution(blocker: ExecutionBlockerView) {
+  return blocker.recoveryActionId !== null && blocker.workspaceRepairRequired !== true
+    && !blocker.workspaceReconstructionPending && !blocker.canReconstructWorkspace
+    && (!blocker.workspaceRecovery || blocker.workspaceRecovery.status === "recovered");
+}
 type LoadGateFactsInput = {
   retryOfRunId?: string | null;
   retrySource?: Pick<HeartbeatRun, "status" | "errorCode" | "resultJson">;
@@ -1123,6 +1137,68 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
+  /**
+   * Liveness-first rule 1 (unknown outcome -> abandon and resend). Settles the
+   * prior execution named by an execution-reconciliation hold so `run` can be
+   * dispatched: a non-terminal prior run without a live controller lease becomes
+   * `failed` / `abandoned_prior` (transient), its issue execution lock moves to
+   * `run` (the per-issue lock stays the one-run-per-issue dedupe) and its checkout
+   * is released. The hold is closed as cancelled with its evidence retained.
+   * A prior run whose controller still renews its lease is live, not unknown: the
+   * hold is left alone. Returns whether anything was released.
+   */
+  async function abandonPriorExecutionInTx(
+    tx: Db,
+    run: HeartbeatRun,
+    issueId: string,
+    blocker: ExecutionBlockerView,
+    now: Date,
+  ): Promise<boolean> {
+    const priorRunId = blocker.runId && blocker.runId !== run.id ? blocker.runId : null;
+    const [prior] = priorRunId ? await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, priorRunId), eq(heartbeatRuns.companyId, run.companyId),
+    )).for("update") : [];
+    const receipt = { schema: "paperclip.abandoned-prior.v1", byRunId: run.id, issueId,
+      recoveryActionId: blocker.recoveryActionId, cause: blocker.cause, at: now.toISOString() };
+    if (prior && !TERMINAL_RUN_STATUSES.includes(prior.status)) {
+      if (prior.controllerLeaseExpiresAt && prior.controllerLeaseExpiresAt.getTime() > now.getTime()) return false;
+      await notifyExecutionRunWork(tx, { companyId: prior.companyId, agentId: prior.agentId, runId: prior.id });
+      await notifyInstructionCollection(tx, { companyId: prior.companyId, runId: prior.id });
+      await notifyRunStopSettlement(tx, { companyId: prior.companyId, runId: prior.id });
+      const [settled] = await tx.update(heartbeatRuns).set({
+        status: "failed", finishedAt: now, errorCode: ABANDONED_PRIOR_ERROR_CODE,
+        error: "Abandoned: its outcome was unknown, so a newer run continues this task.",
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
+          || jsonb_build_object('abandonedPrior', ${JSON.stringify({ ...receipt, previousStatus: prior.status })}::jsonb)`,
+        updatedAt: now,
+      }).where(and(eq(heartbeatRuns.id, prior.id), eq(heartbeatRuns.companyId, prior.companyId),
+        eq(heartbeatRuns.status, prior.status))).returning({ id: heartbeatRuns.id });
+      if (!settled) return false;
+      const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(
+        eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
+      await tx.update(issues).set({ executionRunId: run.id, executionAgentNameKey: normalizeAgentNameKey(agent?.name),
+        executionLockedAt: now, updatedAt: now }).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId),
+        eq(issues.executionRunId, prior.id)));
+      await tx.update(issues).set({ checkoutRunId: null, updatedAt: now }).where(and(
+        eq(issues.companyId, run.companyId), eq(issues.checkoutRunId, prior.id)));
+      await appendHeartbeatRunEvent(tx, { companyId: prior.companyId, runId: prior.id, agentId: prior.agentId,
+        eventType: "lifecycle", stream: "system", level: "warn",
+        message: "Abandoned prior run with an unknown outcome; a newer run continues the task", payload: receipt });
+    }
+    if (!blocker.recoveryActionId) return Boolean(prior);
+    const [closed] = await tx.update(issueRecoveryActions).set({
+      status: "cancelled", outcome: "cancelled", resolvedAt: now, updatedAt: now,
+      resolutionNote: "Liveness-first: the prior execution was abandoned; a newer run continues with a check-current-state note.",
+      evidence: sql`jsonb_set(coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb), '{automaticRecovery,replay}',
+        '"abandoned_prior"'::jsonb, true) || jsonb_build_object('abandonedPrior', ${JSON.stringify(receipt)}::jsonb)`,
+    }).where(and(eq(issueRecoveryActions.id, blocker.recoveryActionId), eq(issueRecoveryActions.companyId, run.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issueId))).returning({ id: issueRecoveryActions.id });
+    if (closed) await appendHeartbeatRunEvent(tx, { companyId: run.companyId, runId: run.id, agentId: run.agentId,
+      eventType: "lifecycle", stream: "system", level: "info",
+      message: "Closed an execution-reconciliation hold; this run continues the task", payload: receipt });
+    return Boolean(closed);
+  }
+
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date, publications?: ActivityPublication[]) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
@@ -1186,7 +1262,14 @@ export function createPostgresRunDispatchAdapter(
         } };
       }
     }
-    const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    let recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    // Liveness-first rule 1: an execution-reconciliation hold no longer refuses
+    // dispatch. Abandon the prior execution it names, close the hold, continue.
+    // A hold can be stacked (one active plus resolved no-replay rows): bounded.
+    for (let pass = 0; recovery && pass < 16 && isAbandonablePriorExecution(recovery); pass++) {
+      if (!await abandonPriorExecutionInTx(tx, run, issueId, recovery, now)) break;
+      recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
+    }
     if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },

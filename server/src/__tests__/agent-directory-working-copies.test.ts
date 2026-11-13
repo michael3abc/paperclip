@@ -139,7 +139,8 @@ describe("persistent agent directories", () => {
     const hook = vi.fn();
     const service = createRunStopSettlement(db, { getAdapter: () => ({ reverifyCancelledRunStop: hook }), isRunActive: () => false });
     await service.reconcile(copy.runId, companyId);
-    expect(await sharedCheckoutHolderSettled(db, companyId, copy.runId)).toBe(false);
+    // Liveness-first rule 2: the terminal run is released at once; file cleanup continues in the background.
+    expect(await sharedCheckoutHolderSettled(db, companyId, copy.runId)).toBe(true);
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
     try {
       // Recreate services: collection and settlement must recover from durable state.

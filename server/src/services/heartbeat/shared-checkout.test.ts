@@ -8,7 +8,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, afterAll, it, expect, vi } from "vitest";
 import { companies, agents, projects, projectWorkspaces, issues, heartbeatRuns, agentInstructionWorkingCopies,
   heartbeatRunEvents, nativeRunFinalizations, createDb, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
-import { claimSharedCheckout, sharedCheckoutPath, unsettledWorkspaceHolders } from "./shared-checkout.js";
+import { claimSharedCheckout, sharedCheckoutHolderSettled, sharedCheckoutPath, unsettledWorkspaceHolders } from "./shared-checkout.js";
 import { runChildProcess } from "../../adapters/utils.js";
 import { persistHeartbeatRunProcessMetadata } from "./run-lifecycle.js";
 import { recordLegacyLocalProcessStop } from "./process-settlement.js";
@@ -39,7 +39,7 @@ async function fixture(git = true) {
   return inputs as [typeof inputs[number], typeof inputs[number]];
 }
 
-// Retention observes historical resource obligations independently of dispatch.
+// Liveness-first: only non-terminal runs hold a directory for retirement.
 async function retirementEligible(input: { cwd: string; runId: string }) {
   return (await unsettledWorkspaceHolders(db, { host: hostname(), path: await sharedCheckoutPath(input.cwd),
     remote: false, excludeRunId: input.runId })).length === 0;
@@ -93,10 +93,12 @@ it.each([false, true])("preserves an admitted run without a claim during upgrade
     .resolves.toMatchObject({ path: b.cwd });
 });
 
-it("does not reinterpret broken Git metadata as an ordinary directory", async () => {
+it("grants a directory with broken Git metadata, recording the mismatch without repairing Git", async () => {
   const [a] = await fixture(false); await mkdir(join(a.cwd,".git"));
-  await expect(claimSharedCheckout(db,a)).rejects.toThrow();
-  expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.contextSnapshot?.sharedCheckoutClaim).toBeUndefined();
+  await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd, kind:"directory", mismatches:[expect.any(String)] });
+  expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.contextSnapshot?.sharedCheckoutClaim)
+    .toMatchObject({ path:a.cwd, executionCwd:a.cwd });
+  await expect(access(join(a.cwd,".git","HEAD"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each([false, true])("retains a damaged historical checkout's scope without breaking independent admissions (alias: %s)", async alias => {
@@ -127,11 +129,12 @@ it("ignores ancestor ignore-only .git directories without requiring Git", async 
   expect(await readFile(join(parent,".git","info","exclude"),"utf8")).toBe("private-files\n");
 });
 
-it("still rejects damaged ancestor repository metadata", async () => {
+it("grants below damaged ancestor repository metadata and only logs the mismatch", async () => {
   const [a] = await fixture(false), parent = a.cwd;
   await mkdir(join(parent,".git")); await writeFile(join(parent,".git","HEAD"),"broken\n");
   a.cwd = join(parent,"documents"); await mkdir(a.cwd);
-  await expect(claimSharedCheckout(db,a)).rejects.toThrow();
+  await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd, kind:"directory", mismatches:[expect.any(String)] });
+  expect(await readFile(join(parent,".git","HEAD"),"utf8")).toBe("broken\n");
 });
 
 it("admits a resident root with only .git/info/exclude without Git and does not turn it into recursive ownership", async () => {
@@ -143,17 +146,18 @@ it("admits a resident root with only .git/info/exclude without Git and does not 
   try {
     await expect(claimSharedCheckout(db,{ ...a, checkSourceHandoff:false })).resolves.toMatchObject({ path:a.cwd, kind:"directory" });
     await expect(claimSharedCheckout(db,b)).resolves.toBeDefined();
-    await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).rejects.toMatchObject({ resultJson:{ workspaceValidation:{ reason:"shared_workspace_git_required" } } });
+    await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).resolves.toMatchObject({ kind:"directory", mismatches:["shared_workspace_git_required"] });
   } finally { vi.unstubAllEnvs(); }
   expect(await readFile(join(a.cwd,".git","info","exclude"),"utf8")).toBe("private-files\n");
 });
 
-it.each(["HEAD","config","objects","refs","unexpected"])("does not classify local ignore metadata plus %s as an ignore-only directory", async marker => {
+it.each(["HEAD","config","objects","refs","unexpected"])("does not classify local ignore metadata plus %s as ignore-only, yet still grants the directory", async marker => {
   const [a] = await fixture(false);
   await mkdir(join(a.cwd,".git","info"),{ recursive:true });
   await writeFile(join(a.cwd,".git","info","exclude"),"private-files\n");
   await writeFile(join(a.cwd,".git",marker),"broken\n");
-  await expect(claimSharedCheckout(db,a)).rejects.toThrow();
+  await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd, kind:"directory", mismatches:[expect.any(String)] });
+  expect(await readFile(join(a.cwd,".git",marker),"utf8")).toBe("broken\n");
 });
 
 it("does not require a Git executable for ordinary directories", async () => {
@@ -162,9 +166,23 @@ it("does not require a Git executable for ordinary directories", async () => {
   finally { vi.unstubAllEnvs(); }
 });
 
-it("retains an explicit Git source requirement", async () => {
+it("logs an unmet Git source expectation instead of refusing the directory", async () => {
+  const [a,b] = await fixture(false);
+  await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).resolves.toMatchObject({ path:a.cwd, kind:"directory",
+    mismatches:["shared_workspace_git_required"] });
+  await expect(access(join(a.cwd,".git"))).rejects.toMatchObject({ code: "ENOENT" });
+  const [git] = await fixture(true);
+  await expect(claimSharedCheckout(db,{ ...git, requireGit:true })).resolves.not.toHaveProperty("mismatches");
+  // A missing directory is recorded too; workspace preparation creates it (mkdir -p).
+  await expect(claimSharedCheckout(db,{ ...b, cwd:join(b.cwd,"not-created-yet") })).resolves.toMatchObject({
+    path:join(b.cwd,"not-created-yet"), kind:"directory" });
+});
+
+it("never refuses when the run already left running; the display record is simply not written", async () => {
   const [a] = await fixture(false);
-  await expect(claimSharedCheckout(db,{ ...a, requireGit:true })).rejects.toMatchObject({ resultJson:{ workspaceValidation:{ reason:"shared_workspace_git_required" } } });
+  await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id,a.runId));
+  await expect(claimSharedCheckout(db,a)).resolves.toMatchObject({ path:a.cwd });
+  expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.contextSnapshot?.sharedCheckoutClaim).toBeUndefined();
 });
 
 it("preserves collaborator changes while admitting a different task", async () => {
@@ -183,12 +201,13 @@ it("admits simultaneous participants across aliases and tasks", async () => {
   expect(results.filter(r=>r.status === "fulfilled")).toHaveLength(2);
 });
 
-it.each([false,true])("admits successors but keeps unknown stop evidence as a retirement obligation (Git: %s)", async git => {
+it.each([false,true])("keeps a live run as a holder and releases it at its terminal status, without stop evidence (Git: %s)", async git => {
   const [a,b] = await fixture(git); await claimSharedCheckout(db,a); await claimSharedCheckout(db,b);
   await db.update(heartbeatRuns).set({ startedAt: new Date(0), lastOutputAt: new Date(0), processPid: 12345 }).where(eq(heartbeatRuns.id,a.runId));
   await expect(retirementEligible(b)).resolves.toBe(false);
   await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id,a.runId));
-  await expect(retirementEligible(b)).resolves.toBe(false);
+  await expect(retirementEligible(b)).resolves.toBe(true);
+  expect(await sharedCheckoutHolderSettled(db, a.companyId, a.runId)).toBe(true);
 });
 
 it("releases a terminal pre-provider admission without replaying the old task", async () => {
@@ -198,56 +217,53 @@ it("releases a terminal pre-provider admission without replaying the old task", 
   expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,a.runId)))[0]?.status).toBe("failed");
 });
 
-it.each(["cancelled", "timed_out"])("does not treat missing historical adapter metadata as stop proof for %s", async status => {
+it.each(["cancelled", "timed_out"])("releases a %s holder without historical adapter metadata or stop proof", async status => {
   const [a, b] = await fixture(false);
   await claimSharedCheckout(db, a); await claimSharedCheckout(db, b);
   await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), processPid: 12345,
     runnerProfileJson: null, resultJson: null }).where(eq(heartbeatRuns.id, a.runId));
-  await expect(retirementEligible(b)).resolves.toBe(false);
+  await expect(retirementEligible(b)).resolves.toBe(true);
 });
 
-it("does not infer pre-provider safety from missing events when Bridge identity was recorded", async () => {
+it("releases a terminal Bridge holder whose identity was recorded, without a stop receipt", async () => {
   const [a,b] = await fixture(); await claimSharedCheckout(db,a); await claimSharedCheckout(db,b);
   await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
     resultJson: { nativeSessionId: "original-native-thread", bridgeSessionId: "original-card" },
   }).where(eq(heartbeatRuns.id,a.runId));
-  await expect(retirementEligible(b)).resolves.toBe(false);
+  await expect(retirementEligible(b)).resolves.toBe(true);
 });
 
-it.each([false,true])("requires a retained process-stop receipt before retirement (Git: %s)", async git => {
+it.each([false,true])("does not wait for instruction cleanup receipts before retirement (Git: %s)", async git => {
   const [a,b] = await fixture(git); await claimSharedCheckout(db,a); await claimSharedCheckout(db,b);
   await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(), processPid:12345 }).where(eq(heartbeatRuns.id,a.runId));
   await db.insert(agentInstructionWorkingCopies).values({ runId:a.runId, companyId:a.companyId, agentId:a.agentId,
     responsibleUserId:"test-owner", entryFile:"AGENTS.md", baseHash:"a".repeat(64), localRoot:a.cwd, executionRoot:a.cwd,
     location:"local", state:"captured", receipt:{}, processStoppedAt:new Date() });
-  await expect(retirementEligible(b)).resolves.toBe(false);
-  await db.update(agentInstructionWorkingCopies).set({ state: "unchanged", receipt: { cleanupPending: false } })
-    .where(eq(agentInstructionWorkingCopies.runId, a.runId));
   await expect(retirementEligible(b)).resolves.toBe(true);
+  // The pending copy is retained untouched for its own background collector.
+  expect((await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, a.runId)))[0])
+    .toMatchObject({ state: "captured" });
 });
 
-it("releases a real local process without an instruction copy only after its bound stop receipt, and invalidates it on another launch", async () => {
+it("releases a terminal local-process holder at once and still records its bound stop receipt in the background", async () => {
   const [a, b] = await fixture(false); await claimSharedCheckout(db, a); await claimSharedCheckout(db, b);
   await runChildProcess(a.runId, process.execPath, ["-e", "console.log('settled-process')"], {
     cwd: a.cwd, env: {}, timeoutSec: 5, graceSec: 1, onLog: async () => {},
     onSpawn: async meta => { await persistHeartbeatRunProcessMetadata(db, a.runId, meta); },
   });
   await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, a.runId));
-  await expect(retirementEligible(b)).resolves.toBe(false);
+  await expect(retirementEligible(b)).resolves.toBe(true);
   expect(await recordLegacyLocalProcessStop(db, a.runId, a.companyId)).toBe(true);
   expect(await recordLegacyLocalProcessStop(db, a.runId, a.companyId)).toBe(false);
   expect(await db.select().from(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, a.runId))).toEqual([]);
   expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, a.runId),
     eq(heartbeatRunEvents.eventType, "execution.local_process_stopped")))).toHaveLength(1);
   await expect(retirementEligible(b)).resolves.toBe(true);
-  await persistHeartbeatRunProcessMetadata(db, a.runId, { pid: process.pid, processGroupId: process.pid, startedAt: new Date().toISOString() });
-  expect(await recordLegacyLocalProcessStop(db, a.runId, a.companyId)).toBe(false);
-  await expect(retirementEligible(b)).resolves.toBe(false);
 });
 
 it.each(["settled", "unknown_stop", "pending_files", "cleanup_pending", "retained_copy",
   "finalizer_owner", "retry_pending", "resuming_session", "restore_failure", "restore_recovery"])(
-  "retirement retains independent stop and file obligations while dispatch proceeds: %s", async state => {
+  "a terminal holder releases retirement while its own stop and file records are kept: %s", async state => {
     const [a, b] = await fixture(false); await claimSharedCheckout(db, a); await claimSharedCheckout(db, b);
     await writeFile(join(a.cwd, "original.txt"), "preserved result");
     await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runtimeMode: "native",
@@ -269,8 +285,7 @@ it.each(["settled", "unknown_stop", "pending_files", "cleanup_pending", "retaine
       receipt: { cleanupPending: state === "cleanup_pending",
         ...(state === "retained_copy" ? { retainedByRunId: b.runId } : {}) },
     });
-    if (state === "settled") await expect(retirementEligible(b)).resolves.toBe(true);
-    else await expect(retirementEligible(b)).resolves.toBe(false);
+    await expect(retirementEligible(b)).resolves.toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, a.runId)))[0])
       .toMatchObject({ phase: "terminal_failure", failureCode: "native_session_interrupted" });
     expect(await readFile(join(a.cwd, "original.txt"), "utf8")).toBe("preserved result");
@@ -290,14 +305,14 @@ it("keys a remote Bridge worker's claim on its host and registered path without 
   await expect(claimSharedCheckout(db, { ...b, remoteHostId: "shopee-d" })).resolves.toMatchObject({ host: "ccpocket:shopee-d", path: remotePath });
 });
 
-it.each(["relative/path", "/home/yoyo/../etc", "/home/yoyo/Projects/"])("rejects a non-canonical remote path %s", async remotePath => {
+it.each(["relative/path", "/home/yoyo/../etc", "/home/yoyo/Projects/"])("records a non-canonical remote path %s as a mismatch only", async remotePath => {
   const [a] = await fixture(false);
   await expect(claimSharedCheckout(db, { ...a, cwd: remotePath, remoteHostId: "shopee-e" }))
-    .rejects.toMatchObject({ resultJson: { workspaceValidation: { reason: "remote_worker_path_invalid" } } });
+    .resolves.toMatchObject({ host: "ccpocket:shopee-e", path: remotePath, mismatches: ["remote_worker_path_invalid"] });
 });
 
 
-it.each(["requested", "forced", "acknowledged", "live_controller"])("admits a successor immediately after cancellation while retaining stop evidence for retirement: %s", async evidence => {
+it.each(["requested", "forced", "acknowledged", "live_controller"])("admits a successor and releases retirement immediately after cancellation: %s", async evidence => {
   const [a,b] = await fixture(false);
   await claimSharedCheckout(db,a);
   await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(), sessionIdAfter: "native-session",
@@ -307,8 +322,7 @@ it.each(["requested", "forced", "acknowledged", "live_controller"])("admits a su
       forced: evidence === "forced", acknowledgedAt: new Date().toISOString() } },
   }).where(eq(heartbeatRuns.id,a.runId));
   await expect(claimSharedCheckout(db,b)).resolves.toMatchObject({ path:a.cwd });
-  if (evidence === "acknowledged") await expect(retirementEligible(b)).resolves.toBe(true);
-  else await expect(retirementEligible(b)).resolves.toBe(false);
+  await expect(retirementEligible(b)).resolves.toBe(true);
 });
 
 it("admits sibling worktrees of the same Git repository concurrently", async () => {

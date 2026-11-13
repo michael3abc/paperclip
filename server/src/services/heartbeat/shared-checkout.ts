@@ -7,10 +7,12 @@ import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { WorkspaceValidationFailure } from "./workspaces.js";
-import { suppressedDispositionRepairPredicate } from "../pre-dispatch-execution-wait.js";
+import { logger } from "../../middleware/logger.js";
 
 const execFile = promisify(execFileCallback);
-export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" | "storage"; executionCwd?: string };
+export type SharedCheckoutClaim = { version: 1; host: string; path: string; issueId: string; acquiredAt: string; kind?: "git" | "directory" | "storage"; executionCwd?: string;
+  /** Logged-only workspace mismatches (liveness-first rule 3); never a refusal. */
+  mismatches?: string[] };
 
 /** Resolve a not-yet-created worktree through its nearest real ancestor. Never
  * collapse it to the source repository (or Git common directory). */
@@ -91,116 +93,22 @@ export async function sharedCheckoutPath(cwd: string): Promise<string> {
   return (await sharedSource(cwd)).path;
 }
 
-/** Durable run ownership, acquired before provisioning can mutate the checkout.
- * A transaction advisory lock serializes claims across processes. Terminal status,
- * silence or a controller timeout alone never frees an admitted provider's files.
- * No idle scanner: the next queued admission inspects its exact checkout only.
- */
-/** Server-recorded proof that a non-shared execution host rebooted after a
- * historical holder finished (written only by workspace-holder reconciliation). */
+/** Server-recorded observation that a non-shared execution host rebooted after a
+ * historical holder finished (written only by workspace-holder reconciliation).
+ * Liveness-first: diagnostic evidence only; it no longer gates anything. */
 export const REMOTE_HOST_REBOOT_EVENT = "workspace.remote_host_rebooted";
 export const REMOTE_HOST_REBOOT_SCHEMA = "paperclip.remote-host-boot-boundary.v1";
 
-/** Reuse an Owner-observed boot boundary for Bridge cleanup, never as a result
- * or a new cancellation ACK. Alias r is the original heartbeat_runs row.
- * The invocation binds the historical host; mutable project settings do not.
- * Only released local preparation leases qualify for this cleanup path. */
-export const verifiedBridgeHostRebootSql = sql`r.runtime_mode = 'legacy'
-  and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
-  and r.process_pid is null and r.process_group_id is null and r.process_started_at is null
-  and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
-    and (l.company_id <> r.company_id or l.provider <> 'local' or l.released_at is null))
-  and exists (select 1 from heartbeat_run_events boot where boot.run_id = r.id
-    and boot.company_id = r.company_id and boot.agent_id = r.agent_id
-    and boot.event_type = ${REMOTE_HOST_REBOOT_EVENT} and boot.stream = 'system'
-    and boot.source_event_id is null and boot.source_instance_id is null
-    and boot.payload->>'schema' = ${REMOTE_HOST_REBOOT_SCHEMA}
-    and boot.payload->>'localProcess' in ('absent', 'not_recorded')
-    and (boot.payload->>'runFinishedAt')::timestamptz = r.finished_at
-    and (boot.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at
-    and boot.payload->>'hostId' = (select invoked.payload#>>'{context,hostId}'
-      from heartbeat_run_events invoked where invoked.run_id = r.id
-        and invoked.company_id = r.company_id and invoked.agent_id = r.agent_id
-        and invoked.event_type = 'adapter.invoke' and invoked.source_event_id is null
-        and invoked.payload->>'adapterType' = 'ccpocket_bridge'
-      order by invoked.seq desc limit 1)
-    and not exists (select 1 from heartbeat_run_events launched where launched.run_id = r.id
-      and launched.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded',
-        'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started')
-      and (launched.seq > boot.seq or launched.created_at >= (boot.payload->>'bootStartedAtLowerBound')::timestamptz)))`;
+/** Terminal run statuses. Liveness-first rule 2: a terminal run releases every
+ * gate at once (workspace holders, claims, retirement). Stop evidence and
+ * cleanup receipts are collected in the background (stop-settlement.ts) and are
+ * never required here. Terminal status still never authorizes deleting files. */
+export const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"] as const;
 
-// Recovery services share this predicate; construct it after module initialization.
-const settledSharedCheckoutSql = () => sql`r.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted') and r.finished_at is not null
-          and (r.result_json#>>'{stopSettlement,proof}' IS DISTINCT FROM 'remote_host_reboot_receipt'
-            OR (${verifiedBridgeHostRebootSql}))
-          and (r.error_code IS DISTINCT FROM 'legacy_disposition_repair_suppressed' OR EXISTS (
-            select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = r.id and ${suppressedDispositionRepairPredicate()}))
-          and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and c.process_stopped_at is not null)
-            or (r.runtime_mode = 'legacy' and exists (select 1 from heartbeat_run_events stopped
-              where stopped.run_id = r.id and stopped.company_id = r.company_id
-                and stopped.source_event_id is null and stopped.stream = 'system'
-                and stopped.event_type = 'execution.local_process_stopped'
-                and stopped.payload->>'schema' = 'paperclip.local-process-stop.v1'
-                and (stopped.payload->>'identitySeq')::integer =
-                  (select max(e.seq) from heartbeat_run_events e where e.run_id = r.id
-                    and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
-                      'turn.started', 'session.resumed'))))
-            or (r.result_json#>>'{stopSettlement,schema}' = 'paperclip.run-stop-settlement.v1'
-              and r.result_json#>>'{stopSettlement,state}' = 'settled' and r.result_json#>>'{stopSettlement,stopVerified}' = 'true'
-              and (r.result_json#>>'{stopSettlement,processGeneration}')::integer =
-                (select coalesce(max(e.seq), 0) from heartbeat_run_events e where e.run_id = r.id
-                  and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded',
-                    'native.local_process_stopped', 'turn.started', 'session.resumed')))
-            or (r.runtime_mode = 'legacy' and r.runner_profile_json#>>'{adapterDispatch,adapterType}' = 'ccpocket_bridge'
-              and r.status in ('cancelled', 'timed_out')
-              and r.result_json#>>'{executionCancellation,state}' = 'acknowledged'
-              and r.result_json#>>'{executionCancellation,forced}' = 'false'
-              and r.result_json#>>'{executionCancellation,acknowledgedAt}' is not null)
-            or (r.process_pid is null and r.process_group_id is null and r.process_started_at is null and r.native_session_id is null and r.session_id_after is null
-              and r.result_json->>'nativeSessionId' is null and r.result_json->>'bridgeSessionId' is null
-              and not (coalesce(r.runner_profile_json, '{}'::jsonb) ? 'nativeExecutionInput')
-              and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-                and (e.source_event_id is not null or e.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded', 'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started', 'provider.event', 'provider.rpc_result', 'tool.execution.started'))))
-            or exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-              and e.event_type = ${REMOTE_HOST_REBOOT_EVENT} and e.stream = 'system' and e.source_event_id is null
-              and e.payload->>'schema' = ${REMOTE_HOST_REBOOT_SCHEMA}
-              and e.payload->>'runFinishedAt' is not null and e.payload->>'bootStartedAtLowerBound' is not null
-              and (e.payload->>'runFinishedAt')::timestamptz = r.finished_at
-              and (e.payload->>'bootStartedAtLowerBound')::timestamptz > r.finished_at
-              and not exists (select 1 from heartbeat_run_events launched where launched.run_id = r.id
-                and launched.event_type in ('adapter.invoke', 'native.process_start_requested', 'native.process_identity_recorded',
-                  'harness.ready', 'session.started', 'session.resumed', 'session.updated', 'turn.started')
-                and (launched.seq > e.seq or launched.created_at >= (e.payload->>'bootStartedAtLowerBound')::timestamptz))))
-          and not exists (select 1 from native_run_finalizations f where f.run_id = r.id
-            and (f.lease_owner is not null or (f.phase <> 'committed' and not (
-              f.phase = 'terminal_failure' and f.next_attempt_at is null
-              and f.control_deadline_at is null and f.recovery_request_id is null
-              and coalesce(f.recovery_state, 'blocked') = 'blocked'
-              and r.result_json->>'workspaceRestoreFailure' is null
-              and coalesce(r.result_json->'workspaceRestoreRecovery', 'null'::jsonb) = 'null'::jsonb
-              and (exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
-                and c.process_stopped_at is not null) or r.result_json#>>'{stopSettlement,state}' = 'settled')
-              and not exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
-                and (c.process_stopped_at is null or c.state not in ('saved', 'unchanged', 'unavailable')
-                  or (c.receipt->>'cleanupPending' = 'true' or (c.receipt->>'schema' = 'paperclip.agent-files.v1' and c.receipt->>'cleanupPending' is distinct from 'false'))
-                  or c.receipt ? 'retainedByRunId'))
-            ))))
-          and not exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id
-            and (c.process_stopped_at is null or c.state not in ('saved', 'unchanged', 'unavailable')
-              or (c.receipt->>'cleanupPending' = 'true' or (c.receipt->>'schema' = 'paperclip.agent-files.v1' and c.receipt->>'cleanupPending' is distinct from 'false')) or c.receipt ? 'retainedByRunId'))
-          and not exists (select 1 from heartbeat_run_events e where e.run_id = r.id
-            and ((e.source_event_id is null and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))
-              or e.event_type in ('adapter.invoke', 'harness.ready', 'session.started', 'session.updated', 'turn.started', 'session.resumed'))
-            and not exists (select 1 from heartbeat_run_events stopped where stopped.run_id = r.id
-              and stopped.source_event_id is null and stopped.event_type = 'native.local_process_stopped' and stopped.seq > e.seq)
-            and exists (select 1 from agent_instruction_working_copies c where c.run_id = r.id and e.created_at > c.process_stopped_at))
-          and (r.controller_lease_expires_at is null or r.controller_lease_expires_at <= now())
-          and not exists (select 1 from workspace_operations o where o.heartbeat_run_id = r.id
-            and o.status in ('running', 'queued', 'pending'))
-          and not exists (select 1 from environment_leases l where l.heartbeat_run_id = r.id
-            and (l.status = 'pending_cleanup' or l.cleanup_status = 'failed' or l.metadata ? 'nativeWorkspaceExportResume'
-              or (l.released_at is null and not coalesce(l.status = 'retained' and l.lease_policy = 'reuse_by_environment' and l.cleanup_status = 'success', false))))`;
+// Recovery services share this predicate; alias r is the holder heartbeat_runs row.
+const settledSharedCheckoutSql = () => sql`r.status in (${sql.join(TERMINAL_RUN_STATUSES.map(status => sql`${status}`), sql`, `)})`;
 
+/** "Settled" == "terminal". Kept as a named check for holder reconciliation callers. */
 export async function sharedCheckoutHolderSettled(db: Db, companyId: string, runId: string) {
   const rows = await db.execute(sql`select 1 from heartbeat_runs r where r.id = ${runId}::uuid
     and r.company_id = ${companyId}::uuid and (${settledSharedCheckoutSql()})`);
@@ -213,8 +121,9 @@ export interface UnsettledWorkspaceHolder {
   /** explicit: recorded sharedCheckoutClaim; prior: admitted before physical claims, keyed by its recorded cwd. */
   kind: "explicit" | "prior";
 }
-/** Unsettled runs owning an equal, parent or child path on one claim host. Shared by
- * admission (first owner only) and read-only holder reconciliation (all owners). */
+/** Non-terminal (live or pending) runs using an equal, parent or child path on one
+ * claim host. Read-only: used by worktree retirement and holder reconciliation for
+ * display and safety, never by dispatch admission. Terminal runs are never holders. */
 export async function unsettledWorkspaceHolders(db: HolderExecutor, input: {
   host: string; path: string; remote: boolean; storage?: boolean; excludeRunId?: string | null; first?: boolean;
 }): Promise<UnsettledWorkspaceHolder[]> {
@@ -265,52 +174,60 @@ export async function unsettledWorkspaceHolders(db: HolderExecutor, input: {
   return found;
 }
 
+function claimMismatchReason(error: unknown) {
+  const validation = (error as { resultJson?: { workspaceValidation?: { reason?: unknown } } })?.resultJson?.workspaceValidation;
+  if (typeof validation?.reason === "string") return validation.reason;
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return typeof code === "string" ? `shared_workspace_${code.toLowerCase()}` : "shared_workspace_unresolved";
+}
+
+/** Liveness-first rule 3 (workspace = directory): always granted. The claim only
+ * records the execution directory for display; other runs, aliases, parent/child
+ * paths, historical cleanup, Git expectations and remote path shape never refuse
+ * or park a run. Mismatches are logged and recorded on the claim (`mismatches`). */
 export async function claimSharedCheckout(db: Db, input: {
   companyId: string; agentId: string; runId: string; issueId: string;
   projectWorkspaceId: string | null; cwd: string; deferralAttempt: number;
   wasIssueAssignee?: boolean;
+  /** Advisory only: a non-Git directory is logged, never refused. */
   requireGit?: boolean;
-  /** Only the runtime's worktree creation callback may reserve a missing path. */
+  /** The runtime's worktree creation callback may record a not-yet-created path. */
   preparingWorktree?: boolean;
   /** Legacy caller hint retained in input until workspace preparation is migrated.
    * It cannot establish exclusive ownership or reject collaborator changes. */
   checkSourceHandoff?: boolean;
   /** Server-owned durable provider namespace and storage reference, never cwd. */
   storageIdentity?: { namespace: string; workspaceRef: string };
-  /** A CC Pocket Bridge host other than the controller. Its filesystem is not visible here: claims key on
-   * that host and the source's canonical registered path, and the remote Bridge verifies the directory. */
+  /** A CC Pocket Bridge host other than the controller. Its filesystem is not visible here: the claim
+   * records that host and the given path, and the remote Bridge creates/verifies the directory. */
   remoteHostId?: string | null;
   context: Record<string, unknown>;
 }): Promise<SharedCheckoutClaim> {
   const remote = input.remoteHostId ?? null;
-  const storage = input.storageIdentity;
-  if (storage && (!storage.namespace || !storage.workspaceRef || remote)) throw new Error("workspace_storage_identity_invalid");
+  const mismatches: string[] = [];
+  const validStorage = input.storageIdentity && input.storageIdentity.namespace && input.storageIdentity.workspaceRef && !remote;
+  if (input.storageIdentity && !validStorage) mismatches.push("workspace_storage_identity_invalid");
+  const storage = validStorage ? input.storageIdentity! : null;
   const source = remote || storage ? null : await sharedSource(input.cwd).catch(async error => {
-    if (!input.preparingWorktree || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return { path: await plannedDirectory(input.cwd), kind: "directory" as const };
+    mismatches.push(claimMismatchReason(error));
+    const planned = await plannedDirectory(input.cwd).catch(() => path.resolve(input.cwd));
+    return { path: planned, kind: "directory" as const };
   });
-  if (remote && (!input.cwd.startsWith("/") || path.posix.normalize(input.cwd) !== input.cwd || (input.cwd.length > 1 && input.cwd.endsWith("/")))) {
-    throw new WorkspaceValidationFailure("The remote project source path is not a canonical absolute path.", { workspaceValidation: { reason: "remote_worker_path_invalid" } });
-  }
-  if (input.requireGit && source?.kind !== "git") throw new WorkspaceValidationFailure(
-    "This source declares a Git repository or revision but its directory is not a Git checkout. Repair that source or select an ordinary document directory without Git settings.",
-    { workspaceValidation: { reason: "shared_workspace_git_required" } });
+  if (remote && (!input.cwd.startsWith("/") || path.posix.normalize(input.cwd) !== input.cwd || (input.cwd.length > 1 && input.cwd.endsWith("/"))))
+    mismatches.push("remote_worker_path_invalid");
+  if (input.requireGit && !remote && !storage && source?.kind !== "git") mismatches.push("shared_workspace_git_required");
   const claim: SharedCheckoutClaim = { version: 1, ...(storage
     ? { host: `storage:${storage.namespace}`, path: `/${createHash("sha256").update(storage.workspaceRef).digest("hex")}`, kind: "storage" as const }
     : source ? { host: hostname(), ...source } : { host: `ccpocket:${remote}`, path: input.cwd }),
-    issueId: input.issueId, executionCwd: input.cwd, acquiredAt: new Date().toISOString() };
-  await db.transaction(async tx => {
-    // Participation records serialize only this run's publication. Other runs,
-    // aliases, parent/child paths and historical cleanup are not directory locks.
-    claim.acquiredAt = new Date().toISOString();
-    const [current] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.agentId, input.agentId))).for("update");
-    if (current?.status !== "running") throw new Error("shared_checkout_run_not_running");
-    await tx.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
-      || jsonb_build_object('sharedCheckoutClaim', ${JSON.stringify(claim)}::jsonb)`, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, input.runId));
-  });
+    issueId: input.issueId, executionCwd: input.cwd, acquiredAt: new Date().toISOString(),
+    ...(mismatches.length ? { mismatches } : {}) };
+  if (mismatches.length) logger.warn({ runId: input.runId, issueId: input.issueId, cwd: input.cwd, remoteHostId: remote, mismatches },
+    "workspace directory mismatch recorded; the run continues in its resolved directory");
+  // Display record only, written while the run is still running. Nothing reads it as a lock.
+  await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb)
+    || jsonb_build_object('sharedCheckoutClaim', ${JSON.stringify(claim)}::jsonb)`, updatedAt: new Date() })
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.status, "running")));
   input.context.sharedCheckoutClaim = claim;
   return claim;
 }

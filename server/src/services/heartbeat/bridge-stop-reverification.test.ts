@@ -78,17 +78,32 @@ describe.skipIf(!support.supported)("bridge stop re-verification", () => {
     expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("skipped");
   });
 
-  it("wakes deferred interrupt receipts when a stop is acknowledged, and not when it stays unverified", async () => {
+  it("is record-only: neither recorded proof nor a missing proof wakes waiters (the terminal run already released them)", async () => {
     const wakes: number[] = [];
     const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, () => { wakes.push(Date.now()); });
+    const settlements: number[] = [];
+    const unsubscribeSettlement = subscribeDeliveryWork(db, DELIVERY_QUEUES.runStopSettlement, () => { settlements.push(Date.now()); });
     try {
       const held = await seed();
       expect(await harness(async () => ({ verified: false as const, reason: "busy" })).service.reconcile(held.run.id, held.company.id)).toBe("unverified");
-      expect(wakes).toHaveLength(0);
       const f = await seed();
       expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("acknowledged");
-      expect(wakes).toHaveLength(1);
-    } finally { unsubscribe(); }
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(wakes).toHaveLength(0);
+      expect(settlements).toHaveLength(0);
+    } finally { unsubscribe(); unsubscribeSettlement(); }
+  });
+
+  it("records bridge evidence for a stop already acknowledged at terminal, keeping its acknowledgement time, then stops re-checking", async () => {
+    const f = await seed({ state: "acknowledged" });
+    await db.update(heartbeatRuns).set({ resultJson: { ...f.run.resultJson, executionCancellation: { ...f.executionCancellation,
+      forced: false, acknowledgedAt: "2026-11-09T08:39:20.000Z", proof: "terminal_status" } } }).where(eq(heartbeatRuns.id, f.run.id));
+    expect(bridgeSessionStopAcknowledged((await read(f.run.id))!)).toBe(true);
+    const h = harness(async input => proofFor(input.runId));
+    expect(await h.service.reconcile(f.run.id, f.company.id)).toBe("acknowledged");
+    expect((await read(f.run.id))!.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", forced: false,
+      acknowledgedAt: "2026-11-09T08:39:20.000Z", proof: "bridge_session_reverified", bridgeStopProof: proofFor(f.run.id).proof });
+    expect(await harness(async input => proofFor(input.runId)).service.reconcile(f.run.id, f.company.id)).toBe("skipped");
   });
 
   it("keeps the hold when the bridge cannot confirm the stop and bounds attempts per interval", async () => {
@@ -122,7 +137,7 @@ describe.skipIf(!support.supported)("bridge stop re-verification", () => {
 
   it.each([
     ["a forced stop", { forced: true }], ["a failed run", { status: "failed" as const }],
-    ["a local adapter run", { historical: "claude_local" }], ["an already acknowledged stop", { state: "acknowledged" }],
+    ["a local adapter run", { historical: "claude_local" }],
   ])("never re-verifies %s", async (_name, options) => {
     const f = await seed(options);
     const h = harness(async input => proofFor(input.runId));

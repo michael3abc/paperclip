@@ -14,7 +14,7 @@ import { publishLiveEvent } from "../live-events.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { createBridgeStopReverification, hasVerifiedBridgeTerminalStop } from "./bridge-stop-reverification.js";
 import { hasVerifiedBridgeUndispatchedStop } from "./bridge-undispatched-stop.js";
-import { inspectStopResources, settleCancelledNativeFinalizer, verifyNativeStop } from "./stop-settlement-evidence.js";
+import { inspectStopResources, settleCancelledNativeFinalizer, verifyBridgeHostReboot, verifyNativeStop } from "./stop-settlement-evidence.js";
 import { registerWorkspaceWaitSettlement } from "./workspace-wait-settlement.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 
@@ -52,6 +52,14 @@ async function evidenceKey(db: Db, run: Run) {
     // exists: a code upgrade is not new evidence and cannot spend another check.
     run.resultJson?.executionCancellation ?? run.resultJson?.executionStopVerification, run.resultJson?.nativeCancellation,
     run.resultJson?.workspaceRestoreFailure, run.resultJson?.workspaceRestoreRecovery, rows[0]?.evidence])).digest("hex");
+}
+
+/** Latest launch generation (event seq) that stop evidence must cover. */
+async function launchGeneration(db: Db, runId: string) {
+  const [row] = await db.execute<{ seq: number | string | null }>(sql`select coalesce(max(seq), 0) as seq from heartbeat_run_events
+    where run_id = ${runId}::uuid and event_type in ('native.process_start_requested', 'native.process_identity_recorded',
+      'native.local_process_stopped', 'turn.started', 'session.resumed')`);
+  return Number(row?.seq ?? 0);
 }
 
 export function createRunStopSettlement(db: Db, deps: {
@@ -107,6 +115,7 @@ export function createRunStopSettlement(db: Db, deps: {
     });
     if (!claimed) return read(runId, companyId);
     let evidence: string | null = null, cleanup: string | null = claimed.inspect ? "inspection_interrupted" : null;
+    let inspectedGeneration: number | null = null;
     try {
       if (claimed.inspect && !options.signal?.aborted) {
         let run = (await read(runId, companyId))!;
@@ -115,6 +124,7 @@ export function createRunStopSettlement(db: Db, deps: {
         } else {
           if (await isPreDispatchExecutionWaitVerified(db, run)) evidence = "verified_pre_dispatch_wait";
           else if (run.runtimeMode === "native") evidence = await verifyNativeStop(db, run);
+          else if (await verifyBridgeHostReboot(db, run)) evidence = "remote_host_reboot_receipt";
           else {
             // Record-only: the adapter re-check adds evidence when available.
             await createBridgeStopReverification(db, { ...deps, intervalMs: 0, signal: options.signal }).reconcile(runId, companyId);
@@ -127,6 +137,8 @@ export function createRunStopSettlement(db: Db, deps: {
             await db.transaction(tx => notifyInstructionCollection(tx, { companyId, runId }));
             if (run.runtimeMode === "native") await settleCancelledNativeFinalizer(db, run, deps.isRunActive);
             cleanup = await inspectStopResources(db, (await read(runId, companyId))!);
+            // Evidence covers the launches seen so far (including a stop it just recorded).
+            inspectedGeneration = await launchGeneration(db, runId);
           }
         }
       }
@@ -141,11 +153,14 @@ export function createRunStopSettlement(db: Db, deps: {
         .for("update");
       if (!current || parseObject(current.resultJson?.stopSettlement).claimToken !== claimed.receipt.claimToken) return null;
       const attempts = claimed.receipt.attempts;
+      // A launch recorded after the inspection makes its evidence stale (never the release).
+      const processGeneration = await launchGeneration(tx, runId);
+      if (claimed.inspect && processGeneration !== inspectedGeneration) evidence = null;
       const pending = claimed.inspect && (cleanup !== null || evidence === null);
       const nextCheckAt = !pending || attempts >= 4 ? null : new Date(now() + STOP_CHECK_DELAYS[Math.max(0, attempts - 1)]!).toISOString();
       const { claimToken: _token, claimUntil: _until, ...settled } = claimed.receipt;
       const receipt = { ...settled, reason: claimed.inspect ? cleanup ?? "cleanup_complete" : settled.reason,
-        ...(claimed.inspect ? { evidence, cleanup } : {}), checkedAt: new Date(now()).toISOString(), nextCheckAt,
+        ...(claimed.inspect ? { evidence, cleanup, processGeneration } : {}), checkedAt: new Date(now()).toISOString(), nextCheckAt,
         evidenceKey: await evidenceKey(tx, current) };
       if (nextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.runStopSettlement, JSON.stringify({ companyId, runId }));
       await notifyInstructionCollection(tx, { companyId, runId });

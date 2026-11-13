@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { hostname, tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces,
+import { agents, companies, createDb, environmentLeases, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces,
   workspaceOperations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { readMainManagedWorktree } from "@paperclipai/shared";
 import { managedWorktreeHostOperation, type ManagedWorktreeHostInput, type ManagedWorktreeHostResult } from "@paperclipai/adapter-utils/managed-worktree-host";
@@ -305,12 +305,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.row()).metadata?.lifecycleGeneration).toBe(2);
   });
 
-  it("requires registered worktrees at task creation, preserves session-only resources, and refuses a converging default", async () => {
+  it("falls back to the project default directory without a worktree, preserves session-only resources, and joins a converging default", async () => {
+    // Liveness-first rule 3 (workspace = directory): no registered worktree never refuses a task.
     const f = await fixture();
     const input = { companyId: f.companyId, projectId: f.projectId };
-    await expect(resolveCooperativeTaskWorkspace(db, input)).rejects.toMatchObject({ details: { code: "configuration_required" } });
+    expect(await resolveCooperativeTaskWorkspace(db, input)).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null,
+      executionWorkspacePreference: null, workspaceSelection: null, executionWorkspaceSettings: { sessionOnly: false } });
     const task = { title: "Code task", projectId: f.projectId, assigneeAgentId: f.agentId };
-    await expect(issueService(db).create(f.companyId, task)).rejects.toThrow("Select a linked worktree");
+    expect(await issueService(db).create(f.companyId, task)).toMatchObject({ executionWorkspaceId: null, projectId: f.projectId });
     await f.service.operate(f.scope, f.registration);
     const operation = { action: "set_default" as const, expectedGeneration: 1, operationId: randomUUID() };
     await f.service.operate(f.scope, operation);
@@ -324,8 +326,10 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await resolveCooperativeTaskWorkspace(db, { ...input, conversationAgentId: f.agentId }))
       .toMatchObject({ executionWorkspaceId: null, executionWorkspaceSettings: { sessionOnly: true } });
     await f.service.operate(f.scope, f.command("converge", 2));
-    await expect(issueService(db).create(f.companyId, task)).rejects.toThrow("closed to new work");
-    expect(await db.select().from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(2);
+    // Convergence is not an execution gate: the open (not closed) default tree is still joined, logged only.
+    expect(await issueService(db).create(f.companyId, task)).toMatchObject({ executionWorkspaceId: f.workspaceId });
+    // The fixture task plus the three tasks created above.
+    expect(await db.select().from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(4);
   });
 
   it("keeps unknown host outcomes pending across restart and reconciles only the original operation", async () => {
@@ -372,6 +376,31 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBeNull();
     expect(await f.service.operate(f.scope, f.command("reopen", 4))).toMatchObject({ phase: "open", generation: 5 });
     expect(f.host.mock.calls.map(call => call[1].action)).toEqual(["inspect", "merge"]);
+  });
+
+  it("retires once participant runs are terminal, without stop evidence or cleanup receipts, while live work still blocks", async () => {
+    const f = await fixture(); await f.service.operate(f.scope, f.registration);
+    await f.service.operate(f.scope, f.command("join", 1));
+    await f.service.operate(f.scope, f.command("converge", 1));
+    await f.service.operate(f.scope, f.command("merge", 2));
+    // The participant run ends with no stop proof; the main continues in a newer run.
+    const nextRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: f.companyId, agentId: f.agentId, status: "running",
+      invocationSource: "on_demand", contextSnapshot: { issueId: f.issueId } });
+    const scope = { ...f.scope, actor: { ...f.scope.actor, runId: nextRun } };
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), processPid: 12345,
+      resultJson: { bridgeSessionId: "unconfirmed", nativeSessionId: "unconfirmed" } }).where(eq(heartbeatRuns.id, f.runId));
+    // Cleanup of the terminal run is still pending: never a retirement gate.
+    await db.insert(environmentLeases).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, heartbeatRunId: f.runId,
+      provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+    // A live run's unreleased lease in this tree still blocks.
+    const [live] = await db.insert(environmentLeases).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+      heartbeatRunId: nextRun, provider: "local", status: "active" }).returning();
+    await expect(f.service.operate(scope, f.command("retire", 3))).rejects.toThrow("retire_blocked_live_resource");
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, live!.id));
+    expect(await f.service.operate(scope, f.command("retire", 4))).toMatchObject({ phase: "retired" });
+    expect(f.host.mock.calls.map(call => call[1].action)).toEqual(["inspect", "merge", "retire"]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toMatchObject({ status: "failed", processPid: 12345 });
   });
 
   it("requires the current running main and preserves Owner holds", async () => {

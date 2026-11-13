@@ -4,19 +4,21 @@ import { conflict, forbidden } from "../../errors.js";
 import { mainAgentProjectId } from "../main-agent-workers.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
-import { sharedCheckoutHolderSettled } from "../heartbeat/shared-checkout.js";
+import { sharedCheckoutHolderSettled, TERMINAL_RUN_STATUSES } from "../heartbeat/shared-checkout.js";
 import { record } from "./workspace-creator.js";
 import { logActivity } from "../activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { reconcileRemoteHostRebootHolders, type RemoteHolderActor, type RemoteHostRebootDeps } from "./remote-host-reboot.js";
 
-/** Re-check one terminal holder. This capability never cancels a live run or removes a claim.
- * Without holderRunId (a holderless wait) the Owner may settle remote owners only by a
- * server-observed host boot boundary; see remote-host-reboot.ts. */
+/** Re-check one holder. Liveness-first rule 2: a terminal holder is released at once;
+ * stop evidence is refreshed by the background stop-settlement worker and never
+ * waited on, so `_reverify` is retained only for caller compatibility. This
+ * capability never cancels a live run or removes a claim. Without holderRunId
+ * (a holderless wait) remote owners are checked through remote-host-reboot.ts. */
 export async function reconcileWorkspaceHolder(db: Db, input: {
   companyId: string; issueId: string; waitingRunId: string; holderRunId?: string | null; expectedBindingRevision: number;
   actor: RemoteHolderActor;
-}, reverify: (runId: string, companyId: string) => Promise<unknown>, remote: RemoteHostRebootDeps = {}) {
+}, _reverify: (runId: string, companyId: string) => Promise<unknown>, remote: RemoteHostRebootDeps = {}) {
   if (!input.holderRunId) return reconcileRemoteHostRebootHolders(db, input, remote);
   const holderRunId = input.holderRunId;
   async function verify() {
@@ -47,20 +49,20 @@ export async function reconcileWorkspaceHolder(db: Db, input: {
     if (!holder || !source || source.projectId !== task.projectId || source.id !== busy.holderIssueId ||
         source.projectWorkspaceId !== task.projectWorkspaceId || !record(holder.contextSnapshot?.sharedCheckoutClaim).path)
       throw forbidden("The holder is outside this configured project workspace");
-    if (!["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(holder.status) || !holder.finishedAt ||
+    if (!TERMINAL_RUN_STATUSES.includes(holder.status as typeof TERMINAL_RUN_STATUSES[number]) ||
         adapterExecutionControls.has(holder.id) || await issueTreeControlService(db).getActivePauseHoldGate(input.companyId, source.id))
-      throw conflict("The holder is active or held; idle is not stop evidence");
+      throw conflict("The holder is active or held");
     return holder;
   }
   const before = await verify();
-  if (!await sharedCheckoutHolderSettled(db, input.companyId, before.id)) await reverify(before.id, input.companyId);
-  await verify();
+  // Terminal == settled. Stop evidence is refreshed by the background stop-settlement
+  // worker (record-only); this request never waits on it or spends its checks.
   const settled = await sharedCheckoutHolderSettled(db, input.companyId, before.id);
   await logActivity(db, { companyId: input.companyId, actorType: input.actor.type === "agent" ? "agent" : "user",
     actorId: input.actor.agentId ?? input.actor.userId ?? "board", agentId: input.actor.agentId, runId: input.actor.runId,
     action: "issue.workspace_holder_reconciled", entityType: "issue", entityId: input.issueId,
     details: { holderRunId: before.id, waitingRunId: input.waitingRunId, settled } });
   return { holderRunId: before.id, state: settled ? "settled" as const : "unverified" as const,
-    nextAction: settled ? "The original waiting task retains its scheduled admission; workspace checks still apply."
-      : "The original stop or resource settlement remains unverified. Owner intervention is required." };
+    nextAction: settled ? "The terminal holder released the workspace; the waiting task is dispatched by its normal retry."
+      : "The holder changed while being checked; it will be checked again automatically." };
 }
