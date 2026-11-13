@@ -167,7 +167,9 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it.each(["workspace", "connection"] as const)("settles the agent after a %s deferral cannot keep its issue lock", async (kind) => {
+  // Liveness-first: workspace holders no longer exist, so only the AI
+  // connection deferral can still reach this settle path.
+  it.each(["connection"] as const)("settles the agent after a %s deferral cannot keep its issue lock", async (kind) => {
     const database = guardedDatabase();
     const deps = callbacks();
     const run = { ...unitRun(), status: "cancelled" };

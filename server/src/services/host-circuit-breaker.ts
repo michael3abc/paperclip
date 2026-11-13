@@ -104,5 +104,22 @@ export function createHostCircuitBreaker(options: { now?: () => number } = {}) {
 
 export type HostCircuitBreaker = ReturnType<typeof createHostCircuitBreaker>;
 
+/**
+ * Breaker key for the host an agent executes on: its configured `hostId`
+ * (CC Pocket remote hosts) or the local Bridge for CC Pocket agents without
+ * one. Other adapters have no shared host and return null.
+ */
+export function hostCircuitKeyForAgent(
+  agent: { adapterType?: string | null; adapterConfig?: unknown } | null | undefined,
+): string | null {
+  if (!agent?.adapterType) return null;
+  const config = agent.adapterConfig && typeof agent.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+    ? agent.adapterConfig as Record<string, unknown>
+    : {};
+  const hostId = typeof config.hostId === "string" ? config.hostId.trim() : "";
+  if (hostId) return `${agent.adapterType}:${hostId}`;
+  return agent.adapterType === "ccpocket_bridge" ? "ccpocket_bridge:local" : null;
+}
+
 /** Process-wide breaker shared by dispatch and run completion. */
 export const hostCircuitBreaker: HostCircuitBreaker = createHostCircuitBreaker();
