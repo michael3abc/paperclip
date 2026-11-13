@@ -314,3 +314,13 @@ repository-root retirement only unregisters metadata.
 - `docs/agents/session-bridge.md` — Native session bridge: startup recovery to main Chat, Codex steering, session-bridge keys
 - `docs/agents/platform-notes.md` — Web Push, host quotas, Runner/PRP contract, Dot assignment, artifact delivery, data-path inventory
 - `docs/agents/testing-and-maps.md` — Scheduler test rules, feature/access/storybook maps and their check commands
+
+## Antigravity CLI shared workers
+
+The fork ports upstream PR #21121 as `agy_local`, separate from the pending
+Google ACP runtime and from `ccpocket_bridge`. Preserve explicit subscription
+bindings and model/effort/permission through the revision-checked worker policy.
+Shared CLI workers set `subscriptionOnly:true`; all CLI invocations disable
+paid extra credits with `useG1Credits:false`. Plan never skips permissions;
+auto is unsupported. Preserve existing Bridge agents, policies, sessions and
+credentials. See `doc/DEVELOPING.md` and `docs/adapters/agy-local.md`.

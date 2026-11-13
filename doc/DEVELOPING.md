@@ -1651,6 +1651,38 @@ custom-image metadata without resolving provider credentials.
 Outdated captures that no longer match the base configuration do not change
 the managed runner default, consistent with execution's template selection.
 
+### Antigravity CLI shared workers
+
+The fork ports `agy_local` from upstream PR #21121, head
+`46b4510cae7d7dbbb73df5ce1c147c96fa73a45a`. It starts the installed `agy` CLI
+directly. Use the **Antigravity** connection provider and **Antigravity (agy)**
+harness. The Google connection belongs to the separate, pending native ACP
+runtime. CLI sign-in uses an isolated home and the command shown on the
+connection page. A host CLI login works when no managed connection is selected.
+
+An active `agy_local` agent with `runtimeConfig.requireProjectWorkspace=true`
+appears in the main agent's Worker settings. Save its model, effort, permission
+and optional explicit subscription connection through the normal revision/hash
+worker-policy API. New tasks expand `workerSelectionId` into adapter overrides
+and the exact connection binding; shared-agent defaults stay unchanged. Revoked
+or uninstalled connections cannot dispatch. Existing tasks retain their overrides.
+
+Shared CLI workers reject API-key connections and API-key environment bindings.
+All CLI invocations, including probes, disable paid extra credits with
+`--settings '{"useG1Credits":false}'`. Full access maps to
+`--dangerously-skip-permissions`; default clears it. Workers use edit mode.
+Plan cannot skip permissions, and auto is unsupported. Effort-suffixed models
+expose that same effort in Worker settings, so dispatch keeps the selected
+model. Discovery errors surface without a static catalog fallback.
+
+Sessions resume with `--conversation`. Managed subscription homes preserve
+conversation data independently of credentials. MCP config uses a private run
+home; account refresh uses the existing credential merge and secret rotation.
+The additive provider-check migration admits `antigravity` without changing
+existing rows. Adding this harness does not convert Bridge agents, rewrite
+policies, start tasks or deploy production. See
+[adapter fields](../docs/adapters/agy-local.md).
+
 ### Local Linux runner qualification
 
 Before serving requests, the server reads `getconf GNU_LIBC_VERSION` once with

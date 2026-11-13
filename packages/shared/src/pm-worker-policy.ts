@@ -6,7 +6,7 @@ import type { PmInstructionLayoutVersion } from "./pm-instruction-layout.js";
  * Shared worker harnesses. `ccpocket_bridge` is admitted only as a plain Bridge shared worker (provider
  * `claude`, `codex` or `antigravity` on its own Bridge host, no main/PM role); the server enforces that eligibility.
  */
-export const PM_WORKER_HARNESSES = ["claude_local", "codex_local", "ccpocket_bridge"] as const;
+export const PM_WORKER_HARNESSES = ["claude_local", "codex_local", "ccpocket_bridge", "agy_local"] as const;
 export type PmWorkerHarness = (typeof PM_WORKER_HARNESSES)[number];
 /**
  * `engine` is a CC Pocket provider (`claude`/`codex`/`antigravity`) or a `<host>/<engine>/<model>` model ID.
@@ -15,6 +15,7 @@ export type PmWorkerHarness = (typeof PM_WORKER_HARNESSES)[number];
 export function pmWorkerHarnessLabel(harness: PmWorkerHarness, engine?: string | null): string {
   if (harness === "claude_local") return "Claude";
   if (harness === "codex_local") return "Codex";
+  if (harness === "agy_local") return "Antigravity CLI";
   const provider = engine?.includes("/") ? engine.split("/")[1] : engine;
   return provider === "claude" ? "Claude" : provider === "codex" ? "Codex" : "Antigravity";
 }

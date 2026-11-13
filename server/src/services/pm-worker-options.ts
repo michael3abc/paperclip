@@ -36,7 +36,7 @@ export function isAntigravityBridgeWorker(agent: WorkerAgent): boolean {
 
 /** Agents that may appear in an Owner-managed worker policy (status and workspace gates are checked separately). */
 export function isPmWorkerAgent(agent: WorkerAgent): agent is WorkerAgent & { adapterType: PmWorkerHarness } {
-  return agent.adapterType === "claude_local" || agent.adapterType === "codex_local" || isBridgeWorker(agent);
+  return agent.adapterType === "claude_local" || agent.adapterType === "codex_local" || agent.adapterType === "agy_local" || isBridgeWorker(agent);
 }
 
 /** Bridge host that runs an agent: the CC Pocket `hostId`, otherwise the controller's own host. */
@@ -65,6 +65,7 @@ export function antigravityWorkerModelPrefix(config: Record<string, unknown>): s
 
 export function workerPermissionChoices(config: Record<string, unknown>, harness?: string): PmWorkerCatalogEntry["permissions"] {
   if ([config.extraArgs, config.args].some(value => Array.isArray(value) && value.length > 0)) return [];
+  if (harness === "agy_local") return ["default", "full-access"];
   // Bridge workers: the Bridge's default permission mode or explicit Full access (Antigravity
   // --dangerously-skip-permissions, Claude bypassPermissions, Codex danger-full-access).
   if (harness === "ccpocket_bridge") return ["claude", "codex", "antigravity"].includes(config.provider as string) ? ["default", "full-access"] : [];
@@ -75,6 +76,9 @@ export function workerPermissionChoices(config: Record<string, unknown>, harness
 }
 
 export function workerModelChoices(harness: PmWorkerCatalogEntry["harness"], models: { id: string; label: string }[], engine: BridgeWorkerProvider = "antigravity"): PmWorkerCatalogEntry["models"] {
+  if (harness === "agy_local") return models.map(model => ({ ...model, speeds: ["standard"],
+    thinking: model.id.match(/-(low|medium|high|xhigh|max)$/i)?.slice(1) ?? ["low", "medium", "high", "xhigh", "max"],
+  }));
   if (harness === "ccpocket_bridge") {
     // CC Pocket model IDs are `<host>/<engine>/<model>`; efforts come from the host's own engine probe. No fast tier.
     return models.filter(model => model.id.split("/")[1] === engine).map(model => {
@@ -91,6 +95,8 @@ export function workerModelChoices(harness: PmWorkerCatalogEntry["harness"], mod
 
 export function workerSelectionOverrides(harness: PmWorkerCatalogEntry["harness"], choice: PmWorkerSelection): Record<string, unknown> {
   const full = choice.permission === "approve-all" || choice.permission === "full-access";
+  if (harness === "agy_local") return { model: choice.model, effort: choice.thinking,
+    mode: "accept-edits", sandbox: false, dangerouslySkipPermissions: full, subscriptionOnly: true };
   // CC Pocket adapter keys: Full access is explicit; any other choice also clears an inherited bypass flag.
   if (harness === "ccpocket_bridge") return { model: choice.model, effort: choice.thinking,
     permissionMode: full ? "fullAccess" : "default", dangerouslyBypassApprovalsAndSandbox: full };
