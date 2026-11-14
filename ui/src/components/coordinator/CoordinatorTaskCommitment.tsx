@@ -135,6 +135,9 @@ export function CoordinatorCreatedTaskLink({ task, createdAt }: {
           ...task.runtimeIdentity, harness: task.runtimeIdentity.harness ?? "harness unknown", modelProvider: null, metadataError: null,
         })}
       </span>}
+      {task.runtimeIdentity?.routeDescription && <span className="block break-words text-xs text-muted-foreground" data-testid="task-route">
+        {task.runtimeIdentity.routeDescription}
+      </span>}
     </span>
     {createdAt ? <CoordinatorRelativeTime value={createdAt} className="shrink-0 text-xs text-muted-foreground" /> : null}
     <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />

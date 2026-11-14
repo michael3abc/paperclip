@@ -20,12 +20,16 @@ export interface MainAgentRuntime {
   billingRoute: string | null;
   modelProvider: string | null;
   metadataError: string | null;
+  /** Subscription-first family route (source, reason, expected return); null when the model is not routed. */
+  routeDescription?: string | null;
 }
 
 function runtimeIdentity(payload: Record<string, unknown>): MainAgentRuntime | null {
   if (!text(payload.harness) && !text(payload.model)) return null;
+  const route = payload.route && typeof payload.route === "object" ? payload.route as Record<string, unknown> : null;
   return { harness: text(payload.harness), model: text(payload.model), billingRoute: text(payload.billingRoute),
-    modelProvider: text(payload.modelProvider), metadataError: text(payload.metadataError) };
+    modelProvider: text(payload.modelProvider), metadataError: text(payload.metadataError),
+    routeDescription: route ? text(route.description) : null };
 }
 
 export function runtimeIdentityLabel(runtime: MainAgentRuntime): string {
