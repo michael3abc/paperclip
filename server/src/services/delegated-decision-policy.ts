@@ -190,49 +190,34 @@ export async function routeDelegatedDecision(db: Db, input: {
   const sourceIssueId = input.issueId ?? runIssueId;
   const [issue] = sourceIssueId ? await db.select().from(issues).where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId))).limit(1) : [];
   if (sourceIssueId && !issue) throw forbidden("Decision task is outside the company");
-  const projectId = issue?.projectId ?? (requester ? pmCoordinationScope(requester)?.projectId : null) ?? null;
-  const requesterProject = requester ? pmCoordinationScope(requester)?.projectId : null;
-  if (requesterProject && projectId !== requesterProject) throw forbidden("PM decisions are limited to the assigned project");
-  const pmGrant = await readProjectPmDecisionAuthority(db, input.companyId, { lock: true });
-  if (pmGrant && projectId && pmGrant.scope.projectIds.includes(projectId)
-    && input.createdAt.getTime() >= Date.parse(pmGrant.scope.activatedAt)
-    && requiredScopes.every(scope => (pmGrant.scope.scopes as string[]).includes(scope))) {
-    const candidates = (await db.select().from(agents).where(eq(agents.companyId, input.companyId)))
-      .filter(agent => pmCoordinationScope(agent)?.projectId === projectId);
-    if (candidates.length !== 1) throw conflict("The task project must have exactly one designated PM");
-    const pm = candidates[0]!;
-    const reservedReasons = [...input.reservedReasons];
-    if (requester?.id === pm.id && !pmGrant.scope.allowSelfApproval) reservedReasons.push("explicit_human");
-    return { version: 1, authority: "project_pm", grantId: pmGrant.id, grantRevision: pmGrant.scope.revision,
-      ownerUserId: pmGrant.ownerUserId, delegateAgentId: null, projectId, sourceIssueId: issue?.id ?? null,
-      level: reservedReasons.length ? "human" : "pm", recipientAgentId: reservedReasons.length ? null : pm.id,
-      sourceRunId: input.sourceRunId, sourceFingerprint: input.fingerprint, revision: randomUUID(), reservedReasons, requiredScopes };
-  }
   const grant = await readDecisionDelegation(db, input.companyId, { lock: true });
   if (!grant || input.createdAt.getTime() < Date.parse(grant.scope.activatedAt)
     || !requiredScopes.every(scope => grant.scope.scopes.includes(scope))) return null;
-  // Owner 2026-11-14: company delegation covers worker requests. A project main's
-  // own questions and anything asked inside an Agent Chat stay with the Owner.
-  if ((requester && mainAgentProjectId(requester)) || issue?.conversationAgentId) return null;
+  // Owner 2026-11-14 「直接把 PM 這個邏輯拔掉，就留 main 有所有權限」: project mains hold
+  // decision authority. Agent Chat requests and a main's own questions stay with the Owner.
+  const requesterMainProjectId = requester ? mainAgentProjectId(requester) : null;
+  if (issue?.conversationAgentId || (requesterMainProjectId && input.category !== "approval")) return null;
   const context: DelegatedDecisionContext = {
     version: 1, grantId: grant.id, grantRevision: grant.scope.revision, ownerUserId: grant.ownerUserId,
     delegateAgentId: grant.agentId, level: "delegate", recipientAgentId: grant.agentId,
     projectId: issue?.projectId ?? null, sourceRunId: input.sourceRunId,
     sourceFingerprint: input.fingerprint, revision: randomUUID(), reservedReasons: input.reservedReasons, requiredScopes,
   };
+  // A main approves its own requests; other requests in a project go to its lead.
+  // Tool-action confirmations (requiresDelegate) stay with the company delegate.
+  let main: { agentId: string; projectId: string } | null = null;
+  if (requester && requesterMainProjectId) main = { agentId: requester.id, projectId: requesterMainProjectId };
+  else if (!input.requiresDelegate && issue?.projectId) {
+    const lead = await projectLeadAgentId(db, input.companyId, issue.projectId);
+    if (lead && lead !== requester?.id) main = { agentId: lead, projectId: issue.projectId };
+  }
+  if (main) {
+    const reservedReasons = input.reservedReasons.filter(reason => reason === "explicit_human");
+    return { ...context, projectId: main.projectId, reservedReasons,
+      level: reservedReasons.length ? "human" : "pm", recipientAgentId: reservedReasons.length ? null : main.agentId };
+  }
   if (context.reservedReasons.length || (requester?.id === grant.agentId && !grant.scope.allowSelfApproval)) {
     return { ...context, level: "human", recipientAgentId: null };
-  }
-  if (!input.requiresDelegate && input.category !== "approval" && requester && !pmCoordinationScope(requester) && requester.id !== grant.agentId && issue?.projectId) {
-    const candidates = (await db.select().from(agents).where(eq(agents.companyId, input.companyId)))
-      .filter(agent => pmCoordinationScope(agent)?.projectId === issue.projectId);
-    // Without exactly one designated PM, the project's lead (main) agent decides;
-    // without a lead, the company delegate keeps it.
-    const recipient = candidates.length === 1 ? candidates[0]!.id : await projectLeadAgentId(db, input.companyId, issue.projectId);
-    if (recipient && recipient !== requester.id) {
-      context.level = "pm";
-      context.recipientAgentId = recipient;
-    }
   }
   return context;
 }
@@ -251,9 +236,9 @@ export async function assertDelegatedDecisionActor(db: Db, input: {
   if (!run || run.status !== "running") throw forbidden("A current running agent turn is required to decide");
   const [agent] = await db.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))).limit(1).for("share");
   if (!agent || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw forbidden("The deciding agent is unavailable");
-  if (context.level === "pm" && pmCoordinationScope(agent)?.projectId !== context.projectId
-    && !(context.projectId && await projectLeadAgentId(db, input.companyId, context.projectId) === agent.id))
-    throw forbidden("PM decisions are limited to the assigned project");
+  if (context.level === "pm" && !(context.projectId && (mainAgentProjectId(agent) === context.projectId
+    || await projectLeadAgentId(db, input.companyId, context.projectId) === agent.id)))
+    throw forbidden("PM decisions are limited to the project's main or lead");
   return grant;
 }
 

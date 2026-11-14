@@ -54,7 +54,13 @@ export function approvalResolutionRecords(db: Db) {
       const current = await getExistingApproval(id, tx);
       if (typeof actor === "string" && current.delegation?.level === "human" && actor !== current.delegation.ownerUserId) throw forbidden("This decision is reserved for the delegating human Owner");
       if (typeof actor !== "string") {
-        if (!current.delegation || approvalReservedReasons(current.type, current.payload).length) throw forbidden("This approval requires the human Owner");
+        if (!current.delegation) throw forbidden("This approval requires the human Owner");
+        // Owner 2026-11-14 「直接把 PM 這個邏輯拔掉，就留 main 有所有權限」: the recipient of a
+        // "pm"-level request is blocked only by explicit_human. assertDelegatedDecisionActor
+        // below admits that recipient only as the project's main or lead.
+        const reserved = approvalReservedReasons(current.type, current.payload);
+        const projectMainDecides = current.delegation.level === "pm" && current.delegation.recipientAgentId === actor.agentId;
+        if (projectMainDecides ? reserved.includes("explicit_human") : reserved.length) throw forbidden("This approval requires the human Owner");
         await assertDelegatedDecisionActor(tx, { companyId: current.companyId, context: current.delegation,
           agentId: actor.agentId, runId: actor.runId, revision: actor.revision,
           fingerprint: decisionFingerprint({ type: current.type, payload: current.payload }) });

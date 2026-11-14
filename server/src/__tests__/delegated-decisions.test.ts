@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { agents, approvals, authUsers, budgetIncidents, budgetPolicies, costEvents, companies, companyMemberships, createDb, heartbeatRuns, issues, projects, issueThreadInteractions, agentWakeupRequests } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { approvalRecords, approvalService } from "../services/approvals.js";
-import { assertDelegatedDecisionActor, decisionFingerprint, nextDelegatedDecision, routeDelegatedDecision, saveDecisionDelegation, saveProjectPmDecisionAuthority, readDecisionAuthority } from "../services/delegated-decision-policy.js";
+import { assertDelegatedDecisionActor, decisionFingerprint, nextDelegatedDecision, routeDelegatedDecision, saveDecisionDelegation, saveProjectPmDecisionAuthority } from "../services/delegated-decision-policy.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { escalateDelegatedRequest, getDelegatedRequest } from "../services/delegated-requests.js";
 import { deliverLegacyRuntimeDecision, requestLegacyRuntimeDecision } from "../services/native-runtime/legacy-runtime-decision-bridge.js";
@@ -41,29 +41,80 @@ describe("Owner-issued layered decision authority", () => {
       enabled: true, allowSelfApproval: true, scopes: ["task_decisions", "general_approvals", "ordinary_operations", "agent_model_budget", "external_writes"] });
   }
   const fingerprint = () => decisionFingerprint({ kind: "ask_user_questions", payload: { options: ["a", "b"] } });
-  async function route(requesterAgentId: string, reservedReasons: ["explicit_human"] | [] = []) {
+  type RouteInput = Parameters<typeof routeDelegatedDecision>[1];
+  async function route(requesterAgentId: string, reservedReasons: RouteInput["reservedReasons"] = [], extra: Partial<RouteInput> = {}) {
     return routeDelegatedDecision(db, { companyId, issueId, requesterAgentId, sourceRunId: null,
-      fingerprint: fingerprint(), createdAt: new Date(), category: "interaction", reservedReasons });
+      fingerprint: fingerprint(), createdAt: new Date(), category: "interaction", reservedReasons, ...extra });
   }
-  it("leaves old requests untouched and resolves a shared worker's PM from its project", async () => {
-    const old = await approvalRecords(db).create(companyId, { type: "approve_ceo_strategy", requestedByAgentId: pmId, payload: { strategy: "existing" } });
-    await activate();
-    expect((await route(workerId))?.recipientAgentId).toBe(pmId);
-    expect((await route(pmId))?.recipientAgentId).toBe(momoId);
-    expect((await approvalRecords(db).getById(old.id))?.delegation).toBeNull();
-    await expect(approvalService(db).approve(old.id, { agentId: momoId, runId, revision: randomUUID() }, "Do not migrate history")).rejects.toThrow();
-  });
-  it("without a designated PM routes worker requests to the project's lead main and keeps main questions human (Owner 2026-11-14)", async () => {
+  /** A project main (Owner 2026-11-14: mains hold all decision authority) set as the project's lead. */
+  async function addLeadMain() {
     const mainId = randomUUID();
-    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, pmId));
     await db.insert(agents).values({ id: mainId, companyId, name: "Main", adapterType: "ccpocket_bridge",
       adapterConfig: { role: "main", projectId } });
     await db.update(projects).set({ leadAgentId: mainId }).where(eq(projects.id, projectId));
+    return mainId;
+  }
+  async function runningRun(agentId: string) {
+    const id = randomUUID();
+    await db.insert(heartbeatRuns).values({ id, companyId, agentId, status: "running" });
+    return id;
+  }
+  it("leaves old requests untouched and no longer routes to a designated project PM", async () => {
+    const old = await approvalRecords(db).create(companyId, { type: "approve_ceo_strategy", requestedByAgentId: pmId, payload: { strategy: "existing" } });
     await activate();
-    expect(await route(workerId)).toMatchObject({ level: "pm", recipientAgentId: mainId, delegateAgentId: momoId });
+    const worker = await route(workerId);
+    expect(worker).toMatchObject({ level: "delegate", recipientAgentId: momoId });
+    expect(worker?.authority).toBeUndefined();
+    expect(await route(pmId)).toMatchObject({ level: "delegate", recipientAgentId: momoId });
+    expect((await approvalRecords(db).getById(old.id))?.delegation).toBeNull();
+    await expect(approvalService(db).approve(old.id, { agentId: momoId, runId, revision: randomUUID() }, "Do not migrate history")).rejects.toThrow();
+  });
+  it("routes worker requests to the project's lead main and keeps main questions and Agent Chat with the Owner (Owner 2026-11-14)", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    expect(await route(workerId)).toMatchObject({ level: "pm", recipientAgentId: mainId, projectId, delegateAgentId: momoId, reservedReasons: [] });
+    // A designated PM is an ordinary requester now; its project's main decides.
+    expect(await route(pmId)).toMatchObject({ level: "pm", recipientAgentId: mainId });
     expect(await route(mainId)).toBeNull();
+    expect(await route(mainId, [], { category: "runtime" })).toBeNull();
+    // Only explicit_human survives for a main recipient.
+    expect(await route(workerId, ["sensitive_data_export"])).toMatchObject({ level: "pm", recipientAgentId: mainId, reservedReasons: [] });
+    expect(await route(workerId, ["explicit_human", "account_security_expansion"]))
+      .toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: ["explicit_human"] });
+    // Tool-action confirmations still require the company delegate.
+    expect(await route(workerId, [], { requiredScopes: ["external_writes"], requiresDelegate: true }))
+      .toMatchObject({ level: "delegate", recipientAgentId: momoId });
+    const chatId = randomUUID();
+    await db.insert(issues).values({ id: chatId, companyId, projectId, title: "Agent Chat", conversationAgentId: workerId,
+      conversationUserId: ownerId, assigneeAgentId: workerId, conversationState: "active" });
+    expect(await route(workerId, [], { issueId: chatId })).toBeNull();
     await db.update(projects).set({ leadAgentId: null }).where(eq(projects.id, projectId));
     expect(await route(workerId)).toMatchObject({ level: "delegate", recipientAgentId: momoId });
+    expect(await route(workerId, ["sensitive_data_export"]))
+      .toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: ["sensitive_data_export"] });
+  });
+  it("lets only the project's main or lead decide a PM-level request", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const decide = async (agentId: string, context: NonNullable<Awaited<ReturnType<typeof route>>>) =>
+      assertDelegatedDecisionActor(db, { companyId, context, agentId, runId: await runningRun(agentId),
+        revision: context.revision, fingerprint: fingerprint() });
+    const request = (await route(workerId))!;
+    await expect(decide(momoId, request)).rejects.toThrow(/not delegated/);
+    // A request a previous release addressed to the designated PM is no longer the PM's to decide.
+    await expect(decide(pmId, { ...request, recipientAgentId: pmId })).rejects.toThrow(/main or lead/);
+    await expect(decide(mainId, request)).resolves.toMatchObject({ agentId: momoId });
+    const formerLeadId = randomUUID();
+    await db.insert(agents).values({ id: formerLeadId, companyId, name: "Former lead", adapterType: "process" });
+    await db.update(projects).set({ leadAgentId: formerLeadId }).where(eq(projects.id, projectId));
+    const leadRequest = (await route(workerId))!;
+    expect(leadRequest).toMatchObject({ level: "pm", recipientAgentId: formerLeadId });
+    await expect(decide(formerLeadId, leadRequest)).resolves.toBeTruthy();
+    await db.update(projects).set({ leadAgentId: mainId }).where(eq(projects.id, projectId));
+    await expect(decide(formerLeadId, leadRequest)).rejects.toThrow(/main or lead/);
+    // The project's main keeps authority over its project without being the lead.
+    await db.update(projects).set({ leadAgentId: null }).where(eq(projects.id, projectId));
+    await expect(decide(mainId, request)).resolves.toBeTruthy();
   });
   it("requires the human Owner and CAS when changing delegation", async () => {
     await expect(saveDecisionDelegation(db, { companyId, ownerUserId: momoId, agentId: momoId,
@@ -72,8 +123,10 @@ describe("Owner-issued layered decision authority", () => {
     await expect(activate()).rejects.toThrow(/revision/);
   });
   it("permits only the current recipient and one-way escalation", async () => {
+    await addLeadMain();
     await activate();
     const request = (await route(workerId))!;
+    expect(request.level).toBe("pm");
     await expect(assertDelegatedDecisionActor(db, { companyId, context: request, agentId: momoId, runId,
       revision: request.revision, fingerprint: fingerprint() })).rejects.toThrow();
     const second = nextDelegatedDecision(request);
@@ -142,13 +195,13 @@ describe("Owner-issued layered decision authority", () => {
       { agentId: momoId, runId })).rejects.toThrow();
   });
 
-  it("escalates the same worker request through PM and momo while rejecting the old PM revision", async () => {
+  it("escalates the same worker request through the lead main and momo while rejecting the old main revision", async () => {
+    const mainId = await addLeadMain();
     await activate();
-    const pmRunId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: pmRunId, companyId, agentId: pmId, invocationSource: "on_demand", status: "running" });
+    const mainRunId = await runningRun(mainId);
     const request = await question(workerId);
-    expect(request.delegation).toMatchObject({ level: "pm", recipientAgentId: pmId });
-    const actor = { companyId, agentId: pmId, runId: pmRunId };
+    expect(request.delegation).toMatchObject({ level: "pm", recipientAgentId: mainId });
+    const actor = { companyId, agentId: mainId, runId: mainRunId };
     const next = await escalateDelegatedRequest(db, actor, { kind: "interaction", requestId: request.id,
       revision: request.delegation!.revision, reason: "Cross-project decision" });
     expect(next.delegation).toMatchObject({ level: "delegate", recipientAgentId: momoId });
@@ -172,11 +225,12 @@ describe("Owner-issued layered decision authority", () => {
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.id)))[0]?.status).toBe("pending");
   });
 
-  it.each(["company", "project_pm"])("returns plan Allow to the original live provider callback without changing worker checkout: %s", async authority => {
-    if (authority === "project_pm") await activatePm(); else await activate();
-    const pmRunId = randomUUID(), workerRunId = randomUUID();
+  it("returns plan Allow from the lead main to the original live provider callback without changing worker checkout", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const mainRunId = randomUUID(), workerRunId = randomUUID();
     await db.insert(heartbeatRuns).values([
-      { id: pmRunId, companyId, agentId: pmId, invocationSource: "on_demand", status: "running" },
+      { id: mainRunId, companyId, agentId: mainId, invocationSource: "on_demand", status: "running" },
       { id: workerRunId, companyId, agentId: workerId, invocationSource: "on_demand", status: "running", contextSnapshot: { issueId } },
     ]);
     await db.update(issues).set({ executionRunId: workerRunId, status: "in_progress" }).where(eq(issues.id, issueId));
@@ -191,12 +245,12 @@ describe("Owner-issued layered decision authority", () => {
     try {
       await vi.waitFor(async () => {
         request = (await issueThreadInteractionService(db).listForIssue(issueId))[0]!;
-        expect(request?.delegation?.recipientAgentId).toBe(pmId);
+        expect(request?.delegation?.recipientAgentId).toBe(mainId);
       });
       const answered = await issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, request.id, {
         answers: [{ questionId: "decision", optionIds: ["accept"] }], delegationRevision: request.delegation!.revision,
         summaryMarkdown: "The plan stays within the authorized test scope",
-      }, { agentId: pmId, runId: pmRunId });
+      }, { agentId: mainId, runId: mainRunId });
       if (answered.kind !== "ask_user_questions") throw new Error("Expected provider question");
       const delivered = deliverLegacyRuntimeDecision(db, answered);
       expect(await callback).toEqual({ outcome: "allow_once" });
@@ -276,65 +330,78 @@ describe("Owner-issued layered decision authority", () => {
       allowSelfApproval: true, projectIds: [projectId], scopes: ["task_decisions", "ordinary_operations", "external_writes", "general_approvals"],
       reason: "Owner authorizes this project PM independently of company delegation" });
   }
-  async function currentPmRun() {
-    const id = randomUUID();
-    await db.insert(heartbeatRuns).values({ id, companyId, agentId: pmId, status: "running" });
-    return id;
-  }
-  it("routes worker and PM self-questions without any momo grant or readiness", async () => {
-    await activatePm();
-    await db.update(agents).set({ status: "paused", lifecycleState: "paused" }).where(eq(agents.id, momoId));
-    expect(await route(workerId)).toMatchObject({ authority: "project_pm", level: "pm", recipientAgentId: pmId, delegateAgentId: null });
-    const request = await question(pmId), pmRunId = await currentPmRun();
-    expect(request.delegation).toMatchObject({ authority: "project_pm", recipientAgentId: pmId });
-    const answered = await issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, request.id,
-      { answers: [{ questionId: "plan", optionIds: ["a"] }], delegationRevision: request.delegation!.revision,
-        summaryMarkdown: "Existing project resources suffice" }, { agentId: pmId, runId: pmRunId });
-    expect(answered).toMatchObject({ status: "answered", resolvedByAgentId: pmId, resolvedByUserId: null });
-  });
-  it("allows PM ordinary self-approval but never resource expansion or explicit human gates", async () => {
-    await activatePm();const pmRunId = await currentPmRun();
-    const request = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: pmId,
-      payload: { proposal: "Use the approved shared worker and existing project budget" } });
-    expect(request.delegation).toMatchObject({ authority: "project_pm", projectId, recipientAgentId: pmId });
-    expect((await approvalService(db).approve(request.id, { agentId: pmId, runId: pmRunId, revision: request.delegation!.revision },
-      "Within the Owner-approved project scope")).approval.decidedByAgentId).toBe(pmId);
-    const hire = await approvalRecords(db).create(companyId, { type: "hire_agent", requestedByAgentId: pmId, payload: { name: "New agent" } });
-    expect(hire.delegation).toBeNull();
-    const security = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: pmId, payload: { permissions: { admin: true } } });
-    expect(security.delegation?.level).toBe("human");
-    expect((await route(pmId, ["explicit_human"]))?.level).toBe("human");
-    expect(nextDelegatedDecision((await route(workerId))!)).toMatchObject({ level: "human", recipientAgentId: null });
-  });
-  it("enforces Owner-only revision-checked PM authority and revocation", async () => {
+  it("keeps the project PM grant Owner-only and revision-checked but never routes through it", async () => {
     await expect(saveProjectPmDecisionAuthority(db, { companyId, ownerUserId: pmId, baseRevision: null, enabled: true,
       allowSelfApproval: true, projectIds: [projectId], scopes: ["task_decisions"], reason: "Self expansion" })).rejects.toThrow();
-    const grant = await activatePm();const request = (await route(workerId))!, pmRunId = await currentPmRun();
+    await activatePm();
     await expect(activatePm()).rejects.toThrow(/revision/);
-    await expect(assertDelegatedDecisionActor(db, { companyId, context: request, agentId: momoId, runId,
-      revision: request.revision, fingerprint: fingerprint() })).rejects.toThrow();
-    await saveProjectPmDecisionAuthority(db, { companyId, ownerUserId: ownerId, baseRevision: (grant.scope as { revision: string }).revision,
-      enabled: false, allowSelfApproval: true, projectIds: [projectId], scopes: ["task_decisions"], reason: "Revoke for test" });
-    await expect(assertDelegatedDecisionActor(db, { companyId, context: request, agentId: pmId, runId: pmRunId,
-      revision: request.revision, fingerprint: fingerprint() })).rejects.toThrow(/no longer current/);
-  });
-  it("invalidates PM decisions when the source task changes project", async () => {
-    await activatePm();const request=(await route(workerId))!;
-    const otherId=randomUUID();await db.insert(projects).values({id:otherId,companyId,name:"Other project"});
-    await db.update(issues).set({projectId:otherId}).where(eq(issues.id,issueId));
-    expect(await readDecisionAuthority(db,companyId,request)).toBeNull();
+    // Without the company grant every request stays with the Owner, PM grant or not.
     expect(await route(workerId)).toBeNull();
+    expect(await route(pmId)).toBeNull();
+    await activate();
+    const request = (await route(workerId))!;
+    expect(request).toMatchObject({ level: "delegate", recipientAgentId: momoId, delegateAgentId: momoId });
+    expect(request.authority).toBeUndefined();
   });
-  it("delivers independent PM decisions once to the PM conversation with momo absent", async () => {
-    await activatePm();const request=await question(workerId),conversationId=randomUUID();
-    await db.insert(issues).values({id:conversationId,companyId,projectId,title:"PM conversation",conversationAgentId:pmId,
-      conversationUserId:ownerId,assigneeAgentId:pmId,conversationState:"active"});
-    const wakeup=vi.fn(async (id:string,input:Parameters<Parameters<typeof delegatedDecisionDelivery>[1]["wakeup"]>[1]={})=>{
-      const [wake]=await db.insert(agentWakeupRequests).values({companyId,agentId:id,source:"automation",idempotencyKey:String(input.idempotencyKey),payload:input.payload as Record<string,unknown>}).returning();return wake as never;
+  it("lets a main approve its own ordinary requests but keeps explicit human gates", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const mainRunId = await runningRun(mainId);
+    const request = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: mainId,
+      payload: { proposal: "Use the approved shared worker and existing project budget" } });
+    expect(request.delegation).toMatchObject({ level: "pm", projectId, recipientAgentId: mainId, delegateAgentId: momoId, reservedReasons: [] });
+    expect((await approvalService(db).approve(request.id, { agentId: mainId, runId: mainRunId, revision: request.delegation!.revision },
+      "Within the main's project authority")).approval).toMatchObject({ status: "approved", decidedByAgentId: mainId, decidedByUserId: null });
+    const human = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: mainId,
+      payload: { proposal: "Owner decides this one", humanOnly: true } });
+    expect(human.delegation).toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: ["explicit_human"] });
+    await expect(approvalService(db).approve(human.id, { agentId: mainId, runId: mainRunId, revision: human.delegation!.revision },
+      "Not the main's call")).rejects.toThrow();
+    // A worker's approval in the project goes to its lead main as well.
+    const workerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: workerRunId, companyId, agentId: workerId, status: "running", contextSnapshot: { issueId } });
+    const workerApproval = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: workerId,
+      payload: { proposal: "Worker asks for an ordinary operation" } }, { runId: workerRunId });
+    expect(workerApproval.delegation).toMatchObject({ level: "pm", projectId, recipientAgentId: mainId });
+  });
+  it("lets the lead main approve a worker's permission grant while other actors keep the reserved-reason gate", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const mainRunId = await runningRun(mainId), workerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: workerRunId, companyId, agentId: workerId, status: "running", contextSnapshot: { issueId } });
+    const requestGrant = (proposal: string) => approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: workerId,
+      payload: { proposal, permissions: { repositoryAdmin: true } } }, { runId: workerRunId });
+    const grant = await requestGrant("Grant the worker repository admin for this project");
+    expect(grant.delegation).toMatchObject({ level: "pm", recipientAgentId: mainId, reservedReasons: [] });
+    await expect(approvalService(db).approve(grant.id, { agentId: momoId, runId, revision: grant.delegation!.revision },
+      "Not the recipient")).rejects.toThrow(/human Owner/);
+    expect((await approvalService(db).approve(grant.id, { agentId: mainId, runId: mainRunId, revision: grant.delegation!.revision },
+      "The main owns this project's access")).approval).toMatchObject({ status: "approved", decidedByAgentId: mainId, decidedByUserId: null });
+    // Escalated to the company delegate, the same request keeps the existing reserved-reason gate.
+    const escalated = await requestGrant("Grant the worker repository admin for another tool");
+    const next = await escalateDelegatedRequest(db, { companyId, agentId: mainId, runId: mainRunId }, { kind: "approval",
+      requestId: escalated.id, revision: escalated.delegation!.revision, reason: "Let the company delegate decide" });
+    expect(next.delegation).toMatchObject({ level: "delegate", recipientAgentId: momoId });
+    await expect(approvalService(db).approve(escalated.id, { agentId: momoId, runId, revision: next.delegation.revision },
+      "Delegate tries")).rejects.toThrow(/human Owner/);
+    expect((await approvalRecords(db).getById(escalated.id))?.status).toBe("pending");
+  });
+  it("delivers a worker decision once to the lead main's conversation", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const request = await question(workerId), conversationId = randomUUID();
+    expect(request.delegation).toMatchObject({ level: "pm", recipientAgentId: mainId });
+    await db.insert(issues).values({ id: conversationId, companyId, projectId, title: "Main conversation", conversationAgentId: mainId,
+      conversationUserId: ownerId, assigneeAgentId: mainId, conversationState: "active" });
+    const wakeup = vi.fn(async (id: string, input: Parameters<Parameters<typeof delegatedDecisionDelivery>[1]["wakeup"]>[1] = {}) => {
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: id, source: "automation",
+        idempotencyKey: String(input.idempotencyKey), payload: input.payload as Record<string, unknown> }).returning();
+      return wake as never;
     });
-    const delivery=delegatedDecisionDelivery(db,{wakeup});await delivery.sweep();await delivery.sweep();
-    expect(wakeup).toHaveBeenCalledTimes(1);expect(wakeup.mock.calls[0]?.[0]).toBe(pmId);
-    expect(wakeup.mock.calls[0]?.[1]?.payload).toMatchObject({issueId:conversationId,delegatedRequest:{requestId:request.id}});
+    const delivery = delegatedDecisionDelivery(db, { wakeup });
+    await delivery.sweep(); await delivery.sweep();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup.mock.calls[0]?.[0]).toBe(mainId);
+    expect(wakeup.mock.calls[0]?.[1]?.payload).toMatchObject({ issueId: conversationId, delegatedRequest: { requestId: request.id } });
   });
-
 });
