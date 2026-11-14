@@ -2,8 +2,10 @@
 
 Status: experimental, default-off. Phase 1 added the control plane below.
 The HOM-311 slice adds a same-origin browser call: endpoint provisioning, a
-media relay to Gemini Live, the `/voice` page and spoken confirmation of
-low-risk comments. See "Browser calls (Gemini Live relay)" at the end.
+media relay to a realtime model, the `/voice` page and spoken confirmation of
+low-risk comments. HOM-318 made OpenAI Realtime (`gpt-realtime-1.5`) the
+default engine and kept Gemini Live as the fallback. See "Browser calls
+(realtime relay)" at the end.
 
 Local voice is a second voice provider (`local_voice`) beside Speko. It reuses
 the existing voice session, delivery, publication and reply machinery. It adds
@@ -335,7 +337,7 @@ A later slice also needs these:
 | `server/src/__tests__/local-voice-protocol.test.ts` | Parser, canonical text, capabilities, Speko compatibility |
 | `server/src/__tests__/local-voice-routes.test.ts` | Same-origin routes on a loopback server with an ephemeral port |
 
-## Browser calls (Gemini Live relay, HOM-311)
+## Browser calls (realtime relay, HOM-311 / HOM-318)
 
 Owner decisions (HOM-265, 2026-11-14): voice_task mode first; a low-risk
 comment may be sent after the draft is read back and the Owner says the
@@ -352,8 +354,14 @@ The relay is off unless both variables are set in the server environment:
 | --- | --- |
 | `PAPERCLIP_LOCAL_VOICE_GATEWAY_URL` | realtime gateway base URL, `ws://` or `wss://`, no query (for example the LAN gateway `ws://192.168.66.11:8792`) |
 | `PAPERCLIP_LOCAL_VOICE_GATEWAY_KEY_FILE` | file that holds the gateway client key; read at connect time, never logged or sent to the browser |
-| `PAPERCLIP_LOCAL_VOICE_MODEL` | optional, default `gemini-3.8-live` |
-| `PAPERCLIP_LOCAL_VOICE_NAME` | optional prebuilt voice, default `Kore` |
+| `PAPERCLIP_LOCAL_VOICE_ENGINE` | optional, `openai` (default) or `gemini`. Without it, a `PAPERCLIP_LOCAL_VOICE_MODEL` that starts with `gemini` selects Gemini; any other value is rejected (relay unconfigured) |
+| `PAPERCLIP_LOCAL_VOICE_MODEL` | optional, default `gpt-realtime-1.5` (openai) or `gemini-3.8-live` (gemini) |
+| `PAPERCLIP_LOCAL_VOICE_NAME` | optional voice, default `marin` (openai) or `Kore` (gemini). For openai, a name outside the OpenAI voice list (for example a leftover `Kore`) falls back to `marin` |
+
+Both engines use the same gateway URL and key: the relay connects to
+`{url}/v1/realtime?model={model}`. The LAN gateway accepts the OpenAI Realtime
+GA protocol for `gpt-realtime-*` and the Gemini Live protocol for
+`gemini-*-live`.
 
 Both experimental flags (`enableChatConnectors`, `enableLocalVoice`) must also
 be on. `GET /api/companies/{companyId}/local-voice/status` reports
@@ -388,14 +396,68 @@ rejects, before upgrading:
 - every condition `local-tools` checks (flags, session owner and authority,
   live state, expiry, generation, endpoint, task access, token hash).
 
-Frames: binary browser→server is PCM16 mono 16 kHz microphone audio,
-binary server→browser is PCM16 mono 24 kHz model audio, text frames are the
+Frames: binary browser→server is PCM16 mono microphone audio at the
+`inputSampleRate` the relay announces in its `ready` event (24 kHz for
+OpenAI, 16 kHz for Gemini), binary server→browser is PCM16 mono 24 kHz model audio, text frames are the
 JSON `LocalVoiceRelayClientMessage` / `LocalVoiceRelayServerEvent` unions in
 `packages/shared/src/types/voice-sessions.ts`. At most 2 relays per caller and
 16 per server, and one relay per voice session (a second upgrade with the same
 token gets `409`). Closing the browser socket ends the voice session.
 
 ### Model session
+
+`server/src/services/voice/voice-relay-core.ts` holds everything that does not
+depend on the engine: drafts, the spoken-confirmation check, the four tools,
+agent replies and notices, the 10/15-minute limits and the reconnect loop.
+`openai-realtime-relay.ts` and `gemini-live-relay.ts` translate their wire
+protocols.
+
+#### OpenAI Realtime (default)
+
+After `session.created` the relay sends one `session.update`:
+`type: "realtime"`, `output_modalities: ["audio"]`, the zh-TW instructions,
+the tools as JSON-schema functions with `tool_choice: "auto"`, input
+`audio/pcm` 24 kHz with `gpt-4o-transcribe` transcription (`language: "zh"`,
+a Taiwan Traditional prompt) and `server_vad` (500 ms silence,
+`create_response` and `interrupt_response` on), output `audio/pcm` 24 kHz
+with the configured voice. `session.updated` makes the call ready; an
+`error` before it fails the setup.
+
+| OpenAI event or request | relay behavior |
+| --- | --- |
+| `input_audio_buffer.append` | every browser microphone frame; `input_audio_buffer.clear` when the microphone pauses |
+| `response.output_audio.delta` | forwarded to the browser; the relay estimates where playback of each audio item starts |
+| `response.output_audio_transcript.delta` | model caption, converted to Taiwan Traditional; also the read-back text |
+| `input_audio_buffer.speech_started` | starts a caller utterance; during model playback it is a barge-in: `response.cancel` when a response is active (late audio and captions of that response are dropped), `conversation.item.truncate` at the estimated played position, and `interrupted` to the browser |
+| `conversation.item.input_audio_transcription.completed` | caller caption and the text of that utterance for the phrase check, converted with OpenCC `cn → twp` (`opencc-js`) |
+| `response.function_call_arguments.done` | runs the tool; the result goes back as a `function_call_output` item, then one `response.create` once no response is active and no other tool call is pending |
+| notices, agent voice summaries, typed text | a user `conversation.item.create` plus `response.create`; notices wait until no response or tool call is pending and the browser reports that playback drained |
+| `response.done` | ends the model turn (`completed` counts for the read-back check), adds its `usage` to the call totals |
+
+An OpenAI utterance can confirm only when its `audio_start_ms` is at or after
+the point in the session's input audio where the browser reported that
+playback drained (the `playback` message and the microphone frames share one
+ordered socket), no response was active and no model audio was due. Speech
+that began during the read-back therefore never confirms, even when VAD
+reports it after playback ended. The transcript often arrives after the model
+already called `submit_request`; the relay waits up to 4 s for it before
+refusing. When the caller starts speaking before 90% of the read-back's audio
+could have played, the draft counts as not read back. Captions and the draft
+are both converted with OpenCC before the read-back check, and only speech
+after `prepare_request` counts. A rejected `response.create` clears the
+pending response state, so notices are not stuck.
+
+OpenAI has no session resumption. After an unexpected close the relay opens a
+new session (up to four attempts) whose instructions add the last 16 caption
+lines (at most 2,400 characters) and the open draft (id, revision, text,
+whether it was read back, or that it was already sent). The browser gets
+`resumed` with `contextKept: true`. Tool results for the replaced session are
+dropped; the draft stays on the server. For both engines, microphone audio
+buffered during a reconnect is not replayed while a read-back draft awaits
+confirmation, because it could hold the phrase spoken over (or echoed from)
+the read-back.
+
+#### Gemini Live (fallback)
 
 The relay sends a flat Live setup: audio responses, voice, zh-TW system
 instruction, input and output transcription, `sessionResumption` and
@@ -430,7 +492,7 @@ session (`voice.confirmation.created` audit `details.via` is `spoken_relay` or
 unknown outcome is idempotent. While a submit is in flight the draft cannot be
 revised or discarded. No other write exists by voice.
 
-GoAway and unexpected upstream closes reconnect with the latest resumption
+For Gemini, GoAway and unexpected upstream closes reconnect with the latest resumption
 handle (up to four attempts; without a handle the browser is told that context
 may be lost). Microphone audio is buffered briefly during the switch. A 403 or
 404 while reading replies (revoked access, ended or expired session) ends the
@@ -445,9 +507,13 @@ once per distinct summary.
 
 `/{companyPrefix}/voice` (sidebar "More" → Voice, pinnable) picks an agent
 (the person's primary agent by default; `?agentId=` and `?issueId=` preselect)
-and runs the call: AudioWorklet capture (context rate → 16 kHz PCM16 frames of
-40 ms with echo cancellation, noise suppression and AGC) and playback
-(24 kHz → context rate, flushed on barge-in), captions, the draft card,
+and runs the call. The AudioContext runs at 24 kHz, so the browser resamples
+the microphone (echo cancellation, noise suppression and AGC) and model audio
+plays without resampling; a browser that cannot open a 24 kHz context for the
+microphone falls back to its default rate. The capture worklet emits 40 ms
+PCM16 frames at the relay's `inputSampleRate` (straight conversion at 24 kHz,
+averaging decimation only when the context rate is higher), and the player
+worklet is flushed on barge-in. The page also shows captions, the draft card,
 replies, a typed fallback, a 10-minute warning and the 60-second silence
 pause (model playback counts as activity). Microphone access needs a secure
 context, so use the HTTPS address. A start that finds another live call on
@@ -455,22 +521,32 @@ the same voice task continues on a new voice task instead of preempting it.
 
 ### Usage
 
-The relay logs `voice_relay_ended` with the call's summed per-turn
-`usageMetadata` (Live reports usage per turn, and each turn's prompt includes
-the context). Ledger metering of gateway realtime sessions and a rate-card
-entry for `gemini-3.8-live` are a separate gateway change.
+The relay logs `voice_relay_ended` with `engine`, `model`, duration,
+reconnects and the call's summed usage. OpenAI: every `response.done` usage
+(`inputTokens`, `outputTokens`, `totalTokens`, input audio/text/cached
+tokens, output audio/text tokens) plus `gpt-4o-transcribe` usage from each
+transcription. Gemini: per-turn `usageMetadata` (each turn's prompt includes
+the context). Ledger metering and rate cards are HOM-314.
 
 ### Tests
 
 | file | coverage |
 | --- | --- |
-| `server/src/__tests__/local-voice-relay.test.ts` | relay setup, audio, spoken and UI confirmation, refusals, resumption, limits, reply announcements, summary helpers |
-| `server/src/__tests__/local-voice-relay.integration.test.ts` | embedded Postgres, loopback upgrade with a fake gateway: provisioning, rejected upgrades, spoken confirmation into one delivery, replies, end on disconnect |
+| `server/src/__tests__/local-voice-relay.test.ts` | Gemini engine and shared core: setup, audio, spoken and UI confirmation, refusals, resumption, limits, reply announcements, summary helpers |
+| `server/src/__tests__/local-voice-openai-relay.test.ts` | OpenAI engine: session config, audio, tool round trip, confirmation with a late transcript, echo and cut-off read-backs, barge-in truncation, notices, reconnect context, usage, engine configuration, Taiwan Traditional conversion |
+| `server/src/__tests__/local-voice-relay.integration.test.ts` | embedded Postgres, loopback upgrade with fake gateways for both engines: provisioning, rejected upgrades, spoken confirmation into one delivery, replies, end on disconnect |
 | `ui/src/lib/local-voice/local-voice-call.test.ts` | browser call controller |
 | `ui/src/lib/local-voice/worklets.test.ts` | capture and playback resampling, flush |
 
+A live check against the LAN gateway (synthesized speech, simulated browser,
+fake task port) is `systemd/routing/compass-codex/bench/paperclip-voice-relay-smoke.mts`
+in the services repository.
+
 ### Rollback
 
-Unset the two gateway variables (the relay then rejects upgrades with 503) or
-turn off `enableLocalVoice`. Endpoints, sessions and voice tasks are ordinary
+To go back to Gemini Live, set `PAPERCLIP_LOCAL_VOICE_ENGINE=gemini` in the
+server environment and restart Paperclip; new calls use Gemini at 16 kHz
+(the browser follows the relay's `inputSampleRate`), calls in progress are
+not moved. To turn voice off, unset the two gateway variables (the relay then
+rejects upgrades with 503) or turn off `enableLocalVoice`. Endpoints, sessions and voice tasks are ordinary
 additive rows and need no migration.

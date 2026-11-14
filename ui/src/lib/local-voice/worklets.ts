@@ -1,9 +1,16 @@
 /**
- * AudioWorklet processors for local voice calls (HOM-311), shipped as Blob
- * modules so no extra static asset or bundler entry is needed.
+ * AudioWorklet processors for local voice calls (HOM-311, HOM-318), shipped as
+ * Blob modules so no extra static asset or bundler entry is needed.
  *
- * - `pc-mic-capture`: mono microphone input at the context rate → PCM16
- *   mono 16 kHz frames of 40 ms, plus an RMS level for silence detection.
+ * - `pc-mic-capture`: mono microphone input → PCM16 mono frames of 40 ms at
+ *   the relay's input rate (24 kHz for OpenAI Realtime, 16 kHz for the Gemini
+ *   fallback), plus an RMS level for silence detection. The call runs its
+ *   AudioContext at 24 kHz, so the browser resamples the microphone and the
+ *   capture is a straight conversion; the averaging decimator below only
+ *   runs when the context rate is higher than the target (a browser that
+ *   ignored the requested rate, or the 16 kHz fallback), and linear
+ *   interpolation when it is lower. The rate changes with a
+ *   `{ type: "rate", rate }` message; every frame carries the rate it was made at.
  * - `pc-voice-player`: PCM16 mono 24 kHz chunks → context-rate output with a
  *   queue that `flush` empties immediately on barge-in.
  */
@@ -11,16 +18,37 @@ const CAPTURE_SOURCE = `
 class PcMicCapture extends AudioWorkletProcessor {
   constructor() {
     super();
-    // Box-filter decimation: each 16 kHz sample is the mean of the input samples
-    // it spans, which suppresses aliasing and carries across block boundaries.
-    this.ratio = sampleRate / 16000;
+    this.configure(24000);
+    this.port.onmessage = (event) => {
+      const data = event.data;
+      if (data && data.type === "rate" && Number.isFinite(data.rate) && data.rate >= 8000 && data.rate <= 48000) this.configure(data.rate);
+    };
+  }
+  configure(rate) {
+    this.rate = rate;
+    // Input samples per output sample. >= 1: averaging decimation, which
+    // suppresses aliasing and carries across blocks (1 copies samples).
+    // < 1 (a context slower than the relay rate): linear interpolation.
+    this.ratio = sampleRate / rate;
     this.phase = 0;
     this.sum = 0;
     this.taken = 0;
-    this.frame = new Int16Array(640);
+    this.last = 0;
+    this.position = 0;
+    this.frame = new Int16Array(Math.round(rate * 0.04));
     this.filled = 0;
     this.sumSquares = 0;
     this.count = 0;
+  }
+  emit(sample) {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    this.frame[this.filled++] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    if (this.filled === this.frame.length) {
+      const rms = Math.sqrt(this.sumSquares / Math.max(1, this.count));
+      const buffer = this.frame.buffer.slice(0);
+      this.port.postMessage({ pcm: buffer, rms, rate: this.rate }, [buffer]);
+      this.filled = 0; this.sumSquares = 0; this.count = 0;
+    }
   }
   process(inputs) {
     const channel = inputs[0] && inputs[0][0];
@@ -28,17 +56,20 @@ class PcMicCapture extends AudioWorkletProcessor {
     for (let i = 0; i < channel.length; i++) {
       const x = channel[i];
       this.sumSquares += x * x; this.count++;
-      this.sum += x; this.taken++; this.phase += 1;
-      if (this.phase >= this.ratio) {
-        const sample = Math.max(-1, Math.min(1, this.sum / this.taken));
-        this.frame[this.filled++] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-        this.phase -= this.ratio; this.sum = 0; this.taken = 0;
-        if (this.filled === this.frame.length) {
-          const rms = Math.sqrt(this.sumSquares / Math.max(1, this.count));
-          const buffer = this.frame.buffer.slice(0);
-          this.port.postMessage({ pcm: buffer, rms }, [buffer]);
-          this.filled = 0; this.sumSquares = 0; this.count = 0;
+      if (this.ratio >= 1) {
+        this.sum += x; this.taken++; this.phase += 1;
+        if (this.phase >= this.ratio) {
+          this.emit(this.sum / this.taken);
+          this.phase -= this.ratio; this.sum = 0; this.taken = 0;
         }
+      } else {
+        // Output samples lie at fractional positions between the previous and this input sample.
+        while (this.position <= 1) {
+          this.emit(this.last + (x - this.last) * this.position);
+          this.position += this.ratio;
+        }
+        this.position -= 1;
+        this.last = x;
       }
     }
     return true;

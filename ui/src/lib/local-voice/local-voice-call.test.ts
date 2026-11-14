@@ -20,13 +20,14 @@ function setup(options: { startError?: unknown; firstStartError?: unknown } = {}
   let now = 1_000_000;
   const sockets: FakeSocket[] = [];
   const intervals: (() => void)[] = [];
-  let frame: ((pcm: ArrayBuffer, rms: number) => void) | null = null;
+  let frame: ((pcm: ArrayBuffer, rms: number, rate?: number) => void) | null = null;
   let playing: ((playing: boolean) => void) | null = null;
-  const audio: VoiceAudioEngine & { played: ArrayBuffer[]; flushes: number; closed: boolean } = {
-    played: [], flushes: 0, closed: false,
+  const audio: VoiceAudioEngine & { played: ArrayBuffer[]; flushes: number; closed: boolean; inputRates: number[] } = {
+    played: [], flushes: 0, closed: false, inputRates: [],
     start: vi.fn(async (handlers) => { frame = handlers.onFrame; playing = handlers.onPlaying; }),
     play(pcm) { this.played.push(pcm); },
     flush() { this.flushes += 1; },
+    setInputSampleRate(rate) { this.inputRates.push(rate); },
     async close() { this.closed = true; },
   };
   let firstStartError = options.firstStartError;
@@ -50,7 +51,7 @@ function setup(options: { startError?: unknown; firstStartError?: unknown } = {}
     clearInterval: () => undefined,
   };
   const call = new LocalVoiceCall(deps);
-  return { call, api, audio, sockets, playing: (value: boolean) => playing?.(value), tick: (ms: number) => { now += ms; for (const fn of intervals) fn(); }, frame: (rms: number) => frame?.(new ArrayBuffer(4), rms) };
+  return { call, api, audio, sockets, playing: (value: boolean) => playing?.(value), tick: (ms: number) => { now += ms; for (const fn of intervals) fn(); }, frame: (rms: number, rate?: number) => frame?.(new ArrayBuffer(4), rms, rate) };
 }
 
 describe("LocalVoiceCall", () => {
@@ -61,9 +62,12 @@ describe("LocalVoiceCall", () => {
     const socket = h.sockets[0]!;
     expect(socket.url).toMatch(/\/api\/companies\/c1\/voice-sessions\/session-1\/ws$/);
     expect(socket.protocols).toEqual([LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}${"T".repeat(43)}`]);
-    socket.emit({ type: "ready", issueId: "issue-1", issueIdentifier: "HOM-9", agentName: "michael", maxSeconds: 900, warningSeconds: 600 });
+    socket.emit({ type: "ready", issueId: "issue-1", issueIdentifier: "HOM-9", agentName: "michael", maxSeconds: 900, warningSeconds: 600, inputSampleRate: 24_000 });
     expect(h.call.getSnapshot()).toMatchObject({ phase: "live", issue: { identifier: "HOM-9" } });
+    expect(h.audio.inputRates).toEqual([24_000]);
     h.frame(0.1);
+    expect(socket.sent.filter((item) => item instanceof ArrayBuffer)).toHaveLength(1);
+    h.frame(0.1, 16_000); // captured before a rate switch: dropped
     expect(socket.sent.filter((item) => item instanceof ArrayBuffer)).toHaveLength(1);
   });
 

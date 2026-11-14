@@ -15,6 +15,7 @@ import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX } from "@pap
 import { setupLocalVoiceRelayWebSocketServer } from "../realtime/local-voice-relay-ws.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureLocalVoiceEndpoint } from "../services/voice/local-voice-endpoints.js";
+import type { LocalVoiceGatewayConfig } from "../services/voice/local-voice-gateway-config.js";
 import { voiceSessionService } from "../services/voice/voice-session-service.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -35,6 +36,7 @@ const GATEWAY_KEY = "test-gateway-key-not-a-secret";
   let gateway: any;
   let relay: ReturnType<typeof setupLocalVoiceRelayWebSocketServer>;
   let keyDir: string;
+  let relayConfig: LocalVoiceGatewayConfig;
   let port: number;
   const gatewayConnections: { socket: any; received: any[]; auth: string | undefined; url: string }[] = [];
   const cookieUsers = new Map<string, string>();
@@ -54,7 +56,10 @@ const GATEWAY_KEY = "test-gateway-key-not-a-secret";
         const message = JSON.parse(data.toString());
         connection.received.push(message);
         if (message.setup) socket.send(JSON.stringify({ setupComplete: {} }));
+        if (message.type === "session.update") socket.send(JSON.stringify({ type: "session.updated", session: message.session }));
       });
+      // OpenAI Realtime opens with session.created.
+      if (String(req.url).includes("model=gpt-")) socket.send(JSON.stringify({ type: "session.created", session: {} }));
     });
     await new Promise((resolve) => gateway.once("listening", resolve));
     server = createServer((_req, res) => { res.statusCode = 404; res.end(); });
@@ -65,7 +70,7 @@ const GATEWAY_KEY = "test-gateway-key-not-a-secret";
         return userId ? ({ user: { id: userId }, session: { id: "s" } } as any) : null;
       },
       voice: () => service,
-      config: { url: `ws://127.0.0.1:${(gateway.address() as AddressInfo).port}`, keyFile: path.join(keyDir, "key"), model: "gemini-3.8-live", voiceName: "Kore" },
+      config: relayConfig = { url: `ws://127.0.0.1:${(gateway.address() as AddressInfo).port}`, keyFile: path.join(keyDir, "key"), engine: "gemini", model: "gemini-3.8-live", voiceName: "Kore" },
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     port = (server.address() as AddressInfo).port;
@@ -190,6 +195,59 @@ const GATEWAY_KEY = "test-gateway-key-not-a-secret";
       expect(session.state).toBe("ended");
     });
     expect(browser.events.at(-1)).toEqual({ type: "ended", reason: "caller_ended" });
+  });
+
+  it("runs the same confirmation path through the OpenAI Realtime engine at 24 kHz", async () => {
+    Object.assign(relayConfig, { engine: "openai", model: "gpt-realtime-1.5", voiceName: "marin" });
+    try {
+      const f = await fixture();
+      const before = gatewayConnections.length;
+      const browser = connect(f);
+      await browser.opened;
+      await vi.waitFor(() => expect(browser.events.find((e) => e.type === "ready")).toMatchObject({ inputSampleRate: 24000 }));
+      const upstream = gatewayConnections[before]!;
+      expect(upstream.url).toBe("/v1/realtime?model=gpt-realtime-1.5");
+      expect(upstream.auth).toBe(`Bearer ${GATEWAY_KEY}`);
+      expect(upstream.received[0]).toMatchObject({ type: "session.update", session: { type: "realtime", audio: { output: { voice: "marin" } } } });
+
+      browser.socket.send(Buffer.from([1, 0, 2, 0]));
+      await vi.waitFor(() => expect(upstream.received.some((m) => m.type === "input_audio_buffer.append")).toBe(true));
+      const send = (message: unknown) => upstream.socket.send(JSON.stringify(message));
+      const outputFor = async (callId: string) => {
+        let output: any;
+        await vi.waitFor(() => { const item = upstream.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === callId); expect(item).toBeTruthy(); output = JSON.parse(item.item.output); });
+        return output;
+      };
+      const text = "請 michael 查昨天部署失敗的原因";
+      send({ type: "response.created", response: { id: "r1" } });
+      send({ type: "response.function_call_arguments.done", call_id: "p", name: "prepare_request", arguments: JSON.stringify({ text }) });
+      send({ type: "response.done", response: { id: "r1", status: "completed" } });
+      const draft = await outputFor("p");
+      send({ type: "response.created", response: { id: "r2" } });
+      send({ type: "response.output_audio.delta", item_id: "a2", content_index: 0, delta: Buffer.from([7, 0]).toString("base64") });
+      send({ type: "response.output_audio_transcript.delta", delta: `草稿：${text}。請說確認送出。` });
+      send({ type: "response.done", response: { id: "r2", status: "completed", usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10 } } });
+      await vi.waitFor(() => expect(browser.audio[0]).toEqual(Buffer.from([7, 0])));
+      browser.socket.send(JSON.stringify({ type: "playback", playing: false }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      send({ type: "input_audio_buffer.speech_started", item_id: "u1", audio_start_ms: 100 });
+      send({ type: "response.created", response: { id: "r3" } });
+      send({ type: "response.function_call_arguments.done", call_id: "s", name: "submit_request", arguments: JSON.stringify({ draftId: draft.draftId }) });
+      send({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "确认送出" });
+      expect(await outputFor("s")).toMatchObject({ status: "accepted" });
+      await vi.waitFor(() => expect(browser.events).toContainEqual({ type: "transcript", role: "user", text: "確認送出" }));
+      const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.companyId, f.companyId));
+      expect(deliveries).toHaveLength(1);
+      expect((deliveries[0]!.normalizedEvent as { message: { text: string } }).message.text).toBe(text);
+      expect(browser.events.find((e) => e.type === "submitted")).toMatchObject({ via: "spoken" });
+      browser.socket.send(JSON.stringify({ type: "end" }));
+      await vi.waitFor(async () => {
+        const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, f.sessionId));
+        expect(session.state).toBe("ended");
+      });
+    } finally {
+      Object.assign(relayConfig, { engine: "gemini", model: "gemini-3.8-live", voiceName: "Kore" });
+    }
   });
 
   it("ends the persisted session when the browser disconnects", async () => {

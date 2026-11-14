@@ -3,7 +3,7 @@ import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { agents, issueComments, issues, type Db } from "@paperclipai/db";
 import { HttpError, forbidden, notFound } from "../../errors.js";
 import { subscribeCompanyLiveEvents } from "../live-events.js";
-import type { VoiceAgentReply, VoiceSubmitResult, VoiceTaskPort } from "./gemini-live-relay.js";
+import type { VoiceAgentReply, VoiceSubmitResult, VoiceTaskPort } from "./voice-relay-core.js";
 import type { VoiceSessionService } from "./voice-session-service.js";
 import { voiceSessionStore, voiceTokenHash, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
 import { extractVoiceSummary, spokenFallback } from "./voice-summary.js";
