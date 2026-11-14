@@ -2211,7 +2211,8 @@ describe("TaskChatComposer", () => {
     try {
       paint(bridge("main"), true);
       await flushAsync();
-      expect(pill()?.textContent).toBe("高gpt-6-sol");
+      expect(pill()?.textContent).toBe("High·GPT-6 Sol");
+      expect(pill()?.getAttribute("aria-label")).toBe("Effort and model: High, GPT-6 Sol");
       expect(container.querySelector('[aria-label="Select model and effort"]')).toBeNull();
       paint(bridge(""), true);
       await flushAsync();

@@ -1,0 +1,118 @@
+/* Main-agent effort slider. A transparent native range input sits over a
+   decorative track so pointer, touch and keyboard behavior stay native. Its
+   thumb spans the track height, so the native and drawn thumbs travel the
+   same distance and line up at every stop. */
+.main-agent-effort {
+  --main-agent-effort-travel: calc(100% - var(--main-agent-effort-track-height));
+  position: relative;
+  height: var(--main-agent-effort-track-height);
+}
+
+.main-agent-effort-input {
+  position: absolute;
+  inset-inline: 0;
+  top: 50%;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  translate: 0 -50%;
+  appearance: none;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.main-agent-effort-input::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--main-agent-effort-track-height);
+  height: var(--main-agent-effort-track-height);
+}
+
+.main-agent-effort-input::-moz-range-thumb {
+  width: var(--main-agent-effort-track-height);
+  height: var(--main-agent-effort-track-height);
+  border: 0;
+}
+
+.main-agent-effort-input::-moz-range-track { background: transparent; }
+
+.main-agent-effort-track,
+.main-agent-effort-skeleton {
+  border-radius: var(--main-agent-effort-track-height);
+  background: var(--main-agent-effort-track);
+}
+
+.main-agent-effort-skeleton { height: var(--main-agent-effort-track-height); }
+
+.main-agent-effort-track {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.main-agent-effort-fill {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: calc(var(--main-agent-effort-track-height) + var(--main-agent-effort-fraction) * var(--main-agent-effort-travel));
+  border-radius: inherit;
+  background-color: var(--main-agent-effort-fill);
+  background-image:
+    radial-gradient(circle, var(--main-agent-effort-dot) 0 var(--main-agent-effort-dot-radius), transparent var(--main-agent-effort-dot-fade)),
+    linear-gradient(to right, var(--main-agent-effort-fill-from), var(--main-agent-effort-fill));
+  background-size: var(--main-agent-effort-dot-gap) var(--main-agent-effort-dot-gap), auto;
+  transition: width var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.main-agent-effort-thumb {
+  position: absolute;
+  top: var(--main-agent-effort-thumb-inset);
+  inset-inline-start: calc(var(--main-agent-effort-thumb-inset) + var(--main-agent-effort-fraction) * var(--main-agent-effort-travel));
+  width: var(--main-agent-effort-thumb-size);
+  height: var(--main-agent-effort-thumb-size);
+  border-radius: 50%;
+  background: var(--main-agent-effort-thumb);
+  box-shadow: var(--main-agent-effort-thumb-shadow);
+  transition:
+    inset-inline-start var(--motion-duration-fast) var(--motion-ease-out),
+    transform var(--motion-duration-fast) var(--motion-ease-out);
+}
+
+.main-agent-effort-input:hover ~ .main-agent-effort-track .main-agent-effort-thumb {
+  transform: scale(var(--main-agent-effort-thumb-hover-scale));
+}
+
+.main-agent-effort-input:active ~ .main-agent-effort-track .main-agent-effort-thumb {
+  transform: scale(var(--main-agent-effort-thumb-press-scale));
+}
+
+.main-agent-effort-input:focus-visible ~ .main-agent-effort-track {
+  outline: var(--main-agent-effort-focus-width) solid var(--ring);
+  outline-offset: var(--main-agent-effort-focus-offset);
+}
+
+.main-agent-model-accent { color: var(--main-agent-effort-label); }
+
+@media (prefers-reduced-motion: reduce) {
+  .main-agent-effort-fill,
+  .main-agent-effort-thumb { transition: none; }
+  .main-agent-effort-input:hover ~ .main-agent-effort-track .main-agent-effort-thumb,
+  .main-agent-effort-input:active ~ .main-agent-effort-track .main-agent-effort-thumb { transform: none; }
+}
+
+/* Forced colors drop decorative backgrounds; draw the track with system colors. */
+@media (forced-colors: active) {
+  .main-agent-effort-track { outline: var(--main-agent-effort-focus-width) solid CanvasText; }
+  .main-agent-effort-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+  .main-agent-effort-thumb {
+    forced-color-adjust: none;
+    background: Canvas;
+    box-shadow: none;
+    outline: var(--main-agent-effort-focus-width) solid CanvasText;
+  }
+  .main-agent-effort-input:focus-visible ~ .main-agent-effort-track { outline-color: Highlight; }
+}
