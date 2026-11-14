@@ -32,6 +32,8 @@ export class GeminiLiveRelay extends VoiceRelayCore {
   readonly inputSampleRate = LOCAL_VOICE_GEMINI_INPUT_SAMPLE_RATE;
   protected readonly defaultTranscriptGraceMs = 1500;
   protected readonly dropStaleToolResults = false;
+  /** Gemini Live answers every utterance, so the relay does not add its own acknowledgement. */
+  protected readonly acknowledgesSpeech = true;
   private resumeHandle: string | null = null;
   /** The caller utterance being transcribed, closed when the model reacts. */
   private openUtterance: CallerUtterance | null = null;
@@ -50,7 +52,8 @@ export class GeminiLiveRelay extends VoiceRelayCore {
       responseModalities: ["AUDIO"],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voiceName ?? "Kore" } } },
       systemInstruction: { parts: [{ text: voiceSystemInstruction(this.options.binding) }] },
-      tools: [{ functionDeclarations: voiceToolDeclarations(this.options.binding.agentName) }],
+      // agent_chat has no tools: the caller's words reach the Chat without the model.
+      tools: this.chatMode ? [] : [{ functionDeclarations: voiceToolDeclarations(this.options.binding.agentName) }],
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
@@ -91,6 +94,8 @@ export class GeminiLiveRelay extends VoiceRelayCore {
       this.browser.sendEvent({ type: "transcript", role: "user", text });
       this.openUtterance ??= this.beginUtterance();
       this.openUtterance.text += text;
+      // Gemini streams fragments; the core merges them after a quiet gap.
+      if (this.chatMode) this.collectDictation(text, { duringPlayback: this.browserPlaying || this.modelTurnActive });
     }
     if (typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
       this.turnOutput += content.outputTranscription.text;

@@ -11,6 +11,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { voiceSessionService } from "../services/voice/voice-session-service.js";
 import { voiceSessionStore } from "../services/voice/voice-session-store.js";
 import { LocalVoiceProtocolError } from "../services/voice/local-voice-protocol.js";
+import { authorizeLocalVoiceRelay, createLocalVoiceTaskPort } from "../services/voice/local-voice-relay-port.js";
 import type { InternalSetupState } from "../services/chat-channels/runtime-types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -535,6 +536,76 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(after).toEqual(before);
       expect(f.onQuestionAnswered).not.toHaveBeenCalled();
       expect(await f.counts()).toMatchObject({ operations: 0, deliveries: 0 });
+    });
+  });
+
+  describe("agent_chat binding (HOM-326)", () => {
+    async function chatFixture() {
+      const f = await fixture();
+      const chatId = randomUUID();
+      await db.insert(issues).values({ id: chatId, companyId: f.companyId, title: "Chat with agent", assigneeAgentId: f.agentId, status: "in_review",
+        conversationAgentId: f.agentId, conversationUserId: f.callerId, conversationState: "waiting", createdByUserId: f.callerId });
+      const startChat = (overrides: Partial<Parameters<typeof f.service.local.start>[0]> = {}) => f.service.local.start({
+        companyId: f.companyId, endpointId: f.endpointId, issueId: chatId, caller: f.caller, idempotencyKey: randomUUID(), maxDurationSeconds: 600, bindingMode: "agent_chat", ...overrides });
+      return { ...f, chatId, startChat };
+    }
+
+    it("binds the caller's own Chat without creating a task, and the relay reads only agent answers there", async () => {
+      const f = await chatFixture();
+      const issuesBefore = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId));
+      const started = await f.startChat();
+      expect(started.media).toMatchObject({ provider: "local_voice", bindingMode: "agent_chat" });
+      const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, started.session.id));
+      expect(session).toMatchObject({ bindingMode: "agent_chat", issueId: f.chatId, assignedAgentId: f.agentId, mode: "browser" });
+      expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(issuesBefore.length);
+      const [anchor] = await db.select().from(chatConversations).where(eq(chatConversations.id, session.conversationId));
+      expect(anchor).toMatchObject({ issueId: f.chatId, endpointId: f.endpointId, state: "active" });
+
+      const binding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId, sessionId: session.id, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
+      expect(binding).toMatchObject({ mode: "agent_chat", issue: { id: f.chatId } });
+      const port = createLocalVoiceTaskPort(db, f.service, { binding, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false, subscribe: () => () => undefined });
+      const later = new Date(Date.now() + 1000);
+      await db.insert(issueComments).values([
+        { companyId: f.companyId, issueId: f.chatId, authorAgentId: f.agentId, body: "Working on it", origin: "fast_response", createdAt: later },
+        { companyId: f.companyId, issueId: f.chatId, authorAgentId: f.agentId, body: "Done.\n語音摘要：已經完成。", createdAt: later },
+        { companyId: f.companyId, issueId: f.chatId, authorUserId: f.callerId, body: "my own message", createdAt: later },
+      ]);
+      const replies = await port.newReplies();
+      expect(replies.map((reply) => reply.voiceSummary)).toEqual(["已經完成。"]);
+
+      // Voice tools, confirmations and receipts belong to voice_task only.
+      const draftId = randomUUID();
+      await expect(f.service.local.confirm(f.companyId, session.id, f.caller, { draftId, revision: 1, text: "x" })).rejects.toMatchObject({ status: 404 });
+      await expect(f.service.local.tool(f.companyId, session.id, f.caller, Buffer.from(JSON.stringify({ v: 1, type: "tool", toolCallId: "call_1", tool: "get_updates", args: { cursor: 0 } })), started.media!.transportToken)).rejects.toMatchObject({ status: 404 });
+
+      // A second call on the same Chat reuses the anchor after the first one ends.
+      await f.service.end(f.companyId, session.id, f.caller);
+      const again = await f.startChat();
+      const [second] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, again.session.id));
+      expect(second.conversationId).toBe(session.conversationId);
+    });
+
+    it("rejects another user's Chat, a Chat with another agent and a voice_task start on a Chat", async () => {
+      const f = await chatFixture();
+      const otherUser = `user-${randomUUID()}`;
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherUser, status: "active", membershipRole: "member" });
+      await expect(f.startChat({ caller: { id: otherUser, authority: "member" } })).rejects.toMatchObject({ status: 409, details: { code: "voice_chat_binding_invalid" } });
+      const otherAgent = randomUUID(), otherChat = randomUUID();
+      await db.insert(agents).values({ id: otherAgent, companyId: f.companyId, name: "Other agent", role: "operator", status: "idle", adapterType: "paperclip_runner" });
+      await db.insert(issues).values({ id: otherChat, companyId: f.companyId, title: "Chat with other", assigneeAgentId: otherAgent, status: "in_review",
+        conversationAgentId: otherAgent, conversationUserId: f.callerId, conversationState: "waiting", createdByUserId: f.callerId });
+      await expect(f.startChat({ issueId: otherChat })).rejects.toMatchObject({ status: 409, details: { code: "voice_chat_binding_invalid" } });
+      await expect(f.startChat({ issueId: f.issueId })).rejects.toMatchObject({ status: 409, details: { code: "voice_chat_binding_invalid" } });
+      await expect(f.startChat({ bindingMode: "voice_task" })).rejects.toMatchObject({ status: 409, details: { code: "voice_chat_binding_invalid" } });
+    });
+
+    it("revokes a live agent_chat session when the Chat changes owner", async () => {
+      const f = await chatFixture();
+      const started = await f.startChat();
+      await db.transaction((tx) => f.store.authorizeSession(tx, f.companyId, started.session.id));
+      const otherUser = `user-${randomUUID()}`;
+      await db.update(issues).set({ conversationUserId: otherUser }).where(eq(issues.id, f.chatId));
+      await expect(db.transaction((tx) => f.store.authorizeSession(tx, f.companyId, started.session.id))).rejects.toMatchObject({ status: 403 });
     });
   });
 

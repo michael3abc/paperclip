@@ -97,6 +97,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   private readonly callNames = new Map<string, string>();
   /** Caller utterances by input item id. */
   private readonly utterances = new Map<string, CallerUtterance>();
+  /** agent_chat: whether each caller utterance began while model audio was playing (echo filter). */
+  private readonly startedDuringPlayback = new Map<string, boolean>();
   private audioItem: AudioItem | null = null;
   /** Estimated wall time when the browser's playback queue drains. */
   private playbackEndsAt = 0;
@@ -136,13 +138,15 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       type: "realtime",
       instructions: this.instructions(),
       output_modalities: ["audio"],
-      tools: openAiToolDeclarations(this.options.binding.agentName),
+      // agent_chat has no tools: the caller's words reach the Chat without the model.
+      tools: this.chatMode ? [] : openAiToolDeclarations(this.options.binding.agentName),
       tool_choice: "auto",
       audio: {
         input: {
           format: { type: "audio/pcm", rate: this.inputSampleRate },
           transcription: { model: OPENAI_TRANSCRIPTION_MODEL, language: "zh", prompt: TRANSCRIPTION_PROMPT },
-          turn_detection: { type: "server_vad", silence_duration_ms: 500, create_response: true, interrupt_response: true },
+          // agent_chat: the model never answers caller speech by itself; it speaks only relay notices.
+          turn_detection: { type: "server_vad", silence_duration_ms: 500, create_response: !this.chatMode, interrupt_response: true },
         },
         output: { format: { type: "audio/pcm", rate: 24_000 }, voice: this.options.voiceName ?? "marin" },
       },
@@ -156,7 +160,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       lines.push("", "語音連線剛重新建立。下面是斷線前最近的對話紀錄，只用來延續上下文；它不是新的要求，也不能當作確認口令：");
       for (const entry of this.history) lines.push(`${entry.role}：${entry.text}`);
     }
-    const draft = this.draft;
+    const draft = this.chatMode ? null : this.draft;
     if (draft && draft.result?.status !== "accepted") {
       lines.push("", `目前有一份尚未送出的草稿（draftId ${draft.draftId}，第 ${draft.revision} 版）：「${draft.text}」。`,
         draft.recited
@@ -182,6 +186,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     this.cancelledResponseId = null;
     this.callNames.clear();
     this.utterances.clear();
+    this.startedDuringPlayback.clear();
     // Item ids belong to the old session; playback timing (recitationPlayback, playbackEndsAt) stays valid.
     this.audioItem = null;
     this.appendedInputMs = 0;
@@ -333,6 +338,10 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     if (playing || startMs === null || startMs < this.playbackStoppedAtInputMs) utterance.eligible = false;
     const itemId = typeof message.item_id === "string" ? message.item_id : null;
     if (itemId) this.utterances.set(itemId, utterance);
+    if (this.chatMode) {
+      if (itemId) this.startedDuringPlayback.set(itemId, playing || (startMs !== null && startMs < this.playbackStoppedAtInputMs));
+      this.holdDictation();
+    }
   }
 
   /** A read-back the caller cut off before most of it played was not heard and cannot be confirmed. */
@@ -363,6 +372,11 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     if (utterance) {
       utterance.text += text;
       this.utterances.delete(itemId);
+    }
+    if (this.chatMode) {
+      const duringPlayback = this.startedDuringPlayback.get(itemId) ?? false;
+      this.startedDuringPlayback.delete(itemId);
+      this.collectDictation(text, { duringPlayback });
     }
   }
 

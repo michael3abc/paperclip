@@ -7,8 +7,11 @@ import {
   type LocalVoiceRelayClientMessage,
   type LocalVoiceRelayEndReason,
   type LocalVoiceRelayServerEvent,
+  type VoiceBindingMode,
 } from "@paperclipai/shared";
 import { isConfirmationUtterance, recitationCoverage } from "./voice-summary.js";
+import { DICTATION_HOLD_MS, DICTATION_MAX_CHARS, DICTATION_MERGE_MS, agentChatVoiceMessageBody, isDictationNoise, isLikelyEcho } from "./voice-dictation.js";
+import { toTaiwanTraditional } from "./zh-tw.js";
 
 /**
  * Engine-independent part of the local voice relay (HOM-311, HOM-318).
@@ -70,7 +73,8 @@ export interface VoiceRelayOptions {
   browser: VoiceRelayBrowser;
   port: VoiceTaskPort;
   connectUpstream: VoiceUpstreamFactory;
-  binding: { issueId: string; issueIdentifier: string | null; issueTitle: string; agentName: string };
+  /** `mode` defaults to voice_task; agent_chat (HOM-326) dictates every finished utterance to the bound Chat. */
+  binding: { issueId: string; issueIdentifier: string | null; issueTitle: string; agentName: string; mode?: VoiceBindingMode };
   voiceName?: string;
   /** Upstream model id, used for logs and the OpenAI session. */
   model?: string;
@@ -85,7 +89,14 @@ export interface VoiceRelayOptions {
   transcriptGraceMs?: number;
   replyDebounceMs?: number;
   reconnectDelaysMs?: number[];
+  /** agent_chat: quiet time after the caller's last words before a dictation is sent. */
+  dictationMergeMs?: number;
+  /** agent_chat: longest wait for a transcription once the caller started speaking. */
+  dictationHoldMs?: number;
 }
+
+/** One caller transcription waiting to be merged into a dictation. */
+interface DictationPart { text: string; duringPlayback: boolean }
 
 /** One caller utterance; `eligible` is fixed when the caller started speaking. */
 export interface CallerUtterance { text: string; eligible: boolean }
@@ -135,7 +146,21 @@ export function voiceToolDeclarations(agentName: string) {
   ];
 }
 
+/** agent_chat: the model is only a receptionist; the caller's words go to the Chat by themselves. */
+function agentChatSystemInstruction(binding: VoiceRelayOptions["binding"]) {
+  const agent = binding.agentName;
+  return [
+    `你是 Owner 在 Paperclip 的語音介面，這通語音連到 Owner 和 ${agent} 的 Chat。`,
+    `Owner 說的每一段話，系統都會自動、照原文送到 Chat 給 ${agent}。你不用、也不能幫忙整理、改寫或代送，更不能自己決定或執行任何事。`,
+    "全程使用台灣繁體中文與台灣口語，每次最多一到兩句。英文專有名詞（Paperclip、HOM-123、michael 等）保持原文。",
+    "Owner 說完話後，你最多只回「收到」，不要回答內容、不要提問、不要給建議。",
+    "簽核、核准、部署、修改設定、刪除等動作不能用語音完成，需要時請 Owner 到 Paperclip 畫面上操作。",
+    `以「${NOTICE_PREFIX}」開頭的文字是系統通知，不是 Owner 說的話。照通知要求簡短播報即可，不要唸出「${NOTICE_PREFIX}」這個標記。`,
+  ].join("\n");
+}
+
 export function voiceSystemInstruction(binding: VoiceRelayOptions["binding"]) {
+  if (binding.mode === "agent_chat") return agentChatSystemInstruction(binding);
   const task = binding.issueIdentifier ? `${binding.issueIdentifier}「${binding.issueTitle}」` : `「${binding.issueTitle}」`;
   const agent = binding.agentName;
   return [
@@ -186,6 +211,13 @@ export abstract class VoiceRelayCore {
   protected connectionGeneration = 0;
   private retireCurrent: (() => void) | null = null;
   private readonly setupAborts = new Set<(error: Error) => void>();
+  /** agent_chat: caller transcriptions not yet sent, and the merge timer. */
+  private dictationParts: DictationPart[] = [];
+  private dictationTimer: unknown = null;
+  /** agent_chat: dictations handed to the browser and not yet reported back. */
+  private readonly pendingDictations = new Map<string, string>();
+  /** Recent model speech, for the echo filter. */
+  private recentModelOutput: string[] = [];
 
   /** Engine name for logs: "gemini" or "openai". */
   protected abstract readonly engine: string;
@@ -206,6 +238,11 @@ export abstract class VoiceRelayCore {
     this.maxSeconds = options.maxSeconds ?? LOCAL_VOICE_CALL_MAX_SECONDS;
     this.warningSeconds = options.warningSeconds ?? LOCAL_VOICE_CALL_WARNING_SECONDS;
   }
+
+  /** agent_chat binding (HOM-326): no tools, no drafts; every finished utterance is dictated to the Chat. */
+  protected get chatMode() { return this.options.binding.mode === "agent_chat"; }
+  /** Whether the engine speaks a short acknowledgement by itself (Gemini answers every utterance). */
+  protected readonly acknowledgesSpeech: boolean = false;
 
   // ---- engine hooks -------------------------------------------------------
 
@@ -260,7 +297,16 @@ export abstract class VoiceRelayCore {
     if (this.closed) return;
     switch (message.type) {
       case "text":
+        if (this.chatMode) {
+          // Typed text is already exact: send it at once, after anything still being merged.
+          this.flushDictation();
+          this.emitDictation(message.text.trim());
+          return;
+        }
         this.sendUserTurn(message.text);
+        return;
+      case "dictation_result":
+        this.onDictationResult(message);
         return;
       case "playback":
         this.browserPlaying = message.playing;
@@ -271,6 +317,8 @@ export abstract class VoiceRelayCore {
         if (this.micPaused) {
           this.bufferedAudio.length = 0;
           this.onMicPaused();
+          // Words already heard are still sent; pausing only stops listening.
+          if (this.chatMode) this.flushDictation();
         }
         return;
       case "confirm_draft": {
@@ -294,6 +342,7 @@ export abstract class VoiceRelayCore {
         }
         return;
       case "end":
+        if (this.chatMode) this.flushDictation();
         await this.end("caller_ended");
         return;
     }
@@ -372,7 +421,8 @@ export abstract class VoiceRelayCore {
     if (this.readyAnnounced) return;
     this.readyAnnounced = true;
     const { issueId, issueIdentifier, agentName } = this.options.binding;
-    this.browser.sendEvent({ type: "ready", issueId, issueIdentifier, agentName, maxSeconds: this.maxSeconds, warningSeconds: this.warningSeconds, inputSampleRate: this.inputSampleRate });
+    this.browser.sendEvent({ type: "ready", issueId, issueIdentifier, agentName, maxSeconds: this.maxSeconds, warningSeconds: this.warningSeconds, inputSampleRate: this.inputSampleRate,
+      bindingMode: this.options.binding.mode ?? "voice_task" });
   }
 
   private handleUpstreamClosed(code: number, reason: string) {
@@ -445,6 +495,10 @@ export abstract class VoiceRelayCore {
       draft.utterances = [];
       this.onRecited(draft);
     }
+    if (this.turnOutput.trim()) {
+      this.recentModelOutput.push(this.turnOutput);
+      if (this.recentModelOutput.length > 3) this.recentModelOutput.shift();
+    }
     this.turnOutput = "";
     this.flushNotices();
   }
@@ -464,6 +518,64 @@ export abstract class VoiceRelayCore {
     const utterance: CallerUtterance = { text: "", eligible };
     this.draft?.utterances.push(utterance);
     return utterance;
+  }
+
+  // ---- agent_chat dictation -------------------------------------------------
+
+  /** The caller started speaking: keep merging until their words are transcribed. */
+  protected holdDictation() {
+    if (!this.chatMode || this.closed || this.dictationParts.length === 0) return;
+    this.armDictationTimer(this.options.dictationHoldMs ?? DICTATION_HOLD_MS);
+  }
+
+  /** A caller transcription (a whole utterance or a fragment) for the bound Chat. */
+  protected collectDictation(text: string, meta: { duringPlayback: boolean }) {
+    if (!this.chatMode || this.closed || this.micPaused) return;
+    const clean = toTaiwanTraditional(text);
+    if (!clean.trim()) return;
+    this.dictationParts.push({ text: clean, duringPlayback: meta.duringPlayback });
+    this.armDictationTimer(this.options.dictationMergeMs ?? DICTATION_MERGE_MS);
+  }
+
+  private armDictationTimer(ms: number) {
+    if (this.dictationTimer !== null) this.clearTimer(this.dictationTimer);
+    this.dictationTimer = this.setTimer(() => { this.dictationTimer = null; this.flushDictation(); }, ms);
+  }
+
+  /** Merge, filter and hand the dictation to the browser, which posts it as the caller's Chat message. */
+  protected flushDictation() {
+    if (this.dictationTimer !== null) { this.clearTimer(this.dictationTimer); this.dictationTimer = null; }
+    const parts = this.dictationParts.splice(0);
+    if (!parts.length || this.closed) return;
+    const recent = this.recentModelOutput.join(" ") + " " + this.turnOutput;
+    const kept = parts.filter((part) => !isLikelyEcho(part.text, recent, part.duringPlayback));
+    const text = joinDictation(kept.map((part) => part.text));
+    if (kept.length < parts.length) this.log("voice_relay_dictation_echo_dropped", { engine: this.engine, dropped: parts.length - kept.length });
+    if (!text || isDictationNoise(text)) {
+      if (text) this.log("voice_relay_dictation_noise_dropped", { engine: this.engine, chars: Array.from(text).length });
+      return;
+    }
+    this.emitDictation(text);
+  }
+
+  private emitDictation(raw: string) {
+    const text = Array.from(raw).slice(0, DICTATION_MAX_CHARS).join("");
+    if (!text) return;
+    const operationId = randomUUID();
+    this.pendingDictations.set(operationId, text);
+    this.browser.sendEvent({ type: "dictation", operationId, text, body: agentChatVoiceMessageBody(text) });
+  }
+
+  private onDictationResult(message: Extract<LocalVoiceRelayClientMessage, { type: "dictation_result" }>) {
+    if (!this.chatMode || !this.pendingDictations.delete(message.operationId)) return;
+    const agent = this.options.binding.agentName;
+    if (message.status === "sent") {
+      this.log("voice_relay_dictation_sent", { engine: this.engine });
+      if (!this.acknowledgesSpeech) this.queueNotice(`${NOTICE_PREFIX} Owner 剛才的話已經照原文送到 Chat 給 ${agent}。只說「收到」兩個字，不要加其他內容。`);
+    } else {
+      this.log("voice_relay_dictation_failed", { engine: this.engine });
+      this.queueNotice(`${NOTICE_PREFIX} 剛才那段話沒有送到 ${agent} 的 Chat。請用一句話請 Owner 看畫面上的錯誤，或再說一次。`);
+    }
   }
 
   // ---- tools --------------------------------------------------------------
@@ -667,6 +779,7 @@ export abstract class VoiceRelayCore {
     this.closed = true;
     for (const timer of this.timers) this.clearTimer(timer);
     if (this.replyTimer !== null) this.clearTimer(this.replyTimer);
+    if (this.dictationTimer !== null) { this.clearTimer(this.dictationTimer); this.dictationTimer = null; }
     this.unwatch?.();
     for (const abort of this.setupAborts) abort(new Error("call ended during upstream setup"));
     this.setupAborts.clear();
@@ -691,9 +804,22 @@ export abstract class VoiceRelayCore {
   get snapshot() {
     return { engine: this.engine, closed: this.closed, upstreamReady: this.upstreamReady, reconnecting: this.reconnecting, micPaused: this.micPaused,
       modelTurnActive: this.modelTurnActive, pendingNotices: this.pendingNotices.length,
+      dictation: this.chatMode ? { buffered: this.dictationParts.length, pending: this.pendingDictations.size } : null,
       draft: this.draft ? { draftId: this.draft.draftId, revision: this.draft.revision, recited: this.draft.recited, submitted: this.draft.result?.status === "accepted" } : null,
       usage: this.usageSnapshot(), ...this.snapshotExtras() };
   }
+}
+
+/** Join caller utterances: Chinese runs together, Latin words keep a space. */
+export function joinDictation(parts: string[]) {
+  let result = "";
+  for (const raw of parts) {
+    const part = raw.trim();
+    if (!part) continue;
+    if (result && /[A-Za-z0-9]$/.test(result) && /^[A-Za-z0-9]/.test(part)) result += " ";
+    result += part;
+  }
+  return result;
 }
 
 export function numberOr0(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : 0; }

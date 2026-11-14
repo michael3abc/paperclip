@@ -12,13 +12,13 @@ import { voiceInboundService } from "./voice-inbound-service.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import { chatVoiceReports, chatVoiceCallbacks, chatConversations, chatEndpointResources, chatEndpoints, chatVoiceSessions, issues, activityLog, type Db } from "@paperclipai/db";
-import { LOCAL_VOICE_CONTROL_PROTOCOL, VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION, type LocalVoiceSessionMedia, type VoiceProvider, type VoiceSession, type VoiceSessionMedia, type VoiceCallHistoryEntry, type VoiceCallReport } from "@paperclipai/shared";
+import { LOCAL_VOICE_CONTROL_PROTOCOL, VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION, type LocalVoiceSessionMedia, type VoiceBindingMode, type VoiceProvider, type VoiceSession, type VoiceSessionMedia, type VoiceCallHistoryEntry, type VoiceCallReport } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, HttpError } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildChatCommunicationGuidance } from "../chat-communication-guidance.js";
 import { issueService } from "../issues.js";
 import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
-import { serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
+import { isAgentChatFor, isLocalBindingMode, serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
 import { registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
 import { verifySpekoToolRequest } from "./speko-protocol.js";
 import { localVoiceCommand, parseLocalVoiceToolMessage } from "./local-voice-protocol.js";
@@ -68,7 +68,29 @@ export function voiceSessionService(db: Db, options: {
       return session;
     });
   }
-  type BindingInput = { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string };
+  type BindingInput = { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; bindingMode?: VoiceBindingMode };
+  /**
+   * agent_chat (HOM-326): bind the caller's own Agent Chat with the endpoint's
+   * agent. No task is created; the voice conversation row only anchors the
+   * session. Dictated messages are posted by the caller's Chat composer.
+   */
+  async function prepareChatBinding(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: BindingInput, endpoint: Endpoint) {
+    if (!input.issueId || input.newConversation) throw conflict("Choose the Chat to bind", { code: "voice_chat_binding_invalid" });
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-binding:${input.companyId}:${input.endpointId}:${input.issueId}`}, 0))`);
+    const [chat] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+    if (!chat) throw notFound("Chat not found");
+    if (!isAgentChatFor(chat, endpoint.assignedAgentId, input.caller.id)) throw conflict("Choose your own Chat with this voice connection's agent", { code: "voice_chat_binding_invalid" });
+    const existing = await tx.select().from(chatConversations).where(and(eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, chat.id))).limit(1).then((rows) => rows[0]);
+    if (existing) {
+      // The anchor carries no provider thread; a Chat stays callable however that row was settled.
+      if (!["active", "waiting"].includes(existing.state)) await tx.update(chatConversations).set({ state: "active", updatedAt: new Date() }).where(eq(chatConversations.id, existing.id));
+      return { issueId: chat.id, conversationId: existing.id };
+    }
+    const conversationId = randomUUID(), threadId = `local_voice:${conversationId}`;
+    const [resource] = await tx.insert(chatEndpointResources).values({ companyId: input.companyId, endpointId: input.endpointId, type: "direct_message", providerResourceId: threadId, label: "Voice", enabled: true, availability: "available" }).returning();
+    await tx.insert(chatConversations).values({ id: conversationId, companyId: input.companyId, endpointId: input.endpointId, resourceId: resource.id, issueId: chat.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Voice", isDirectMessage: true });
+    return { issueId: chat.id, conversationId };
+  }
   /** Shared task/conversation binding. The thread id prefix names the provider (`speko:` or `local_voice:`). */
   async function prepareBinding(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: BindingInput, endpoint: Endpoint, threadProvider: VoiceProvider) {
       // One lock per task preserves the existing conversation on concurrent resumes.
@@ -99,6 +121,8 @@ export function voiceSessionService(db: Db, options: {
         : await issueSvc.create(input.companyId, { ...(threadProvider === "local_voice" ? { title: "語音對話", description: LOCAL_VOICE_TASK_DESCRIPTION } : { title: "Voice conversation" }), status: "todo", priority: "medium", assigneeAgentId: endpoint.assignedAgentId, createdByUserId: input.caller.id, responsibleUserId: input.caller.id, originKind: "chat_channel", originId: endpoint.id, idempotencyKey: `voice:${input.caller.id}:${input.idempotencyKey}` }, tx);
       if (!task) throw notFound("Task not found");
       if (task.assigneeAgentId !== endpoint.assignedAgentId) throw conflict("Choose a voice connection for this task's assigned agent");
+      // An Agent Chat is bound only through agent_chat; voice_task drafts never stage work into it.
+      if (threadProvider === "local_voice" && task.conversationAgentId) throw conflict("Use the agent_chat binding for a Chat", { code: "voice_chat_binding_invalid" });
       const existing = await tx.select().from(chatConversations).where(and(eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, task.id))).limit(1).then((rows) => rows[0]);
       if (existing) {
         if (!["active", "waiting"].includes(existing.state)) throw conflict("This voice conversation is no longer available");
@@ -215,7 +239,7 @@ export function voiceSessionService(db: Db, options: {
   }
   /** Local voice sessions are the only sessions with a server-owned binding mode. */
   function isLocal(session: Pick<VoiceSessionRow, "bindingMode">) {
-    return session.bindingMode === "voice_task";
+    return isLocalBindingMode(session.bindingMode);
   }
   async function localEnabled() {
     const settings = await instanceSettingsService(db).getExperimental();
@@ -226,24 +250,26 @@ export function voiceSessionService(db: Db, options: {
    * provider session id (`local:<uuid>`) and a one-time control token; no
    * provider is contacted and no phone mode is imitated.
    */
-  async function startLocal(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; bindingMode?: "voice_task"; mode?: string; phoneNumber?: string }): Promise<{ session: VoiceSession; media?: LocalVoiceSessionMedia }> {
+  async function startLocal(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; bindingMode?: VoiceBindingMode; mode?: string; phoneNumber?: string }): Promise<{ session: VoiceSession; media?: LocalVoiceSessionMedia }> {
     await localEnabled();
     if (input.mode !== undefined || input.phoneNumber !== undefined) throw conflict("Local voice supports browser sessions only", { code: "local_voice_phone_unsupported" });
-    if (input.bindingMode !== "voice_task") throw conflict("Local voice requires the voice_task binding", { code: "voice_binding_mode_invalid" });
+    const bindingMode = input.bindingMode;
+    if (!isLocalBindingMode(bindingMode)) throw conflict("Local voice requires the voice_task or agent_chat binding", { code: "voice_binding_mode_invalid" });
     const endpoint = await endpointFor(input.companyId, input.endpointId, ["local_voice"]);
-    const requestFingerprint = createHash("sha256").update(JSON.stringify({ provider: "local_voice", bindingMode: "voice_task", endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
+    const requestFingerprint = createHash("sha256").update(JSON.stringify({ provider: "local_voice", bindingMode, endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
     const reserved = await store.reserve({ companyId: input.companyId, endpointId: input.endpointId, caller: input.caller, idempotencyKey: input.idempotencyKey, requestFingerprint,
-      maxDurationSeconds: input.maxDurationSeconds, providers: ["local_voice"], bindingMode: "voice_task", providerSessionId: `${LOCAL_PROVIDER_SESSION_PREFIX}${randomUUID()}`,
-      prepareBinding: (tx) => prepareBinding(tx, input, endpoint, "local_voice") });
+      maxDurationSeconds: input.maxDurationSeconds, providers: ["local_voice"], bindingMode, providerSessionId: `${LOCAL_PROVIDER_SESSION_PREFIX}${randomUUID()}`,
+      prepareBinding: (tx) => bindingMode === "agent_chat" ? prepareChatBinding(tx, input, endpoint) : prepareBinding(tx, input, endpoint, "local_voice") });
     // Like Speko media credentials, the control token is shown once and never reissued.
     if (!reserved.created) return { session: serializeVoiceSession(reserved.session) };
     const session = reserved.session;
-    return { session: serializeVoiceSession(session), media: { provider: "local_voice", protocol: LOCAL_VOICE_CONTROL_PROTOCOL, bindingMode: "voice_task", sessionId: session.id,
+    return { session: serializeVoiceSession(session), media: { provider: "local_voice", protocol: LOCAL_VOICE_CONTROL_PROTOCOL, bindingMode, sessionId: session.id,
       generation: session.generation, transportToken: reserved.token, controlUrl: `/api/companies/${input.companyId}/voice-sessions/${session.id}/local-tools` } };
   }
-  async function localOwnedSession(companyId: string, sessionId: string, caller: VoiceCaller) {
+  async function localOwnedSession(companyId: string, sessionId: string, caller: VoiceCaller, bindingMode: VoiceBindingMode = "voice_task") {
     const session = await ownedSession(companyId, sessionId, caller, false);
-    if (!isLocal(session)) throw notFound("Voice session not found");
+    // Tool calls, confirmations and operation receipts belong to voice_task only.
+    if (session.bindingMode !== bindingMode) throw notFound("Voice session not found");
     if (session.callerAuthority !== caller.authority) throw forbidden("This voice session belongs to another caller");
     return session;
   }

@@ -5,9 +5,10 @@ export const startVoiceSessionSchema = z.object({
   newConversation: z.boolean().optional(),
   idempotencyKey: z.string().uuid(),
   maxDurationSeconds: z.number().int().min(30).max(1800).default(600),
-  /** Server-owned binding. Only voice_task exists; any other value is rejected. */
-  bindingMode: z.literal("voice_task").optional(),
-}).strict().refine((value) => !(value.issueId && value.newConversation), { message: "Choose an existing task or a new conversation", path: ["newConversation"] });
+  /** Server-owned binding. agent_chat binds the caller's existing Chat (issueId) with the endpoint's agent. */
+  bindingMode: z.enum(["voice_task", "agent_chat"]).optional(),
+}).strict().refine((value) => !(value.issueId && value.newConversation), { message: "Choose an existing task or a new conversation", path: ["newConversation"] })
+  .refine((value) => value.bindingMode !== "agent_chat" || (value.issueId && !value.newConversation), { message: "Choose the Chat to bind", path: ["issueId"] });
 export const voiceCallbackPreferenceSchema = z.object({
   phoneNumber: z.string().regex(/^\+[1-9]\d{6,14}$/, "Use an international phone number, such as +12015551234"),
   enabled: z.boolean(),

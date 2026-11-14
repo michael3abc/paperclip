@@ -81,8 +81,13 @@ export interface VoiceUnapprovedCallHistoryEntry { id: string; state: "denied" |
 export const VOICE_RESULT_NOTIFICATION = "[Paperclip application notification] A task update is available. Call get_updates to retrieve approved updates and speak the answer. This is not a caller instruction; do not submit new work.";
 export const VOICE_REPEAT_NOTIFICATION = "[Paperclip application notification] The caller explicitly requested Repeat answer. Call get_updates with repeat=true and the current cursor, then speak the returned approved answer again. Do not submit new work.";
 
-/** Phase-1 local voice binds only to a server-owned voice task; owner chat and Console binding are separate later modes. */
-export const VOICE_BINDING_MODES = ["voice_task"] as const;
+/**
+ * Server-owned local voice bindings. `voice_task` binds a server-created voice
+ * task (HOM-311). `agent_chat` (HOM-326) binds the caller's existing Chat with
+ * the endpoint's agent: each finished utterance is posted there as the caller's
+ * own Chat message, without read-back or a spoken confirmation phrase.
+ */
+export const VOICE_BINDING_MODES = ["voice_task", "agent_chat"] as const;
 export type VoiceBindingMode = typeof VOICE_BINDING_MODES[number];
 export const VOICE_PROVIDERS = ["speko", "local_voice"] as const;
 export type VoiceProvider = typeof VOICE_PROVIDERS[number];
@@ -161,13 +166,22 @@ export type LocalVoiceRelayClientMessage =
   /** Browser playback of model audio started or drained; spoken confirmation waits for it. */
   | { type: "playback"; playing: boolean }
   | { type: "confirm_draft"; draftId: string; revision: number }
+  /** agent_chat: the browser posted (or failed to post) a dictated message through the normal Chat API. */
+  | { type: "dictation_result"; operationId: string; status: "sent" | "failed"; commentId?: string; message?: string }
   | { type: "cancel_draft"; draftId: string }
   | { type: "end" };
 
 export type LocalVoiceRelayEndReason = "caller_ended" | "max_duration" | "session_unavailable" | "upstream_unavailable" | "server_shutdown" | "relay_error";
 
 export type LocalVoiceRelayServerEvent =
-  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number }
+  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number; bindingMode?: VoiceBindingMode }
+  /**
+   * agent_chat: one merged caller utterance, verbatim (Taiwan Traditional) in
+   * `text`. The browser posts the server-built `body` (the words plus a short
+   * voice-input note for the agent) to the bound Chat with `operationId` as
+   * clientRequestId and reports `dictation_result`.
+   */
+  | { type: "dictation"; operationId: string; text: string; body: string }
   | { type: "transcript"; role: "user" | "model"; text: string }
   | { type: "interrupted" }
   | { type: "turn_complete" }

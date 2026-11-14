@@ -1,11 +1,12 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import type { VoiceBindingMode } from "@paperclipai/shared";
+import { and, desc, eq, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { agents, issueComments, issues, type Db } from "@paperclipai/db";
 import { HttpError, forbidden, notFound } from "../../errors.js";
 import { subscribeCompanyLiveEvents } from "../live-events.js";
 import type { VoiceAgentReply, VoiceSubmitResult, VoiceTaskPort } from "./voice-relay-core.js";
 import type { VoiceSessionService } from "./voice-session-service.js";
-import { voiceSessionStore, voiceTokenHash, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
+import { isLocalBindingMode, voiceSessionStore, voiceTokenHash, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
 import { extractVoiceSummary, spokenFallback } from "./voice-summary.js";
 
 const OPEN_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
@@ -15,6 +16,8 @@ const STATUS_LABELS: Record<string, string> = {
 
 export interface LocalVoiceRelayBinding {
   session: VoiceSessionRow;
+  /** voice_task (HOM-311) or agent_chat (HOM-326). */
+  mode: VoiceBindingMode;
   issue: { id: string; identifier: string | null; title: string };
   agentName: string;
 }
@@ -33,12 +36,12 @@ export async function authorizeLocalVoiceRelay(db: Db, service: VoiceSessionServ
   return db.transaction(async (tx) => {
     const context = await store.authorizeSession(tx, input.companyId, input.sessionId);
     const session = context.session;
-    if (context.endpoint.provider !== "local_voice" || session.bindingMode !== "voice_task") throw notFound("Voice session not found");
+    if (context.endpoint.provider !== "local_voice" || !isLocalBindingMode(session.bindingMode)) throw notFound("Voice session not found");
     if (session.callerId !== input.caller.id || session.callerAuthority !== input.caller.authority) throw forbidden("This voice session belongs to another caller");
     const expected = Buffer.from(session.toolTokenHash, "hex"), presented = Buffer.from(voiceTokenHash(input.token), "hex");
     if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) throw forbidden("Voice session credential does not match");
     const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(eq(agents.id, session.assignedAgentId), eq(agents.companyId, input.companyId)));
-    return { session, issue: { id: context.task.id, identifier: context.task.identifier ?? null, title: context.task.title }, agentName: agent?.name ?? "main agent" };
+    return { session, mode: session.bindingMode, issue: { id: context.task.id, identifier: context.task.identifier ?? null, title: context.task.title }, agentName: agent?.name ?? "main agent" };
   });
 }
 
@@ -143,7 +146,9 @@ export function createLocalVoiceTaskPort(db: Db, service: VoiceSessionService, i
         const rows = await tx.select({ id: issueComments.id, body: issueComments.body, createdAt: issueComments.createdAt })
           .from(issueComments)
           .where(and(eq(issueComments.issueId, session.issueId), eq(issueComments.companyId, session.companyId), eq(issueComments.authorAgentId, session.assignedAgentId),
-            isNull(issueComments.deletedAt), gte(issueComments.createdAt, since)))
+            isNull(issueComments.deletedAt), gte(issueComments.createdAt, since),
+            // A Chat also carries platform receipts and recovery notes in the agent's name; only its answers are read aloud.
+            ...(input.binding.mode === "agent_chat" ? [notInArray(issueComments.origin, ["fast_response", "workspace_recovery", "session_bridge_input"])] : [])))
           // Newest first, so a long thread never hides new replies behind old ones.
           .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(20);
         const fresh = rows.reverse().filter((row) => !seen.has(row.id));

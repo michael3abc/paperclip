@@ -37,6 +37,14 @@ export async function currentVoiceCredentialFingerprint(db: Db | VoiceTransactio
   return voiceCredentialFingerprint(resolved);
 }
 const VOICE_STORE_PROVIDERS: readonly VoiceProvider[] = ["speko", "local_voice"];
+/** Local voice endpoints always carry one of these server-owned bindings; Speko never does. */
+export function isLocalBindingMode(mode: VoiceBindingMode | null | undefined): mode is VoiceBindingMode {
+  return mode === "voice_task" || mode === "agent_chat";
+}
+/** An agent_chat binding targets the caller's own live Agent Chat with this agent. */
+export function isAgentChatFor(task: { conversationAgentId: string | null; conversationUserId: string | null; assigneeAgentId: string | null }, agentId: string, callerId: string) {
+  return task.conversationAgentId === agentId && task.assigneeAgentId === agentId && task.conversationUserId === callerId;
+}
 export const voiceTokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 export function serializeVoiceSession(row: VoiceSessionRow): VoiceSession {
   return { id: row.id, companyId: row.companyId, endpointId: row.endpointId, issueId: row.issueId, assignedAgentId: row.assignedAgentId, state: row.state, mode: row.mode, generation: row.generation, callerAuthority: row.callerAuthority, replyCursor: row.replyCursor, errorCode: row.errorCode, createdAt: row.createdAt.toISOString(), expiresAt: row.expiresAt.toISOString(), endedAt: row.endedAt?.toISOString() ?? null };
@@ -164,10 +172,12 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
     const conversation = await tx.select().from(chatConversations).where(and(eq(chatConversations.id, session.conversationId), eq(chatConversations.companyId, companyId), eq(chatConversations.endpointId, session.endpointId), eq(chatConversations.issueId, session.issueId))).for("share", options.nonblockingAuthority ? { noWait: true } : undefined).then((rows) => rows[0]);
     if (!task || !conversation || !["active", "waiting"].includes(conversation.state) || task.assigneeAgentId !== session.assignedAgentId || context.endpoint.assignedAgentId !== session.assignedAgentId) throw forbidden("The voice task binding changed");
     // Server-owned local binding: a local endpoint session is always a
-    // voice_task browser session bound to its task's project at reservation.
-    // Speko sessions never carry a binding mode.
+    // voice_task or agent_chat browser session bound to its task's project at
+    // reservation. Speko sessions never carry a binding mode.
     const local = context.endpoint.provider === "local_voice";
-    if (local !== (session.bindingMode === "voice_task") || local && (session.mode !== "browser" || (task.projectId ?? null) !== (session.bindingProjectId ?? null))) throw forbidden("The voice task binding changed");
+    if (local !== isLocalBindingMode(session.bindingMode) || local && (session.mode !== "browser" || (task.projectId ?? null) !== (session.bindingProjectId ?? null))) throw forbidden("The voice task binding changed");
+    // agent_chat (HOM-326): the caller's own Chat with the endpoint's agent.
+    if (session.bindingMode === "agent_chat" && !isAgentChatFor(task, session.assignedAgentId, session.callerId)) throw forbidden("The voice Chat binding changed");
     return { ...context, session, conversation, task };
   }
   async function reserve(input: {
@@ -186,7 +196,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       if (previous && (previous.requestFingerprint !== input.requestFingerprint || previous.endpointId !== input.endpointId)) throw conflict("Voice request key was already used for different work");
       const context = await endpointContext(tx, input.companyId, input.endpointId, input.providers ?? ["speko"]);
       const local = context.endpoint.provider === "local_voice";
-      if (local ? input.bindingMode !== "voice_task" || (input.mode ?? "browser") !== "browser" : input.bindingMode !== undefined) throw conflict("Voice binding mode is not supported by this connection", { code: "voice_binding_mode_invalid" });
+      if (local ? !isLocalBindingMode(input.bindingMode) || (input.mode ?? "browser") !== "browser" : input.bindingMode !== undefined) throw conflict("Voice binding mode is not supported by this connection", { code: "voice_binding_mode_invalid" });
       await authorizeConnection(tx, context, input.caller);
       let inboundAdmission: typeof chatVoiceInboundCalls.$inferSelect | undefined;
       async function bindInboundSession(sessionId: string) {
@@ -225,6 +235,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       const task = await authorizeTask(tx, input.companyId, binding.issueId, input.caller);
       const conversation = await tx.select().from(chatConversations).where(and(eq(chatConversations.id, binding.conversationId), eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, binding.issueId))).then((rows) => rows[0]);
       if (!task || !conversation || task.assigneeAgentId !== context.endpoint.assignedAgentId) throw conflict("The selected voice agent must be assigned to this task");
+      if (input.bindingMode === "agent_chat" && !isAgentChatFor(task, context.endpoint.assignedAgentId, input.caller.id)) throw conflict("Choose your own Chat with this voice connection's agent", { code: "voice_chat_binding_invalid" });
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-live:${input.companyId}:${input.caller.id}:${binding.issueId}`}, 0))`);
       const [live] = await tx.select({ id: chatVoiceSessions.id }).from(chatVoiceSessions).where(and(
         eq(chatVoiceSessions.companyId, input.companyId), eq(chatVoiceSessions.callerId, input.caller.id), eq(chatVoiceSessions.issueId, binding.issueId),
@@ -247,7 +258,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       const sessionId = randomUUID();
       await notifyVoiceChange(tx, { kind: "session", id: sessionId });
       const [session] = await tx.insert(chatVoiceSessions).values({ id: sessionId, companyId: input.companyId, endpointId: input.endpointId, ...binding, assignedAgentId: context.endpoint.assignedAgentId,
-        ...(local ? { bindingMode: "voice_task" as const, bindingProjectId: task.projectId ?? null } : {}),
+        ...(local ? { bindingMode: input.bindingMode, bindingProjectId: task.projectId ?? null } : {}),
         callerId: input.caller.id, callerAuthority: input.caller.authority, mode: input.mode ?? "browser", state: input.providerSessionId ? "connecting" : "reserved", providerSessionId: input.providerSessionId ?? null, approvedByUserId: input.mode === "inbound_phone" ? input.caller.id : null, generation: context.generation, credentialFingerprint: context.fingerprint,
         toolTokenHash: voiceTokenHash(token), idempotencyKey: input.idempotencyKey, requestFingerprint: input.requestFingerprint, createdAt, expiresAt: new Date(createdAt.getTime() + input.maxDurationSeconds * 1000) }).returning();
       await tx.insert(activityLog).values({ companyId: input.companyId, actorType: "user", actorId: input.caller.id, action: "voice.session.requested", entityType: "voice_session", entityId: session.id, details: { endpointId: input.endpointId, issueId: session.issueId, mode: input.mode ?? "browser" } });
@@ -400,6 +411,8 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       const context = await authorizeSession(tx, input.companyId, input.sessionId), { session } = context;
       if (session.endpointId !== input.endpointId || context.endpoint.provider !== cmd.provider || session.providerSessionId !== cmd.providerSessionId || !timingSafeEqual(Buffer.from(session.toolTokenHash, "hex"), Buffer.from(voiceTokenHash(input.token), "hex"))) throw forbidden("Voice tool scope does not match this session");
       const local = cmd.provider === "local_voice";
+      // agent_chat dictation is posted by the caller's own Chat composer; it never stages chat work.
+      if (local && session.bindingMode !== "voice_task") throw forbidden("Voice tools are not available for this binding", { code: "voice_binding_tools_unavailable" });
       if (session.state === "connecting") {
         await notifyVoiceChange(tx, { kind: "session", id: session.id });
         await tx.update(chatVoiceSessions).set({ state: "active", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));

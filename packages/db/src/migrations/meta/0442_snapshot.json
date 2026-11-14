@@ -1,6 +1,6 @@
 {
-  "id": "7d3e6c55-7b1c-489d-99fa-12274969c598",
-  "prevId": "8b448d34-c283-4301-99c4-c6f68b1d9a70",
+  "id": "e5e5c8b8-790a-4fbd-af80-052565cbd876",
+  "prevId": "81e8d5e1-2895-4e0e-a027-a5e027a9d173",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3835,6 +3835,28 @@
         }
       },
       "indexes": {
+        "agent_wakeup_requests_pm_followthrough_uq": {
+          "name": "agent_wakeup_requests_pm_followthrough_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"agent_wakeup_requests\".\"idempotency_key\" LIKE 'issue-continue:%' OR \"agent_wakeup_requests\".\"idempotency_key\" LIKE 'pm-followthrough:%'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "agent_wakeup_requests_delegated_decision_uq": {
           "name": "agent_wakeup_requests_delegated_decision_uq",
           "columns": [
@@ -4637,7 +4659,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -5110,7 +5132,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
         }
       },
       "isRLSEnabled": false
@@ -16056,7 +16078,7 @@
         },
         "chat_voice_sessions_binding_mode_check": {
           "name": "chat_voice_sessions_binding_mode_check",
-          "value": "\"chat_voice_sessions\".\"binding_mode\" is null or \"chat_voice_sessions\".\"binding_mode\" = 'voice_task'"
+          "value": "\"chat_voice_sessions\".\"binding_mode\" is null or \"chat_voice_sessions\".\"binding_mode\" in ('voice_task', 'agent_chat')"
         }
       },
       "isRLSEnabled": false
@@ -21824,6 +21846,13 @@
         },
         "project_order": {
           "name": "project_order",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "excluded_pm_status_agent_ids": {
+          "name": "excluded_pm_status_agent_ids",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -38429,6 +38458,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "actor_run_id": {
+          "name": "actor_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "request_hash": {
           "name": "request_hash",
           "type": "text",
@@ -42123,6 +42158,81 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_watchdog_events": {
+      "name": "issue_watchdog_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_watchdog_events_company_pending_idx": {
+          "name": "issue_watchdog_events_company_pending_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_watchdog_events_company_id_companies_id_fk": {
+          "name": "issue_watchdog_events_company_id_companies_id_fk",
+          "tableFrom": "issue_watchdog_events",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },

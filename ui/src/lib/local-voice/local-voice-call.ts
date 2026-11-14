@@ -7,6 +7,8 @@ import {
   type LocalVoiceRelayClientMessage,
   type LocalVoiceRelayServerEvent,
 } from "@paperclipai/shared";
+import { agentChatsApi } from "@/api/agentChats";
+import { issuesApi } from "@/api/issues";
 import { localVoiceApi } from "@/api/localVoice";
 import { buildSameOriginWebSocketUrl } from "@/lib/websocket-url";
 import { loadVoiceWorklets } from "./worklets";
@@ -15,6 +17,14 @@ import { loadVoiceWorklets } from "./worklets";
 export const SPEECH_RMS_THRESHOLD = 0.02;
 
 export type LocalVoicePhase = "idle" | "starting" | "live" | "ending" | "ended" | "error";
+/**
+ * `agent_chat` (HOM-326, default): each finished utterance is posted to the Owner's
+ * Chat with the agent as the Owner's own message. `voice_task` (HOM-311): a separate
+ * voice task with read-back drafts that need a spoken or UI confirmation.
+ */
+export type LocalVoiceMode = "agent_chat" | "voice_task";
+/** agent_chat: one dictated message and the result of posting it to the Chat. */
+export interface LocalVoiceSentEntry { operationId: string; text: string; status: "sending" | "sent" | "failed"; error?: string }
 export interface LocalVoiceTranscriptEntry { id: number; role: "user" | "model"; text: string }
 export interface LocalVoiceDraftView {
   draftId: string; revision: number; text: string;
@@ -24,6 +34,7 @@ export interface LocalVoiceDraftView {
 export interface LocalVoiceReplyView { commentId: string; body: string; voiceSummary: string | null; createdAt: string }
 export interface LocalVoiceCallSnapshot {
   phase: LocalVoicePhase;
+  mode: LocalVoiceMode;
   mic: "live" | "paused";
   micPausedReason: "manual" | "silence" | null;
   modelSpeaking: boolean;
@@ -36,6 +47,8 @@ export interface LocalVoiceCallSnapshot {
   transcript: LocalVoiceTranscriptEntry[];
   draft: LocalVoiceDraftView | null;
   replies: LocalVoiceReplyView[];
+  /** agent_chat: dictated messages posted (or being posted) to the Chat, oldest first. */
+  sentLog: LocalVoiceSentEntry[];
   notice: string | null;
   error: string | null;
   endedReason: string | null;
@@ -53,16 +66,28 @@ export interface VoiceAudioEngine {
 
 export interface LocalVoiceCallDependencies {
   api: Pick<typeof localVoiceApi, "ensureEndpoint" | "start" | "end" | "relayPath">;
+  /** agent_chat: the caller's Chat issue with the agent, created when missing. */
+  ensureChat(companyId: string, agentId: string): Promise<{ id: string; identifier?: string | null }>;
+  /** agent_chat: post a dictated message to the Chat as the caller; clientRequestId keeps retries idempotent. */
+  postChatMessage(issueId: string, body: string, clientRequestId: string): Promise<{ id: string }>;
   createSocket(url: string, protocols: string[]): WebSocket;
   createAudio(): VoiceAudioEngine;
   now(): number;
   randomId(): string;
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
+  /** Defaults to the global timers. */
+  setTimeout?(fn: () => void, ms: number): unknown;
+  clearTimeout?(handle: unknown): void;
   wakeLock?: () => Promise<{ release(): Promise<void> } | null>;
 }
 
 const MAX_TRANSCRIPT = 60;
+const MAX_SENT_LOG = 50;
+/** agent_chat end: how long to wait for the relay to flush buffered words and confirm the end. */
+export const AGENT_CHAT_END_WAIT_MS = 2_500;
+/** agent_chat end: how long to wait for Chat posts that are still in flight. */
+export const AGENT_CHAT_POST_SETTLE_MS = 5_000;
 const OPEN = 1;
 
 const END_REASONS: Record<string, string> = {
@@ -76,13 +101,13 @@ const END_REASONS: Record<string, string> = {
 
 function initialSnapshot(): LocalVoiceCallSnapshot {
   return {
-    phase: "idle", mic: "live", micPausedReason: null, modelSpeaking: false, issue: null, agentName: null, startedAt: null,
+    phase: "idle", mode: "voice_task", mic: "live", micPausedReason: null, modelSpeaking: false, issue: null, agentName: null, startedAt: null,
     maxSeconds: LOCAL_VOICE_CALL_MAX_SECONDS, warningSeconds: LOCAL_VOICE_CALL_WARNING_SECONDS, timeWarning: false,
-    transcript: [], draft: null, replies: [], notice: null, error: null, endedReason: null,
+    transcript: [], draft: null, replies: [], sentLog: [], notice: null, error: null, endedReason: null,
   };
 }
 
-export function errorMessage(error: unknown) {
+export function errorMessage(error: unknown, fallback = "Voice could not start.") {
   if (error && typeof error === "object") {
     const name = (error as { name?: unknown }).name;
     if (name === "NotAllowedError" || name === "SecurityError") return "Microphone permission was denied. Allow microphone access for this site and try again.";
@@ -92,7 +117,19 @@ export function errorMessage(error: unknown) {
     const message = (error as { message?: unknown }).message;
     if (typeof message === "string" && message) return message;
   }
-  return "Voice could not start.";
+  return fallback;
+}
+
+function isCallAlreadyActive(error: unknown) {
+  const failure = error as { status?: number; body?: { code?: unknown } } | null;
+  return failure?.status === 409 && failure.body?.code === "voice_call_already_active";
+}
+
+/** The live session that blocked a start; the error handler nests it under `details`. */
+function activeSessionId(error: unknown) {
+  const body = (error as { body?: { sessionId?: unknown; details?: { sessionId?: unknown } } } | null)?.body;
+  const id = body?.sessionId ?? body?.details?.sessionId;
+  return typeof id === "string" && id ? id : null;
 }
 
 export class LocalVoiceCall {
@@ -111,6 +148,13 @@ export class LocalVoiceCall {
   private ending = false;
   /** Each start owns one attempt; end() or a newer start makes older attempts stale. */
   private attempt = 0;
+  private mode: LocalVoiceMode = "voice_task";
+  /** agent_chat: the bound Chat issue that dictations are posted to. */
+  private chatIssueId: string | null = null;
+  /** agent_chat: Chat posts that have not settled yet. */
+  private readonly pendingPosts = new Set<Promise<void>>();
+  /** agent_chat end(): resolved by the relay's `ended` event or the socket closing. */
+  private relayEnded: (() => void) | null = null;
 
   constructor(private readonly deps: LocalVoiceCallDependencies) {}
 
@@ -123,7 +167,7 @@ export class LocalVoiceCall {
   }
 
   /** Must be called from a user gesture: it creates the AudioContext synchronously. */
-  async start(input: { companyId: string; agentId: string; issueId?: string; newConversation?: boolean }) {
+  async start(input: { companyId: string; agentId: string; issueId?: string; newConversation?: boolean; mode?: LocalVoiceMode }) {
     if (this.snapshot.phase === "starting" || this.snapshot.phase === "live" || this.snapshot.phase === "ending") return;
     this.ending = false;
     const attempt = ++this.attempt;
@@ -138,33 +182,57 @@ export class LocalVoiceCall {
     };
     const audio = this.deps.createAudio();
     this.audio = audio;
-    this.snapshot = { ...initialSnapshot(), phase: "starting", replies: [], transcript: [] };
+    const mode: LocalVoiceMode = input.mode ?? "voice_task";
+    this.mode = mode;
+    this.chatIssueId = null;
+    this.snapshot = { ...initialSnapshot(), phase: "starting", mode, replies: [], transcript: [], sentLog: [] };
     this.inputSampleRate = null;
     this.update({});
     try {
       const endpoint = await this.deps.api.ensureEndpoint(input.companyId, input.agentId);
       if (stale()) return void await abandon();
-      const startOnce = (newConversation: boolean) => this.deps.api.start(input.companyId, {
-        endpointId: endpoint.endpointId, ...(input.issueId && !newConversation ? { issueId: input.issueId } : {}), ...(newConversation ? { newConversation: true } : {}),
-        idempotencyKey: this.deps.randomId(), maxDurationSeconds: LOCAL_VOICE_CALL_MAX_SECONDS + 30,
-      });
-      let started: Awaited<ReturnType<typeof startOnce>>;
-      try {
-        started = await startOnce(Boolean(input.newConversation));
-      } catch (error) {
-        // An earlier call on the same voice task is still open (for example in another tab).
-        // Calls never preempt each other, so continue on a fresh voice task instead.
-        if (!input.newConversation && (error as { status?: number; body?: { code?: unknown } })?.status === 409
-          && (error as { body?: { code?: unknown } }).body?.code === "voice_call_already_active") {
-          started = await startOnce(true);
-          this.update({ notice: "Another call is still open on the previous voice task, so this call uses a new voice task." });
-        } else throw error;
+      let started: Awaited<ReturnType<LocalVoiceCallDependencies["api"]["start"]>>;
+      if (mode === "agent_chat") {
+        const chat = await this.deps.ensureChat(input.companyId, input.agentId);
+        if (stale()) return void await abandon();
+        this.chatIssueId = chat.id;
+        this.update({ issue: { id: chat.id, identifier: chat.identifier ?? null } });
+        const startChat = () => this.deps.api.start(input.companyId, {
+          endpointId: endpoint.endpointId, issueId: chat.id, bindingMode: "agent_chat",
+          idempotencyKey: this.deps.randomId(), maxDurationSeconds: LOCAL_VOICE_CALL_MAX_SECONDS + 30,
+        });
+        try {
+          started = await startChat();
+        } catch (error) {
+          // This caller still has a live call on the Chat (for example an old tab): end it and retry once.
+          const previous = isCallAlreadyActive(error) ? activeSessionId(error) : null;
+          if (!previous) throw error;
+          await this.deps.api.end(input.companyId, previous);
+          if (stale()) return void await abandon();
+          started = await startChat();
+          this.update({ notice: "An earlier voice call on this Chat was ended." });
+        }
+      } else {
+        const startOnce = (newConversation: boolean) => this.deps.api.start(input.companyId, {
+          endpointId: endpoint.endpointId, ...(input.issueId && !newConversation ? { issueId: input.issueId } : {}), ...(newConversation ? { newConversation: true } : {}),
+          idempotencyKey: this.deps.randomId(), maxDurationSeconds: LOCAL_VOICE_CALL_MAX_SECONDS + 30,
+        });
+        try {
+          started = await startOnce(Boolean(input.newConversation));
+        } catch (error) {
+          // An earlier call on the same voice task is still open (for example in another tab).
+          // Calls never preempt each other, so continue on a fresh voice task instead.
+          if (!input.newConversation && isCallAlreadyActive(error)) {
+            started = await startOnce(true);
+            this.update({ notice: "Another call is still open on the previous voice task, so this call uses a new voice task." });
+          } else throw error;
+        }
       }
       createdSession = { companyId: input.companyId, sessionId: started.session.id };
       if (stale()) return void await abandon();
       if (!started.media) throw new Error("This voice call was already started elsewhere. End it there or start a new one.");
       this.session = createdSession;
-      this.update({ issue: { id: started.session.issueId, identifier: null }, agentName: endpoint.agentName });
+      this.update({ issue: { id: started.session.issueId, identifier: this.snapshot.issue?.identifier ?? null }, agentName: endpoint.agentName });
       await audio.start({
         onFrame: (pcm, rms, rate) => this.onMicFrame(pcm, rms, rate),
         onPlaying: (playing) => {
@@ -185,7 +253,11 @@ export class LocalVoiceCall {
           this.audio?.play(event.data);
         }
       };
-      socket.onclose = () => { if (this.socket === socket) this.onSocketClosed(); };
+      socket.onclose = () => {
+        if (this.socket !== socket) return;
+        this.relayEnded?.();
+        this.onSocketClosed();
+      };
       this.socket = socket;
     } catch (error) {
       if (stale()) return void await abandon();
@@ -215,6 +287,7 @@ export class LocalVoiceCall {
         void this.deps.wakeLock?.().then((lock) => { if (this.snapshot.phase === "live") this.wakeLock = lock; else void lock?.release(); }).catch(() => undefined);
         this.silenceTimer = this.deps.setInterval(() => this.checkSilence(), 1000);
         return;
+      case "dictation": this.onDictation(event); return;
       case "transcript": this.appendTranscript(event.role, event.text); return;
       case "interrupted":
         this.audio?.flush();
@@ -241,9 +314,37 @@ export class LocalVoiceCall {
       case "error": this.update({ notice: event.message }); return;
       case "ended":
         this.update({ endedReason: END_REASONS[event.reason] ?? "Call ended." });
+        // end() is waiting for the relay's final dictation; it cleans up itself.
+        if (this.relayEnded) return void this.relayEnded();
         void this.cleanup({ endRemote: false }).then(() => this.update({ phase: "ended" }));
         return;
     }
+  }
+
+  /** agent_chat: post one dictated utterance to the Chat as the caller and report the result to the relay. */
+  private onDictation(event: Extract<LocalVoiceRelayServerEvent, { type: "dictation" }>) {
+    const issueId = this.chatIssueId;
+    if (this.mode !== "agent_chat" || !issueId) return;
+    if (this.snapshot.sentLog.some((entry) => entry.operationId === event.operationId)) return;
+    const { operationId } = event;
+    const socket = this.socket;
+    this.update({ sentLog: [...this.snapshot.sentLog, { operationId, text: event.text, status: "sending" as const }].slice(-MAX_SENT_LOG) });
+    const settle = (patch: Pick<LocalVoiceSentEntry, "status" | "error">) => {
+      this.update({ sentLog: this.snapshot.sentLog.map((entry) => entry.operationId === operationId ? { operationId, text: entry.text, ...patch } : entry) });
+    };
+    const task = this.deps.postChatMessage(issueId, event.body, operationId).then(
+      (comment) => {
+        settle({ status: "sent" });
+        this.sendOn(socket, { type: "dictation_result", operationId, status: "sent", ...(comment?.id ? { commentId: comment.id } : {}) });
+      },
+      (error: unknown) => {
+        const message = errorMessage(error, "The message could not be sent to the Chat.");
+        settle({ status: "failed", error: message });
+        this.sendOn(socket, { type: "dictation_result", operationId, status: "failed", message: message.slice(0, 500) });
+      },
+    );
+    this.pendingPosts.add(task);
+    void task.finally(() => this.pendingPosts.delete(task));
   }
 
   private appendTranscript(role: "user" | "model", text: string) {
@@ -306,18 +407,46 @@ export class LocalVoiceCall {
     const socketOpen = this.socket?.readyState === OPEN;
     this.update({ phase: "ending" });
     if (socketOpen) this.send({ type: "end" });
+    if (socketOpen && this.mode === "agent_chat") {
+      // The relay flushes words it is still merging as a final dictation, then reports `ended`.
+      await this.waitFor((resolve) => { this.relayEnded = resolve; }, AGENT_CHAT_END_WAIT_MS);
+      this.relayEnded = null;
+    }
+    if (this.pendingPosts.size > 0) {
+      const posts = [...this.pendingPosts];
+      await this.waitFor((resolve) => { void Promise.allSettled(posts).then(() => resolve()); }, AGENT_CHAT_POST_SETTLE_MS);
+    }
     await this.cleanup({ endRemote: !socketOpen });
     this.update({ phase: "ended", endedReason: this.snapshot.endedReason ?? END_REASONS.caller_ended! });
   }
 
+  /** Resolves when `register`'s callback fires or after `ms`, whichever comes first. */
+  private waitFor(register: (resolve: () => void) => void, ms: number) {
+    const setTimer = this.deps.setTimeout ?? ((fn: () => void, delay: number) => globalThis.setTimeout(fn, delay));
+    const clearTimer = this.deps.clearTimeout ?? ((handle: unknown) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>));
+    return new Promise<void>((resolve) => {
+      let timer: unknown = null;
+      const done = () => { if (timer !== null) clearTimer(timer); timer = null; resolve(); };
+      timer = setTimer(done, ms);
+      register(done);
+    });
+  }
+
   private onSocketClosed() {
     if (this.snapshot.phase === "ended" || this.snapshot.phase === "ending") return;
-    void this.cleanup({ endRemote: true }).then(() => this.update({ phase: "error", error: "The voice connection was lost. Start the call again to continue the same voice task." }));
+    const error = this.mode === "agent_chat"
+      ? "The voice connection was lost. Start the call again to keep talking in the same Chat."
+      : "The voice connection was lost. Start the call again to continue the same voice task.";
+    void this.cleanup({ endRemote: true }).then(() => this.update({ phase: "error", error }));
   }
 
   private send(message: LocalVoiceRelayClientMessage) {
-    if (this.socket?.readyState !== OPEN) return false;
-    this.socket.send(JSON.stringify(message));
+    return this.sendOn(this.socket, message);
+  }
+
+  private sendOn(socket: WebSocket | null, message: LocalVoiceRelayClientMessage) {
+    if (socket?.readyState !== OPEN) return false;
+    socket.send(JSON.stringify(message));
     return true;
   }
 
@@ -409,6 +538,8 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
 export function createLocalVoiceCall() {
   return new LocalVoiceCall({
     api: localVoiceApi,
+    ensureChat: (companyId, agentId) => agentChatsApi.ensure(companyId, agentId),
+    postChatMessage: (issueId, body, clientRequestId) => issuesApi.addComment(issueId, body, undefined, undefined, undefined, clientRequestId),
     createSocket: (url, protocols) => new WebSocket(url, protocols),
     createAudio: createBrowserAudioEngine,
     now: () => Date.now(),
