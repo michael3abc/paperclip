@@ -1,9 +1,15 @@
 /**
- * AudioWorklet processors for local voice calls (HOM-311), shipped as Blob
- * modules so no extra static asset or bundler entry is needed.
+ * AudioWorklet processors for local voice calls (HOM-311, HOM-318), shipped as
+ * Blob modules so no extra static asset or bundler entry is needed.
  *
- * - `pc-mic-capture`: mono microphone input at the context rate → PCM16
- *   mono 16 kHz frames of 40 ms, plus an RMS level for silence detection.
+ * - `pc-mic-capture`: mono microphone input → PCM16 mono frames of 40 ms at
+ *   the relay's input rate (24 kHz for OpenAI Realtime, 16 kHz for the Gemini
+ *   fallback), plus an RMS level for silence detection. The call runs its
+ *   AudioContext at 24 kHz, so the browser resamples the microphone and the
+ *   capture is a straight conversion; the averaging decimator below only
+ *   runs when the context rate is higher than the target (a browser that
+ *   ignored the requested rate, or the 16 kHz fallback). The rate changes with
+ *   a `{ type: "rate", rate }` message.
  * - `pc-voice-player`: PCM16 mono 24 kHz chunks → context-rate output with a
  *   queue that `flush` empties immediately on barge-in.
  */
@@ -11,13 +17,21 @@ const CAPTURE_SOURCE = `
 class PcMicCapture extends AudioWorkletProcessor {
   constructor() {
     super();
-    // Box-filter decimation: each 16 kHz sample is the mean of the input samples
-    // it spans, which suppresses aliasing and carries across block boundaries.
-    this.ratio = sampleRate / 16000;
+    this.configure(24000);
+    this.port.onmessage = (event) => {
+      const data = event.data;
+      if (data && data.type === "rate" && Number.isFinite(data.rate) && data.rate >= 8000 && data.rate <= 48000) this.configure(data.rate);
+    };
+  }
+  configure(rate) {
+    // At or below the context rate: averaging decimation, which suppresses
+    // aliasing and carries across block boundaries (ratio 1 copies samples).
+    this.rate = Math.min(rate, sampleRate);
+    this.ratio = sampleRate / this.rate;
     this.phase = 0;
     this.sum = 0;
     this.taken = 0;
-    this.frame = new Int16Array(640);
+    this.frame = new Int16Array(Math.round(this.rate * 0.04));
     this.filled = 0;
     this.sumSquares = 0;
     this.count = 0;

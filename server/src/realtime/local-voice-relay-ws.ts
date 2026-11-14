@@ -15,14 +15,16 @@ import {
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { GeminiLiveRelay, type VoiceUpstream, type VoiceUpstreamHandlers } from "../services/voice/gemini-live-relay.js";
+import { GeminiLiveRelay } from "../services/voice/gemini-live-relay.js";
+import { OpenAIRealtimeRelay } from "../services/voice/openai-realtime-relay.js";
+import type { VoiceRelayCore, VoiceRelayOptions, VoiceUpstream, VoiceUpstreamHandlers } from "../services/voice/voice-relay-core.js";
 import { localVoiceRealtimeUrl, readLocalVoiceGatewayKey, type LocalVoiceGatewayConfig } from "../services/voice/local-voice-gateway-config.js";
 import { authorizeLocalVoiceRelay, createLocalVoiceTaskPort } from "../services/voice/local-voice-relay-port.js";
 import type { VoiceSessionService } from "../services/voice/voice-session-service.js";
 import type { VoiceCaller } from "../services/voice/voice-session-store.js";
 
 /**
- * Same-origin media relay for local voice (HOM-311):
+ * Same-origin media relay for local voice (HOM-311; OpenAI Realtime engine HOM-318):
  * `/api/companies/:companyId/voice-sessions/:sessionId/ws`.
  *
  * Authentication happens before the upgrade completes: trusted browser
@@ -136,7 +138,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
     maxPayload: MAX_AUDIO_FRAME_BYTES,
     handleProtocols: (protocols) => protocols.has(LOCAL_VOICE_RELAY_PROTOCOL) ? LOCAL_VOICE_RELAY_PROTOCOL : false,
   });
-  const active = new Map<GeminiLiveRelay, string>();
+  const active = new Map<VoiceRelayCore, string>();
   /** One relay per voice session, and limit slots reserved before the async authorization. */
   const sessions = new Set<string>();
   const reserved = new Map<string, number>();
@@ -185,7 +187,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       if (ws.readyState !== WebSocket.OPEN) return;
       ws.send(data, { binary }, (error) => { if (error) logger.warn({ errorName: error.name, sessionId }, "local voice relay send failed"); });
     };
-    const relay = new GeminiLiveRelay({
+    const relayOptions: VoiceRelayOptions = {
       browser: {
         sendEvent: (event: LocalVoiceRelayServerEvent) => send(JSON.stringify(event), false),
         sendAudio: (pcm) => send(pcm, true),
@@ -195,8 +197,10 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       connectUpstream: connectUpstream(input.config),
       binding: { issueId: input.binding.issue.id, issueIdentifier: input.binding.issue.identifier, issueTitle: input.binding.issue.title, agentName: input.binding.agentName },
       voiceName: input.config.voiceName,
+      model: input.config.model,
       log: (event, fields) => logger.info({ ...fields, sessionId, companyId: input.companyId }, event),
-    });
+    };
+    const relay: VoiceRelayCore = input.config.engine === "gemini" ? new GeminiLiveRelay(relayOptions) : new OpenAIRealtimeRelay(relayOptions);
     active.set(relay, input.caller.id);
     sessions.add(sessionId);
     let alive = true;

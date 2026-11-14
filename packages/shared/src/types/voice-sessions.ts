@@ -129,13 +129,18 @@ export interface VoiceOperationReceipt {
  * Same-origin media relay for local voice (HOM-311). The browser opens
  * `/api/companies/{companyId}/voice-sessions/{sessionId}/ws` with the
  * subprotocols [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}<transportToken>`].
- * Binary frames: browser→server PCM16 mono 16 kHz microphone audio;
- * server→browser PCM16 mono 24 kHz model audio. Text frames are JSON below.
+ * Binary frames: browser→server PCM16 mono microphone audio at the
+ * `inputSampleRate` announced in `ready` (24 kHz for the OpenAI Realtime
+ * engine, 16 kHz for the Gemini Live fallback); server→browser PCM16 mono
+ * 24 kHz model audio. Text frames are JSON below.
  * The model gateway key never leaves the server.
  */
 export const LOCAL_VOICE_RELAY_PROTOCOL = "paperclip.voice-relay.v1" as const;
 export const LOCAL_VOICE_RELAY_TOKEN_PREFIX = "pcvt." as const;
-export const LOCAL_VOICE_INPUT_SAMPLE_RATE = 16_000;
+/** Default microphone rate (OpenAI Realtime, HOM-318). */
+export const LOCAL_VOICE_INPUT_SAMPLE_RATE = 24_000;
+/** Microphone rate for the Gemini Live fallback engine (HOM-311). */
+export const LOCAL_VOICE_GEMINI_INPUT_SAMPLE_RATE = 16_000;
 export const LOCAL_VOICE_OUTPUT_SAMPLE_RATE = 24_000;
 /** Owner decision (HOM-265): remind at 10 minutes, end at 15, pause the mic after 60 s without speech. */
 export const LOCAL_VOICE_CALL_WARNING_SECONDS = 600;
@@ -162,7 +167,7 @@ export type LocalVoiceRelayClientMessage =
 export type LocalVoiceRelayEndReason = "caller_ended" | "max_duration" | "session_unavailable" | "upstream_unavailable" | "server_shutdown" | "relay_error";
 
 export type LocalVoiceRelayServerEvent =
-  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number }
+  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number }
   | { type: "transcript"; role: "user" | "model"; text: string }
   | { type: "interrupted" }
   | { type: "turn_complete" }

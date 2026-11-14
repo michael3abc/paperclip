@@ -46,6 +46,8 @@ export interface VoiceAudioEngine {
   start(handlers: { onFrame(pcm: ArrayBuffer, rms: number): void; onPlaying(playing: boolean): void }): Promise<void>;
   play(pcm: ArrayBuffer): void;
   flush(): void;
+  /** Microphone frame rate the relay expects (sent in its `ready` event). */
+  setInputSampleRate(rate: number): void;
   close(): Promise<void>;
 }
 
@@ -200,6 +202,8 @@ export class LocalVoiceCall {
     switch (event.type) {
       case "ready":
         this.lastActivityAt = this.deps.now();
+        // Older relays did not announce a rate; they expected 16 kHz.
+        this.audio?.setInputSampleRate(event.inputSampleRate ?? 16_000);
         this.update({ phase: "live", issue: { id: event.issueId, identifier: event.issueIdentifier }, agentName: event.agentName,
           startedAt: this.deps.now(), maxSeconds: event.maxSeconds, warningSeconds: event.warningSeconds });
         void this.deps.wakeLock?.().then((lock) => { if (this.snapshot.phase === "live") this.wakeLock = lock; else void lock?.release(); }).catch(() => undefined);
@@ -332,16 +336,25 @@ export class LocalVoiceCall {
   dispose() { void this.end(); this.listeners.clear(); }
 }
 
+/** Context rate for calls: the relay's 24 kHz model audio plays without resampling and the browser resamples the microphone. */
+export const VOICE_CONTEXT_SAMPLE_RATE = 24_000;
+
 /** Browser implementation: one AudioContext, mic capture and player worklets. */
 export function createBrowserAudioEngine(): VoiceAudioEngine {
   const AudioContextCtor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextCtor) throw new Error("This browser does not support Web Audio.");
-  const context = new AudioContextCtor({ latencyHint: "interactive" });
-  void context.resume().catch(() => undefined);
+  const createContext = (sampleRate?: number) => {
+    const created = new AudioContextCtor(sampleRate ? { latencyHint: "interactive", sampleRate } : { latencyHint: "interactive" });
+    void created.resume().catch(() => undefined);
+    return created;
+  };
+  let context: AudioContext;
+  try { context = createContext(VOICE_CONTEXT_SAMPLE_RATE); } catch { context = createContext(); }
   let stream: MediaStream | null = null;
   let player: AudioWorkletNode | null = null;
   let capture: AudioWorkletNode | null = null;
   let source: MediaStreamAudioSourceNode | null = null;
+  let inputRate = VOICE_CONTEXT_SAMPLE_RATE;
   let closed = false;
   return {
     async start(handlers) {
@@ -351,18 +364,31 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
       const granted = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       if (closed) { for (const track of granted.getTracks()) track.stop(); throw new Error("The call ended before the microphone opened."); }
       stream = granted;
+      try {
+        source = context.createMediaStreamSource(stream);
+      } catch (error) {
+        // Some browsers cannot connect a microphone to a context whose rate differs from the device rate.
+        if (context.sampleRate !== VOICE_CONTEXT_SAMPLE_RATE) throw error;
+        await context.close().catch(() => undefined);
+        context = createContext();
+        source = context.createMediaStreamSource(stream);
+      }
       await loadVoiceWorklets(context);
       player = new AudioWorkletNode(context, "pc-voice-player", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       player.port.onmessage = (event) => { if (event.data?.type === "playing") handlers.onPlaying(Boolean(event.data.playing)); };
       player.connect(context.destination);
-      source = context.createMediaStreamSource(stream);
       capture = new AudioWorkletNode(context, "pc-mic-capture", { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1, channelCountMode: "explicit" });
+      capture.port.postMessage({ type: "rate", rate: inputRate });
       capture.port.onmessage = (event) => { if (event.data?.pcm) handlers.onFrame(event.data.pcm as ArrayBuffer, Number(event.data.rms) || 0); };
       source.connect(capture);
       if (context.state !== "running") await context.resume();
     },
     play(pcm) { player?.port.postMessage({ type: "pcm", data: pcm }, [pcm]); },
     flush() { player?.port.postMessage({ type: "flush" }); },
+    setInputSampleRate(rate) {
+      inputRate = rate;
+      capture?.port.postMessage({ type: "rate", rate });
+    },
     async close() {
       closed = true;
       try { source?.disconnect(); capture?.disconnect(); player?.disconnect(); } catch { /* already disconnected */ }

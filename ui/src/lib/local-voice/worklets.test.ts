@@ -10,8 +10,21 @@ function load(source: string, sampleRate: number) {
 }
 
 describe("voice worklets", () => {
-  it("downsamples 48 kHz microphone input into 40 ms PCM16 frames at 16 kHz", () => {
+  it("passes a 24 kHz context through as 40 ms PCM16 frames at 24 kHz", () => {
+    const processor = new (load(VOICE_WORKLET_SOURCES.capture, 24_000)["pc-mic-capture"]!)();
+    const block = new Float32Array(128).fill(0.25);
+    block[0] = -1;
+    for (let i = 0; i < 8; i++) processor.process([[block]]); // 1024 samples → one 960-sample frame
+    expect(processor.port.posted).toHaveLength(1);
+    const frame = new Int16Array(processor.port.posted[0].pcm);
+    expect(frame).toHaveLength(960);
+    expect(frame[0]).toBe(-0x8000);
+    expect(frame[1]).toBe(Math.floor(0.25 * 0x7fff));
+  });
+
+  it("switches to 16 kHz frames for the Gemini fallback and decimates a 48 kHz context", () => {
     const processor = new (load(VOICE_WORKLET_SOURCES.capture, 48_000)["pc-mic-capture"]!)();
+    processor.port.onmessage({ data: { type: "rate", rate: 16_000 } });
     const block = new Float32Array(128).fill(0.5);
     for (let i = 0; i < 15; i++) processor.process([[block]]); // 1920 input samples = 640 output samples
     expect(processor.port.posted).toHaveLength(1);
