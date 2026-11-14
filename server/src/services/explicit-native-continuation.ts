@@ -365,8 +365,11 @@ export async function admitExplicitNativeContinuation(input: {
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
-      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator, "admission"))
+      || adapterExecutionControls.has(source.id))
       return blocked("delivery_unknown", "The original attempt's delivery state changed. Reconcile its receipt before retrying.");
+    // Liveness-first (Owner 2026-11-13): Retry of a finished run with an unknown
+    // delivery outcome resends; the adapter adds the check-current-state note.
+    if (!await isFailedNativePreparation(db, source, coordinator, "admission")) return null;
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length) return null;
