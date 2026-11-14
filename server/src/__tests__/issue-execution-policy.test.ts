@@ -2154,7 +2154,7 @@ describe("review round circuit breaker", () => {
     expect(result.patch.assigneeAgentId).toBeUndefined();
   });
 
-  it("rejects a non-escalated actor advancing the stage during the hold", () => {
+  it("rejects a non-reviewer agent advancing the stage during the hold", () => {
     expect(() =>
       applyIssueExecutionPolicyTransition({
         issue: reviewPendingIssue(
@@ -2167,10 +2167,29 @@ describe("review round circuit breaker", () => {
         policy,
         requestedStatus: "done",
         requestedAssigneePatch: {},
-        actor: { agentId: qaAgentId },
-        commentBody: "Agent trying to close it anyway",
+        actor: { agentId: coderAgentId },
+        commentBody: "Executor trying to close it anyway",
       }),
     ).toThrow("Only the escalated reviewer can advance the current execution stage");
+  });
+
+  it("lets the configured reviewer agent decide during the hold and resets the rounds (Owner 2026-11-14)", () => {
+    const held = reviewPendingIssue(
+      { assigneeAgentId: null, assigneeUserId: boardUserId },
+      { currentParticipant: { type: "user", userId: boardUserId }, changesRequestedCount: 3 },
+    );
+    const changes = applyIssueExecutionPolicyTransition({
+      issue: held, policy, requestedStatus: "in_progress", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "Owner decided: continue within the round-three scope",
+    });
+    expect(changes.decision).toMatchObject({ outcome: "changes_requested" });
+    expect(changes.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(changes.patch.executionState).toMatchObject({ status: "changes_requested", changesRequestedCount: 0 });
+    const approved = applyIssueExecutionPolicyTransition({
+      issue: held, policy, requestedStatus: "done", requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId }, commentBody: "Reviewer approves after the Owner's decision",
+    });
+    expect(approved.decision).toMatchObject({ outcome: "approved" });
   });
 
   it("rejects a non-escalated actor reassigning the issue during the hold", () => {
