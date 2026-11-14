@@ -207,7 +207,9 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           )).for("update");
           const [agent] = await connection.select().from(agents).where(and(eq(agents.id, scope.actor.agentId!), eq(agents.companyId, scope.companyId)));
           const [project] = await connection.select().from(projects).where(and(eq(projects.id, scope.projectId), eq(projects.companyId, scope.companyId)));
-          const [issue] = await connection.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, scope.companyId), eq(issues.projectId, scope.projectId)));
+          // A main's own Agent Chat has no project; it may run in its project's tree (Owner 2026-11-14).
+          const [issue] = await connection.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, scope.companyId),
+            or(eq(issues.projectId, scope.projectId), and(isNull(issues.projectId), eq(issues.conversationAgentId, scope.actor.agentId!)))));
           if (!run || agentRunWritesRevoked(run) || !agent || agent.lifecycleState !== "ready" || agent.lifecycleHolds.length
             || agent.pauseReason || !(await evaluateAgentInvokabilityFromDb(connection, agent)).invokable
             || !project || project.pausedAt || project.archivedAt

@@ -282,6 +282,26 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host).toHaveBeenCalledTimes(2);
   });
 
+  it("admits the main's own project-less Agent Chat in its project's tree (Owner 2026-11-14)", async () => {
+    const f = await fixture();
+    f.host.mockImplementation(async (_host, input) => ({ ...f.response(input), head: null, targetHead: null, merged: false, dirty: true }));
+    await f.service.operate(f.scope, { ...f.registration, kind: "repository_root", cwd: f.sourceCwd });
+    const chatId = randomUUID();
+    await db.insert(issues).values({ id: chatId, companyId: f.companyId, projectId: null, title: "Chat with main", status: "in_review",
+      assigneeAgentId: f.agentId, conversationAgentId: f.agentId, conversationUserId: "owner", conversationState: "active",
+      executionWorkspaceId: f.workspaceId,
+      workspaceSelection: { version: 1, source: "explicit", selection: { kind: "existing", workspaceId: f.workspaceId } } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: chatId } }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await f.service.prepareRun(f.scope, chatId, 1)).toMatchObject({ generation: 1 });
+    // Another agent's project-less chat is still not admitted.
+    const otherChat = randomUUID(), otherAgent = randomUUID();
+    await db.insert(agents).values({ id: otherAgent, companyId: f.companyId, name: "Other main", adapterType: "process" });
+    await db.insert(issues).values({ id: otherChat, companyId: f.companyId, projectId: null, title: "Other chat", status: "in_review",
+      assigneeAgentId: otherAgent, conversationAgentId: otherAgent, conversationUserId: "owner", conversationState: "active" });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: otherChat } }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(f.service.prepareRun(f.scope, otherChat, 1)).rejects.toThrow();
+  });
+
   it("allows multiple task participants without a writer lock, closes join at converge and reopens explicitly", async () => {
     const f = await fixture(); await f.service.operate(f.scope, f.registration);
     const board = { ...f.scope, actor: { type: "board" as const, source: "local_implicit" as const, isInstanceAdmin: true } };
