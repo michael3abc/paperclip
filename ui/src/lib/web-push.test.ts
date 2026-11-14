@@ -73,5 +73,7 @@ describe("browser push enrollment and account transitions", () => {
   it("a still-valid account binding is unchanged on normal visits", async () => {
     localStorage.setItem("paperclip.push.device", JSON.stringify({ userId: "alice", companyId: "company", subscriptionId: "device-a" }));
     await reconcilePushAccount("alice"); expect(unsubscribe).not.toHaveBeenCalled();
+    // A lost worker copy self-heals: the enrollment is re-sent on every visit.
+    expect(postMessage.mock.calls.at(-1)?.[0]).toMatchObject({ type: "paperclip.push.bind", binding: { subscriptionId: "device-a" } });
   });
 });

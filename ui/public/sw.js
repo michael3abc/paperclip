@@ -189,7 +189,9 @@ self.addEventListener("message", event => {
   if (binding && (typeof binding.userId !== "string" || typeof binding.subscriptionId !== "string")) {
     event.ports[0]?.postMessage({ ok: false }); return;
   }
-  event.waitUntil(pushBindingStore("readwrite", binding).then(async () => {
+  // An explicit sign-out/disable leaves a tombstone so later pushes stay silent;
+  // only a binding that was never stored or was lost shows the re-enable notice.
+  event.waitUntil(pushBindingStore("readwrite", binding ?? { revokedAt: Date.now() }).then(async () => {
     if (!binding) for (const notification of await self.registration.getNotifications()) notification.close();
     event.ports[0]?.postMessage({ ok: true });
   },
@@ -202,9 +204,22 @@ function pushTarget(value) {
 }
 self.addEventListener("push", event => {
   event.waitUntil((async () => {
-    const binding = await pushBindingStore("readonly");
-    const payload = event.data?.json();
-    if (!binding || payload?.subscriptionId !== binding.subscriptionId) return;
+    const binding = await pushBindingStore("readonly").catch(() => null);
+    let payload = null;
+    try { payload = event.data?.json(); } catch { payload = null; }
+    if (binding?.revokedAt || binding && payload?.subscriptionId !== binding.subscriptionId) return;
+    if (!binding) {
+      // This browser decrypted the push, so it was sent to this device, but its
+      // account binding was lost. Never drop it silently (iOS revokes silent
+      // pushes and the Owner sees nothing): show a content-free notice that leads
+      // to re-enabling notifications, which rebinds this device.
+      await self.registration.showNotification("Paperclip 有新通知", {
+        body: "這台裝置的通知需要重新啟用：點這裡到個人設定，把通知關閉再開啟。",
+        icon: "/android-chrome-192x192.png", tag: "paperclip:rebind",
+        data: { rebind: true, url: new URL("/company/settings/instance/profile", self.location.origin).href },
+      });
+      return;
+    }
     const url = pushTarget(payload.url);
     if (!url || typeof payload.title !== "string" || typeof payload.body !== "string" || typeof payload.tag !== "string") return;
     await self.registration.showNotification(payload.title, {
@@ -216,8 +231,9 @@ self.addEventListener("push", event => {
 self.addEventListener("notificationclick", event => {
   event.notification.close();
   event.waitUntil((async () => {
-    const binding = await pushBindingStore("readonly");
-    if (!binding || event.notification.data?.subscriptionId !== binding.subscriptionId) return;
+    const binding = await pushBindingStore("readonly").catch(() => null);
+    const rebind = event.notification.data?.rebind === true;
+    if (!rebind && (!binding || event.notification.data?.subscriptionId !== binding.subscriptionId)) return;
     const raw = event.notification.data.url;
     const parsed = new URL(raw);
     const url = parsed.origin === self.location.origin ? pushTarget(parsed.pathname + parsed.search + parsed.hash) : null;
