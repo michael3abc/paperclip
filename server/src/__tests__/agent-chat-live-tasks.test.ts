@@ -68,6 +68,16 @@ const LOCAL_BOARD: AuthorizationActor = { type: "board", userId: VIEWER, source:
     }
   });
 
+  it("marks a chat while a task is in progress between runs or waits for a monitor check", async () => {
+    const f = await seed(), taskId = await f.task({ status: "in_progress" });
+    await f.handOff(taskId);
+    expect(await f.live()).toEqual([f.chatId]);
+    await db.update(issues).set({ status: "blocked", monitorNextCheckAt: new Date(Date.now() + 3_600_000) }).where(eq(issues.id, taskId));
+    expect(await f.live()).toEqual([f.chatId]);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, taskId));
+    expect(await f.live()).toEqual([]);
+  });
+
   it("marks a chat while a direct subtask runs", async () => {
     const f = await seed(), taskId = await f.task({ parentId: f.chatId });
     expect(await f.live()).toEqual([]);

@@ -1,4 +1,4 @@
-import { and, eq, exists, inArray, isNull } from "drizzle-orm";
+import { and, eq, exists, inArray, isNotNull, isNull, notInArray, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { chatTaskHandoffs, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
@@ -11,7 +11,7 @@ export const LIVE_CHAT_TASK_RUN_STATUSES = ["queued", "running", "scheduled_retr
  * with a live task, meaning a task the chat created in its current session
  * (`chat_task_handoffs`, the same scope as the chat's task list and completion
  * delivery) or a direct subtask of the chat, that has a queued, running or
- * scheduled-retry run. Native subagents exist only in run transcripts and are
+ * scheduled-retry run, is in progress, or has a scheduled monitor check. Native subagents exist only in run transcripts and are
  * not part of this projection.
  *
  * Read-only and company-scoped: two indexed queries bounded by the caller's
@@ -31,7 +31,11 @@ export async function conversationsWithLiveChildTasks(
     eq(heartbeatRuns.issueId, issues.id),
     inArray(heartbeatRuns.status, [...LIVE_CHAT_TASK_RUN_STATUSES]),
   )));
-  const liveTask = and(eq(issues.companyId, companyId), isNull(issues.hiddenAt), readable, liveRun);
+  // Owner 2026-11-14: a task whose work is in progress between runs (a GPU job
+  // with a scheduled monitor check) is still a task the chat is waiting for.
+  const ongoing = or(liveRun, eq(issues.status, "in_progress"),
+    and(isNotNull(issues.monitorNextCheckAt), notInArray(issues.status, ["done", "cancelled"])));
+  const liveTask = and(eq(issues.companyId, companyId), isNull(issues.hiddenAt), readable, ongoing);
   const conversation = alias(issues, "conversation");
   const [handedOff, subtasks] = await Promise.all([
     db.selectDistinct({ conversationId: chatTaskHandoffs.conversationId }).from(chatTaskHandoffs)
