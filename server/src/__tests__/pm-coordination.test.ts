@@ -1,5 +1,5 @@
 import { seedManagedDispatchWorkspace } from "./helpers/managed-dispatch-workspace.js";
-import { pmInstructionLayout, requiredPmBundleFiles, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
+import { DECISION_DELEGATION_PERMISSION, pmInstructionLayout, requiredPmBundleFiles, renderPmWorkerPolicy, type PmWorkerPolicy } from "@paperclipai/shared";
 import { workerSelectionOverrides } from "../services/pm-worker-options.js";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import express from "express";
@@ -541,27 +541,53 @@ describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["code
       await db.delete(companies).where(eq(companies.id, foreignCompany));
     }
   });
-  it("scoped general approval resolves through its real PM tool and HTTP middleware", async () => {
-    const { saveProjectPmDecisionAuthority } = await import("../services/delegated-decision-policy.js");
+  it("a PM's general approval resolves through the project's lead main via the decision tool and HTTP middleware", async () => {
+    // Owner 2026-11-14 「直接把 PM 這個邏輯拔掉，就留 main 有所有權限」: the project's main decides, not the PM.
     const { approvalRecords } = await import("../services/approvals.js");
     const { issueApprovalService } = await import("../services/issue-approvals.js");
     const { executeDelegatedDecisionTool } = await import("../services/native-runtime/delegated-decision-tools.js");
     const { createLocalAgentJwt } = await import("../agent-auth-jwt.js");
     await reads();
+    const mainId = randomUUID(), mainRunId = randomUUID(), delegateId = randomUUID();
+    // Earlier tests may leave the single company delegation grant; restore it afterwards.
+    const previousGrants = await db.select().from(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, companyId),
+      eq(principalPermissionGrants.permissionKey, DECISION_DELEGATION_PERMISSION)));
+    if (previousGrants.length) await db.delete(principalPermissionGrants).where(inArray(principalPermissionGrants.id, previousGrants.map(row => row.id)));
     await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, userId)));
-    const grant = await saveProjectPmDecisionAuthority(db, { companyId, ownerUserId: userId, baseRevision: null, enabled: true,
-      allowSelfApproval: true, projectIds: [projectId], scopes: ["task_decisions", "ordinary_operations", "general_approvals"], reason: "Owned audit fixture" });
+    await db.insert(agents).values([
+      { id: mainId, companyId, name: "Project main", status: "active", adapterType: "ccpocket_bridge", adapterConfig: { role: "main", projectId } },
+      { id: delegateId, companyId, name: "Approval delegate", status: "active", adapterType: "process" },
+    ]);
+    await db.insert(heartbeatRuns).values({ id: mainRunId, companyId, agentId: mainId, status: "running", responsibleUserId: userId });
+    await db.update(projects).set({ leadAgentId: mainId }).where(eq(projects.id, projectId));
+    // Agent Chat requests stay with the Owner; an earlier test turns this task into a chat, so use it as an ordinary task here.
+    const [chat] = await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+      conversationState: issues.conversationState }).from(issues).where(eq(issues.id, issueId));
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null }).where(eq(issues.id, issueId));
+    let grantId: string | undefined;
     try {
+      grantId = (await saveDecisionDelegation(db, { companyId, ownerUserId: userId, agentId: delegateId, baseRevision: null, enabled: true,
+        allowSelfApproval: true, scopes: ["task_decisions", "ordinary_operations", "general_approvals"], reason: "Owned audit fixture" })).id;
       const approval = await approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: agentId,
         payload: { proposal: "Owned test-only ordinary operation" } }, { runId });
       await issueApprovalService(db).linkManyForApproval(approval!.id, [issueId], { agentId });
-      expect(approval!.delegation).toMatchObject({ authority: "project_pm", level: "pm", recipientAgentId: agentId });
-      const token = createLocalAgentJwt(agentId, companyId, pmHarness, runId, userId);
-      await expect(executeDelegatedDecisionTool({ db, actor: { companyId, agentId, runId }, name: "resolve_delegated_request", apiUrl, token: token!,
+      expect(approval!.delegation).toMatchObject({ level: "pm", recipientAgentId: mainId, projectId });
+      expect(approval!.delegation!.authority).toBeUndefined();
+      const resolve = (actor: { agentId: string; runId: string }, adapterType: string) => executeDelegatedDecisionTool({
+        db, actor: { companyId, ...actor }, name: "resolve_delegated_request", apiUrl,
+        token: createLocalAgentJwt(actor.agentId, companyId, adapterType, actor.runId, userId)!,
         arguments: { kind: "approval", requestId: approval!.id, revision: approval!.delegation!.revision, action: "accept", reason: "Within this test's grant" },
-      })).resolves.toBeDefined();
+      });
+      await expect(resolve({ agentId, runId }, pmHarness)).rejects.toThrow();
+      await expect(resolve({ agentId: mainId, runId: mainRunId }, "ccpocket_bridge")).resolves.toBeDefined();
+      expect((await approvalRecords(db).getById(approval!.id))).toMatchObject({ status: "approved", decidedByAgentId: mainId, decidedByUserId: null });
     } finally {
-      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
+      if (grantId) await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grantId));
+      if (previousGrants.length) await db.insert(principalPermissionGrants).values(previousGrants);
+      await db.update(projects).set({ leadAgentId: null }).where(eq(projects.id, projectId));
+      if (chat) await db.update(issues).set(chat).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, mainRunId));
+      await db.update(agents).set({ status: "terminated" }).where(inArray(agents.id, [mainId, delegateId]));
       await db.update(companyMemberships).set({ membershipRole: "operator" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, userId)));
     }
   });
