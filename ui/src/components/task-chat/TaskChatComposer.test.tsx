@@ -14,6 +14,8 @@ import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, HeartbeatRun } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
+import { accessApi } from "@/api/access";
+import { ToastProvider } from "@/context/ToastContext";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
@@ -2191,6 +2193,34 @@ describe("TaskChatComposer", () => {
       expect(onAdd).toHaveBeenCalledWith("Please outline the launch.", undefined, undefined, undefined, expect.any(String), { model: "gpt-6-astra", effort: "high", fast: false });
     } finally {
       render(<></>); client.clear(); catalog.mockRestore(); vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the saved-model picker only in Bridge main-agent chats", async () => {
+    const boardAccess = vi.spyOn(accessApi, "getCurrentBoardAccess").mockResolvedValue({
+      user: null, userId: "user-1", isInstanceAdmin: false, companyIds: ["chat-company"], source: "local_implicit", keyId: null,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const bridge = (role: string) => ({ id: "main-agent", name: "Data-mining", adapterType: "ccpocket_bridge",
+      adapterConfig: { role, hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-sol", effort: "high" } }) as unknown as Agent;
+    const paint = (agent: Agent, conversationMode: boolean) => render(<QueryClientProvider client={client}><ToastProvider>
+      <TaskChatComposer onAdd={vi.fn()} conversationMode={conversationMode} companyId="chat-company" workMode="standard"
+        currentAssigneeValue="agent:main-agent" modelAgents={new Map([[agent.id, agent]])} />
+    </ToastProvider></QueryClientProvider>);
+    const pill = () => container.querySelector('[data-testid="main-agent-model-pill"]');
+    try {
+      paint(bridge("main"), true);
+      await flushAsync();
+      expect(pill()?.textContent).toBe("高gpt-6-sol");
+      expect(container.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+      paint(bridge(""), true);
+      await flushAsync();
+      expect(pill()).toBeNull();
+      paint(bridge("main"), false);
+      await flushAsync();
+      expect(pill()).toBeNull();
+    } finally {
+      render(<></>); client.clear(); boardAccess.mockRestore();
     }
   });
 
