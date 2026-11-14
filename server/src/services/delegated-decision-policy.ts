@@ -4,7 +4,7 @@ import { agents, companies, companyMemberships, heartbeatRuns, issues, projects,
 import {
   DECISION_DELEGATION_PERMISSION, delegatedDecisionScopeSchema, PROJECT_PM_DECISION_PERMISSION, projectPmDecisionScopeSchema,
   type DecisionDelegationScope, type DelegatedDecisionContext,
-  type HumanReservedDecisionReason,
+  type HumanReservedDecisionReason, isUuidLike,
 } from "@paperclipai/shared";
 import { conflict, forbidden } from "../errors.js";
 import { pmCoordinationScope } from "./pm-coordination-policy.js";
@@ -174,7 +174,6 @@ export async function routeDelegatedDecision(db: Db, input: {
   category: "interaction" | "approval" | "runtime";
   reservedReasons: HumanReservedDecisionReason[];
   requiredScopes?: DecisionDelegationScope["scopes"];
-  requiresDelegate?: boolean;
 }): Promise<DelegatedDecisionContext | null> {
   const requiredScopes: DecisionDelegationScope["scopes"] = [...new Set([
     input.category === "approval" ? "general_approvals" as const : "task_decisions" as const,
@@ -197,29 +196,39 @@ export async function routeDelegatedDecision(db: Db, input: {
   // decision authority. Agent Chat requests and a main's own questions stay with the Owner.
   const requesterMainProjectId = requester ? mainAgentProjectId(requester) : null;
   if (issue?.conversationAgentId || (requesterMainProjectId && input.category !== "approval")) return null;
-  const context: DelegatedDecisionContext = {
+  // Owner 2026-11-14 「為啥要給 michael ? 直接給 mian 自己處理」: the relevant main decides and
+  // nothing routes to the company delegate. A main approves its own requests; any other
+  // request goes to the project's lead, else the task's own main, else the Owner.
+  const recipient = requester && requesterMainProjectId ? { agentId: requester.id, projectId: requesterMainProjectId }
+    : await taskMainRecipient(db, input.companyId, issue ?? null, requester?.id ?? null);
+  if (!recipient) return null;
+  const reservedReasons = input.reservedReasons.filter(reason => reason === "explicit_human");
+  return {
     version: 1, grantId: grant.id, grantRevision: grant.scope.revision, ownerUserId: grant.ownerUserId,
-    delegateAgentId: grant.agentId, level: "delegate", recipientAgentId: grant.agentId,
-    projectId: issue?.projectId ?? null, sourceRunId: input.sourceRunId,
-    sourceFingerprint: input.fingerprint, revision: randomUUID(), reservedReasons: input.reservedReasons, requiredScopes,
+    delegateAgentId: grant.agentId, level: reservedReasons.length ? "human" : "pm",
+    recipientAgentId: reservedReasons.length ? null : recipient.agentId, projectId: recipient.projectId,
+    sourceRunId: input.sourceRunId, sourceFingerprint: input.fingerprint, revision: randomUUID(), reservedReasons, requiredScopes,
   };
-  // A main approves its own requests; other requests in a project go to its lead.
-  // Tool-action confirmations (requiresDelegate) stay with the company delegate.
-  let main: { agentId: string; projectId: string } | null = null;
-  if (requester && requesterMainProjectId) main = { agentId: requester.id, projectId: requesterMainProjectId };
-  else if (!input.requiresDelegate && issue?.projectId) {
-    const lead = await projectLeadAgentId(db, input.companyId, issue.projectId);
-    if (lead && lead !== requester?.id) main = { agentId: lead, projectId: issue.projectId };
+}
+
+/** The project's lead (unless it asked), else the main that created the task directly or from its run. */
+async function taskMainRecipient(db: Db, companyId: string, issue: typeof issues.$inferSelect | null, requesterId: string | null) {
+  if (!issue) return null;
+  if (issue.projectId) {
+    const lead = await projectLeadAgentId(db, companyId, issue.projectId);
+    if (lead && lead !== requesterId) return { agentId: lead, projectId: issue.projectId };
   }
-  if (main) {
-    const reservedReasons = input.reservedReasons.filter(reason => reason === "explicit_human");
-    return { ...context, projectId: main.projectId, reservedReasons,
-      level: reservedReasons.length ? "human" : "pm", recipientAgentId: reservedReasons.length ? null : main.agentId };
-  }
-  if (context.reservedReasons.length || (requester?.id === grant.agentId && !grant.scope.allowSelfApproval)) {
-    return { ...context, level: "human", recipientAgentId: null };
-  }
-  return context;
+  const main = async (agentId: string | null | undefined) => {
+    if (!agentId) return null;
+    const [agent] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
+    const mainProjectId = agent ? mainAgentProjectId(agent) : null;
+    return agent && mainProjectId ? { agentId: agent.id, projectId: issue.projectId ?? mainProjectId } : null;
+  };
+  const creator = await main(issue.createdByAgentId);
+  if (creator || !issue.originRunId || !isUuidLike(issue.originRunId)) return creator;
+  const [originRun] = await db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, issue.originRunId), eq(heartbeatRuns.companyId, companyId))).limit(1);
+  return main(originRun?.agentId);
 }
 
 export async function assertDelegatedDecisionActor(db: Db, input: {
@@ -236,18 +245,17 @@ export async function assertDelegatedDecisionActor(db: Db, input: {
   if (!run || run.status !== "running") throw forbidden("A current running agent turn is required to decide");
   const [agent] = await db.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))).limit(1).for("share");
   if (!agent || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw forbidden("The deciding agent is unavailable");
-  if (context.level === "pm" && !(context.projectId && (mainAgentProjectId(agent) === context.projectId
-    || await projectLeadAgentId(db, input.companyId, context.projectId) === agent.id)))
-    throw forbidden("PM decisions are limited to the project's main or lead");
+  if (context.level === "pm" && !mainAgentProjectId(agent)
+    && !(context.projectId && await projectLeadAgentId(db, input.companyId, context.projectId) === agent.id))
+    throw forbidden("PM-level decisions are limited to a main or the project's lead");
   return grant;
 }
 
+/** Escalation goes to the human Owner, never the company delegate (Owner 2026-11-14). */
 export function nextDelegatedDecision(context: DelegatedDecisionContext, humanReason?: HumanReservedDecisionReason): DelegatedDecisionContext {
   if (context.level === "human") throw conflict("The request is already waiting for the human Owner");
-  const human = context.authority === "project_pm" || context.level === "delegate" || !!humanReason;
-  return { ...context, revision: randomUUID(), level: human ? "human" : "delegate",
-    recipientAgentId: human ? null : context.delegateAgentId,
-    reservedReasons: human ? [...new Set([...context.reservedReasons, humanReason ?? "uncertain"])] : context.reservedReasons };
+  return { ...context, revision: randomUUID(), level: "human", recipientAgentId: null,
+    reservedReasons: [...new Set([...context.reservedReasons, humanReason ?? "uncertain"])] };
 }
 
 async function projectLeadAgentId(db: Db, companyId: string, projectId: string): Promise<string | null> {

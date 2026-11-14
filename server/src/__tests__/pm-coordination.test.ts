@@ -332,11 +332,15 @@ describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["code
   });
 
   it("dispatches an independent chat task, returns worker delivery, then accepts the corrected delivery through HTTP", async () => {
-    const delegateId = randomUUID(), delegateRunId = randomUUID(), delegatingOwnerId = randomUUID();
+    const delegateId = randomUUID(), delegatingOwnerId = randomUUID(), mainId = randomUUID(), mainRunId = randomUUID();
     await db.insert(authUsers).values({ id: delegatingOwnerId, name: "Delegating Owner", email: `${delegatingOwnerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: delegatingOwnerId, membershipRole: "owner" });
-    await db.insert(agents).values({ id: delegateId, companyId, name: "Decision delegate", adapterType: "process" });
-    await db.insert(heartbeatRuns).values({ id: delegateRunId, companyId, agentId: delegateId, status: "running" });
+    // Owner 2026-11-14 「為啥要給 michael ? 直接給 mian 自己處理」: the project's lead main, not the
+    // company delegate, answers the PM's review question.
+    await db.insert(agents).values([{ id: delegateId, companyId, name: "Decision delegate", adapterType: "process" },
+      { id: mainId, companyId, name: "Project main", adapterType: "ccpocket_bridge", adapterConfig: { role: "main", projectId } }]);
+    await db.insert(heartbeatRuns).values({ id: mainRunId, companyId, agentId: mainId, status: "running" });
+    await db.update(projects).set({ leadAgentId: mainId }).where(eq(projects.id, projectId));
     await saveDecisionDelegation(db, { companyId, ownerUserId: delegatingOwnerId, agentId: delegateId,
       baseRevision: null, enabled: true, allowSelfApproval: true, scopes: ["task_decisions"] });
     await db.update(issues).set({ conversationAgentId: agentId, conversationUserId: userId, conversationState: "active", executionPolicy: null }).where(eq(issues.id, issueId));
@@ -394,10 +398,10 @@ describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["code
             continuationPolicy: "wake_assignee", payload: { questions: [{ id: "scope", prompt: "Scope", selectionMode: "single",
               options: [{ id: "original", label: "Keep the agreed scope" }], required: true }] },
           } }) as { interaction: { id: string; delegation: { revision: string; recipientAgentId: string } } };
-          expect(requested.interaction.delegation.recipientAgentId).toBe(delegateId);
+          expect(requested.interaction.delegation.recipientAgentId).toBe(mainId);
           await issueThreadInteractionService(db).answerQuestions({ id: childId, companyId }, requested.interaction.id,
             { answers: [{ questionId: "scope", optionIds: ["original"] }], summaryMarkdown: "Existing scope still applies",
-              delegationRevision: requested.interaction.delegation.revision }, { agentId: delegateId, runId: delegateRunId });
+              delegationRevision: requested.interaction.delegation.revision }, { agentId: mainId, runId: mainRunId });
           const wakeup = vi.fn(async (target: string, input: any) => {
             await db.insert(agentWakeupRequests).values({ companyId, agentId: target, source: "automation", status: "queued",
               idempotencyKey: input.idempotencyKey, payload: input.payload });
@@ -421,6 +425,8 @@ describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["code
     const all = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, childId));
     expect(all.filter(row => row.addresseeAgentId === agentId).map(row => row.status).sort()).toEqual(["accepted", "rejected"]);
     expect(all.find(row => row.status === "accepted")?.result).toMatchObject({ acceptanceReason: expect.stringContaining("acceptance case verified") });
+    await db.update(projects).set({ leadAgentId: null }).where(eq(projects.id, projectId));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, mainRunId));
   }, 30_000);
 
   it("exposes the policy-stage review tool to zero-slot PMs without opening management APIs", async () => {

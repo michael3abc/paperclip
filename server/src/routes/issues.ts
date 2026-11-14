@@ -6154,6 +6154,11 @@ export function issueRoutes(
           })
         : null;
     const actor = getActorInfo(req);
+    // A "pm"-level tool action belongs to its recipient main; the service rechecks
+    // assertDelegatedDecisionActor under the interaction lock (Owner 2026-11-14).
+    const toolDelegation = interaction.delegation?.requiredScopes.includes("external_writes") ? interaction.delegation : null;
+    const delegatedToolAction = !!toolDelegation && (toolDelegation.level === "delegate"
+      || toolDelegation.level === "pm" && actor.actorType === "agent" && toolDelegation.recipientAgentId === actor.agentId);
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
         actor:
@@ -6167,7 +6172,7 @@ export function issueRoutes(
         interaction,
         additionalRestriction: resolverPolicyRestriction,
         governedAction:
-          !(interaction.delegation?.level === "delegate" && interaction.delegation.requiredScopes.includes("external_writes")) &&
+          !delegatedToolAction &&
           interaction.kind === "request_confirmation" &&
           (payload?.toolAction !== undefined ||
             payload?.secretProposal !== undefined),
