@@ -79,7 +79,8 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: ran.id, status: "succeeded" }).returning();
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: old.id, status: "succeeded" });
     await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId, runId: run.id, seq: 1, eventType: "adapter.invoke",
-      payload: { adapterType: "ccpocket_bridge", context: { provider: "codex", model: "gpt-6-astra", secret: "PRIVATE" }, env: { TOKEN: "PRIVATE" } } });
+      payload: { adapterType: "ccpocket_bridge", context: { provider: "codex", model: "gpt-6-astra", secret: "PRIVATE",
+        route: { schema: "paperclip.route-decision.v1", route: "subscription", description: "GPT-6 Astra 走訂閱（gpt-6-astra）；訂閱優先" } }, env: { TOKEN: "PRIVATE" } } });
     await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId, issueId: ran.id, heartbeatRunId: run.id,
       provider: "codex", model: "gpt-6-astra", biller: "openai_subscription", billingType: "subscription_included", costCents: 0, occurredAt: new Date() });
     // Child usage within the same run must not relabel its task invocation.
@@ -89,7 +90,9 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
       actor: { type: "board", userId: f.userId, source: "session", ignoreInstanceAdmin: true }, userId: f.userId,
     });
     const page = await list();
-    expect(page.items.find(t => t.issueId === ran.id)?.runtimeIdentity).toEqual({ basis: "run", runId: run.id, harness: "codex", model: "gpt-6-astra", billingRoute: "openai_subscription" });
+    expect(page.items.find(t => t.issueId === ran.id)?.runtimeIdentity).toEqual({ basis: "run", runId: run.id, harness: "codex", model: "gpt-6-astra", billingRoute: "openai_subscription",
+      routeDescription: "GPT-6 Astra 走訂閱（gpt-6-astra）；訂閱優先" });
+    expect(page.items.find(t => t.issueId === waiting.id)?.runtimeIdentity).not.toHaveProperty("routeDescription");
     expect(page.items.find(t => t.issueId === waiting.id)?.runtimeIdentity).toMatchObject({ basis: "configured", harness: "claude", model: "sonnet", billingRoute: null });
     expect(page.items.find(t => t.issueId === old.id)?.runtimeIdentity).toMatchObject({ basis: "unknown", model: null, billingRoute: null });
     expect(JSON.stringify(page)).not.toContain("PRIVATE");

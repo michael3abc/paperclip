@@ -49,10 +49,11 @@ export async function conversationTaskRuntime(db: Db, companyId: string, issueId
       const selector = new RegExp("^[^/]+/(claude|codex|antigravity)/(.+)$").exec(model);
       if (selector) { harness = selector[1]; model = selector[2]; }
     }
+    const routeDescription = observed ? text(row.invoked_route_description) : null;
     identities.set(String(row.id), { basis: observed ? "run" : configured ? "configured" : "unknown",
       runId: text(row.run_id), harness, model,
       billingRoute: observed ? text(row.used_route ?? row.invoked_route) : null,
-      routeDescription: observed ? text(row.invoked_route_description) : null });
+      ...(routeDescription ? { routeDescription } : {}) });
   }
   return identities;
 }
