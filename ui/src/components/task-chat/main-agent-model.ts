@@ -141,6 +141,8 @@ export function humanizeBridgeModelId(rawId: string): string {
     context = bracket[1]!.trim().toUpperCase();
     id = id.slice(0, bracket.index).trim();
   }
+  // Route-router families (`family:opus`) show only the family name.
+  id = id.replace(/^family:/i, "");
   const compass = /^compass[-_]/i.test(id);
   if (compass) id = id.replace(/^compass[-_]/i, "");
   const name = (!compass ? MODEL_ALIASES[id.toLowerCase()] : undefined) ?? humanizeWords(id);
