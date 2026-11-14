@@ -224,6 +224,27 @@
   --composer-effort-hover-scale: 1.08;
   --composer-effort-press-scale: 1.16;
   --composer-effort-halo: 0 0 0 calc(var(--spacing) * 1.5) color-mix(in oklab, var(--tc-mode-ask) 14%, transparent);
+  /* Main-agent effort slider (MainAgentModelPicker): a thick pill track whose
+     dotted accent fill ends under a light thumb inset within it. */
+  --main-agent-effort-track-height: calc(var(--spacing) * 8);
+  --main-agent-effort-thumb-inset: calc(var(--spacing) * 0.75);
+  --main-agent-effort-thumb-size: calc(var(--main-agent-effort-track-height) - var(--main-agent-effort-thumb-inset) * 2);
+  --main-agent-effort-track: oklch(0.955 0 0);
+  --main-agent-effort-fill: var(--tc-mode-ask);
+  --main-agent-effort-fill-from: color-mix(in oklab, var(--tc-mode-ask) 72%, oklch(1 0 0));
+  --main-agent-effort-dot: oklch(1 0 0 / 32%);
+  --main-agent-effort-dot-radius: calc(var(--spacing) * 0.25);
+  --main-agent-effort-dot-fade: calc(var(--spacing) * 0.4);
+  --main-agent-effort-dot-gap: calc(var(--spacing) * 1.5);
+  --main-agent-effort-thumb: oklch(1 0 0);
+  --main-agent-effort-thumb-shadow: 0 1px 3px oklch(0 0 0 / 22%), 0 0 0 0.5px oklch(0 0 0 / 8%);
+  --main-agent-effort-thumb-hover-scale: 1.06;
+  --main-agent-effort-thumb-press-scale: 0.94;
+  --main-agent-effort-focus-width: calc(var(--spacing) * 0.5);
+  --main-agent-effort-focus-offset: calc(var(--spacing) * 0.5);
+  --main-agent-effort-label: var(--color-blue-600);
+  --main-agent-model-popover-width: calc(var(--spacing) * 78);
+  --shadow-main-agent-model-popover: 0 2px 6px -1px oklch(0 0 0 / 6%), 0 16px 40px -12px oklch(0 0 0 / 20%);
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --background-alt: var(--muted);
@@ -651,6 +672,13 @@
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
   --collection-filter-active: var(--color-blue-400);
+  --main-agent-effort-track: oklch(0.29 0 0);
+  --main-agent-effort-fill-from: color-mix(in oklab, var(--tc-mode-ask) 68%, oklch(0.205 0 0));
+  --main-agent-effort-dot: oklch(1 0 0 / 20%);
+  --main-agent-effort-thumb: oklch(0.97 0 0);
+  --main-agent-effort-thumb-shadow: 0 1px 3px oklch(0 0 0 / 45%);
+  --main-agent-effort-label: var(--color-blue-400);
+  --shadow-main-agent-model-popover: 0 2px 6px -1px oklch(0 0 0 / 30%), 0 16px 40px -12px oklch(0 0 0 / 60%);
   --bubble-agent: oklch(0.185 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
