@@ -103,3 +103,14 @@ latest run's invocation/usage evidence through the authorized handoff page; neve
 Label unstarted assignment settings Configured and unavailable historical fields unknown. Do not
 expose adapter configs, credentials or transcripts, fetch each card separately, or poll for identity.
 
+Project main-agent chats (`ccpocket_bridge` with `adapterConfig.role === "main"`) show a model and
+effort pill on the right of the composer (`MainAgentModelPicker`). It edits the agent's saved
+`model`/`effort`, not per-message run settings: read `GET /agents/:id/configuration`, refuse if the
+viewed model, effort, host or executor changed, then `PATCH /agents/:id` with only those two keys
+(server merge) and `expectedConfigurationRevision`. Models come from the company-scoped Bridge
+catalog for the agent's own host and executor, in Bridge order with qualified IDs; efforts come from
+the selected model's `efforts` metadata, with no slider when it reports none. Editing is gated in the
+UI by the viewer's default `agents:configure` role (local board, instance admin, owner, admin,
+operator, member); others see read-only text, and the server's `agent_config:update` check stays
+authoritative. A saved change applies from the next turn in the same native session.
+

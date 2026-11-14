@@ -76,6 +76,8 @@ import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeov
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
 import { ComposerImageAttachments, type ComposerImageAttachment } from "./ComposerImageAttachments";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import { MainAgentModelPicker } from "./MainAgentModelPicker";
+import { isBridgeMainAgent } from "./main-agent-model";
 import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import { ComposerAddMenu, ComposerModeChip, ComposerPrivacyChip } from "./ComposerAddMenu";
 import { supportsComposerModel, type ComposerRunSettings } from "./composer-run-settings";
@@ -664,6 +666,9 @@ export function TaskChatComposer({
   );
   const assigneeValue = creation || conversationMode ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
   const showConversationModel = coordinator && conversationMode && supportsComposerModel(modelAgents?.get(assigneeValue.slice(6)));
+  // Main-agent chats edit the Bridge agent's saved model/effort instead of per-message run settings.
+  const conversationAgent = conversationMode && !creation ? modelAgents?.get(assigneeValue.slice(6)) : undefined;
+  const mainAgentModelAgent = isBridgeMainAgent(conversationAgent) ? conversationAgent : undefined;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
@@ -1541,6 +1546,10 @@ export function TaskChatComposer({
             </div>
 
             <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-2", mobile && !queuedEdit && "flex-1 justify-end")}>
+
+            {mainAgentModelAgent && !queuedEdit && companyId ? (
+              <MainAgentModelPicker agent={mainAgentModelAgent} companyId={companyId} mobile={mobile} />
+            ) : null}
 
             {(showAssignee || showConversationModel) && !queuedEdit && companyId && modelAgents ? (
               <ComposerRunSettingsPicker
