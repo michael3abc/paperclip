@@ -167,11 +167,12 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       const socket = new WebSocket(localVoiceRealtimeUrl(config), {
         headers: { Authorization: `Bearer ${key}` }, maxPayload: 16 * 1024 * 1024, handshakeTimeout: 15_000,
       });
+      // Listen before the open completes: a gateway may send its first frame together with the upgrade.
+      socket.on("message", (data) => handlers.onMessage(data.toString("utf8")));
       await new Promise<void>((resolve, reject) => {
         socket.once("open", () => resolve());
         socket.once("error", (error) => reject(new Error(`gateway connect failed: ${error.message.slice(0, 120)}`)));
       });
-      socket.on("message", (data) => handlers.onMessage(data.toString("utf8")));
       socket.on("close", (code, reason) => handlers.onClose(code, reason.toString("utf8")));
       socket.on("error", (error) => logger.warn({ errorName: error.name }, "local voice upstream socket error"));
       return {

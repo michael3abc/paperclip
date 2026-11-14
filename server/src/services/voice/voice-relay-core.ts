@@ -309,18 +309,21 @@ export abstract class VoiceRelayCore {
 
   private async openUpstream(): Promise<VoiceUpstream> {
     const connection: { socket: VoiceUpstream | null; retired: boolean; ready: boolean } = { socket: null, retired: false, ready: false };
+    /** Frames that arrive before the factory resolves (OpenAI sends session.created right after the upgrade). */
+    const early: string[] = [];
     const setupDone = new Promise<void>((resolve, reject) => {
       // end() aborts a setup in flight so the caller never waits for the timeout.
       this.setupAborts.add(reject);
       const handlers: VoiceUpstreamHandlers = {
         onMessage: (json) => {
           if (connection.retired || this.closed) return;
+          if (!connection.socket) { if (early.length < 32) early.push(json); return; }
           let message: Record<string, any>;
           try { message = JSON.parse(json); } catch { return; }
           if (!message || typeof message !== "object") return;
           // A malformed gateway frame must never throw into the socket listener.
           try {
-            if (!connection.ready && connection.socket) {
+            if (!connection.ready) {
               const state = this.handshake(message, connection.socket);
               if (state === "failed") { reject(new Error("upstream session setup was rejected")); return; }
               if (state === "ready") {
@@ -343,6 +346,7 @@ export abstract class VoiceRelayCore {
         // A connection that resolves after its timeout or after the call ended is closed at once.
         if (connection.retired || this.closed) { try { socket.close(); } catch { /* closed */ } return; }
         this.onUpstreamOpen(socket);
+        for (const json of early.splice(0)) handlers.onMessage(json);
       }, reject);
     });
     try {

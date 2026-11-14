@@ -10,6 +10,6 @@ let convert: ((text: string) => string) | null = null;
 
 export function toTaiwanTraditional(text: string): string {
   if (!text) return text;
-  convert ??= Converter({ from: "cn", to: "twp" });
-  try { return convert(text); } catch { return text; }
+  const run = convert ??= Converter({ from: "cn", to: "twp" });
+  try { return run(text); } catch { return text; }
 }
