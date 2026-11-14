@@ -25,6 +25,20 @@ import { localVoiceCommand, parseLocalVoiceToolMessage } from "./local-voice-pro
 import { LOCAL_PROVIDER_SESSION_PREFIX, LOCAL_VOICE_CAPABILITIES, SPEKO_VOICE_CAPABILITIES } from "./voice-provider-port.js";
 import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT } from "./voice-prompts.js";
 
+/**
+ * Instructions for the assigned agent on a local voice task (HOM-311, Owner decision 4):
+ * replies carry a short spoken summary that the relay reads aloud.
+ */
+export const LOCAL_VOICE_TASK_DESCRIPTION = [
+  "這是 Owner 透過 Paperclip 語音介面建立的語音對話任務（voice_task）。Owner 在語音中確認的需求會以留言送到這裡。",
+  "",
+  "回覆方式：",
+  "- 照常在這張任務留言，寫完整內容（表格、指令、連結都可以）。",
+  "- 每則回覆的最後一行另外加上 `語音摘要：<兩到三句口語摘要>`。語音介面只會唸這一行，完整內容留在文字面板。",
+  "- 語音摘要用台灣繁體中文口語，不要放程式碼、路徑或表格。",
+  "- 需要 Owner 簽核、部署或改設定時，在摘要中請 Owner 到 Paperclip 畫面上處理；語音不能代替這些確認。",
+].join("\n");
+
 const liveStates = ["reserved", "creating", "creation_unknown", "connecting", "active", "ending"] as const;
 const terminalStates = ["ended", "failed", "expired"] as const;
 
@@ -82,7 +96,7 @@ export function voiceSessionService(db: Db, options: {
       }
       const task = issueId
         ? await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId))).then((rows) => rows[0])
-        : await issueSvc.create(input.companyId, { title: "Voice conversation", status: "todo", priority: "medium", assigneeAgentId: endpoint.assignedAgentId, createdByUserId: input.caller.id, responsibleUserId: input.caller.id, originKind: "chat_channel", originId: endpoint.id, idempotencyKey: `voice:${input.caller.id}:${input.idempotencyKey}` }, tx);
+        : await issueSvc.create(input.companyId, { ...(threadProvider === "local_voice" ? { title: "語音對話", description: LOCAL_VOICE_TASK_DESCRIPTION } : { title: "Voice conversation" }), status: "todo", priority: "medium", assigneeAgentId: endpoint.assignedAgentId, createdByUserId: input.caller.id, responsibleUserId: input.caller.id, originKind: "chat_channel", originId: endpoint.id, idempotencyKey: `voice:${input.caller.id}:${input.idempotencyKey}` }, tx);
       if (!task) throw notFound("Task not found");
       if (task.assigneeAgentId !== endpoint.assignedAgentId) throw conflict("Choose a voice connection for this task's assigned agent");
       const existing = await tx.select().from(chatConversations).where(and(eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, task.id))).limit(1).then((rows) => rows[0]);
@@ -243,7 +257,7 @@ export function voiceSessionService(db: Db, options: {
     if (command.command.tool === "answer_question") options.onQuestionAnswered(command.command.args.interactionId);
     return { toolCallId: message.toolCallId, result };
   }
-  async function confirmLocal(companyId: string, sessionId: string, caller: VoiceCaller, input: { draftId: string; revision: number; text: string }) {
+  async function confirmLocal(companyId: string, sessionId: string, caller: VoiceCaller, input: { draftId: string; revision: number; text: string; via?: "spoken_relay" | "ui_relay" }) {
     await localEnabled();
     await localOwnedSession(companyId, sessionId, caller);
     return store.confirmDraft({ companyId, sessionId, caller, ...input });
@@ -397,7 +411,7 @@ export function voiceSessionService(db: Db, options: {
     local_voice: { provider: "local_voice" as const, capabilities: LOCAL_VOICE_CAPABILITIES, endpointFor: (companyId: string, endpointId: string) => endpointFor(companyId, endpointId, ["local_voice"]), start: startLocal, tool: localTool, end, reconcile: reconcileLocal, report: async () => 0 },
   };
   return { start, inspect, end, tool, reconcile, registerReportWork, registerRecoveryWork, registerReplyWork, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools,
-    ports, local: { start: startLocal, tool: localTool, confirm: confirmLocal, operation: localOperation, end, reconcile: reconcileLocal } };
+    ports, local: { start: startLocal, tool: localTool, confirm: confirmLocal, operation: localOperation, end, reconcile: reconcileLocal, assertEnabled: localEnabled } };
 
 }
 export type VoiceSessionService = ReturnType<typeof voiceSessionService>;

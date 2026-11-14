@@ -587,6 +587,8 @@ export async function createApp(
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
   app.use(voiceWebhookRoutes(db, chatChannels.voice));
+  // The local voice media relay (index.ts) authorizes upgrades with this same service.
+  app.locals.voiceSessions = chatChannels.voice;
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,

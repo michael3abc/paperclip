@@ -135,6 +135,8 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { setupLocalVoiceRelayWebSocketServer } from "./realtime/local-voice-relay-ws.js";
+import { loadLocalVoiceGatewayConfig } from "./services/voice/local-voice-gateway-config.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
@@ -1045,6 +1047,13 @@ async function startServerWithDatabaseTeardown(
   try {
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
+  });
+  // Must precede the live-events listener, which destroys upgrades it does not own.
+  const localVoiceRelay = setupLocalVoiceRelayWebSocketServer(server, db as any, {
+    deploymentMode: config.deploymentMode,
+    resolveSessionFromHeaders,
+    voice: () => (app.locals.voiceSessions ?? null) as import("./services/voice/voice-session-service.js").VoiceSessionService | null,
+    config: loadLocalVoiceGatewayConfig(),
   });
   const liveEventsWebSocketServer = setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
@@ -1988,6 +1997,7 @@ async function startServerWithDatabaseTeardown(
     exitProcess: boolean,
   ) => {
     setStartupRecoveryPhase("draining");
+    await localVoiceRelay.close().catch((err) => logger.warn({ err }, "local voice relay shutdown failed"));
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
     // Finish admitted HTTP requests while their services, workers and database
