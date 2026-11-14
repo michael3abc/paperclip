@@ -1,8 +1,9 @@
-# Local voice (phase 1: control plane)
+# Local voice
 
-Status: experimental, default-off. Phase 1 contains only the control-plane
-slice. It has no microphone, ASR, TTS, media relay, local voice gateway, call
-UI, owner-Chat binding or Console entry. Those belong to later slices.
+Status: experimental, default-off. Phase 1 added the control plane below.
+The HOM-311 slice adds a same-origin browser call: endpoint provisioning, a
+media relay to Gemini Live, the `/voice` page and spoken confirmation of
+low-risk comments. See "Browser calls (Gemini Live relay)" at the end.
 
 Local voice is a second voice provider (`local_voice`) beside Speko. It reuses
 the existing voice session, delivery, publication and reply machinery. It adds
@@ -333,3 +334,132 @@ A later slice also needs these:
 | `server/src/__tests__/local-voice.integration.test.ts` | Embedded Postgres, one test per acceptance row |
 | `server/src/__tests__/local-voice-protocol.test.ts` | Parser, canonical text, capabilities, Speko compatibility |
 | `server/src/__tests__/local-voice-routes.test.ts` | Same-origin routes on a loopback server with an ephemeral port |
+
+## Browser calls (Gemini Live relay, HOM-311)
+
+Owner decisions (HOM-265, 2026-11-14): voice_task mode first; a low-risk
+comment may be sent after the draft is read back and the Owner says the
+confirmation phrase 「確認送出」; approvals, deployment and settings changes
+still need the normal UI; the agent writes a separate spoken summary; calls
+warn at 10 minutes, end at 15, and the microphone pauses after 60 seconds
+without speech; only the same-origin web page, not the CC Pocket app.
+
+### Configuration
+
+The relay is off unless both variables are set in the server environment:
+
+| variable | meaning |
+| --- | --- |
+| `PAPERCLIP_LOCAL_VOICE_GATEWAY_URL` | realtime gateway base URL, `ws://` or `wss://`, no query (for example the LAN gateway `ws://192.168.66.11:8792`) |
+| `PAPERCLIP_LOCAL_VOICE_GATEWAY_KEY_FILE` | file that holds the gateway client key; read at connect time, never logged or sent to the browser |
+| `PAPERCLIP_LOCAL_VOICE_MODEL` | optional, default `gemini-3.8-live` |
+| `PAPERCLIP_LOCAL_VOICE_NAME` | optional prebuilt voice, default `Kore` |
+
+Both experimental flags (`enableChatConnectors`, `enableLocalVoice`) must also
+be on. `GET /api/companies/{companyId}/local-voice/status` reports
+`{enabled, relayConfigured}`.
+
+### Endpoint provisioning
+
+`POST /api/companies/{companyId}/local-voice/endpoints {"agentId"}` creates or
+returns the one local voice endpoint for that agent (tool application,
+`transport: "voice"` connection and `chat_endpoints` row, setup complete). It
+needs a board session, a trusted origin, both flags and voice caller authority
+(active non-viewer member, instance admin or local board). The generic chat
+endpoint create contract still rejects `local_voice`.
+
+A start without `issueId` reuses the caller's latest open voice task on that
+endpoint or creates a new task titled 「語音對話」. Its description tells the
+assigned agent to end every reply with one line `語音摘要：<two or three spoken
+sentences>`.
+
+### Relay WebSocket
+
+`GET /api/companies/{companyId}/voice-sessions/{sessionId}/ws` (upgrade).
+The upgrade listener is registered before the live-events listener. It
+rejects, before upgrading:
+
+- an Origin outside the board mutation guard's same-origin set (Host,
+  `PAPERCLIP_PUBLIC_URL`, local dev origins; `X-Forwarded-Host` is not trusted);
+- any `Authorization` header or query string;
+- a missing caller session cookie or a caller who is not a member/admin;
+- subprotocols other than exactly `paperclip.voice-relay.v1` plus one
+  `pcvt.<transportToken>`;
+- every condition `local-tools` checks (flags, session owner and authority,
+  live state, expiry, generation, endpoint, task access, token hash).
+
+Frames: binary browser→server is PCM16 mono 16 kHz microphone audio,
+binary server→browser is PCM16 mono 24 kHz model audio, text frames are the
+JSON `LocalVoiceRelayClientMessage` / `LocalVoiceRelayServerEvent` unions in
+`packages/shared/src/types/voice-sessions.ts`. At most 2 relays per caller and
+16 per server. Closing the browser socket ends the voice session.
+
+### Model session
+
+The relay sends a flat Live setup: audio responses, voice, zh-TW system
+instruction, input and output transcription, `sessionResumption` and
+`contextWindowCompression.slidingWindow`. Compass/Vertex rejects
+`behavior: NON_BLOCKING`, so every tool returns immediately and later results
+are pushed as new `clientContent` turns once the model finishes speaking.
+
+| tool | effect |
+| --- | --- |
+| `query_task_status({identifier?})` | read-only: the voice task, its latest agent reply and the agent's open tasks, or one readable task by identifier |
+| `prepare_request({text})` | creates or revises the draft (`draftId`, `revision`, fresh `operationId`) and shows it in the browser |
+| `submit_request({draftId})` | sends the current draft as a comment through the existing confirmation and operation ledger |
+| `get_updates()` | agent replies on the voice task since the call started |
+
+`submit_request` succeeds only when the Owner pressed "Confirm and send" for
+that revision, or when the caller's own transcribed speech contains
+「確認送出」 after the model finished the turn that read the draft back
+(traditional and simplified transcription are normalized; 「不要確認送出」
+and similar refusals do not count; text notices injected by Paperclip are
+never transcription). The relay then creates the confirmation receipt in the
+caller's authenticated session (`voice.confirmation.created` audit
+`details.via = "spoken_relay"`) and submits with the draft's operation id, so
+a retry after an unknown outcome is idempotent. No other write exists by voice.
+
+GoAway and unexpected upstream closes reconnect with the latest resumption
+handle (up to four attempts; without a handle the browser is told that context
+may be lost). Microphone audio is buffered briefly during the switch. A 403 or
+404 while reading replies (revoked access, ended or expired session) ends the
+call.
+
+Agent replies are found through company live events for the voice task plus
+a 30-second safety check. The browser gets every new reply in full; the model
+speaks the newest reply's `語音摘要：` line (or a short plain-text fallback),
+once per distinct summary.
+
+### Browser page
+
+`/{companyPrefix}/voice` (sidebar "More" → Voice, pinnable) picks an agent
+(the person's primary agent by default; `?agentId=` and `?issueId=` preselect)
+and runs the call: AudioWorklet capture (context rate → 16 kHz PCM16 frames of
+40 ms with echo cancellation, noise suppression and AGC) and playback
+(24 kHz → context rate, flushed on barge-in), captions, the draft card,
+replies, a typed fallback, a 10-minute warning and the 60-second silence
+pause (model playback counts as activity). Microphone access needs a secure
+context, so use the HTTPS address. A start that finds another live call on
+the same voice task continues on a new voice task instead of preempting it.
+
+### Usage
+
+The relay logs `voice_relay_ended` with the call's summed per-turn
+`usageMetadata` (Live reports usage per turn, and each turn's prompt includes
+the context). Ledger metering of gateway realtime sessions and a rate-card
+entry for `gemini-3.8-live` are a separate gateway change.
+
+### Tests
+
+| file | coverage |
+| --- | --- |
+| `server/src/__tests__/local-voice-relay.test.ts` | relay setup, audio, spoken and UI confirmation, refusals, resumption, limits, reply announcements, summary helpers |
+| `server/src/__tests__/local-voice-relay.integration.test.ts` | embedded Postgres, loopback upgrade with a fake gateway: provisioning, rejected upgrades, spoken confirmation into one delivery, replies, end on disconnect |
+| `ui/src/lib/local-voice/local-voice-call.test.ts` | browser call controller |
+| `ui/src/lib/local-voice/worklets.test.ts` | capture and playback resampling, flush |
+
+### Rollback
+
+Unset the two gateway variables (the relay then rejects upgrades with 503) or
+turn off `enableLocalVoice`. Endpoints, sessions and voice tasks are ordinary
+additive rows and need no migration.
