@@ -53,6 +53,18 @@ describe("Owner-issued layered decision authority", () => {
     expect((await approvalRecords(db).getById(old.id))?.delegation).toBeNull();
     await expect(approvalService(db).approve(old.id, { agentId: momoId, runId, revision: randomUUID() }, "Do not migrate history")).rejects.toThrow();
   });
+  it("without a designated PM routes worker requests to the project's lead main and keeps main questions human (Owner 2026-11-14)", async () => {
+    const mainId = randomUUID();
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, pmId));
+    await db.insert(agents).values({ id: mainId, companyId, name: "Main", adapterType: "ccpocket_bridge",
+      adapterConfig: { role: "main", projectId } });
+    await db.update(projects).set({ leadAgentId: mainId }).where(eq(projects.id, projectId));
+    await activate();
+    expect(await route(workerId)).toMatchObject({ level: "pm", recipientAgentId: mainId, delegateAgentId: momoId });
+    expect(await route(mainId)).toBeNull();
+    await db.update(projects).set({ leadAgentId: null }).where(eq(projects.id, projectId));
+    expect(await route(workerId)).toMatchObject({ level: "delegate", recipientAgentId: momoId });
+  });
   it("requires the human Owner and CAS when changing delegation", async () => {
     await expect(saveDecisionDelegation(db, { companyId, ownerUserId: momoId, agentId: momoId,
       baseRevision: null, enabled: true, allowSelfApproval: true, scopes: ["general_approvals"] })).rejects.toThrow();

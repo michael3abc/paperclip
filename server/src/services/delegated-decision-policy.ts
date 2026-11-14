@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, forbidden } from "../errors.js";
 import { pmCoordinationScope } from "./pm-coordination-policy.js";
+import { mainAgentProjectId } from "./main-agent-workers.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 
 export type ActiveDecisionDelegation = {
@@ -210,6 +211,9 @@ export async function routeDelegatedDecision(db: Db, input: {
   const grant = await readDecisionDelegation(db, input.companyId, { lock: true });
   if (!grant || input.createdAt.getTime() < Date.parse(grant.scope.activatedAt)
     || !requiredScopes.every(scope => grant.scope.scopes.includes(scope))) return null;
+  // Owner 2026-11-14: company delegation covers worker requests. A project main's
+  // own questions and anything asked inside an Agent Chat stay with the Owner.
+  if ((requester && mainAgentProjectId(requester)) || issue?.conversationAgentId) return null;
   const context: DelegatedDecisionContext = {
     version: 1, grantId: grant.id, grantRevision: grant.scope.revision, ownerUserId: grant.ownerUserId,
     delegateAgentId: grant.agentId, level: "delegate", recipientAgentId: grant.agentId,
@@ -222,9 +226,13 @@ export async function routeDelegatedDecision(db: Db, input: {
   if (!input.requiresDelegate && input.category !== "approval" && requester && !pmCoordinationScope(requester) && requester.id !== grant.agentId && issue?.projectId) {
     const candidates = (await db.select().from(agents).where(eq(agents.companyId, input.companyId)))
       .filter(agent => pmCoordinationScope(agent)?.projectId === issue.projectId);
-    if (candidates.length !== 1) throw conflict("The task project must have exactly one designated PM");
-    context.level = "pm";
-    context.recipientAgentId = candidates[0]!.id;
+    // Without exactly one designated PM, the project's lead (main) agent decides;
+    // without a lead, the company delegate keeps it.
+    const recipient = candidates.length === 1 ? candidates[0]!.id : await projectLeadAgentId(db, input.companyId, issue.projectId);
+    if (recipient && recipient !== requester.id) {
+      context.level = "pm";
+      context.recipientAgentId = recipient;
+    }
   }
   return context;
 }
@@ -243,7 +251,9 @@ export async function assertDelegatedDecisionActor(db: Db, input: {
   if (!run || run.status !== "running") throw forbidden("A current running agent turn is required to decide");
   const [agent] = await db.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))).limit(1).for("share");
   if (!agent || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw forbidden("The deciding agent is unavailable");
-  if (context.level === "pm" && pmCoordinationScope(agent)?.projectId !== context.projectId) throw forbidden("PM decisions are limited to the assigned project");
+  if (context.level === "pm" && pmCoordinationScope(agent)?.projectId !== context.projectId
+    && !(context.projectId && await projectLeadAgentId(db, input.companyId, context.projectId) === agent.id))
+    throw forbidden("PM decisions are limited to the assigned project");
   return grant;
 }
 
@@ -253,4 +263,10 @@ export function nextDelegatedDecision(context: DelegatedDecisionContext, humanRe
   return { ...context, revision: randomUUID(), level: human ? "human" : "delegate",
     recipientAgentId: human ? null : context.delegateAgentId,
     reservedReasons: human ? [...new Set([...context.reservedReasons, humanReason ?? "uncertain"])] : context.reservedReasons };
+}
+
+async function projectLeadAgentId(db: Db, companyId: string, projectId: string): Promise<string | null> {
+  const [project] = await db.select({ lead: projects.leadAgentId }).from(projects)
+    .where(and(eq(projects.companyId, companyId), eq(projects.id, projectId))).limit(1);
+  return project?.lead ?? null;
 }
