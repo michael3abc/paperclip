@@ -196,19 +196,27 @@ export async function routeDelegatedDecision(db: Db, input: {
   // decision authority. Agent Chat requests and a main's own questions stay with the Owner.
   const requesterMainProjectId = requester ? mainAgentProjectId(requester) : null;
   if (issue?.conversationAgentId || (requesterMainProjectId && input.category !== "approval")) return null;
-  // Owner 2026-11-14 「為啥要給 michael ? 直接給 mian 自己處理」: the relevant main decides and
-  // nothing routes to the company delegate. A main approves its own requests; any other
-  // request goes to the project's lead, else the task's own main, else the Owner.
+  // Owner 2026-11-14 「為啥要給 michael ? 直接給 mian 自己處理」: the relevant main decides.
+  // A main approves its own requests; any other request goes to the project's lead, else
+  // the task's own main.
   const recipient = requester && requesterMainProjectId ? { agentId: requester.id, projectId: requesterMainProjectId }
     : await taskMainRecipient(db, input.companyId, issue ?? null, requester?.id ?? null);
-  if (!recipient) return null;
-  const reservedReasons = input.reservedReasons.filter(reason => reason === "explicit_human");
-  return {
-    version: 1, grantId: grant.id, grantRevision: grant.scope.revision, ownerUserId: grant.ownerUserId,
-    delegateAgentId: grant.agentId, level: reservedReasons.length ? "human" : "pm",
-    recipientAgentId: reservedReasons.length ? null : recipient.agentId, projectId: recipient.projectId,
-    sourceRunId: input.sourceRunId, sourceFingerprint: input.fingerprint, revision: randomUUID(), reservedReasons, requiredScopes,
+  const base = {
+    version: 1 as const, grantId: grant.id, grantRevision: grant.scope.revision, ownerUserId: grant.ownerUserId,
+    delegateAgentId: grant.agentId, sourceRunId: input.sourceRunId, sourceFingerprint: input.fingerprint,
+    revision: randomUUID(), requiredScopes,
   };
+  if (!recipient) {
+    // Owner 2026-11-14 「「找不到 main 的卡片」或「預算超額審批」改由 momo 決定」: a request with no
+    // main (including budget-threshold approvals, which have no requester or task) goes to
+    // the company delegate; any reserved reason keeps it with the Owner.
+    const human = input.reservedReasons.length > 0 || (requester?.id === grant.agentId && !grant.scope.allowSelfApproval);
+    return { ...base, level: human ? "human" : "delegate", recipientAgentId: human ? null : grant.agentId,
+      projectId: issue?.projectId ?? null, reservedReasons: input.reservedReasons };
+  }
+  const reservedReasons = input.reservedReasons.filter(reason => reason === "explicit_human");
+  return { ...base, level: reservedReasons.length ? "human" : "pm",
+    recipientAgentId: reservedReasons.length ? null : recipient.agentId, projectId: recipient.projectId, reservedReasons };
 }
 
 /** The project's lead (unless it asked), else the main that created the task directly or from its run. */
@@ -251,7 +259,7 @@ export async function assertDelegatedDecisionActor(db: Db, input: {
   return grant;
 }
 
-/** Escalation goes to the human Owner, never the company delegate (Owner 2026-11-14). */
+/** Escalation goes to the human Owner from either level (Owner 2026-11-14). */
 export function nextDelegatedDecision(context: DelegatedDecisionContext, humanReason?: HumanReservedDecisionReason): DelegatedDecisionContext {
   if (context.level === "human") throw conflict("The request is already waiting for the human Owner");
   return { ...context, revision: randomUUID(), level: "human", recipientAgentId: null,
