@@ -2173,6 +2173,24 @@ describe("review round circuit breaker", () => {
     ).toThrow("Only the escalated reviewer can advance the current execution stage");
   });
 
+  it("lets the project's lead main agent decide during the hold even when it is not a configured reviewer", () => {
+    const held = reviewPendingIssue(
+      { assigneeAgentId: null, assigneeUserId: boardUserId },
+      { currentParticipant: { type: "user", userId: boardUserId }, changesRequestedCount: 3 },
+    );
+    const leadAgentId = "lead-main-agent";
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: held, policy, requestedStatus: "in_progress", requestedAssigneePatch: {},
+      actor: { agentId: leadAgentId }, commentBody: "Main sends it back",
+    })).toThrow("Only the escalated reviewer can advance the current execution stage");
+    const changes = applyIssueExecutionPolicyTransition({
+      issue: held, policy, requestedStatus: "in_progress", requestedAssigneePatch: {},
+      actor: { agentId: leadAgentId }, actorIsProjectLead: true, commentBody: "Main sends it back",
+    });
+    expect(changes.patch.assigneeAgentId).toBe(coderAgentId);
+    expect(changes.patch.executionState).toMatchObject({ status: "changes_requested", changesRequestedCount: 0 });
+  });
+
   it("lets the configured reviewer agent decide during the hold and resets the rounds (Owner 2026-11-14)", () => {
     const held = reviewPendingIssue(
       { assigneeAgentId: null, assigneeUserId: boardUserId },

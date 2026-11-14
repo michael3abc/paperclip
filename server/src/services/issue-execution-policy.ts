@@ -50,6 +50,8 @@ type TransitionInput = {
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
   allowBoardOverride?: boolean;
+  /** The acting agent leads the issue's project (its main agent). */
+  actorIsProjectLead?: boolean;
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
@@ -749,10 +751,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
-    // Liveness-first (Owner 2026-11-14 「給他權限」): the stage's configured
-    // reviewer agent (the project main/PM) may still decide an escalated review.
+    // Liveness-first (Owner 2026-11-14 「給他權限」, 「把 main agent 的權限都拉高」):
+    // the stage's configured reviewer agent or the project's lead (main) agent
+    // may still decide an escalated review.
     // Its decision counts like the Owner's: it resets the round counter.
-    const reviewerOverride = escalatedHold && actor?.type === "agent" && stageHasParticipant(activeStage, actor);
+    const reviewerOverride = escalatedHold && actor?.type === "agent"
+      && (stageHasParticipant(activeStage, actor) || input.actorIsProjectLead === true);
     const decidingParticipant = reviewerOverride ? actor! : currentParticipant;
     if (escalatedHold && !reviewerOverride && !principalsEqual(currentParticipant, actor)) {
       // An empty patch would not override the caller's own requested fields,
