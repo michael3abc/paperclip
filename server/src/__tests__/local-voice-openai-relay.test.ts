@@ -16,7 +16,7 @@ function harness(options: { replies?: VoiceAgentReply[][]; transcriptGraceMs?: n
   let clock = 1_000_000;
   const port = {
     status: vi.fn(async (identifier?: string) => ({ status: "ok", identifier: identifier ?? null })),
-    submit: vi.fn(async (draft: { operationId: string }) => ({ status: "accepted" as const, operationId: draft.operationId })),
+    submit: vi.fn(async (draft: { operationId: string }, _via: "spoken" | "ui") => ({ status: "accepted" as const, operationId: draft.operationId })),
     newReplies: vi.fn(async () => replyBatches.shift() ?? []),
     watch: vi.fn((onChange: () => void) => { watchers.push(onChange); return () => undefined; }),
     end: vi.fn(async () => undefined),
@@ -195,7 +195,7 @@ describe("OpenAIRealtimeRelay", () => {
     expect(h.sent("response.cancel")).toHaveLength(1);
     expect(h.sent("conversation.item.truncate")[0]).toMatchObject({ item_id: "a1", audio_end_ms: 50 });
     h.fromModel({ type: "response.done", response: { id: "r1", status: "cancelled" } });
-    expect(h.relay.snapshot.activeResponse).toBe(false);
+    expect((h.relay.snapshot as Record<string, unknown>).activeResponse).toBe(false);
   });
 
   it("speaks an agent voice summary as a user item once no response or tool call is pending", async () => {
@@ -249,7 +249,7 @@ describe("OpenAIRealtimeRelay", () => {
     release();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(h.upstreams.flatMap((u) => u.sent).some((m) => m.item?.call_id === "c1")).toBe(false);
-    expect(h.relay.snapshot.pendingToolCalls).toBe(0);
+    expect((h.relay.snapshot as Record<string, unknown>).pendingToolCalls).toBe(0);
   });
 
   it("sums response and transcription usage for the call log", async () => {
