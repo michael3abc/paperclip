@@ -21,6 +21,9 @@ export interface LocalVoiceGatewayConfig {
   voiceName: string;
 }
 
+/** OpenAI Realtime voices; a Gemini voice name (for example Kore) left from an older configuration is ignored. */
+const OPENAI_VOICES = new Set(["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"]);
+
 const DEFAULTS: Record<LocalVoiceEngine, { model: string; voiceName: string }> = {
   openai: { model: "gpt-realtime-1.5", voiceName: "marin" },
   gemini: { model: "gemini-3.8-live", voiceName: "Kore" },
@@ -42,8 +45,10 @@ export function loadLocalVoiceGatewayConfig(env: NodeJS.ProcessEnv = process.env
   else engine = configuredModel?.toLowerCase().startsWith("gemini") ? "gemini" : "openai";
   const model = configuredModel || DEFAULTS[engine].model;
   if (!/^[A-Za-z0-9._-]{1,100}$/.test(model)) return null;
-  const voiceName = env.PAPERCLIP_LOCAL_VOICE_NAME?.trim() || DEFAULTS[engine].voiceName;
+  let voiceName = env.PAPERCLIP_LOCAL_VOICE_NAME?.trim() || DEFAULTS[engine].voiceName;
   if (!/^[A-Za-z]{1,40}$/.test(voiceName)) return null;
+  if (engine === "openai" && !OPENAI_VOICES.has(voiceName.toLowerCase())) voiceName = DEFAULTS.openai.voiceName;
+  if (engine === "openai") voiceName = voiceName.toLowerCase();
   return { url: url.replace(/\/+$/, ""), keyFile, engine, model, voiceName };
 }
 

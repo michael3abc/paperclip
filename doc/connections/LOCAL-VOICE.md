@@ -356,7 +356,7 @@ The relay is off unless both variables are set in the server environment:
 | `PAPERCLIP_LOCAL_VOICE_GATEWAY_KEY_FILE` | file that holds the gateway client key; read at connect time, never logged or sent to the browser |
 | `PAPERCLIP_LOCAL_VOICE_ENGINE` | optional, `openai` (default) or `gemini`. Without it, a `PAPERCLIP_LOCAL_VOICE_MODEL` that starts with `gemini` selects Gemini; any other value is rejected (relay unconfigured) |
 | `PAPERCLIP_LOCAL_VOICE_MODEL` | optional, default `gpt-realtime-1.5` (openai) or `gemini-3.8-live` (gemini) |
-| `PAPERCLIP_LOCAL_VOICE_NAME` | optional voice, default `marin` (openai) or `Kore` (gemini) |
+| `PAPERCLIP_LOCAL_VOICE_NAME` | optional voice, default `marin` (openai) or `Kore` (gemini). For openai, a name outside the OpenAI voice list (for example a leftover `Kore`) falls back to `marin` |
 
 Both engines use the same gateway URL and key: the relay connects to
 `{url}/v1/realtime?model={model}`. The LAN gateway accepts the OpenAI Realtime
@@ -428,23 +428,34 @@ with the configured voice. `session.updated` makes the call ready; an
 | `input_audio_buffer.append` | every browser microphone frame; `input_audio_buffer.clear` when the microphone pauses |
 | `response.output_audio.delta` | forwarded to the browser; the relay estimates where playback of each audio item starts |
 | `response.output_audio_transcript.delta` | model caption, converted to Taiwan Traditional; also the read-back text |
-| `input_audio_buffer.speech_started` | starts a caller utterance (its confirmation eligibility is fixed here); during model playback it is a barge-in: `response.cancel` when a response is active, `conversation.item.truncate` at the estimated played position, and `interrupted` to the browser |
+| `input_audio_buffer.speech_started` | starts a caller utterance; during model playback it is a barge-in: `response.cancel` when a response is active (late audio and captions of that response are dropped), `conversation.item.truncate` at the estimated played position, and `interrupted` to the browser |
 | `conversation.item.input_audio_transcription.completed` | caller caption and the text of that utterance for the phrase check, converted with OpenCC `cn → twp` (`opencc-js`) |
 | `response.function_call_arguments.done` | runs the tool; the result goes back as a `function_call_output` item, then one `response.create` once no response is active and no other tool call is pending |
-| notices, agent voice summaries, typed text | a user `conversation.item.create` plus `response.create` when the model is idle |
+| notices, agent voice summaries, typed text | a user `conversation.item.create` plus `response.create`; notices wait until no response or tool call is pending and the browser reports that playback drained |
 | `response.done` | ends the model turn (`completed` counts for the read-back check), adds its `usage` to the call totals |
 
-The transcript of a caller utterance often arrives after the model already
-called `submit_request`; the relay waits up to 4 s for it before refusing.
-When the caller cuts off the read-back before 90% of its audio played, the
-draft counts as not read back.
+An OpenAI utterance can confirm only when its `audio_start_ms` is at or after
+the point in the session's input audio where the browser reported that
+playback drained (the `playback` message and the microphone frames share one
+ordered socket), no response was active and no model audio was due. Speech
+that began during the read-back therefore never confirms, even when VAD
+reports it after playback ended. The transcript often arrives after the model
+already called `submit_request`; the relay waits up to 4 s for it before
+refusing. When the caller starts speaking before 90% of the read-back's audio
+could have played, the draft counts as not read back. Captions and the draft
+are both converted with OpenCC before the read-back check, and only speech
+after `prepare_request` counts. A rejected `response.create` clears the
+pending response state, so notices are not stuck.
 
 OpenAI has no session resumption. After an unexpected close the relay opens a
 new session (up to four attempts) whose instructions add the last 16 caption
 lines (at most 2,400 characters) and the open draft (id, revision, text,
 whether it was read back, or that it was already sent). The browser gets
 `resumed` with `contextKept: true`. Tool results for the replaced session are
-dropped; the draft stays on the server.
+dropped; the draft stays on the server. For both engines, microphone audio
+buffered during a reconnect is not replayed while a read-back draft awaits
+confirmation, because it could hold the phrase spoken over (or echoed from)
+the read-back.
 
 #### Gemini Live (fallback)
 

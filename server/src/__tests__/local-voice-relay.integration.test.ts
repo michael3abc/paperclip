@@ -230,7 +230,7 @@ const GATEWAY_KEY = "test-gateway-key-not-a-secret";
       await vi.waitFor(() => expect(browser.audio[0]).toEqual(Buffer.from([7, 0])));
       browser.socket.send(JSON.stringify({ type: "playback", playing: false }));
       await new Promise((resolve) => setTimeout(resolve, 100));
-      send({ type: "input_audio_buffer.speech_started", item_id: "u1" });
+      send({ type: "input_audio_buffer.speech_started", item_id: "u1", audio_start_ms: 100 });
       send({ type: "response.created", response: { id: "r3" } });
       send({ type: "response.function_call_arguments.done", call_id: "s", name: "submit_request", arguments: JSON.stringify({ draftId: draft.draftId }) });
       send({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "确认送出" });

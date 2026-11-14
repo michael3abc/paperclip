@@ -408,7 +408,11 @@ export abstract class VoiceRelayCore {
         this.onReconnected();
         const kept = contextKept();
         this.browser.sendEvent({ type: "resumed", contextKept: kept });
-        for (const frame of this.bufferedAudio.splice(0)) this.sendAudio(frame);
+        // Audio held during the switch is judged only when the new session hears it, after the
+        // read-back stopped playing. While a read-back draft awaits confirmation it could carry a
+        // 「確認送出」 spoken over (or echoed from) the read-back, so it is dropped instead.
+        const frames = this.bufferedAudio.splice(0);
+        if (!(this.draft?.recited && this.draft.result === undefined)) for (const frame of frames) this.sendAudio(frame);
         if (!kept) this.queueNotice(`${NOTICE_PREFIX} 語音連線剛重新建立，先前的對話內容可能遺失。請用一句話請 Owner 繼續說。`);
         this.flushNotices();
         return;
@@ -435,7 +439,8 @@ export abstract class VoiceRelayCore {
   protected finishModelTurn(outcome: ModelTurnOutcome) {
     this.modelTurnActive = false;
     const draft = this.draft;
-    if (outcome.completed && draft && !draft.recited && draft.result === undefined && recitationCoverage(draft.text, this.turnOutput) >= RECITATION_COVERAGE) {
+    if (outcome.completed && draft && !draft.recited && draft.result === undefined
+      && recitationCoverage(this.recitationText(draft.text), this.recitationText(this.turnOutput)) >= RECITATION_COVERAGE) {
       draft.recited = true;
       draft.utterances = [];
       this.onRecited(draft);
@@ -445,6 +450,8 @@ export abstract class VoiceRelayCore {
   }
 
   protected onRecited(_draft: DraftState) { /* engine-specific */ }
+  /** Normalization applied to both the draft and the spoken output before the read-back check. */
+  protected recitationText(text: string) { return text; }
 
   /**
    * A caller utterance begins. Only one that starts after the read-back
@@ -475,13 +482,13 @@ export abstract class VoiceRelayCore {
     if (this.dropStaleToolResults && generation !== this.connectionGeneration) {
       // The call id belongs to a replaced upstream session; the draft state is kept server-side.
       this.log("voice_relay_tool_result_dropped", { engine: this.engine, tool: name });
-      this.onToolResultDropped();
+      this.onToolResultDropped({ id: call.id, name });
       return;
     }
     this.sendToolResult({ id: call.id, name }, response);
   }
 
-  protected onToolResultDropped() { /* engine-specific */ }
+  protected onToolResultDropped(_call: { id: unknown; name: string }) { /* engine-specific */ }
 
   private async runTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
     switch (name) {
@@ -513,6 +520,8 @@ export abstract class VoiceRelayCore {
     if (this.draft?.submitting) return { status: "busy", message: "上一版草稿正在送出，請等送出結果出來再修改" };
     const current = this.draft && !this.draft.result ? this.draft : null;
     this.beforeNewDraft();
+    // Only speech after this draft exists can count as its read-back.
+    this.turnOutput = "";
     this.draft = {
       draftId: current?.draftId ?? randomUUID(),
       revision: (current?.revision ?? 0) + 1,

@@ -43,7 +43,7 @@ export interface LocalVoiceCallSnapshot {
 
 /** Browser audio for one call. Created synchronously inside the user's click. */
 export interface VoiceAudioEngine {
-  start(handlers: { onFrame(pcm: ArrayBuffer, rms: number): void; onPlaying(playing: boolean): void }): Promise<void>;
+  start(handlers: { onFrame(pcm: ArrayBuffer, rms: number, rate?: number): void; onPlaying(playing: boolean): void }): Promise<void>;
   play(pcm: ArrayBuffer): void;
   flush(): void;
   /** Microphone frame rate the relay expects (sent in its `ready` event). */
@@ -102,6 +102,8 @@ export class LocalVoiceCall {
   private audio: VoiceAudioEngine | null = null;
   private session: { companyId: string; sessionId: string } | null = null;
   private lastActivityAt = 0;
+  /** Microphone rate the relay announced; frames made at another rate are dropped. */
+  private inputSampleRate: number | null = null;
   private silenceTimer: unknown = null;
   private nextTranscriptId = 1;
   private openTurn: { role: "user" | "model"; id: number } | null = null;
@@ -137,6 +139,7 @@ export class LocalVoiceCall {
     const audio = this.deps.createAudio();
     this.audio = audio;
     this.snapshot = { ...initialSnapshot(), phase: "starting", replies: [], transcript: [] };
+    this.inputSampleRate = null;
     this.update({});
     try {
       const endpoint = await this.deps.api.ensureEndpoint(input.companyId, input.agentId);
@@ -163,7 +166,7 @@ export class LocalVoiceCall {
       this.session = createdSession;
       this.update({ issue: { id: started.session.issueId, identifier: null }, agentName: endpoint.agentName });
       await audio.start({
-        onFrame: (pcm, rms) => this.onMicFrame(pcm, rms),
+        onFrame: (pcm, rms, rate) => this.onMicFrame(pcm, rms, rate),
         onPlaying: (playing) => {
           if (playing) this.lastActivityAt = this.deps.now();
           this.update({ modelSpeaking: playing });
@@ -191,10 +194,12 @@ export class LocalVoiceCall {
     }
   }
 
-  private onMicFrame(pcm: ArrayBuffer, rms: number) {
+  private onMicFrame(pcm: ArrayBuffer, rms: number, rate?: number) {
     const now = this.deps.now();
     if (rms >= SPEECH_RMS_THRESHOLD) this.lastActivityAt = now;
     if (this.snapshot.phase !== "live" || this.snapshot.mic !== "live") return;
+    // A frame captured before the rate switch would play at the wrong speed upstream.
+    if (rate !== undefined && this.inputSampleRate !== null && rate !== this.inputSampleRate) return;
     if (this.socket?.readyState === OPEN) this.socket.send(pcm);
   }
 
@@ -203,7 +208,8 @@ export class LocalVoiceCall {
       case "ready":
         this.lastActivityAt = this.deps.now();
         // Older relays did not announce a rate; they expected 16 kHz.
-        this.audio?.setInputSampleRate(event.inputSampleRate ?? 16_000);
+        this.inputSampleRate = event.inputSampleRate ?? 16_000;
+        this.audio?.setInputSampleRate(this.inputSampleRate);
         this.update({ phase: "live", issue: { id: event.issueId, identifier: event.issueIdentifier }, agentName: event.agentName,
           startedAt: this.deps.now(), maxSeconds: event.maxSeconds, warningSeconds: event.warningSeconds });
         void this.deps.wakeLock?.().then((lock) => { if (this.snapshot.phase === "live") this.wakeLock = lock; else void lock?.release(); }).catch(() => undefined);
@@ -379,7 +385,9 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
       player.connect(context.destination);
       capture = new AudioWorkletNode(context, "pc-mic-capture", { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1, channelCountMode: "explicit" });
       capture.port.postMessage({ type: "rate", rate: inputRate });
-      capture.port.onmessage = (event) => { if (event.data?.pcm) handlers.onFrame(event.data.pcm as ArrayBuffer, Number(event.data.rms) || 0); };
+      capture.port.onmessage = (event) => {
+        if (event.data?.pcm) handlers.onFrame(event.data.pcm as ArrayBuffer, Number(event.data.rms) || 0, typeof event.data.rate === "number" ? event.data.rate : undefined);
+      };
       source.connect(capture);
       if (context.state !== "running") await context.resume();
     },

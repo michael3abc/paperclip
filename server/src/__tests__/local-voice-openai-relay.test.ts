@@ -180,7 +180,7 @@ describe("OpenAIRealtimeRelay", () => {
     expect(cut.events.at(-1)).toEqual({ type: "interrupted" });
     expect(cut.relay.snapshot.draft?.recited).toBe(false);
     await cut.relay.handleBrowserMessage({ type: "playback", playing: false });
-    cut.fromModel({ type: "input_audio_buffer.speech_started", item_id: "u2" });
+    cut.fromModel({ type: "input_audio_buffer.speech_started", item_id: "u2", audio_start_ms: 5000 });
     cut.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "u2", transcript: "確認送出" });
     cut.toolCall("s1", "submit_request", { draftId: draft.draftId });
     expect(await cut.outputFor("s1")).toMatchObject({ status: "confirmation_required" });
@@ -230,7 +230,8 @@ describe("OpenAIRealtimeRelay", () => {
     expect(instructions).toContain("助理：草稿是：請 michael 檢查磁碟。");
     expect(instructions).toContain(prepared.draftId);
     expect(instructions).toContain("草稿已覆誦過");
-    expect(h.sent("input_audio_buffer.append", h.upstreams[1])).toHaveLength(1);
+    // The draft was read back, so audio held during the switch is dropped (it could carry a confirmation).
+    expect(h.sent("input_audio_buffer.append", h.upstreams[1])).toHaveLength(0);
     // Frames from the retired connection are ignored.
     first.handlers.onMessage(JSON.stringify({ type: "response.output_audio_transcript.delta", delta: "old" }));
     expect(h.events.some((e) => e.type === "transcript" && e.text === "old")).toBe(false);
@@ -266,6 +267,115 @@ describe("OpenAIRealtimeRelay", () => {
   });
 });
 
+describe("OpenAIRealtimeRelay review hardening", () => {
+  async function recitedDraft(h: Awaited<ReturnType<typeof started>>, text: string) {
+    h.toolCall("p1", "prepare_request", { text });
+    const prepared = await h.outputFor("p1");
+    h.speak("r2", `草稿是：${text}。`);
+    return prepared;
+  }
+
+  it("drops microphone audio buffered during a reconnect while a read-back awaits confirmation", async () => {
+    const h = await started();
+    await recitedDraft(h, "請 michael 重新部署");
+    h.current().handlers.onClose(1006, "gone");
+    await vi.waitFor(() => expect(h.upstreams).toHaveLength(2));
+    h.relay.handleBrowserAudio(Buffer.from([7, 0])); // could be 「確認送出」 over the read-back, or its echo
+    await h.ready(h.upstreams[1]);
+    await vi.waitFor(() => expect(h.events.some((e) => e.type === "resumed")).toBe(true));
+    expect(h.sent("input_audio_buffer.append", h.upstreams[1])).toHaveLength(0);
+  });
+
+  it("judges an utterance by when it began: speech that started before playback drained cannot confirm", async () => {
+    const h = await started();
+    const prepared = await recitedDraft(h, "請 michael 重新部署");
+    h.advance(1000);
+    for (let i = 0; i < 10; i++) h.relay.handleBrowserAudio(Buffer.alloc(4800)); // 1 s of microphone audio
+    await h.relay.handleBrowserMessage({ type: "playback", playing: false });
+    // VAD reports speech that began 300 ms before the browser drained playback.
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "u1", audio_start_ms: 700 });
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "確認送出" });
+    h.toolCall("s1", "submit_request", { draftId: prepared.draftId });
+    expect(await h.outputFor("s1")).toMatchObject({ status: "confirmation_required" });
+    // The model answers the refusal (no audio) before the caller speaks again.
+    h.fromModel({ type: "response.created", response: { id: "r4" } });
+    h.fromModel({ type: "response.done", response: { id: "r4", status: "completed" } });
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "u2", audio_start_ms: 1200 });
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "u2", transcript: "確認送出" });
+    h.toolCall("s2", "submit_request", { draftId: prepared.draftId });
+    expect(await h.outputFor("s2")).toMatchObject({ status: "accepted" });
+  });
+
+  it("holds notices until playback drains, and a cut-off read-back is unheard even after a notice played", async () => {
+    const reply: VoiceAgentReply = { commentId: "c1", body: "語音摘要：好了。", voiceSummary: "好了。", spoken: "好了。", createdAt: "x" };
+    const h = await started({ replies: [[reply]] });
+    await recitedDraft(h, "請 michael 檢查磁碟空間");
+    h.watchers[0]!();
+    await vi.waitFor(() => expect(h.events.some((e) => e.type === "agent_reply")).toBe(true));
+    expect(h.sent("conversation.item.create").filter((m) => m.item.type === "message")).toHaveLength(0); // read-back still playing
+    // A notice response replaces the current audio item; the caller then cuts in early.
+    h.speak("r3", "通知");
+    h.advance(300);
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "u1", audio_start_ms: 0 });
+    expect(h.relay.snapshot.draft?.recited).toBe(false);
+    await h.relay.handleBrowserMessage({ type: "playback", playing: false });
+    expect(h.sent("conversation.item.create").filter((m) => m.item.type === "message")).toHaveLength(1);
+  });
+
+  it("counts a read-back whose captions OpenCC rewrote, and only speech after the draft", async () => {
+    const h = await started();
+    h.fromModel({ type: "response.created", response: { id: "r0" } });
+    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "r0", delta: "請 michael 檢查軟件後台" });
+    h.fromModel({ type: "response.function_call_arguments.done", call_id: "p1", name: "prepare_request", arguments: JSON.stringify({ text: "請 michael 檢查軟件後台" }) });
+    await h.outputFor("p1");
+    h.fromModel({ type: "response.done", response: { id: "r0", status: "completed" } });
+    expect(h.relay.snapshot.draft?.recited).toBe(false); // spoken before the draft existed
+    h.speak("r2", "草稿：請 michael 檢查軟件後台。");
+    expect(h.relay.snapshot.draft?.recited).toBe(true);
+  });
+
+  it("recovers from a rejected response.create and drops late audio of a cancelled response", async () => {
+    const h = await started();
+    await h.relay.handleBrowserMessage({ type: "text", text: "你好" });
+    expect(h.sent("response.create")).toHaveLength(1);
+    expect((h.relay.snapshot as Record<string, unknown>).activeResponse).toBe(true);
+    h.fromModel({ type: "error", error: { code: "invalid_value" } });
+    expect((h.relay.snapshot as Record<string, unknown>).activeResponse).toBe(false);
+    expect(h.relay.snapshot.modelTurnActive).toBe(false);
+
+    h.fromModel({ type: "response.created", response: { id: "r9" } });
+    h.fromModel({ type: "response.output_audio.delta", response_id: "r9", item_id: "a9", delta: Buffer.alloc(480).toString("base64") });
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "u1", audio_start_ms: 0 });
+    const played = h.audio.length;
+    h.fromModel({ type: "response.output_audio.delta", response_id: "r9", item_id: "a9", delta: Buffer.alloc(480).toString("base64") });
+    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "r9", delta: "晚到" });
+    expect(h.audio).toHaveLength(played);
+    expect(h.events.some((e) => e.type === "transcript" && e.text === "晚到")).toBe(false);
+  });
+
+  it("keeps a new session's tool call pending when an old session's result is dropped", async () => {
+    let releaseOld!: () => void;
+    const h = harness();
+    h.port.status.mockImplementationOnce(() => new Promise((resolve) => { releaseOld = () => resolve({ status: "ok", identifier: null }); }));
+    const start = h.relay.start(); await h.ready(); await start;
+    h.fromModel({ type: "response.function_call_arguments.done", call_id: "old", name: "query_task_status", arguments: "{}" });
+    h.current().handlers.onClose(1006, "gone");
+    await vi.waitFor(() => expect(h.upstreams).toHaveLength(2));
+    await h.ready(h.upstreams[1]);
+    await vi.waitFor(() => expect(h.events.some((e) => e.type === "resumed")).toBe(true));
+    let releaseNew!: () => void;
+    h.port.status.mockImplementationOnce(() => new Promise((resolve) => { releaseNew = () => resolve({ status: "ok", identifier: null }); }));
+    h.fromModel({ type: "response.function_call_arguments.done", call_id: "new", name: "query_task_status", arguments: "{}" });
+    releaseOld();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect((h.relay.snapshot as Record<string, unknown>).pendingToolCalls).toBe(1);
+    expect(h.sent("response.create", h.upstreams[1])).toHaveLength(0);
+    releaseNew();
+    expect(await h.outputFor("new")).toMatchObject({ status: "ok" });
+    expect(h.sent("response.create", h.upstreams[1])).toHaveLength(1);
+  });
+});
+
 describe("local voice engine configuration", () => {
   const base = { PAPERCLIP_LOCAL_VOICE_GATEWAY_URL: "ws://192.168.66.11:8792/", PAPERCLIP_LOCAL_VOICE_GATEWAY_KEY_FILE: "/tmp/key" };
   it("defaults to OpenAI gpt-realtime-1.5 with the marin voice", () => {
@@ -276,6 +386,8 @@ describe("local voice engine configuration", () => {
     expect(loadLocalVoiceGatewayConfig({ ...base, PAPERCLIP_LOCAL_VOICE_MODEL: "gemini-3.8-live" })).toMatchObject({ engine: "gemini" });
     expect(loadLocalVoiceGatewayConfig({ ...base, PAPERCLIP_LOCAL_VOICE_ENGINE: "OpenAI", PAPERCLIP_LOCAL_VOICE_MODEL: "gpt-realtime-2" })).toMatchObject({ engine: "openai", model: "gpt-realtime-2" });
     expect(loadLocalVoiceGatewayConfig({ ...base, PAPERCLIP_LOCAL_VOICE_ENGINE: "whisper" })).toBeNull();
+    expect(loadLocalVoiceGatewayConfig({ ...base, PAPERCLIP_LOCAL_VOICE_NAME: "Kore" })).toMatchObject({ engine: "openai", voiceName: "marin" });
+    expect(loadLocalVoiceGatewayConfig({ ...base, PAPERCLIP_LOCAL_VOICE_NAME: "Cedar" })).toMatchObject({ voiceName: "cedar" });
   });
 });
 

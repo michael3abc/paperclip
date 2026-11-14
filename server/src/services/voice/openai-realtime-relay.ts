@@ -84,9 +84,15 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   protected readonly dropStaleToolResults = true;
   /** A response is being generated (created and not yet done). */
   private activeResponse = false;
+  private activeResponseId: string | null = null;
+  /** A `response.create` was sent and its `response.created` has not arrived. */
+  private awaitingCreated = false;
   /** A `response.create` is owed once no response is active. */
   private responseWanted = false;
-  private pendingToolCalls = 0;
+  /** Tool calls of the current session still being produced, by call id. */
+  private readonly pendingCalls = new Set<string>();
+  /** Response cut off by barge-in; its late audio and captions are dropped. */
+  private cancelledResponseId: string | null = null;
   /** function_call items by item id, for name lookup. */
   private readonly callNames = new Map<string, string>();
   /** Caller utterances by input item id. */
@@ -94,8 +100,12 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   private audioItem: AudioItem | null = null;
   /** Estimated wall time when the browser's playback queue drains. */
   private playbackEndsAt = 0;
-  /** Item id of the audio that completed the current draft's read-back. */
-  private recitationItem: { draftId: string; revision: number; itemId: string; totalBytes: number } | null = null;
+  /** Milliseconds of microphone audio appended to the current session's input buffer. */
+  private appendedInputMs = 0;
+  /** `appendedInputMs` when the browser last reported that playback drained (same ordered socket as the mic). */
+  private playbackStoppedAtInputMs = 0;
+  /** Playback window of the audio that completed the current draft's read-back. */
+  private recitationPlayback: { draftId: string; revision: number; startAt: number; durationMs: number } | null = null;
   private readonly history: { role: "Owner" | "助理"; text: string }[] = [];
   private usage: Usage = {
     responses: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, inputAudioTokens: 0, inputTextTokens: 0, cachedInputTokens: 0,
@@ -115,7 +125,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     }
     if (message.type === "session.updated") return "ready" as const;
     if (message.type === "error") {
-      this.log("voice_relay_session_error", { engine: this.engine, code: String(message.error?.code ?? message.error?.type ?? "unknown").slice(0, 80) });
+      this.log("voice_relay_session_error", { engine: this.engine, code: errorCode(message) });
       return "failed" as const;
     }
     return null;
@@ -165,12 +175,17 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
 
   protected onReconnected() {
     this.activeResponse = false;
+    this.activeResponseId = null;
+    this.awaitingCreated = false;
     this.responseWanted = false;
-    this.pendingToolCalls = 0;
+    this.pendingCalls.clear();
+    this.cancelledResponseId = null;
     this.callNames.clear();
     this.utterances.clear();
+    // Item ids belong to the old session; playback timing (recitationPlayback, playbackEndsAt) stays valid.
     this.audioItem = null;
-    this.recitationItem = null;
+    this.appendedInputMs = 0;
+    this.playbackStoppedAtInputMs = 0;
   }
 
   // ---- upstream events ------------------------------------------------------
@@ -179,6 +194,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     switch (message.type) {
       case "response.created":
         this.activeResponse = true;
+        this.awaitingCreated = false;
+        this.activeResponseId = typeof message.response?.id === "string" ? message.response.id : null;
         this.modelTurnActive = true;
         return;
       case "response.output_item.added": {
@@ -188,11 +205,12 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       }
       case "response.output_audio.delta":
       case "response.audio.delta":
+        if (this.isCancelled(message)) return;
         this.forwardAudio(message);
         return;
       case "response.output_audio_transcript.delta":
       case "response.audio_transcript.delta": {
-        if (typeof message.delta !== "string" || !message.delta) return;
+        if (this.isCancelled(message) || typeof message.delta !== "string" || !message.delta) return;
         const text = toTaiwanTraditional(message.delta);
         this.turnOutput += text;
         this.browser.sendEvent({ type: "transcript", role: "model", text });
@@ -211,17 +229,30 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
         this.onTranscription(message);
         return;
       case "conversation.item.input_audio_transcription.failed":
-        this.log("voice_relay_transcription_failed", { engine: this.engine, code: String(message.error?.code ?? "unknown").slice(0, 80) });
+        this.log("voice_relay_transcription_failed", { engine: this.engine, code: errorCode(message) });
         return;
       case "error": {
-        const code = String(message.error?.code ?? message.error?.type ?? "unknown").slice(0, 80);
-        if (code === "conversation_already_has_active_response") this.responseWanted = true;
+        const code = errorCode(message);
+        if (code === "conversation_already_has_active_response") {
+          // Another response (server VAD) is active; ask again when it is done.
+          this.responseWanted = true;
+        } else if (this.awaitingCreated) {
+          // A rejected response.create must not leave the call waiting for a response that never comes.
+          this.awaitingCreated = false;
+          this.activeResponse = false;
+          this.modelTurnActive = false;
+          this.flushNotices();
+        }
         if (!BENIGN_ERROR_CODES.has(code)) this.log("voice_relay_upstream_error", { engine: this.engine, code });
         return;
       }
       default:
         return;
     }
+  }
+
+  private isCancelled(message: Record<string, any>) {
+    return this.cancelledResponseId !== null && message.response_id === this.cancelledResponseId;
   }
 
   private forwardAudio(message: Record<string, any>) {
@@ -246,64 +277,73 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
 
   private onFunctionCall(message: Record<string, any>) {
     const callId = typeof message.call_id === "string" ? message.call_id : "";
-    if (!callId) return;
+    if (!callId || this.isCancelled(message)) return;
     const name = typeof message.name === "string" && message.name ? message.name : this.callNames.get(String(message.item_id ?? "")) ?? "";
     let args: unknown = {};
     try { args = typeof message.arguments === "string" && message.arguments.trim() ? JSON.parse(message.arguments) : {}; } catch { args = {}; }
-    this.pendingToolCalls += 1;
+    this.pendingCalls.add(callId);
     void this.runToolCall({ id: callId, name, args });
   }
 
   private onResponseDone(response: Record<string, any> | undefined) {
     this.activeResponse = false;
+    this.awaitingCreated = false;
+    this.activeResponseId = null;
     if (response && typeof response === "object") this.recordUsage(response.usage);
     const status = typeof response?.status === "string" ? response.status : "completed";
-    const completed = status === "completed";
     const draft = this.draft;
     const wasRecited = draft?.recited ?? false;
-    const audio = this.audioItem;
+    const audio = this.audioItem && this.audioItem.responseId === (typeof response?.id === "string" ? response.id : this.audioItem.responseId) ? this.audioItem : null;
     const output = this.turnOutput;
     if (output.trim()) this.remember("助理", output);
     this.browser.sendEvent({ type: "turn_complete" });
-    this.finishModelTurn({ completed });
-    if (draft && !wasRecited && draft.recited && audio) {
-      this.recitationItem = { draftId: draft.draftId, revision: draft.revision, itemId: audio.itemId, totalBytes: audio.sentBytes };
+    this.finishModelTurn({ completed: status === "completed" });
+    if (draft && !wasRecited && draft.recited) {
+      this.recitationPlayback = audio
+        ? { draftId: draft.draftId, revision: draft.revision, startAt: audio.playStartAt, durationMs: bytesToMs(audio.sentBytes) }
+        : null;
     }
     this.maybeCreateResponse();
   }
 
   /** Server VAD heard the caller start speaking: barge-in plus a new utterance. */
   private onSpeechStarted(message: Record<string, any>) {
-    const playing = this.browserPlaying || this.now() < this.playbackEndsAt;
-    if (this.activeResponse) this.sendUpstream({ type: "response.cancel" });
+    const now = this.now();
+    const playing = this.browserPlaying || now < this.playbackEndsAt;
+    if (this.activeResponse) {
+      this.cancelledResponseId = this.activeResponseId;
+      this.sendUpstream({ type: "response.cancel" });
+    }
     const audio = this.audioItem;
     if (audio && playing) {
-      const playedMs = Math.max(0, Math.min(bytesToMs(audio.sentBytes), this.now() - audio.playStartAt));
+      const playedMs = Math.max(0, Math.min(bytesToMs(audio.sentBytes), now - audio.playStartAt));
       if (audio.itemId) this.sendUpstream({ type: "conversation.item.truncate", item_id: audio.itemId, content_index: audio.contentIndex, audio_end_ms: Math.floor(playedMs) });
-      this.unhearRecitation(audio.itemId, playedMs);
     }
+    this.unhearRecitation(now);
     if (playing || this.activeResponse) {
       this.browser.sendEvent({ type: "interrupted" });
       this.browserPlaying = false;
       this.playbackEndsAt = 0;
       this.audioItem = null;
     }
-    // Eligibility is decided now, before playback state changes; text arrives later.
+    // Eligibility is decided from when the speech began, not when the event arrived:
+    // it must begin after the browser reported that playback drained.
     const utterance = this.beginUtterance();
-    if (playing) utterance.eligible = false;
+    const startMs = typeof message.audio_start_ms === "number" ? message.audio_start_ms : null;
+    if (playing || startMs === null || startMs < this.playbackStoppedAtInputMs) utterance.eligible = false;
     const itemId = typeof message.item_id === "string" ? message.item_id : null;
     if (itemId) this.utterances.set(itemId, utterance);
   }
 
-  /** A read-back the caller cut off early was not heard in full and cannot be confirmed. */
-  private unhearRecitation(itemId: string, playedMs: number) {
-    const recited = this.recitationItem;
+  /** A read-back the caller cut off before most of it played was not heard and cannot be confirmed. */
+  private unhearRecitation(now: number) {
+    const recited = this.recitationPlayback;
     const draft = this.draft;
-    if (!recited || !draft || recited.itemId !== itemId || recited.draftId !== draft.draftId || recited.revision !== draft.revision) return;
-    if (draft.result || playedMs >= bytesToMs(recited.totalBytes) * HEARD_SHARE) return;
+    if (!recited || !draft || recited.draftId !== draft.draftId || recited.revision !== draft.revision || draft.result) return;
+    if (now - recited.startAt >= recited.durationMs * HEARD_SHARE) return;
     draft.recited = false;
     draft.utterances = [];
-    this.recitationItem = null;
+    this.recitationPlayback = null;
   }
 
   private onTranscription(message: Record<string, any>) {
@@ -329,7 +369,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   // ---- client side ----------------------------------------------------------
 
   protected sendAudio(pcm: Buffer) {
-    this.sendUpstream({ type: "input_audio_buffer.append", audio: pcm.toString("base64") });
+    if (this.sendUpstream({ type: "input_audio_buffer.append", audio: pcm.toString("base64") })) this.appendedInputMs += bytesToMs(pcm.length);
   }
 
   protected sendUserTurn(text: string) {
@@ -346,29 +386,32 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   protected sendToolResult(call: { id: unknown; name: string }, response: Record<string, unknown>) {
-    this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1);
+    this.pendingCalls.delete(String(call.id));
     this.sendUpstream({ type: "conversation.item.create", item: { type: "function_call_output", call_id: String(call.id), output: JSON.stringify(response) } });
-    if (this.pendingToolCalls === 0) {
+    if (this.pendingCalls.size === 0) {
       this.responseWanted = true;
       this.maybeCreateResponse();
     }
   }
 
-  protected onToolResultDropped() {
-    this.pendingToolCalls = Math.max(0, this.pendingToolCalls - 1);
+  protected onToolResultDropped(call: { id: unknown; name: string }) {
+    // Only ids of the current session are tracked; a replaced session's id is already gone.
+    this.pendingCalls.delete(String(call.id));
   }
 
+  /** Notices wait for the model, pending tool results and the browser's playback. */
   protected engineBusy() {
-    return this.activeResponse || this.responseWanted || this.pendingToolCalls > 0;
+    return this.activeResponse || this.responseWanted || this.pendingCalls.size > 0 || this.browserPlaying;
   }
 
   /** One `response.create` at a time, and never while tool results are still being produced. */
   private maybeCreateResponse() {
-    if (this.responseWanted && !this.activeResponse && this.pendingToolCalls === 0 && !this.reconnecting) {
+    if (this.responseWanted && !this.activeResponse && this.pendingCalls.size === 0 && !this.reconnecting) {
       if (this.sendUpstream({ type: "response.create" })) {
         this.responseWanted = false;
-        // Optimistic until response.created/done; a rejected create sets responseWanted again.
+        // Optimistic until response.created; an error before it clears this again.
         this.activeResponse = true;
+        this.awaitingCreated = true;
         this.modelTurnActive = true;
       }
     }
@@ -376,11 +419,14 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   protected onBrowserPlayback(playing: boolean) {
-    if (!playing) this.playbackEndsAt = Math.min(this.playbackEndsAt, this.now());
+    if (playing) return;
+    this.playbackStoppedAtInputMs = this.appendedInputMs;
+    this.flushNotices();
   }
 
-  protected beforeNewDraft() { this.recitationItem = null; }
-  protected onRecited(_draft: DraftState) { /* recitation item is recorded in onResponseDone */ }
+  protected recitationText(text: string) { return toTaiwanTraditional(text); }
+  protected beforeNewDraft() { this.recitationPlayback = null; }
+  protected onRecited(_draft: DraftState) { /* playback window is recorded in onResponseDone */ }
 
   // ---- bookkeeping ----------------------------------------------------------
 
@@ -408,9 +454,11 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
 
   protected usageSnapshot() { return { ...this.usage }; }
   protected snapshotExtras() {
-    return { activeResponse: this.activeResponse, responseWanted: this.responseWanted, pendingToolCalls: this.pendingToolCalls, historyEntries: this.history.length };
+    return { activeResponse: this.activeResponse, responseWanted: this.responseWanted, pendingToolCalls: this.pendingCalls.size, historyEntries: this.history.length };
   }
 }
+
+function errorCode(message: Record<string, any>) { return String(message.error?.code ?? message.error?.type ?? "unknown").slice(0, 80); }
 
 /** PCM16 mono 24 kHz: 48 bytes per millisecond. */
 function bytesToMs(bytes: number) { return bytes / 48; }
