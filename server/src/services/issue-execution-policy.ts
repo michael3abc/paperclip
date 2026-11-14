@@ -749,7 +749,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
-    if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
+    // Liveness-first (Owner 2026-11-14 「給他權限」): the stage's configured
+    // reviewer agent (the project main/PM) may still decide an escalated review.
+    // Its decision counts like the Owner's: it resets the round counter.
+    const reviewerOverride = escalatedHold && actor?.type === "agent" && stageHasParticipant(activeStage, actor);
+    const decidingParticipant = reviewerOverride ? actor! : currentParticipant;
+    if (escalatedHold && !reviewerOverride && !principalsEqual(currentParticipant, actor)) {
       // An empty patch would not override the caller's own requested fields,
       // so a status or assignee change from a non-escalated actor must be
       // rejected outright — mirroring the "only the active participant can
@@ -808,7 +813,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       };
     }
 
-    if (principalsEqual(currentParticipant, actor)) {
+    if (principalsEqual(decidingParticipant, actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
@@ -888,7 +893,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         };
         // Human decisions reset the round counter: the cap exists to stop
         // unattended agent↔agent ping-pong, not to limit human review.
-        const actorIsHuman = actor?.type === "user";
+        const actorIsHuman = actor?.type === "user" || reviewerOverride;
         const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
         if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
           const escalationUserId = reviewEscalationUserId(input.issue);
