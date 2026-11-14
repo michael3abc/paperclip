@@ -381,6 +381,19 @@ Enable **Workspace files and commands** on the agent to expose `workspace_list`,
 Mailbox `follow_up` entries reference new comments on an accepted assignment. Read `get_task_history` and incorporate them at a safe boundary. This supplies new input without claiming OpenAI steering support. `paperclip_dot_tasks` pages by the last task ID. Each assignment allows up to 4,000 broker operations; lower domain-specific limits still apply. A fenced assignment's control acknowledgement remains available at that limit. `hire_agent` creates a distinct unpaired Paperclip Dot teammate; the operator still pairs a separate OpenAI Dot. No existing binding or workspace permission is inherited.
 
 
+## Talking to main agents in Agent Chat
+
+Owner 2026-11-14: an idle or busy Dot can talk to project main agents the way its
+responsible person does in Agent Chat, without an intake task.
+`paperclip_dot_list_chats` lists that person's open Chats (one per main agent) with
+the last message. `paperclip_dot_read_chat` reads messages oldest first (50 per
+page, `before` for older) and the tasks the Chat spawned (children and tasks created
+by the main's runs in that Chat). `paperclip_dot_send_chat` posts a message authored
+by the Dot agent with `onBehalfOfUserId` set to the person (never as the person),
+idempotent per `requestId`, and wakes the main in that Chat. `paperclip_dot_read_task`
+opens any task the person can read. Another person's Chats are never visible.
+Implementation: `server/src/modules/external-agents/dot-main-chat.ts`.
+
 ## Tool inventory
 
 The top-level MCP catalog contains these 16 transport, lifecycle, and profile tools:

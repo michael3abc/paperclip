@@ -26,6 +26,7 @@ import { authorizationService } from "../../services/authorization.js";
 import { canConfigureAgentConnection } from "../agent-lifecycle/index.js";
 import { issueService } from "../../services/issues.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "../../services/native-runtime/native-review-participant.js";
+import { dotMainChatService } from "./dot-main-chat.js";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const fail = (message: string) => new McpOAuthError("access_denied", message, 409);
@@ -320,6 +321,8 @@ function createBroker(db: Db) {
         permissions: agent!.permissions, ready: agent!.lifecycleState === "ready" && state?.status === "ready" && state.wakeVerified,
         assignment: state?.assignment ?? null,
         idle: { read: [tool("capabilities"), tool("tasks"), tool("inbox")],
+          ...(grok ? {} : { chat: ["paperclip_dot_list_chats", "paperclip_dot_read_chat", "paperclip_dot_send_chat", "paperclip_dot_read_task"],
+            chatInstruction: "Talk to project main agents directly in your person's Agent Chats: list them, read the Chat, send the person's message (shown as from you on their behalf), and open the tasks a Chat spawned. This needs no intake task." }),
           profile: tool("set_avatar"),
           start: tool("request_turn"), instruction: grok ? "Start work without an existing task using paperclip_grok_request_turn with a stable UUID. Read and accept the admitted assignment, use its catalog through paperclip_grok_tool, and use your own tools for the work. Retry the same request when admission is pending. This always acts as the named agent." : "You can start work without an existing task. Call paperclip_dot_request_turn with the user's request and a stable UUID. Drain the inbox, read and accept the assignment, then use its catalog for Paperclip operations through paperclip_dot_tool and your own tools for the work. Task tools run as this agent under normal permissions, never as the owner." },
         runtime: { skills: "pinned_read", mcp: grok ? "first_party" : "assigned_gateway", taskAttachments: grok ? "accepted_work_session_file_grants" : agent!.adapterConfig?.dotAttachmentAccess === true ? "assigned_task_read" : "disabled",
@@ -582,6 +585,10 @@ export function createDotRunnerMcpTools(db: Db, heartbeat?: DotHeartbeat, transf
     { name: "paperclip_dot_finish", description: "End the current external turn after successful paperclip_finish or paperclip_block. Submit exactly the canonical accepted report to the same assigned task; this is completion of the admitted work, not a new task. Preserve user restrictions, approvals and unresolved-operation fences. A reply in your own conversation does not complete the Paperclip turn.", schema: z.object({ ...request, result: z.record(z.string(), z.unknown()) }).strict() },
     { name: "paperclip_dot_operation_status", description: "Read a durable operation receipt after pending delivery. Never replay an unknown write with a new request ID.", schema: z.object(request).strict() },
     { name: "paperclip_dot_confirm_event", description: "Complete the harmless readiness challenge found in a readiness_challenge mailbox item.", schema: z.object({ challenge: z.string().min(20).max(100) }).strict() },
+    { name: "paperclip_dot_list_chats", description: "List your responsible person's Agent Chats with project main agents (one per main), newest first, with each Chat's last message. Use this to talk to a main agent the way the owner does in Agent Chat.", schema: z.object({}).strict() },
+    { name: "paperclip_dot_read_chat", description: "Read an Agent Chat's messages (oldest first, up to 50; pass olderCursor as before for older ones) and the tasks it spawned. Works while idle.", schema: z.object({ chatId: z.uuid(), limit: z.number().int().min(1).max(50).optional(), before: z.uuid().optional() }).strict() },
+    { name: "paperclip_dot_send_chat", description: "Send a message into a main agent's Agent Chat on behalf of your responsible person and wake that main agent. The message is shown as from you (Dot). Only send what the person asked you to relay. Retry a timeout with the same requestId and message.", schema: z.object({ chatId: z.uuid(), message: z.string().trim().min(1).max(20_000), requestId: z.uuid() }).strict() },
+    { name: "paperclip_dot_read_task", description: "Open any task your responsible person can read (UUID or identifier such as HOM-123): status, assignee, description, recent messages and subtasks.", schema: z.object({ taskId: z.string().trim().min(3).max(64) }).strict() },
     { name: "paperclip_dot_control_ack", description: "Acknowledge that this Dot saw a fenced assignment. This never restores authority or confirms that all external work stopped.", schema: z.object(request).strict() },
   ];
   async function providerFor(principal: McpPrincipal) {
@@ -589,7 +596,12 @@ export function createDotRunnerMcpTools(db: Db, heartbeat?: DotHeartbeat, transf
     const [binding] = await db.select({ provider: bindings.providerKind }).from(bindings).where(and(eq(bindings.grantId, principal.grant.id), eq(bindings.companyId, principal.grant.companyId), isNull(bindings.revokedAt)));
     return binding?.provider ?? "openai_dot";
   }
-  const grokDefinitions = definitions.filter(d => d.name !== "paperclip_dot_confirm_event").map(d => ({ ...d,
+  const chatTools = new Set(["paperclip_dot_list_chats", "paperclip_dot_read_chat", "paperclip_dot_send_chat", "paperclip_dot_read_task"]);
+  const chats = dotMainChatService(db, async () => {
+    const h = heartbeat ?? await admissionHeartbeat(db);
+    return (agentId, opts) => h.wakeup(agentId, opts as Parameters<DotHeartbeat["wakeup"]>[1]);
+  });
+  const grokDefinitions = definitions.filter(d => d.name !== "paperclip_dot_confirm_event" && !chatTools.has(d.name)).map(d => ({ ...d,
     name: d.name.replace("paperclip_dot_", "paperclip_grok_"),
     description: d.description.replaceAll("Dot", "Grok Bot").replaceAll("event", "routine wake"),
   }));
@@ -602,7 +614,7 @@ export function createDotRunnerMcpTools(db: Db, heartbeat?: DotHeartbeat, transf
     async listTools(principal) { const provider = await providerFor(principal); const available = provider === "grok_bot" ? grokDefinitions : definitions;
       return provider ? available.map(d => ({ name: d.name, description: d.description,
       inputSchema: z.toJSONSchema(d.schema) as { type: "object"; properties: Record<string, unknown> },
-      annotations: { readOnlyHint: ["paperclip_dot_capabilities", "paperclip_dot_tasks", "paperclip_dot_inbox", "paperclip_dot_read", "paperclip_dot_operation_status"].includes(d.name.replace("paperclip_grok_", "paperclip_dot_")), destructiveHint: false, idempotentHint: true, openWorldHint: true } })) : []; },
+      annotations: { readOnlyHint: ["paperclip_dot_capabilities", "paperclip_dot_tasks", "paperclip_dot_inbox", "paperclip_dot_read", "paperclip_dot_operation_status", "paperclip_dot_list_chats", "paperclip_dot_read_chat", "paperclip_dot_read_task"].includes(d.name.replace("paperclip_grok_", "paperclip_dot_")), destructiveHint: false, idempotentHint: true, openWorldHint: true } })) : []; },
     async callTool(principal, name, raw) {
       const provider = await providerFor(principal);
       const available = provider === "grok_bot" ? grokDefinitions : definitions;
@@ -620,6 +632,14 @@ export function createDotRunnerMcpTools(db: Db, heartbeat?: DotHeartbeat, transf
       if (name === "paperclip_grok_get_download_url") return { outcome: "completed", result: await transfers!.getDownloadUrl(principal, String(input.attachmentId), String(input.assignmentId)) };
       name = name.replace("paperclip_grok_", "paperclip_dot_");
       let result: unknown;
+      if (chatTools.has(name)) {
+        const b = await authorizeExternalBotBinding(db, principal, { requireReady: false, allowPaused: false });
+        if (name === "paperclip_dot_list_chats") result = await chats.listChats(b);
+        else if (name === "paperclip_dot_read_chat") result = await chats.readChat(b, String(input.chatId), input.limit as number | undefined, input.before as string | undefined);
+        else if (name === "paperclip_dot_send_chat") result = await chats.sendChat(b, String(input.chatId), String(input.message), String(input.requestId));
+        else result = await chats.readTask(b, String(input.taskId));
+        return { outcome: "completed", result };
+      }
       if (name === "paperclip_dot_set_avatar") result = await broker.setAvatar(principal, setAgentAvatarSchema.parse(input));
       else if (name === "paperclip_dot_capabilities") result = await broker.capabilities(principal);
       else if (name === "paperclip_dot_request_turn") result = await broker.requestTurn(principal, String(input.prompt), String(input.requestId), input.projectId ? String(input.projectId) : undefined);
