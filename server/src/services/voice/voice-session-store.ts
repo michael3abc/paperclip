@@ -572,7 +572,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
    * session creates it, never the voice model's tool channel. A newer revision
    * supersedes every older confirmed revision of the same draft.
    */
-  async function confirmDraft(input: { companyId: string; sessionId: string; caller: VoiceCaller; draftId: string; revision: number; text: string }) {
+  async function confirmDraft(input: { companyId: string; sessionId: string; caller: VoiceCaller; draftId: string; revision: number; text: string; via?: "spoken_relay" | "ui_relay" }) {
     if (!/\S/.test(input.text) || input.text.length > 16_000) throw conflict("Confirmed text must not be empty", { code: "voice_confirmation_empty" });
     // The work queue trims the message into the issue comment; only the canonical form keeps the confirmed hash equal to what the agent receives.
     if (input.text !== input.text.trim()) throw conflict("Confirmed text must not have leading or trailing whitespace", { code: "voice_confirmation_not_canonical" });
@@ -593,7 +593,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
         eq(chatVoiceConfirmations.draftId, input.draftId), eq(chatVoiceConfirmations.state, "confirmed")));
       const [created] = await tx.insert(chatVoiceConfirmations).values({ companyId: session.companyId, sessionId: session.id, callerId: session.callerId,
         draftId: input.draftId, revision: input.revision, textSha256, textLength: input.text.length, confirmedByUserId: input.caller.id }).returning();
-      await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "user", actorId: input.caller.id, action: "voice.confirmation.created", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId, draftId: input.draftId, revision: input.revision, textSha256 } });
+      await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "user", actorId: input.caller.id, action: "voice.confirmation.created", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId, draftId: input.draftId, revision: input.revision, textSha256, ...(input.via ? { via: input.via } : {}) } });
       return confirmationProjection(created);
     });
   }

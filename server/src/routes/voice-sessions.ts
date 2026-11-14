@@ -8,6 +8,9 @@ import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import { SpekoProtocolError } from "../services/voice/speko-protocol.js";
 import { LocalVoiceProtocolError, localVoiceToolResult } from "../services/voice/local-voice-protocol.js";
 import type { VoiceSessionService } from "../services/voice/voice-session-service.js";
+import { ensureLocalVoiceEndpoint } from "../services/voice/local-voice-endpoints.js";
+import { loadLocalVoiceGatewayConfig } from "../services/voice/local-voice-gateway-config.js";
+import { z } from "zod";
 import type { VoiceCaller } from "../services/voice/voice-session-store.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
@@ -29,6 +32,7 @@ function session(req: Request) {
   if (!isUuidLike(id)) throw badRequest("Invalid voice session id");
   return id;
 }
+const localVoiceEndpointSchema = z.object({ agentId: z.string().uuid() }).strict();
 export function voiceSessionRoutes(db: Db, service: VoiceSessionService) {
   const router = Router(), settings = instanceSettingsService(db);
   const starts = createInviteRateLimiter({ windowMs: 60_000, maxRequests: 10 });
@@ -101,6 +105,24 @@ export function voiceSessionRoutes(db: Db, service: VoiceSessionService) {
       if (error instanceof LocalVoiceProtocolError) throw new HttpError(error.code === "body_too_large" ? 413 : error.code === "invalid_json" ? 400 : 422, "Invalid voice control message", { code: `voice_control_${error.code}` });
       throw error;
     }
+  });
+  /** Whether this instance can serve browser voice calls through the same-origin relay (HOM-311). */
+  router.get("/companies/:companyId/local-voice/status", async (req, res) => {
+    const companyId = company(req);
+    caller(req);
+    const experimental = await settings.getExperimental();
+    const relayConfigured = loadLocalVoiceGatewayConfig() !== null;
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ companyId, enabled: Boolean(experimental.enableChatConnectors && experimental.enableLocalVoice), relayConfigured });
+  });
+  /** Server-owned local voice endpoint for one agent; idempotent per company and agent. */
+  router.post("/companies/:companyId/local-voice/endpoints", validate(localVoiceEndpointSchema), async (req, res) => {
+    const companyId = company(req), actor = caller(req);
+    await enabled();
+    await service.local.assertEnabled();
+    if (!starts.consume(`endpoint:${companyId}:${actor.id}`).allowed) throw tooManyRequests("Too many voice setup attempts");
+    const result = await ensureLocalVoiceEndpoint(db, { companyId, agentId: req.body.agentId, caller: actor, allowLocalBoard: actor.authority === "local_board" });
+    res.status(result.created ? 201 : 200).json(result);
   });
   /** Trusted confirmation receipt: created only from the caller's own board session. */
   router.post("/companies/:companyId/voice-sessions/:sessionId/confirmations", validate(localVoiceConfirmationSchema), async (req, res) => {

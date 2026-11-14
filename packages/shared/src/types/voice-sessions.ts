@@ -124,3 +124,53 @@ export interface VoiceOperationReceipt {
   textSha256?: string | null;
   acceptedAt?: string;
 }
+
+/**
+ * Same-origin media relay for local voice (HOM-311). The browser opens
+ * `/api/companies/{companyId}/voice-sessions/{sessionId}/ws` with the
+ * subprotocols [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}<transportToken>`].
+ * Binary frames: browser→server PCM16 mono 16 kHz microphone audio;
+ * server→browser PCM16 mono 24 kHz model audio. Text frames are JSON below.
+ * The model gateway key never leaves the server.
+ */
+export const LOCAL_VOICE_RELAY_PROTOCOL = "paperclip.voice-relay.v1" as const;
+export const LOCAL_VOICE_RELAY_TOKEN_PREFIX = "pcvt." as const;
+export const LOCAL_VOICE_INPUT_SAMPLE_RATE = 16_000;
+export const LOCAL_VOICE_OUTPUT_SAMPLE_RATE = 24_000;
+/** Owner decision (HOM-265): remind at 10 minutes, end at 15, pause the mic after 60 s without speech. */
+export const LOCAL_VOICE_CALL_WARNING_SECONDS = 600;
+export const LOCAL_VOICE_CALL_MAX_SECONDS = 900;
+export const LOCAL_VOICE_SILENCE_PAUSE_SECONDS = 60;
+/** Spoken confirmation phrase for low-risk comments. Approvals, deployment and settings always need the UI. */
+export const LOCAL_VOICE_CONFIRMATION_PHRASE = "確認送出" as const;
+
+export interface LocalVoiceDraft {
+  draftId: string;
+  revision: number;
+  text: string;
+}
+
+export type LocalVoiceRelayClientMessage =
+  | { type: "text"; text: string }
+  | { type: "mic"; state: "live" | "paused" }
+  | { type: "confirm_draft"; draftId: string; revision: number }
+  | { type: "cancel_draft"; draftId: string }
+  | { type: "end" };
+
+export type LocalVoiceRelayEndReason = "caller_ended" | "max_duration" | "session_unavailable" | "upstream_unavailable" | "server_shutdown" | "relay_error";
+
+export type LocalVoiceRelayServerEvent =
+  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number }
+  | { type: "transcript"; role: "user" | "model"; text: string }
+  | { type: "interrupted" }
+  | { type: "turn_complete" }
+  | { type: "draft"; draft: LocalVoiceDraft }
+  | { type: "draft_cleared"; draftId: string }
+  | { type: "submitted"; draftId: string; revision: number; operationId: string; via: "spoken" | "ui" }
+  | { type: "submit_failed"; draftId: string; code: string; message: string }
+  | { type: "agent_reply"; commentId: string; body: string; voiceSummary: string | null; createdAt: string }
+  | { type: "time_warning"; remainingSeconds: number }
+  | { type: "reconnecting"; reason: string }
+  | { type: "resumed"; contextKept: boolean }
+  | { type: "error"; code: string; message: string }
+  | { type: "ended"; reason: LocalVoiceRelayEndReason };
