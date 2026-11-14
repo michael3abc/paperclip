@@ -261,6 +261,10 @@ export class ChatControlRecoveryUnresolvedError extends Error {
   }
 }
 
+/** One-shot execution-stage handoffs; a blocked handoff is deferred, never recorded as skipped. */
+const EXECUTION_HANDOFF_WAKE_REASONS: ReadonlySet<string> = new Set([
+  "execution_review_requested", "execution_approval_requested", "execution_changes_requested",
+]);
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
@@ -3430,7 +3434,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 requestId: executionWaitRequestId }, condition, { replace: true });
               return { kind: "deferred" as const, admitted: true };
             }
-            if (durableRequest || wakeCommentId ||
+            // Liveness-first: an execution-stage handoff (review/approval/changes) is
+            // one-shot; a hold must defer it until the blocker clears, never drop it.
+            if (durableRequest || wakeCommentId || EXECUTION_HANDOFF_WAKE_REASONS.has(reason ?? "") ||
                 hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
                 readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {
               await notifyDeferredExecutionWork(tx, { companyId: agent.companyId });

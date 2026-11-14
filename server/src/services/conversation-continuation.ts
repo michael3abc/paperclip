@@ -106,9 +106,14 @@ function processMayBeAlive(pid: number): boolean {
  * Other adapters keep their existing bootstrap and ownership protocols.
  */
 export async function getConversationOwnershipBlocker(db: Db, companyId: string, issueId: string) {
+  // Liveness-first (Owner 2026-11-13): a terminal run releases every gate. A
+  // local lease's release lags the terminal status by seconds; the live-process
+  // check below already covers local execution, so only a remote environment
+  // (whose process this host cannot see) keeps an unreleased lease as a hold.
   const activeLease = sql`exists (select 1 from ${environmentLeases}
     where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
       and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id"
+      and ${environmentLeases.provider} <> 'local'
       and (${environmentLeases.releasedAt} is null
         or ${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
