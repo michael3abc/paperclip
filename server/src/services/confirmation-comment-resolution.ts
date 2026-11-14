@@ -64,6 +64,10 @@ export async function resolveConfirmationFromComment(db: Db, args: {
       || comment.createdAt < card.createdAt || comment.body.trim() === "/new") {
       throw unprocessable("The answer must be a user message posted after this confirmation on the same task");
     }
+    // HOM-326: speech recognition is not consent. A dictated message may decline, never accept.
+    if (comment.metadata?.voiceInput && input.decision === "accept") {
+      throw forbidden("A voice message cannot accept a confirmation; ask the user to use the card");
+    }
     if ((issue.conversationUserId && comment.authorUserId !== issue.conversationUserId)
       || (run.responsibleUserId && comment.authorUserId !== run.responsibleUserId)) {
       throw forbidden("The answer is not from this conversation's user");

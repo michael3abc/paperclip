@@ -76,9 +76,9 @@ export function voiceSessionRoutes(db: Db, service: VoiceSessionService) {
     await enabled();
     const limit = starts.consume(`${companyId}:${actor.id}`);
     if (!limit.allowed) throw tooManyRequests("Too many voice session attempts");
-    // The server-owned voice_task binding selects the local provider; every
-    // other start keeps the pre-existing Speko path unchanged.
-    const result = req.body.bindingMode === "voice_task"
+    // A server-owned binding (voice_task or agent_chat) selects the local
+    // provider; every other start keeps the pre-existing Speko path unchanged.
+    const result = req.body.bindingMode !== undefined
       ? await service.local.start({ ...req.body, companyId, caller: actor })
       : await service.start({ ...req.body, companyId, caller: actor });
     res.status(result.media ? 201 : 200).json(result);

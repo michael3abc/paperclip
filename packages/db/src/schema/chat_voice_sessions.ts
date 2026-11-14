@@ -10,7 +10,8 @@ export const chatVoiceSessions = pgTable("chat_voice_sessions", {
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   endpointId: uuid("endpoint_id").notNull(),
-  conversationId: uuid("conversation_id").notNull(),
+  /** Null only for agent_chat (HOM-326): the Chat itself is the binding, with no channel conversation. */
+  conversationId: uuid("conversation_id"),
   issueId: uuid("issue_id").notNull(),
   assignedAgentId: uuid("assigned_agent_id").notNull(),
   callerId: text("caller_id").notNull(),
@@ -52,7 +53,8 @@ export const chatVoiceSessions = pgTable("chat_voice_sessions", {
   check("chat_voice_sessions_counters_check", sql`${t.generation} >= 1 and ${t.replyCursor} >= 0`),
   check("chat_voice_sessions_token_check", sql`${t.toolTokenHash} ~ '^[a-f0-9]{64}$'`),
   check("chat_voice_sessions_expiry_check", sql`${t.expiresAt} > ${t.createdAt}`),
-  check("chat_voice_sessions_binding_mode_check", sql`${t.bindingMode} is null or ${t.bindingMode} = 'voice_task'`),
+  check("chat_voice_sessions_binding_mode_check", sql`${t.bindingMode} is null or ${t.bindingMode} in ('voice_task', 'agent_chat')`),
+  check("chat_voice_sessions_conversation_check", sql`${t.conversationId} is not null or ${t.bindingMode} = 'agent_chat'`),
 ]);
 
 /** Each tool call has one durable result; inbound work points at the chat ledger. */
@@ -105,6 +107,7 @@ export const chatVoiceOperations = pgTable("chat_voice_operations", {
   sessionId: uuid("session_id").notNull(),
   callerId: text("caller_id").notNull(),
   issueId: uuid("issue_id").notNull(),
+  /** Null only for agent_chat (HOM-326): the Chat itself is the binding, with no channel conversation. */
   conversationId: uuid("conversation_id").notNull(),
   conversationGeneration: integer("conversation_generation").notNull(),
   operationId: uuid("operation_id").notNull(),

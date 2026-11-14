@@ -82,6 +82,7 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `2fa8751de0` fix(workers): fail invalid model policy instead of substituting defaults
 - `b4ba1a8e94` docs(costs): use the canonical checkout for Compass ledger pricing
 - `b9cc0742bc` feat(voice): integrate default-off local control plane with event-driven recovery
+- `0cb993e80b`, `74724fd441` feat(voice): agent_chat binding — speak and it is sent to the Owner's Chat (HOM-326; branch `michael/voice-agent-chat`, migration 0442 widens `chat_voice_sessions.binding_mode` and lets agent_chat sessions omit `conversation_id`; see doc/connections/LOCAL-VOICE.md)
 - `708c47741e` merge: consolidate rebased Paperclip while preserving local main history
 - `b337eafaaa` fix(agents): recognize proven pre-dispatch PM rejection during stop
 - `4e5fe15ef8` fix(ui): show only CEO and PM agents in coordinator sidebar

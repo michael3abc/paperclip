@@ -32,9 +32,13 @@ export class GeminiLiveRelay extends VoiceRelayCore {
   readonly inputSampleRate = LOCAL_VOICE_GEMINI_INPUT_SAMPLE_RATE;
   protected readonly defaultTranscriptGraceMs = 1500;
   protected readonly dropStaleToolResults = false;
+  /** Gemini Live answers every utterance, so the relay does not add its own acknowledgement. */
+  protected readonly acknowledgesSpeech = true;
   private resumeHandle: string | null = null;
   /** The caller utterance being transcribed, closed when the model reacts. */
   private openUtterance: CallerUtterance | null = null;
+  /** Counter naming each caller utterance for the agent_chat echo filter. */
+  private utteranceSegment = 0;
   private usage = { promptTokens: 0, responseTokens: 0, totalTokens: 0, messages: 0 };
 
   protected onUpstreamOpen(socket: VoiceUpstream) {
@@ -50,7 +54,8 @@ export class GeminiLiveRelay extends VoiceRelayCore {
       responseModalities: ["AUDIO"],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voiceName ?? "Kore" } } },
       systemInstruction: { parts: [{ text: voiceSystemInstruction(this.options.binding) }] },
-      tools: [{ functionDeclarations: voiceToolDeclarations(this.options.binding.agentName) }],
+      // agent_chat has no tools: the caller's words reach the Chat without the model.
+      tools: this.chatMode ? [] : [{ functionDeclarations: voiceToolDeclarations(this.options.binding.agentName) }],
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
@@ -89,8 +94,10 @@ export class GeminiLiveRelay extends VoiceRelayCore {
     if (typeof content.inputTranscription?.text === "string" && content.inputTranscription.text) {
       const text = content.inputTranscription.text;
       this.browser.sendEvent({ type: "transcript", role: "user", text });
-      this.openUtterance ??= this.beginUtterance();
+      if (!this.openUtterance) { this.openUtterance = this.beginUtterance(); this.utteranceSegment += 1; }
       this.openUtterance.text += text;
+      // Gemini streams fragments; the core merges them after a quiet gap and judges echo per utterance.
+      if (this.chatMode) this.collectDictation(text, { duringPlayback: this.browserPlaying || this.modelTurnActive, segment: `g${this.utteranceSegment}` });
     }
     if (typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
       this.turnOutput += content.outputTranscription.text;

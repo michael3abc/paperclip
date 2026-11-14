@@ -1,0 +1,4 @@
+ALTER TABLE "chat_voice_sessions" DROP CONSTRAINT "chat_voice_sessions_binding_mode_check";--> statement-breakpoint
+ALTER TABLE "chat_voice_sessions" ALTER COLUMN "conversation_id" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "chat_voice_sessions" ADD CONSTRAINT "chat_voice_sessions_conversation_check" CHECK ("chat_voice_sessions"."conversation_id" is not null or "chat_voice_sessions"."binding_mode" = 'agent_chat');--> statement-breakpoint
+ALTER TABLE "chat_voice_sessions" ADD CONSTRAINT "chat_voice_sessions_binding_mode_check" CHECK ("chat_voice_sessions"."binding_mode" is null or "chat_voice_sessions"."binding_mode" in ('voice_task', 'agent_chat'));

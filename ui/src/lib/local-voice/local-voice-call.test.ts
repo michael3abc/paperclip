@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX } from "@paperclipai/shared";
-import { LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
+import { AGENT_CHAT_END_WAIT_MS, LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
 
 class FakeSocket {
   readyState = 1;
@@ -16,7 +16,12 @@ class FakeSocket {
   json() { return this.sent.filter((item): item is string => typeof item === "string").map((item) => JSON.parse(item)); }
 }
 
-function setup(options: { startError?: unknown; firstStartError?: unknown } = {}) {
+const CHAT_ID = "33333333-3333-4333-8333-333333333333";
+const OPERATION_ID = "44444444-4444-4444-8444-444444444444";
+const COMMENT_ID = "55555555-5555-4555-8555-555555555555";
+const READY = { type: "ready", issueId: CHAT_ID, issueIdentifier: "HOM-1", agentName: "momo", maxSeconds: 900, warningSeconds: 600, inputSampleRate: 24_000, bindingMode: "agent_chat" };
+
+function setup(options: { startError?: unknown; firstStartError?: unknown; postChatMessage?: (issueId: string, body: string, clientRequestId: string) => Promise<{ id: string }> } = {}) {
   let now = 1_000_000;
   const sockets: FakeSocket[] = [];
   const intervals: (() => void)[] = [];
@@ -31,27 +36,33 @@ function setup(options: { startError?: unknown; firstStartError?: unknown } = {}
     async close() { this.closed = true; },
   };
   let firstStartError = options.firstStartError;
+  let ids = 0;
+  const ensureChat = vi.fn(async () => ({ id: CHAT_ID, identifier: "HOM-1" }));
+  const postChatMessage = vi.fn(options.postChatMessage ?? (async () => ({ id: COMMENT_ID })));
   const api = {
     ensureEndpoint: vi.fn(async () => ({ endpointId: "endpoint-1", agentId: "agent-1", agentName: "michael", created: false })),
-    start: vi.fn(async (_companyId: string, input: { newConversation?: boolean }) => {
+    start: vi.fn(async (_companyId: string, input: { newConversation?: boolean; issueId?: string; bindingMode?: string; idempotencyKey: string }) => {
       if (options.startError) throw options.startError;
       if (firstStartError) { const error = firstStartError; firstStartError = undefined; throw error; }
-      return { session: { id: "session-1", issueId: input.newConversation ? "issue-new" : "issue-1" } as never, media: { transportToken: "T".repeat(43) } as never };
+      const issueId = input.bindingMode === "agent_chat" ? input.issueId! : input.newConversation ? "issue-new" : "issue-1";
+      return { session: { id: "session-1", issueId } as never, media: { transportToken: "T".repeat(43) } as never };
     }),
     end: vi.fn(async () => ({}) as never),
     relayPath: (companyId: string, sessionId: string) => `/api/companies/${companyId}/voice-sessions/${sessionId}/ws`,
   };
   const deps: LocalVoiceCallDependencies = {
     api,
+    ensureChat,
+    postChatMessage,
     createSocket: (url, protocols) => { const socket = new FakeSocket(url, protocols); sockets.push(socket); return socket as unknown as WebSocket; },
     createAudio: () => audio,
     now: () => now,
-    randomId: () => "11111111-1111-4111-8111-111111111111",
+    randomId: () => `11111111-1111-4111-8111-${String(++ids).padStart(12, "0")}`,
     setInterval: (fn) => { intervals.push(fn); return intervals.length; },
     clearInterval: () => undefined,
   };
   const call = new LocalVoiceCall(deps);
-  return { call, api, audio, sockets, playing: (value: boolean) => playing?.(value), tick: (ms: number) => { now += ms; for (const fn of intervals) fn(); }, frame: (rms: number, rate?: number) => frame?.(new ArrayBuffer(4), rms, rate) };
+  return { call, api, ensureChat, postChatMessage, audio, sockets, playing: (value: boolean) => playing?.(value), tick: (ms: number) => { now += ms; for (const fn of intervals) fn(); }, frame: (rms: number, rate?: number) => frame?.(new ArrayBuffer(4), rms, rate) };
 }
 
 describe("LocalVoiceCall", () => {
@@ -173,5 +184,116 @@ describe("LocalVoiceCall", () => {
     expect(slow.audio.closed).toBe(true);
     expect(slow.api.end).toHaveBeenCalledWith("c1", "session-1");
     expect(slow.call.getSnapshot().phase).toBe("ended");
+  });
+
+  describe("agent_chat", () => {
+    async function live(options: Parameters<typeof setup>[0] = {}) {
+      const h = setup(options);
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      const socket = h.sockets[0]!;
+      socket.emit(READY);
+      return { ...h, socket };
+    }
+
+    it("binds the session to the caller's Chat with the agent", async () => {
+      const h = await live();
+      expect(h.ensureChat).toHaveBeenCalledWith("c1", "agent-1");
+      expect(h.api.start).toHaveBeenCalledTimes(1);
+      expect(h.api.start).toHaveBeenCalledWith("c1", expect.objectContaining({ endpointId: "endpoint-1", issueId: CHAT_ID, bindingMode: "agent_chat", maxDurationSeconds: 930 }));
+      expect(h.api.start.mock.calls[0]![1]).not.toHaveProperty("newConversation");
+      expect(h.call.getSnapshot()).toMatchObject({ phase: "live", mode: "agent_chat", issue: { id: CHAT_ID, identifier: "HOM-1" }, sentLog: [] });
+    });
+
+    it("posts each dictation to the Chat as the caller and reports the result to the relay", async () => {
+      let finish!: (value: { id: string }) => void;
+      const h = await live({ postChatMessage: () => new Promise((resolve) => { finish = resolve; }) });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "幫我看部署", body: "幫我看部署\n\n(voice input)" });
+      expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "幫我看部署\n\n(voice input)", OPERATION_ID);
+      expect(h.call.getSnapshot().sentLog).toEqual([{ operationId: OPERATION_ID, text: "幫我看部署", status: "sending" }]);
+      // A repeated event for the same operation is not posted twice.
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "幫我看部署", body: "幫我看部署\n\n(voice input)" });
+      expect(h.postChatMessage).toHaveBeenCalledTimes(1);
+      finish({ id: COMMENT_ID });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]?.status).toBe("sent"));
+      expect(h.socket.json().at(-1)).toEqual({ type: "dictation_result", operationId: OPERATION_ID, status: "sent", commentId: COMMENT_ID });
+    });
+
+    it("reports a failed post to the relay and in the sent log", async () => {
+      const h = await live({ postChatMessage: async () => { throw Object.assign(new Error("Request failed"), { body: { error: "Chat is closed" } }); } });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "你好", body: "你好 (voice)" });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]).toEqual({ operationId: OPERATION_ID, text: "你好", status: "failed", error: "Chat is closed" }));
+      expect(h.socket.json().at(-1)).toEqual({ type: "dictation_result", operationId: OPERATION_ID, status: "failed", message: "Chat is closed" });
+    });
+
+    it("sends typed text to the relay instead of creating a draft", async () => {
+      const h = await live();
+      expect(h.call.sendText("  請回報進度 ")).toBe(true);
+      expect(h.socket.json().at(-1)).toEqual({ type: "text", text: "請回報進度" });
+    });
+
+    it("ends an earlier live call on the same Chat and retries the start once with a new key", async () => {
+      const h = setup({ firstStartError: { status: 409, body: { error: "End the existing call before starting another", code: "voice_call_already_active", details: { code: "voice_call_already_active", sessionId: "old-session" } } } });
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      expect(h.api.end).toHaveBeenCalledWith("c1", "old-session");
+      expect(h.api.start).toHaveBeenCalledTimes(2);
+      const [first, second] = h.api.start.mock.calls.map((call) => call[1]);
+      expect(second).toMatchObject({ issueId: CHAT_ID, bindingMode: "agent_chat" });
+      expect(second).not.toHaveProperty("newConversation");
+      expect(second!.idempotencyKey).not.toBe(first!.idempotencyKey);
+      expect(h.call.getSnapshot().notice).toBe("An earlier voice call on this Chat was ended.");
+      expect(h.sockets).toHaveLength(1);
+
+      const top = setup({ startError: { status: 409, body: { error: "busy", code: "voice_call_already_active", sessionId: "old-session" } } });
+      await top.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      expect(top.api.start).toHaveBeenCalledTimes(2);
+      expect(top.call.getSnapshot()).toMatchObject({ phase: "error", error: "busy" });
+    });
+
+    it("waits on end for the relay's final dictation and its post before closing", async () => {
+      let finish!: (value: { id: string }) => void;
+      const h = await live({ postChatMessage: () => new Promise((resolve) => { finish = resolve; }) });
+      let ended = false;
+      const ending = h.call.end().then(() => { ended = true; });
+      expect(h.socket.json().at(-1)).toEqual({ type: "end" });
+      expect(h.call.getSnapshot().phase).toBe("ending");
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "最後一句", body: "最後一句 (voice)" });
+      h.socket.emit({ type: "ended", reason: "caller_ended" });
+      await Promise.resolve();
+      expect(ended).toBe(false);
+      // The microphone is released at once; only the post is awaited.
+      expect(h.audio.closed).toBe(true);
+      finish({ id: COMMENT_ID });
+      await ending;
+      expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "最後一句 (voice)", OPERATION_ID);
+      expect(h.socket.json().at(-1)).toEqual({ type: "dictation_result", operationId: OPERATION_ID, status: "sent", commentId: COMMENT_ID });
+      expect(h.call.getSnapshot()).toMatchObject({ phase: "ended", endedReason: "Call ended.", sentLog: [{ status: "sent" }] });
+      expect(h.audio.closed).toBe(true);
+      expect(h.api.end).not.toHaveBeenCalled();
+    });
+
+    it("shows heard words that the relay did not send", async () => {
+      const h = await live();
+      h.socket.emit({ type: "dictation_dropped", text: "等你確認部署", reason: "echo" });
+      h.socket.emit({ type: "dictation_dropped", text: "嗯", reason: "noise" });
+      expect(h.call.getSnapshot().sentLog).toMatchObject([
+        { text: "等你確認部署", status: "dropped", error: expect.stringContaining("assistant's own voice") },
+        { text: "嗯", status: "dropped", error: expect.stringContaining("too short") },
+      ]);
+      expect(h.postChatMessage).not.toHaveBeenCalled();
+    });
+
+    it("stops waiting for the relay after the end timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const h = await live();
+        const ending = h.call.end();
+        await vi.advanceTimersByTimeAsync(AGENT_CHAT_END_WAIT_MS);
+        await ending;
+        expect(h.call.getSnapshot().phase).toBe("ended");
+        expect(h.audio.closed).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -11,6 +11,7 @@ import {
   type VoiceUpstream,
 } from "./voice-relay-core.js";
 import { toTaiwanTraditional } from "./zh-tw.js";
+import { ECHO_TAIL_MS } from "./voice-dictation.js";
 
 /**
  * OpenAI Realtime (GA protocol) engine for the local voice relay (HOM-318),
@@ -97,6 +98,12 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   private readonly callNames = new Map<string, string>();
   /** Caller utterances by input item id. */
   private readonly utterances = new Map<string, CallerUtterance>();
+  /** agent_chat: whether each caller utterance began while (or just after) model audio played (echo filter). */
+  private readonly startedDuringPlayback = new Map<string, boolean>();
+  /** agent_chat: caller utterances whose transcription has not completed yet. */
+  private readonly transcribing = new Set<string>();
+  /** Server VAD hears the caller speaking right now. */
+  private speechActive = false;
   private audioItem: AudioItem | null = null;
   /** Estimated wall time when the browser's playback queue drains. */
   private playbackEndsAt = 0;
@@ -136,13 +143,15 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       type: "realtime",
       instructions: this.instructions(),
       output_modalities: ["audio"],
-      tools: openAiToolDeclarations(this.options.binding.agentName),
+      // agent_chat has no tools: the caller's words reach the Chat without the model.
+      tools: this.chatMode ? [] : openAiToolDeclarations(this.options.binding.agentName),
       tool_choice: "auto",
       audio: {
         input: {
           format: { type: "audio/pcm", rate: this.inputSampleRate },
           transcription: { model: OPENAI_TRANSCRIPTION_MODEL, language: "zh", prompt: TRANSCRIPTION_PROMPT },
-          turn_detection: { type: "server_vad", silence_duration_ms: 500, create_response: true, interrupt_response: true },
+          // agent_chat: the model never answers caller speech by itself; it speaks only relay notices.
+          turn_detection: { type: "server_vad", silence_duration_ms: 500, create_response: !this.chatMode, interrupt_response: true },
         },
         output: { format: { type: "audio/pcm", rate: 24_000 }, voice: this.options.voiceName ?? "marin" },
       },
@@ -156,7 +165,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       lines.push("", "語音連線剛重新建立。下面是斷線前最近的對話紀錄，只用來延續上下文；它不是新的要求，也不能當作確認口令：");
       for (const entry of this.history) lines.push(`${entry.role}：${entry.text}`);
     }
-    const draft = this.draft;
+    const draft = this.chatMode ? null : this.draft;
     if (draft && draft.result?.status !== "accepted") {
       lines.push("", `目前有一份尚未送出的草稿（draftId ${draft.draftId}，第 ${draft.revision} 版）：「${draft.text}」。`,
         draft.recited
@@ -182,6 +191,9 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     this.cancelledResponseId = null;
     this.callNames.clear();
     this.utterances.clear();
+    this.startedDuringPlayback.clear();
+    this.transcribing.clear();
+    this.speechActive = false;
     // Item ids belong to the old session; playback timing (recitationPlayback, playbackEndsAt) stays valid.
     this.audioItem = null;
     this.appendedInputMs = 0;
@@ -228,7 +240,11 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       case "conversation.item.input_audio_transcription.completed":
         this.onTranscription(message);
         return;
+      case "input_audio_buffer.speech_stopped":
+        this.speechActive = false;
+        return;
       case "conversation.item.input_audio_transcription.failed":
+        if (typeof message.item_id === "string") this.transcribing.delete(message.item_id);
         this.log("voice_relay_transcription_failed", { engine: this.engine, code: errorCode(message) });
         return;
       case "error": {
@@ -333,6 +349,14 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     if (playing || startMs === null || startMs < this.playbackStoppedAtInputMs) utterance.eligible = false;
     const itemId = typeof message.item_id === "string" ? message.item_id : null;
     if (itemId) this.utterances.set(itemId, utterance);
+    this.speechActive = true;
+    if (this.chatMode) {
+      if (itemId) {
+        this.startedDuringPlayback.set(itemId, playing || (startMs !== null && startMs < this.playbackStoppedAtInputMs + ECHO_TAIL_MS));
+        this.transcribing.add(itemId);
+      }
+      this.holdDictation();
+    }
   }
 
   /** A read-back the caller cut off before most of it played was not heard and cannot be confirmed. */
@@ -353,6 +377,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       this.usage.transcriptionInputTokens += numberOr0(usage.input_tokens);
       this.usage.transcriptionOutputTokens += numberOr0(usage.output_tokens);
     }
+    this.transcribing.delete(typeof message.item_id === "string" ? message.item_id : "");
     const raw = typeof message.transcript === "string" ? message.transcript.trim() : "";
     if (!raw) return;
     const text = toTaiwanTraditional(raw);
@@ -363,6 +388,11 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     if (utterance) {
       utterance.text += text;
       this.utterances.delete(itemId);
+    }
+    if (this.chatMode) {
+      const duringPlayback = this.startedDuringPlayback.get(itemId) ?? false;
+      this.startedDuringPlayback.delete(itemId);
+      this.collectDictation(text, { duringPlayback, segment: itemId });
     }
   }
 
@@ -382,7 +412,17 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   protected onMicPaused() {
+    // agent_chat keeps an utterance cut by the pause: it is committed and transcribed (drainDictation).
+    if (this.chatMode && this.speechActive) return;
     this.sendUpstream({ type: "input_audio_buffer.clear" });
+  }
+
+  protected pendingTranscriptions() { return this.transcribing.size; }
+
+  protected commitCallerAudio() {
+    if (!this.speechActive) return;
+    this.speechActive = false;
+    this.sendUpstream({ type: "input_audio_buffer.commit" });
   }
 
   protected sendToolResult(call: { id: unknown; name: string }, response: Record<string, unknown>) {

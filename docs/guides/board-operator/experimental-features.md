@@ -69,6 +69,13 @@ binding). This first phase contains only the control plane:
 It has no microphone, speech recognition, speech synthesis or call UI yet, and
 it never places phone calls.
 
+With a voice gateway configured, the **Voice** page (HOM-311, HOM-326) talks
+to your Chat with the agent you pick (momo by default; the page remembers your
+last choice). What you say is posted to that Chat as your own message as soon
+as you stop talking, with no read-back or spoken confirmation, and the agent's
+reply is read aloud from its `語音摘要：` line. Voice never answers cards,
+approvals or deployments; use the normal Paperclip controls for those.
+
 Turning it off stops new sessions and rejects further voice tool calls. The
 next reconcile ends live local sessions. Requests that were already accepted
 stay on their tasks, and the agent still processes them. Speko voice is not

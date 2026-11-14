@@ -1,12 +1,12 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { chatActions, chatPublications, chatVoiceReplies } from "@paperclipai/db";
-import type { VoiceSessionRow, VoiceTransaction } from "./voice-session-store.js";
+import type { ChannelSessionRow, VoiceTransaction } from "./voice-session-store.js";
 import { planVoiceReply, VOICE_REPLY_ACTION_KIND, VOICE_REPLY_DISPATCH_TIMEOUT_MS } from "./voice-reply-policy.js";
 
 /** Read the ordered delivery barrier under the caller's existing session lock. */
 export async function readVoiceReplyState(
   tx: VoiceTransaction,
-  session: Pick<VoiceSessionRow, "id" | "companyId" | "endpointId" | "conversationId" | "issueId">,
+  session: Pick<ChannelSessionRow, "id" | "companyId" | "endpointId" | "conversationId" | "issueId">,
 ) {
   const [inFlight] = await tx.select({ updatedAt: chatActions.updatedAt }).from(chatActions)
     .where(and(eq(chatActions.companyId, session.companyId), eq(chatActions.endpointId, session.endpointId),

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
-import { AlertTriangle, Check, Mic, MicOff, Phone, PhoneOff, Send, X } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Mic, MicOff, Phone, PhoneOff, Send, X } from "lucide-react";
 import { LOCAL_VOICE_CONFIRMATION_PHRASE } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
-import { createLocalVoiceCall, type LocalVoiceCall } from "@/lib/local-voice/local-voice-call";
+import { createLocalVoiceCall, type LocalVoiceCall, type LocalVoiceMode, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
 
 function formatClock(seconds: number) {
   const safe = Math.max(0, Math.floor(seconds));
@@ -26,18 +26,31 @@ export interface LocalVoicePanelProps {
   companyId: string;
   agentId: string;
   agentName: string;
-  /** Continue a specific voice task; otherwise the latest open one (or a new one). */
+  /** voice_task: continue a specific voice task; otherwise the latest open one (or a new one). */
   issueId?: string;
+  /** Default `agent_chat` (the caller's Chat with the agent); `voice_task` when `issueId` is given. */
+  mode?: LocalVoiceMode;
   /** Test seam. */
   call?: LocalVoiceCall;
 }
 
+function SentStatus({ entry }: { entry: LocalVoiceSentEntry }) {
+  if (entry.status === "sending") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" aria-hidden /> Sending…</span>;
+  if (entry.status === "sent") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Check className="size-3" aria-hidden /> Sent</span>;
+  if (entry.status === "dropped") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><X className="size-3" aria-hidden /> {entry.error ?? "Not sent"}</span>;
+  return <span className="flex items-center gap-1 text-xs text-destructive"><AlertTriangle className="size-3" aria-hidden /> Not sent</span>;
+}
+
 /**
  * Browser voice call with an agent through the same-origin realtime relay
- * (HOM-311; OpenAI Realtime by default, Gemini Live fallback, HOM-318). Drafts are confirmed by the spoken phrase or the button here;
- * approvals, deployment and settings changes are never available by voice.
+ * (HOM-311; OpenAI Realtime by default, Gemini Live fallback, HOM-318).
+ * `agent_chat` (HOM-326): each finished utterance goes straight to the caller's Chat with the agent.
+ * `voice_task`: drafts are confirmed by the spoken phrase or the button here.
+ * Approvals, deployment and settings changes are never available by voice.
  */
-export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: injected }: LocalVoicePanelProps) {
+export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: requestedMode, call: injected }: LocalVoicePanelProps) {
+  const mode: LocalVoiceMode = requestedMode ?? (issueId ? "voice_task" : "agent_chat");
+  const chatMode = mode === "agent_chat";
   const call = useMemo(() => injected ?? createLocalVoiceCall(), [injected]);
   useEffect(() => () => call.dispose(), [call]);
   const state = useSyncExternalStore(call.subscribe, call.getSnapshot);
@@ -48,8 +61,10 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: 
   const busy = state.phase === "starting" || state.phase === "ending";
 
   const start = (newConversation = false) => {
-    void call.start({ companyId, agentId, ...(issueId && !newConversation ? { issueId } : {}), ...(newConversation ? { newConversation: true } : {}) });
+    if (chatMode) return void call.start({ companyId, agentId, mode });
+    void call.start({ companyId, agentId, mode, ...(issueId && !newConversation ? { issueId } : {}), ...(newConversation ? { newConversation: true } : {}) });
   };
+  const replyAgent = state.agentName ?? agentName;
   const submitText = (event: FormEvent) => {
     event.preventDefault();
     if (call.sendText(text)) setText("");
@@ -65,12 +80,12 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: 
         ) : (
           <>
             <Button size="sm" onClick={() => start(false)}><Phone aria-hidden /> Start voice call</Button>
-            <Button variant="ghost" size="sm" onClick={() => start(true)}>New voice task</Button>
+            {!chatMode && <Button variant="ghost" size="sm" onClick={() => start(true)}>New voice task</Button>}
           </>
         )}
         {live && (state.mic === "live"
-          ? <Button variant="outline" size="sm" onClick={() => call.pauseMic("manual")}><MicOff aria-hidden /> Pause mic</Button>
-          : <Button variant="outline" size="sm" onClick={() => call.resumeMic()}><Mic aria-hidden /> Resume mic</Button>)}
+          ? <Button variant="outline" size="sm" onClick={() => call.pauseMic("manual")}><MicOff aria-hidden /> {chatMode ? "Pause listening" : "Pause mic"}</Button>
+          : <Button variant="outline" size="sm" onClick={() => call.resumeMic()}><Mic aria-hidden /> {chatMode ? "Resume listening" : "Resume mic"}</Button>)}
         <span role="status" className="text-sm text-muted-foreground">
           {state.phase === "starting" && "Connecting…"}
           {live && (state.modelSpeaking ? "Speaking" : state.mic === "live" ? "Listening" : "Mic paused")}
@@ -84,7 +99,15 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: 
         )}
       </div>
 
-      {state.issue && (
+      {chatMode && (
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <p>
+            Connected to your Chat with {replyAgent} — <Link className="text-primary underline" to={`/chats/${encodeURIComponent(agentId)}`}>Open Chat</Link>
+          </p>
+          <p>What you say is sent to the Chat as soon as you stop talking. Approvals, deployments and settings still need the normal Paperclip controls.</p>
+        </div>
+      )}
+      {!chatMode && state.issue && (
         <p className="text-xs text-muted-foreground">
           Voice task <Link className="text-primary underline" to={`/issues/${state.issue.identifier ?? state.issue.id}`}>{state.issue.identifier ?? "open task"}</Link>
           {" · "}assigned to {state.agentName ?? agentName}
@@ -104,7 +127,7 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: 
         </div>
       )}
 
-      {state.draft && (
+      {!chatMode && state.draft && (
         <div className="space-y-2 rounded-lg border border-border p-4" aria-label="Draft for confirmation">
           <p className="text-xs font-medium text-muted-foreground">
             Draft for {state.agentName ?? agentName} · revision {state.draft.revision}
@@ -126,6 +149,21 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: 
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {chatMode && state.sentLog.length > 0 && (
+        <div className="space-y-2">
+          <h2 className="text-sm font-medium">Sent to {replyAgent}</h2>
+          <ol className="space-y-2" aria-label={`Sent to ${replyAgent}`}>
+            {state.sentLog.map((entry) => (
+              <li key={entry.operationId} className="space-y-1 rounded-lg border border-border p-3">
+                <p className="whitespace-pre-wrap break-words text-sm">{entry.text}</p>
+                <SentStatus entry={entry} />
+                {entry.status === "failed" && entry.error && <p role="alert" className="text-xs text-destructive">{entry.error}</p>}
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 

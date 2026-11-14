@@ -56,8 +56,10 @@ binding: it records the company, caller, endpoint, assigned agent, issue and
 project on the session (`binding_mode`, `binding_project_id`). The client never
 supplies these values again on later calls.
 
-A start without `bindingMode` keeps the existing Speko path unchanged. Any
-other `bindingMode` value is rejected with `400`. When a live session already
+A start without `bindingMode` keeps the existing Speko path unchanged.
+`bindingMode: "agent_chat"` (HOM-326) binds the caller's own Agent Chat
+instead; see [Agent Chat binding](#agent-chat-binding-hom-326). Any other
+`bindingMode` value is rejected with `400`. When a live session already
 exists for the same caller and task, a second start gets
 `409 voice_call_already_active` and does not preempt the first session.
 
@@ -248,7 +250,8 @@ All changes are additive.
 
 | column | constraint |
 | --- | --- |
-| `binding_mode` | `null` or `'voice_task'` |
+| `binding_mode` | `null`, `'voice_task'` or (migration `0442_loose_masque`) `'agent_chat'` |
+| `conversation_id` | required except for `agent_chat` (migration `0442_loose_masque`) |
 | `binding_project_id` | none |
 
 `chat_voice_confirmations` has these constraints:
@@ -528,10 +531,77 @@ tokens, output audio/text tokens) plus `gpt-4o-transcribe` usage from each
 transcription. Gemini: per-turn `usageMetadata` (each turn's prompt includes
 the context). Ledger metering and rate cards are HOM-314.
 
+### Agent Chat binding (HOM-326)
+
+Owner decisions (HOM-265 comments 71faa9b0 and 80be3af8, 2026-11-14): the
+voice page talks to the Owner's Chat with an agent chosen per call (momo by
+default), and what the Owner says is sent as soon as they stop talking, with
+no read-back and no 「確認送出」. `voice_task` stays for compatibility.
+
+- **Start.** The page resolves the agent's local voice endpoint, then the
+  caller's Chat with that agent (`POST /companies/{id}/chats/{agentRef}`
+  creates it on first use), then starts with
+  `{ bindingMode: "agent_chat", issueId: <chat issue>, … }`. The server
+  requires `issueId`, rejects `newConversation`, and accepts the Chat only
+  when `conversationAgentId` and `assigneeAgentId` equal the endpoint's agent
+  and `conversationUserId` is the caller (`409 voice_chat_binding_invalid`
+  otherwise). No task and no `chat_conversations` row are created: the
+  session's `conversation_id` is null (allowed only for `agent_chat`), so the
+  Chat never looks like an externally bound issue (workspace isolation,
+  external retry policy, assignee lock and blocker text stay unchanged).
+  `voice_task` starts refuse a Chat with the same code. A second live call on
+  the same Chat gets `409 voice_call_already_active`; the page ends that
+  older call of the same caller and starts again once. Without Agent Chat
+  (`enableAgentChat` off) the page keeps the `voice_task` flow.
+- **Authority.** Relay, reconcile and recovery checks use
+  `authorizeAnySession`, which for `agent_chat` also requires the Chat to
+  still belong to the caller and the agent. Channel work (`authorizeSession`:
+  tools, deliveries, publications, replies) refuses `agent_chat` sessions with
+  `404`; local tools, confirmations and operation receipts stay `voice_task`
+  only, and `runCommand` refuses `agent_chat` sessions.
+- **Dictation.** The model session has no tools and, for OpenAI, server VAD
+  with `create_response: false`, so the model never answers caller speech on
+  its own. Each caller transcription (Taiwan Traditional) is buffered; 2 s
+  after the last words (a new `speech_started` holds the buffer up to 20 s)
+  the relay merges them and sends `{ type: "dictation", operationId, text,
+  body }`. Fillers (「嗯」「好」「對」…), known transcription hallucinations and
+  speaker echo are dropped and shown to the caller as
+  `{ type: "dictation_dropped", text, reason: "echo" | "noise" }`. Echo is
+  judged only for a whole utterance (Gemini fragments are regrouped) of at
+  least 4 characters that began during model playback or within 1.5 s after
+  it, and that repeats at least 60% of the last two model turns. Typed text
+  is sent at once. Pausing the microphone or ending the call (by the caller
+  or by the relay, e.g. the time limit) commits an utterance in progress,
+  waits up to 3 s for its transcription and flushes the buffer before
+  `ended`. Nothing rewrites the caller's words.
+- **Posting.** The browser posts `body` as the caller through the normal Chat
+  composer path, `POST /issues/{chat}/comments` with
+  `clientRequestId = operationId` and `metadata.voiceInput.sessionId`, so
+  Chat delivery, native session bridges, read state and retries behave exactly
+  like typing. The server accepts that marker only for the caller's own
+  `agent_chat` session on that Chat and stores it with a "Voice input"
+  section; it only restricts the message: `resolve-from-comment` refuses to
+  accept a confirmation card from a voice-marked message (declining is
+  allowed). `body` is the words
+  followed by one italic line telling the agent that the text came from speech
+  recognition, that it is not an approval, deployment or settings
+  authorization, and asking for a last `語音摘要：` line. The browser reports
+  `{ type: "dictation_result", operationId, status }`; on `sent` the OpenAI
+  model says only 「收到」 (Gemini already answers each utterance), on
+  `failed` it asks the Owner to look at the screen.
+- **Replies.** New agent comments on the Chat since the call started are read
+  as for `voice_task` (the `語音摘要：` line, else a short spoken summary),
+  except that `fast_response`, `workspace_recovery` and
+  `session_bridge_input` comments are skipped. The Chat status is never
+  changed by voice.
+
 ### Tests
 
 | file | coverage |
 | --- | --- |
+| `server/src/__tests__/local-voice-agent-chat-relay.test.ts` | agent_chat on both engines: no tools, no automatic answers, merge and hold, fillers and echo (only during playback, whole utterances), typed text, pause and end drain (caller and relay ends), acknowledgement and failure notices, replies |
+| `server/src/__tests__/local-voice.integration.test.ts` (agent_chat block) | own Chat only, no task or channel conversation, channel paths refused, revocation on owner change |
+| `server/src/__tests__/confirmation-comment-resolution.test.ts` | a voice-marked message cannot accept a confirmation, may decline |
 | `server/src/__tests__/local-voice-relay.test.ts` | Gemini engine and shared core: setup, audio, spoken and UI confirmation, refusals, resumption, limits, reply announcements, summary helpers |
 | `server/src/__tests__/local-voice-openai-relay.test.ts` | OpenAI engine: session config, audio, tool round trip, confirmation with a late transcript, echo and cut-off read-backs, barge-in truncation, notices, reconnect context, usage, engine configuration, Taiwan Traditional conversion |
 | `server/src/__tests__/local-voice-relay.integration.test.ts` | embedded Postgres, loopback upgrade with fake gateways for both engines: provisioning, rejected upgrades, spoken confirmation into one delivery, replies, end on disconnect |
@@ -549,4 +619,6 @@ server environment and restart Paperclip; new calls use Gemini at 16 kHz
 (the browser follows the relay's `inputSampleRate`), calls in progress are
 not moved. To turn voice off, unset the two gateway variables (the relay then
 rejects upgrades with 503) or turn off `enableLocalVoice`. Endpoints, sessions and voice tasks are ordinary
-additive rows and need no migration.
+additive rows and need no migration. Migration `0442_loose_masque` only widens
+the `binding_mode` check and lets `agent_chat` rows omit `conversation_id`; a previous release keeps working on it and
+ends any live `agent_chat` session as revoked on its next local reconcile.

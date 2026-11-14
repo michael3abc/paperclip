@@ -80,6 +80,7 @@ const clientMessageSchema: z.ZodType<LocalVoiceRelayClientMessage> = z.discrimin
   z.object({ type: z.literal("playback"), playing: z.boolean() }).strict(),
   z.object({ type: z.literal("confirm_draft"), draftId: z.string().uuid(), revision: z.number().int().min(1).max(1_000_000) }).strict(),
   z.object({ type: z.literal("cancel_draft"), draftId: z.string().uuid() }).strict(),
+  z.object({ type: z.literal("dictation_result"), operationId: z.string().uuid(), status: z.enum(["sent", "failed"]), commentId: z.string().uuid().optional(), message: z.string().max(500).optional() }).strict(),
   z.object({ type: z.literal("end") }).strict(),
 ]);
 
@@ -196,7 +197,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       },
       port: createLocalVoiceTaskPort(db, input.service, { binding: input.binding, caller: input.caller, token: input.token, allowLocalBoard }),
       connectUpstream: connectUpstream(input.config),
-      binding: { issueId: input.binding.issue.id, issueIdentifier: input.binding.issue.identifier, issueTitle: input.binding.issue.title, agentName: input.binding.agentName },
+      binding: { issueId: input.binding.issue.id, issueIdentifier: input.binding.issue.identifier, issueTitle: input.binding.issue.title, agentName: input.binding.agentName, mode: input.binding.mode },
       voiceName: input.config.voiceName,
       model: input.config.model,
       log: (event, fields) => logger.info({ ...fields, sessionId, companyId: input.companyId }, event),
