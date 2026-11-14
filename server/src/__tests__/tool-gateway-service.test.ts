@@ -1992,13 +1992,20 @@ describeEmbeddedPostgres("tool gateway service", () => {
     })).rejects.toMatchObject({ reasonCode: "action_not_approved" });
   });
 
-  it.each([false, true])("delegates ordinary external writes but preserves explicit human policy (%s)", async humanOnly => {
-    const { company, agent, run } = await createRunFixture(db);
+  it.each([false, true])("routes ordinary external writes to the task's main and preserves explicit human policy (%s)", async humanOnly => {
+    const { company, agent, issue, run } = await createRunFixture(db);
     const ownerId = randomUUID();
     await db.insert(authUsers).values({ id: ownerId, name: "Delegating Owner", email: `${ownerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: ownerId, membershipRole: "owner" });
     await saveDecisionDelegation(db, { companyId: company.id, ownerUserId: ownerId, agentId: agent.id,
       baseRevision: null, enabled: true, allowSelfApproval: true, scopes: ["task_decisions", "external_writes"] });
+    // Owner 2026-11-14 「為啥要給 michael ? 直接給 mian 自己處理」: the main that created the task decides.
+    const [project] = await db.insert(projects).values({ companyId: company.id, name: "Gateway project" }).returning();
+    const [main] = await db.insert(agents).values({ companyId: company.id, name: `Gateway Main ${randomUUID()}`, adapterType: "ccpocket_bridge",
+      adapterConfig: { role: "main", projectId: project!.id }, runtimeConfig: {}, permissions: {} }).returning();
+    const [mainRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: main!.id, invocationSource: "on_demand",
+      status: "running" }).returning();
+    await db.update(issues).set({ createdByAgentId: main!.id }).where(eq(issues.id, issue.id));
     await db.insert(toolPolicies).values({ ...reviewNotePolicyRow(company), ...(humanOnly ? { createdByUserId: ownerId } : {}) });
     const gateway = createTestToolGatewayService(db);
     const session = await gateway.createSession(runSessionInput(company, agent, run));
@@ -2006,16 +2013,20 @@ describeEmbeddedPostgres("tool gateway service", () => {
       parameters: { noteId: "owned", body: "reviewed simulated write" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
     const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
     const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
-    expect(interaction.delegation?.level).toBe(humanOnly ? "human" : "delegate");
-    const actor = { agentId: agent.id, runId: run.id, delegationRevision: interaction.delegation!.revision, reason: "Owned simulated action matches the requested scope" };
+    expect(interaction.delegation).toMatchObject(humanOnly ? { level: "human", recipientAgentId: null } : { level: "pm", recipientAgentId: main!.id });
+    const reason = "Owned simulated action matches the requested scope";
+    const actor = { agentId: main!.id, runId: mainRun!.id, delegationRevision: interaction.delegation!.revision, reason };
     await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor, rememberAction: true })).rejects.toThrow();
+    // The requesting worker (also the grant holder) is not the recipient.
+    await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id,
+      actor: { agentId: agent.id, runId: run.id, delegationRevision: interaction.delegation!.revision, reason } })).rejects.toThrow();
     if (humanOnly) {
       await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor })).rejects.toThrow();
       expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, request.id)))[0].status).toBe("pending");
     } else {
       expect(await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor })).toMatchObject({ status: "executed" });
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
-        .toMatchObject({ status: "accepted", resolvedByAgentId: agent.id, resolvedByUserId: null });
+        .toMatchObject({ status: "accepted", resolvedByAgentId: main!.id, resolvedByUserId: null });
     }
   });
 

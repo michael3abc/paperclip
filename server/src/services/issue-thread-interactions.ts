@@ -517,12 +517,17 @@ async function assertInteractionResolutionAllowed(
     });
     if (actor.delegationRevision !== current.delegation.revision) throw conflict("The delegated request changed; reread the current revision");
   }
+  // A "pm"-level tool action is delegated only to its recipient, which passed
+  // assertDelegatedDecisionActor above (Owner 2026-11-14: the main decides).
+  const toolDelegation = current.delegation?.requiredScopes.includes("external_writes") ? current.delegation : null;
+  const delegatedToolAction = !!toolDelegation && (toolDelegation.level === "delegate"
+    || toolDelegation.level === "pm" && !!actor.agentId && toolDelegation.recipientAgentId === actor.agentId);
   return assertIssueThreadInteractionResolverAudience({
     actor: resolverActor(actor),
     interaction: current,
     additionalRestriction: actor.resolverPolicyRestriction,
     governedAction:
-      !(current.delegation?.level === "delegate" && current.delegation.requiredScopes.includes("external_writes")) &&
+      !delegatedToolAction &&
       current.kind === "request_confirmation" &&
       current.payload !== null &&
       typeof current.payload === "object" &&
@@ -3538,7 +3543,7 @@ export function issueThreadInteractionService(
             && (data.resolverPolicy !== undefined || governance[data.kind]?.cap !== undefined
               || governance[data.kind]?.defaultPolicy !== undefined || policy.effectiveResolverPolicySource === "governed_action" && !options.delegateOrdinaryToolAction)
             ? ["explicit_human", ...(options.decisionReservedReasons ?? [])] : options.decisionReservedReasons ?? [],
-          ...(options.delegateOrdinaryToolAction ? { requiredScopes: ["external_writes"], requiresDelegate: true } : {}),
+          ...(options.delegateOrdinaryToolAction ? { requiredScopes: ["external_writes"] } : {}),
         }) : null;
       if (delegation) {
         policy = { ...policy, effectiveResolverPolicy: delegation.level === "human" ? "human_only" : "anyone",
@@ -3584,7 +3589,7 @@ export function issueThreadInteractionService(
         if (
           normalizedData.kind === "request_confirmation" &&
           normalizedData.payload.toolAction !== undefined &&
-          !(options.delegateOrdinaryToolAction && delegation?.level === "delegate"
+          !(options.delegateOrdinaryToolAction && (delegation?.level === "delegate" || delegation?.level === "pm")
             && delegation.requiredScopes.includes("external_writes"))
         ) {
           throw unprocessable(

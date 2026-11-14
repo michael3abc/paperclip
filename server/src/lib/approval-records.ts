@@ -57,7 +57,7 @@ export function approvalResolutionRecords(db: Db) {
         if (!current.delegation) throw forbidden("This approval requires the human Owner");
         // Owner 2026-11-14 「直接把 PM 這個邏輯拔掉，就留 main 有所有權限」: the recipient of a
         // "pm"-level request is blocked only by explicit_human. assertDelegatedDecisionActor
-        // below admits that recipient only as the project's main or lead.
+        // below admits that recipient only as a main or the project's lead.
         const reserved = approvalReservedReasons(current.type, current.payload);
         const projectMainDecides = current.delegation.level === "pm" && current.delegation.recipientAgentId === actor.agentId;
         if (projectMainDecides ? reserved.includes("explicit_human") : reserved.length) throw forbidden("This approval requires the human Owner");
