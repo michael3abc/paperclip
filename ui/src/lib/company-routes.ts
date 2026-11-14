@@ -31,6 +31,7 @@ const BOARD_ROUTE_ROOTS = new Set([
   "search",
   "settings",
   "timeline",
+  "voice",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "mcp-connect", "dot-connect", "assistant-connections", "docs", "instance"]);

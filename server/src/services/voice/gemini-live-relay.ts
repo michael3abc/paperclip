@@ -531,6 +531,9 @@ export class GeminiLiveRelay {
     let replies: VoiceAgentReply[];
     try { replies = await this.port.newReplies(); } catch (error) {
       this.log("voice_relay_reply_check_failed", { error: safeError(error) });
+      // Revoked access, an ended or expired session: stop the call instead of talking without authority.
+      const status = (error as { status?: unknown })?.status;
+      if (status === 403 || status === 404) await this.end("session_unavailable");
       return;
     }
     if (!replies.length) return;
