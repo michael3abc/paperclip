@@ -1,4 +1,5 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { isDeliberateRunCancellation } from "../automatic-retry-authority.js";
 import { cancelledRunRejectsAutomaticRetry, findRetrySupersedingInput, findCancelledRetryAncestor } from "../automatic-retry-authority.js";
 import { isOriginalMainBlockerRetry } from "../recovery/main-blocker-run.js";
 import { normalizeAgentNameKey } from "../agent-name-key.js";
@@ -464,8 +465,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON;
     // A persisted transient error family (provider transient or quota) is
     // transient even when the adapter recorded a generic or unknown code.
+    // A run the system itself cancelled (controller lease lost, watchdog,
+    // shutdown) records the generic `cancelled` code; only a deliberate
+    // Owner/agent stop is final. System stops retry as transient.
+    const systemCancelled = run.errorCode === "cancelled" && !isDeliberateRunCancellation(run)
+      && (parseObject(parseObject(run.resultJson).cancellation).initiator as { type?: unknown } | undefined)?.type === "system";
     const failureClass = failureClassBudget
-      ? (readTransientRecoveryContractFromRun(run) ? "transient" : classifyRunFailure(run.errorCode))
+      ? (readTransientRecoveryContractFromRun(run) || systemCancelled ? "transient" : classifyRunFailure(run.errorCode))
       : null;
     const maxAttempts = !failureClassBudget
       ? Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS))
