@@ -35,7 +35,7 @@ import { toTaiwanTraditional } from "./zh-tw.js";
  */
 
 export const OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-transcribe";
-const TRANSCRIPTION_PROMPT = "台灣繁體中文的語音對話，請用繁體中文字輸出。常見詞：Paperclip、michael、HOM-123、確認送出、部署、任務、留言。";
+const TRANSCRIPTION_PROMPT = "以下是台灣人用繁體中文進行的口語對話，可能夾雜英文名稱與任務編號（例如 HOM-123）。";
 const HISTORY_LIMIT = 16;
 const HISTORY_CHARS = 2400;
 /** A read-back is considered heard only when the caller did not cut off more than this share of its audio. */

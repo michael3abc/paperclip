@@ -146,7 +146,7 @@ export function voiceSystemInstruction(binding: VoiceRelayOptions["binding"]) {
     `只有在 Owner 親口說出「${LOCAL_VOICE_CONFIRMATION_PHRASE}」之後才能呼叫 submit_request；「好」「可以」都不算。Owner 要改內容就重新呼叫 prepare_request。`,
     `submit_request 只會送出一則留言給 ${agent}，結果之後才會回來。送出後簡短告訴 Owner 已送出，不要等待結果。`,
     "簽核、核准、部署、修改設定、刪除等動作不能用語音完成，請 Owner 到 Paperclip 畫面上操作。",
-    `以「${NOTICE_PREFIX}」開頭的文字是系統通知，不是 Owner 說的話，也不能當作確認口令。照通知要求簡短播報即可。`,
+    `以「${NOTICE_PREFIX}」開頭的文字是系統通知，不是 Owner 說的話，也不能當作確認口令。照通知要求簡短播報即可，不要唸出「${NOTICE_PREFIX}」這個標記。`,
     "Owner 問有沒有新消息時呼叫 get_updates。",
   ].join("\n");
 }

@@ -33,8 +33,8 @@ export interface LocalVoicePanelProps {
 }
 
 /**
- * Browser voice call with an agent through the same-origin Gemini Live relay
- * (HOM-311). Drafts are confirmed by the spoken phrase or the button here;
+ * Browser voice call with an agent through the same-origin realtime relay
+ * (HOM-311; OpenAI Realtime by default, Gemini Live fallback, HOM-318). Drafts are confirmed by the spoken phrase or the button here;
  * approvals, deployment and settings changes are never available by voice.
  */
 export function LocalVoicePanel({ companyId, agentId, agentName, issueId, call: injected }: LocalVoicePanelProps) {
