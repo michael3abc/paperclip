@@ -414,6 +414,7 @@ import {
 } from "../services/cross-issue-influence-limit.js";
 import { observeSessionBridgeWrite } from "../services/session-bridge-write-limit.js";
 import { bridgeChatSteeringService, bridgeSteeringAttempt, isCodexBridgeChatDispatch } from "../services/bridge-chat-steering.js";
+import { deliverInteractionToAddresseeConversation } from "../services/interaction-addressee-conversation.js";
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
@@ -17840,8 +17841,14 @@ export function issueRoutes(
             interaction.payload.toolAction !== undefined,
         })
       ) {
-        void heartbeat
-          .wakeup(interaction.addresseeAgentId, {
+        const addresseeAgentId = interaction.addresseeAgentId;
+        // A card addressed to a non-assignee (a worker asking its project main)
+        // cannot run on the worker's task; deliver it to the addressee's Chat.
+        void deliverInteractionToAddresseeConversation(db, (agentId, opts) =>
+          heartbeat.wakeup(agentId, opts as Parameters<typeof heartbeat.wakeup>[1]), {
+          issue, interaction, requestedByActorType: actor.actorType, requestedByActorId: actor.actorId,
+        }).then((delivered) => delivered ? undefined : heartbeat
+          .wakeup(addresseeAgentId, {
             source: "automation",
             triggerDetail: "system",
             reason: "interaction_pending",
@@ -17866,7 +17873,7 @@ export function issueRoutes(
               wakeReason: "interaction_pending",
               source: "issue.interaction.created",
             },
-          })
+          }))
           .catch((err) =>
             logger.warn(
               {
