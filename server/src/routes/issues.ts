@@ -14784,6 +14784,9 @@ export function issueRoutes(
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
         allowBoardOverride: req.actor.type === "board" && req.actor.source !== "mcp_oauth",
+        actorIsProjectLead: Boolean(actor.agentId && existing.projectId && await db.select({ lead: projects.leadAgentId })
+          .from(projects).where(and(eq(projects.companyId, existing.companyId), eq(projects.id, existing.projectId))).limit(1)
+          .then(rows => rows[0]?.lead === actor.agentId)),
         commentBody,
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
