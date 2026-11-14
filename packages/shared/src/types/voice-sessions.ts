@@ -153,6 +153,8 @@ export interface LocalVoiceDraft {
 export type LocalVoiceRelayClientMessage =
   | { type: "text"; text: string }
   | { type: "mic"; state: "live" | "paused" }
+  /** Browser playback of model audio started or drained; spoken confirmation waits for it. */
+  | { type: "playback"; playing: boolean }
   | { type: "confirm_draft"; draftId: string; revision: number }
   | { type: "cancel_draft"; draftId: string }
   | { type: "end" };
@@ -167,7 +169,7 @@ export type LocalVoiceRelayServerEvent =
   | { type: "draft"; draft: LocalVoiceDraft }
   | { type: "draft_cleared"; draftId: string }
   | { type: "submitted"; draftId: string; revision: number; operationId: string; via: "spoken" | "ui" }
-  | { type: "submit_failed"; draftId: string; code: string; message: string }
+  | { type: "submit_failed"; draftId: string; revision: number; code: string; message: string }
   | { type: "agent_reply"; commentId: string; body: string; voiceSummary: string | null; createdAt: string }
   | { type: "time_warning"; remainingSeconds: number }
   | { type: "reconnecting"; reason: string }

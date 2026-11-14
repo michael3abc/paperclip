@@ -21,9 +21,10 @@ function setup(options: { startError?: unknown; firstStartError?: unknown } = {}
   const sockets: FakeSocket[] = [];
   const intervals: (() => void)[] = [];
   let frame: ((pcm: ArrayBuffer, rms: number) => void) | null = null;
+  let playing: ((playing: boolean) => void) | null = null;
   const audio: VoiceAudioEngine & { played: ArrayBuffer[]; flushes: number; closed: boolean } = {
     played: [], flushes: 0, closed: false,
-    start: vi.fn(async (handlers) => { frame = handlers.onFrame; }),
+    start: vi.fn(async (handlers) => { frame = handlers.onFrame; playing = handlers.onPlaying; }),
     play(pcm) { this.played.push(pcm); },
     flush() { this.flushes += 1; },
     async close() { this.closed = true; },
@@ -49,7 +50,7 @@ function setup(options: { startError?: unknown; firstStartError?: unknown } = {}
     clearInterval: () => undefined,
   };
   const call = new LocalVoiceCall(deps);
-  return { call, api, audio, sockets, tick: (ms: number) => { now += ms; for (const fn of intervals) fn(); }, frame: (rms: number) => frame?.(new ArrayBuffer(4), rms) };
+  return { call, api, audio, sockets, playing: (value: boolean) => playing?.(value), tick: (ms: number) => { now += ms; for (const fn of intervals) fn(); }, frame: (rms: number) => frame?.(new ArrayBuffer(4), rms) };
 }
 
 describe("LocalVoiceCall", () => {
@@ -146,5 +147,27 @@ describe("LocalVoiceCall", () => {
     await busy.call.start({ companyId: "c1", agentId: "agent-1" });
     expect(busy.api.start).toHaveBeenLastCalledWith("c1", expect.objectContaining({ newConversation: true }));
     expect(busy.call.getSnapshot().issue?.id).toBe("issue-new");
+  });
+
+  it("reports playback changes to the relay and abandons a start that was ended midway", async () => {
+    const h = setup();
+    await h.call.start({ companyId: "c1", agentId: "agent-1" });
+    const socket = h.sockets[0]!;
+    socket.emit({ type: "ready", issueId: "issue-1", issueIdentifier: null, agentName: "michael", maxSeconds: 900, warningSeconds: 600 });
+    h.playing(true); h.playing(false);
+    expect(socket.json().slice(-2)).toEqual([{ type: "playback", playing: true }, { type: "playback", playing: false }]);
+
+    const slow = setup();
+    let finish!: () => void;
+    (slow.audio.start as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const starting = slow.call.start({ companyId: "c1", agentId: "agent-1" });
+    await vi.waitFor(() => expect(slow.audio.start).toHaveBeenCalled());
+    await slow.call.end();
+    finish();
+    await starting;
+    expect(slow.sockets).toHaveLength(0);
+    expect(slow.audio.closed).toBe(true);
+    expect(slow.api.end).toHaveBeenCalledWith("c1", "session-1");
+    expect(slow.call.getSnapshot().phase).toBe("ended");
   });
 });

@@ -32,16 +32,21 @@ export function VoiceCall() {
   const available = useMemo(() => (agents.data ?? []).filter((agent) => agent.status !== "terminated"), [agents.data]);
   const requested = searchParams.get("agentId");
   const [chosen, setChosen] = useState<string | null>(null);
-  const agentId = chosen
-    ?? (requested && available.some((agent) => agent.id === requested) ? requested : null)
+  // Pin the default once: a later primary-agent or roster refresh must not remount (and end) a live call.
+  const [pinned, setPinned] = useState<string | null>(null);
+  const defaultReady = agents.isSuccess && !primary.loading;
+  const fallback = (requested && available.some((agent) => agent.id === requested) ? requested : null)
     ?? (primary.data?.primaryAgentId && available.some((agent) => agent.id === primary.data?.primaryAgentId) ? primary.data.primaryAgentId : null)
     ?? available[0]?.id ?? null;
+  useEffect(() => { if (defaultReady && pinned === null && fallback) setPinned(fallback); }, [defaultReady, pinned, fallback]);
+  const agentId = chosen ?? pinned;
   const agent = available.find((item) => item.id === agentId);
   const issueId = searchParams.get("issueId") ?? undefined;
 
   if (!selectedCompanyId) return <EmptyState icon={Mic} message="Select an organization to start a voice call." />;
-  if (status.isError) return <p role="alert" className="text-sm text-destructive">Voice status could not be loaded. Reload the page to try again.</p>;
-  if (status.isPending || agents.isPending) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  // Only the first load gates the page; a failed background refetch keeps a live call mounted.
+  if (!status.data && status.isError) return <p role="alert" className="text-sm text-destructive">Voice status could not be loaded. Reload the page to try again.</p>;
+  if (!status.data || agents.isPending || !defaultReady) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (!status.data.enabled) {
     return <EmptyState icon={Mic} message="Voice is off. Turn on chat connectors and local voice in Settings → Instance → Experimental." />;
   }

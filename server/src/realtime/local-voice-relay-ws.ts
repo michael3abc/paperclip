@@ -75,6 +75,7 @@ const DEFAULT_DEV_ORIGINS = ["http://localhost:3100", "http://127.0.0.1:3100"];
 const clientMessageSchema: z.ZodType<LocalVoiceRelayClientMessage> = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string().trim().min(1).max(4000) }).strict(),
   z.object({ type: z.literal("mic"), state: z.enum(["live", "paused"]) }).strict(),
+  z.object({ type: z.literal("playback"), playing: z.boolean() }).strict(),
   z.object({ type: z.literal("confirm_draft"), draftId: z.string().uuid(), revision: z.number().int().min(1).max(1_000_000) }).strict(),
   z.object({ type: z.literal("cancel_draft"), draftId: z.string().uuid() }).strict(),
   z.object({ type: z.literal("end") }).strict(),
@@ -136,6 +137,10 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
     handleProtocols: (protocols) => protocols.has(LOCAL_VOICE_RELAY_PROTOCOL) ? LOCAL_VOICE_RELAY_PROTOCOL : false,
   });
   const active = new Map<GeminiLiveRelay, string>();
+  /** One relay per voice session, and limit slots reserved before the async authorization. */
+  const sessions = new Set<string>();
+  const reserved = new Map<string, number>();
+  const reservedTotal = () => [...reserved.values()].reduce((sum, count) => sum + count, 0);
   const allowLocalBoard = opts.deploymentMode === "local_trusted";
 
   async function resolveCaller(req: IncomingMessage, companyId: string): Promise<VoiceCaller | null> {
@@ -193,6 +198,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       log: (event, fields) => logger.info({ ...fields, sessionId, companyId: input.companyId }, event),
     });
     active.set(relay, input.caller.id);
+    sessions.add(sessionId);
     let alive = true;
     const ping = setInterval(() => {
       if (!alive) { ws.terminate(); return; }
@@ -216,6 +222,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
     ws.on("close", () => {
       clearInterval(ping);
       active.delete(relay);
+      sessions.delete(sessionId);
       relay.handleBrowserClosed();
     });
     ws.on("error", (error) => logger.warn({ errorName: error.name, sessionId }, "local voice relay socket error"));
@@ -239,10 +246,18 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
     const service = opts.voice();
     const config = opts.config;
     if (!service || !config) { rejectUpgrade(socket, "503 Service Unavailable", "local voice relay is not configured"); return; }
+    if (sessions.has(sessionId)) { rejectUpgrade(socket, "409 Conflict", "this voice session already has a connection"); return; }
+    // Reserve the session and a global slot synchronously so parallel upgrades cannot race past the limits.
+    sessions.add(sessionId);
+    const slotKey = `pending:${sessionId}`;
+    reserved.set(slotKey, 1);
+    let attached = false;
+    const release = () => { reserved.delete(slotKey); if (!attached) sessions.delete(sessionId); };
     void (async () => {
+      if (active.size + reservedTotal() > MAX_RELAYS) { rejectUpgrade(socket, "429 Too Many Requests", "too many voice calls"); return; }
       const caller = await resolveCaller(req, companyId);
       if (!caller) { rejectUpgrade(socket, "403 Forbidden", "forbidden"); return; }
-      if (active.size >= MAX_RELAYS || [...active.values()].filter((id) => id === caller.id).length >= MAX_RELAYS_PER_CALLER) {
+      if ([...active.values()].filter((id) => id === caller.id).length >= MAX_RELAYS_PER_CALLER) {
         rejectUpgrade(socket, "429 Too Many Requests", "too many voice calls"); return;
       }
       let binding: Awaited<ReturnType<typeof authorizeLocalVoiceRelay>>;
@@ -253,11 +268,12 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
         throw error;
       }
       if (socket.destroyed) return;
+      attached = true;
       wss.handleUpgrade(req, socket, head, (ws) => attach(ws, { companyId, caller, token: protocols.token, binding, service, config }));
     })().catch((error) => {
       logger.error({ err: error }, "local voice relay upgrade failed");
       rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
-    });
+    }).finally(release);
   });
 
   return {

@@ -11,8 +11,12 @@ const CAPTURE_SOURCE = `
 class PcMicCapture extends AudioWorkletProcessor {
   constructor() {
     super();
+    // Box-filter decimation: each 16 kHz sample is the mean of the input samples
+    // it spans, which suppresses aliasing and carries across block boundaries.
     this.ratio = sampleRate / 16000;
-    this.position = 0;
+    this.phase = 0;
+    this.sum = 0;
+    this.taken = 0;
     this.frame = new Int16Array(640);
     this.filled = 0;
     this.sumSquares = 0;
@@ -21,21 +25,22 @@ class PcMicCapture extends AudioWorkletProcessor {
   process(inputs) {
     const channel = inputs[0] && inputs[0][0];
     if (!channel) return true;
-    for (let i = 0; i < channel.length; i++) { this.sumSquares += channel[i] * channel[i]; this.count++; }
-    while (this.position < channel.length) {
-      const index = Math.floor(this.position), fraction = this.position - index;
-      const a = channel[index], b = index + 1 < channel.length ? channel[index + 1] : a;
-      const sample = Math.max(-1, Math.min(1, a + (b - a) * fraction));
-      this.frame[this.filled++] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-      if (this.filled === this.frame.length) {
-        const rms = Math.sqrt(this.sumSquares / Math.max(1, this.count));
-        const buffer = this.frame.buffer.slice(0);
-        this.port.postMessage({ pcm: buffer, rms }, [buffer]);
-        this.filled = 0; this.sumSquares = 0; this.count = 0;
+    for (let i = 0; i < channel.length; i++) {
+      const x = channel[i];
+      this.sumSquares += x * x; this.count++;
+      this.sum += x; this.taken++; this.phase += 1;
+      if (this.phase >= this.ratio) {
+        const sample = Math.max(-1, Math.min(1, this.sum / this.taken));
+        this.frame[this.filled++] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+        this.phase -= this.ratio; this.sum = 0; this.taken = 0;
+        if (this.filled === this.frame.length) {
+          const rms = Math.sqrt(this.sumSquares / Math.max(1, this.count));
+          const buffer = this.frame.buffer.slice(0);
+          this.port.postMessage({ pcm: buffer, rms }, [buffer]);
+          this.filled = 0; this.sumSquares = 0; this.count = 0;
+        }
       }
-      this.position += this.ratio;
     }
-    this.position -= channel.length;
     return true;
   }
 }

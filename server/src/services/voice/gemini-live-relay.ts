@@ -9,7 +9,7 @@ import {
   type LocalVoiceRelayEndReason,
   type LocalVoiceRelayServerEvent,
 } from "@paperclipai/shared";
-import { containsConfirmationPhrase } from "./voice-summary.js";
+import { isConfirmationUtterance, recitationCoverage } from "./voice-summary.js";
 
 /**
  * Gemini Live relay for one local voice call (HOM-311).
@@ -57,7 +57,7 @@ export interface VoiceTaskPort {
   /** Read-only status; `identifier` such as HOM-307 selects another readable task. */
   status(identifier?: string): Promise<Record<string, unknown>>;
   /** Create the trusted confirmation receipt and submit exactly the confirmed text. */
-  submit(draft: LocalVoiceDraft & { operationId: string }): Promise<VoiceSubmitResult>;
+  submit(draft: LocalVoiceDraft & { operationId: string }, via: "spoken" | "ui"): Promise<VoiceSubmitResult>;
   /** Agent replies on the voice task not returned before (oldest first). */
   newReplies(): Promise<VoiceAgentReply[]>;
   /** Wake the relay when the voice task may have new replies. Returns an unsubscribe. */
@@ -87,10 +87,10 @@ export interface VoiceRelayOptions {
 
 interface DraftState extends LocalVoiceDraft {
   operationId: string;
-  /** The model finished (or was interrupted during) the turn that recited the draft. */
+  /** A completed model turn whose output transcription covered the draft text. */
   recited: boolean;
-  /** Caller speech transcribed after the recitation turn ended. */
-  heardAfterRecital: string;
+  /** Caller utterances that began after the recitation finished playing in the browser. */
+  utterances: { text: string; eligible: boolean }[];
   uiConfirmed: boolean;
   submitting?: Promise<VoiceSubmitResult>;
   result?: VoiceSubmitResult;
@@ -99,6 +99,8 @@ interface DraftState extends LocalVoiceDraft {
 const NOTICE_PREFIX = "[Paperclip 通知]";
 const MAX_DRAFT_CHARS = 4000;
 const MAX_BUFFERED_AUDIO_FRAMES = 50;
+/** Share of the draft's character bigrams that the read-back turn must contain. */
+const RECITATION_COVERAGE = 0.6;
 
 export function voiceToolDeclarations(agentName: string) {
   return [
@@ -159,6 +161,13 @@ export class GeminiLiveRelay {
   private closed = false;
   private micPaused = false;
   private modelTurnActive = false;
+  /** The browser is still playing model audio (it reports `playback` changes). */
+  private browserPlaying = false;
+  /** Output transcription of the current model turn, for recitation checks. */
+  private turnOutput = "";
+  /** The caller utterance being transcribed, closed when the model reacts. */
+  private openUtterance: { text: string; eligible: boolean } | null = null;
+  private replyCheckDueAt: number | null = null;
   private draft: DraftState | null = null;
   private readonly pendingNotices: string[] = [];
   private readonly bufferedAudio: Buffer[] = [];
@@ -186,7 +195,9 @@ export class GeminiLiveRelay {
     this.timers.push(this.setTimer(() => void this.end("max_duration"), this.maxSeconds * 1000));
     this.unwatch = this.port.watch(() => this.scheduleReplyCheck());
     try {
-      this.upstream = await this.openUpstream();
+      const upstream = await this.openUpstream();
+      if (this.closed) { this.retireCurrent?.(); try { upstream.close(); } catch { /* closed */ } return; }
+      this.upstream = upstream;
     } catch (error) {
       this.log("voice_relay_upstream_failed", { error: safeError(error) });
       await this.end("upstream_unavailable");
@@ -211,6 +222,9 @@ export class GeminiLiveRelay {
       case "text":
         this.sendUpstream({ clientContent: { turns: [{ role: "user", parts: [{ text: message.text }] }], turnComplete: true } });
         return;
+      case "playback":
+        this.browserPlaying = message.playing;
+        return;
       case "mic":
         this.micPaused = message.state === "paused";
         if (this.micPaused) {
@@ -221,7 +235,7 @@ export class GeminiLiveRelay {
       case "confirm_draft": {
         const draft = this.draft;
         if (!draft || draft.draftId !== message.draftId || draft.revision !== message.revision) {
-          this.browser.sendEvent({ type: "submit_failed", draftId: message.draftId, code: "voice_draft_stale", message: "這份草稿已經更新或不存在" });
+          this.browser.sendEvent({ type: "submit_failed", draftId: message.draftId, revision: message.revision, code: "voice_draft_stale", message: "這份草稿已經更新或不存在" });
           return;
         }
         draft.uiConfirmed = true;
@@ -232,7 +246,7 @@ export class GeminiLiveRelay {
         return;
       }
       case "cancel_draft":
-        if (this.draft?.draftId === message.draftId && !this.draft.result) {
+        if (this.draft?.draftId === message.draftId && !this.draft.result && !this.draft.submitting) {
           this.draft = null;
           this.browser.sendEvent({ type: "draft_cleared", draftId: message.draftId });
           this.queueNotice(`${NOTICE_PREFIX} Owner 在畫面上取消了草稿，沒有送出。`);
@@ -253,13 +267,18 @@ export class GeminiLiveRelay {
   private async openUpstream(): Promise<VoiceUpstream> {
     const connection: { socket: VoiceUpstream | null; retired: boolean } = { socket: null, retired: false };
     const setupDone = new Promise<void>((resolve, reject) => {
+      // end() aborts a setup in flight so the caller never waits for the timeout.
+      this.setupAborts.add(reject);
       const handlers: VoiceUpstreamHandlers = {
         onMessage: (json) => {
           if (connection.retired || this.closed) return;
           let message: Record<string, any>;
           try { message = JSON.parse(json); } catch { return; }
+          if (!message || typeof message !== "object") return;
           if (message.setupComplete) resolve();
-          this.handleUpstreamMessage(message);
+          // A malformed gateway frame must never throw into the socket listener.
+          try { this.handleUpstreamMessage(message); }
+          catch (error) { this.log("voice_relay_frame_rejected", { error: safeError(error) }); }
         },
         onClose: (code, reason) => {
           reject(new Error(`upstream closed ${code}`));
@@ -268,20 +287,30 @@ export class GeminiLiveRelay {
       };
       this.options.connectUpstream(handlers).then((socket) => {
         connection.socket = socket;
+        // A connection that resolves after its timeout or after the call ended is closed at once.
+        if (connection.retired || this.closed) { try { socket.close(); } catch { /* closed */ } return; }
         socket.send(JSON.stringify({ setup: this.setupMessage() }));
       }, reject);
     });
     try {
       await withTimeout(setupDone, 15_000);
     } catch (error) {
+      this.setupAborts.clear();
       connection.retired = true;
       try { connection.socket?.close(); } catch { /* already closed */ }
       throw error;
+    }
+    this.setupAborts.clear();
+    if (this.closed) {
+      connection.retired = true;
+      try { connection.socket?.close(); } catch { /* closed */ }
+      throw new Error("call ended during upstream setup");
     }
     this.retireCurrent = () => { connection.retired = true; };
     return connection.socket!;
   }
   private retireCurrent: (() => void) | null = null;
+  private readonly setupAborts = new Set<(error: Error) => void>();
 
   private setupMessage() {
     return {
@@ -315,40 +344,77 @@ export class GeminiLiveRelay {
       void this.reconnect("go_away");
     }
     if (message.usageMetadata) this.recordUsage(message.usageMetadata);
-    if (message.toolCall?.functionCalls) {
-      for (const call of message.toolCall.functionCalls) void this.handleToolCall(call);
+    const calls = message.toolCall?.functionCalls;
+    if (Array.isArray(calls)) {
+      this.closeUtterance();
+      for (const call of calls) if (call && typeof call === "object") void this.handleToolCall(call);
     }
     const content = message.serverContent;
-    if (!content) return;
-    for (const part of content.modelTurn?.parts ?? []) {
+    if (!content || typeof content !== "object") return;
+    const parts = content.modelTurn?.parts;
+    for (const part of Array.isArray(parts) ? parts : []) {
       const data = part?.inlineData;
       if (typeof data?.data === "string" && String(data.mimeType ?? "").startsWith("audio/pcm")) {
+        if (!this.modelTurnActive) this.closeUtterance();
         this.modelTurnActive = true;
+        this.browserPlaying = true;
         this.browser.sendAudio(Buffer.from(data.data, "base64"));
       }
     }
     if (typeof content.inputTranscription?.text === "string" && content.inputTranscription.text) {
       const text = content.inputTranscription.text;
       this.browser.sendEvent({ type: "transcript", role: "user", text });
-      if (this.draft?.recited) this.draft.heardAfterRecital += text;
+      this.recordCallerSpeech(text);
     }
     if (typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
+      this.turnOutput += content.outputTranscription.text;
       this.browser.sendEvent({ type: "transcript", role: "model", text: content.outputTranscription.text });
     }
     if (content.interrupted) {
       this.browser.sendEvent({ type: "interrupted" });
-      this.finishModelTurn();
+      // The browser flushes its playback on barge-in.
+      this.browserPlaying = false;
+      this.finishModelTurn(false);
     }
     if (content.turnComplete) {
       this.browser.sendEvent({ type: "turn_complete" });
-      this.finishModelTurn();
+      this.finishModelTurn(true);
     }
   }
 
-  private finishModelTurn() {
+  /**
+   * A draft counts as read back only after a model turn that completed (not
+   * interrupted) and whose output transcription covers most of the draft.
+   */
+  private finishModelTurn(completed: boolean) {
     this.modelTurnActive = false;
-    if (this.draft && !this.draft.recited && this.draft.result === undefined) this.draft.recited = true;
+    const draft = this.draft;
+    if (completed && draft && !draft.recited && draft.result === undefined && recitationCoverage(draft.text, this.turnOutput) >= RECITATION_COVERAGE) {
+      draft.recited = true;
+      draft.utterances = [];
+      this.openUtterance = null;
+    }
+    this.turnOutput = "";
     this.flushNotices();
+  }
+
+  /**
+   * Caller transcription is grouped into utterances. Only an utterance that
+   * starts after the read-back finished, while neither the model is generating
+   * nor the browser is still playing its audio, can confirm a draft. This keeps
+   * the model's own voice (speaker echo) from confirming.
+   */
+  private recordCallerSpeech(text: string) {
+    if (!this.openUtterance) {
+      const eligible = Boolean(this.draft?.recited) && !this.modelTurnActive && !this.browserPlaying;
+      this.openUtterance = { text: "", eligible };
+      this.draft?.utterances.push(this.openUtterance);
+    }
+    this.openUtterance.text += text;
+  }
+
+  private closeUtterance() {
+    this.openUtterance = null;
   }
 
   private handleUpstreamClosed(code: number, reason: string) {
@@ -372,6 +438,7 @@ export class GeminiLiveRelay {
       if (delay > 0) await new Promise<void>((resolve) => this.setTimer(resolve, delay));
       try {
         const next = await this.openUpstream();
+        if (this.closed) { this.retireCurrent?.(); try { next.close(); } catch { /* closed */ } return; }
         this.upstream = next;
         // Retire the previous connection only after the new one is ready.
         retirePrevious?.();
@@ -379,6 +446,7 @@ export class GeminiLiveRelay {
         this.reconnecting = false;
         this.upstreamReady = true;
         this.modelTurnActive = false;
+        this.turnOutput = "";
         const contextKept = hadHandle && this.resumeHandle !== null;
         this.browser.sendEvent({ type: "resumed", contextKept });
         for (const frame of this.bufferedAudio.splice(0)) this.sendAudio(frame);
@@ -413,11 +481,12 @@ export class GeminiLiveRelay {
 
   // ---- tools --------------------------------------------------------------
 
-  private async handleToolCall(call: { id?: string; name?: string; args?: Record<string, unknown> }) {
-    const name = String(call.name ?? "");
+  private async handleToolCall(call: { id?: unknown; name?: unknown; args?: unknown }) {
+    const name = typeof call.name === "string" ? call.name : "";
+    const args = call.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args as Record<string, unknown> : {};
     let response: Record<string, unknown>;
     try {
-      response = await this.runTool(name, call.args ?? {});
+      response = await this.runTool(name, args);
     } catch (error) {
       this.log("voice_relay_tool_failed", { tool: name, error: safeError(error) });
       response = { status: "error", message: "Paperclip 暫時無法完成這個動作" };
@@ -450,14 +519,16 @@ export class GeminiLiveRelay {
     const text = raw.trim();
     if (!text) return { status: "error", message: "草稿內容是空的" };
     if (Array.from(text).length > MAX_DRAFT_CHARS) return { status: "error", message: `草稿太長，請精簡到 ${MAX_DRAFT_CHARS} 字以內` };
+    if (this.draft?.submitting) return { status: "busy", message: "上一版草稿正在送出，請等送出結果出來再修改" };
     const current = this.draft && !this.draft.result ? this.draft : null;
+    this.closeUtterance();
     this.draft = {
       draftId: current?.draftId ?? randomUUID(),
       revision: (current?.revision ?? 0) + 1,
       text,
       operationId: randomUUID(),
       recited: false,
-      heardAfterRecital: "",
+      utterances: [],
       uiConfirmed: false,
     };
     const { draftId, revision } = this.draft;
@@ -486,7 +557,7 @@ export class GeminiLiveRelay {
 
   /** Caller audio transcribed after the recitation, possibly arriving just after the tool call. */
   private async heardConfirmation(draft: DraftState) {
-    const check = () => draft.recited && containsConfirmationPhrase(draft.heardAfterRecital, LOCAL_VOICE_CONFIRMATION_PHRASE);
+    const check = () => draft.recited && draft.utterances.some((utterance) => utterance.eligible && isConfirmationUtterance(utterance.text, LOCAL_VOICE_CONFIRMATION_PHRASE));
     if (check()) return true;
     const grace = this.options.transcriptGraceMs ?? 1500;
     if (grace <= 0) return false;
@@ -500,7 +571,7 @@ export class GeminiLiveRelay {
     draft.submitting = (async () => {
       let result: VoiceSubmitResult;
       try {
-        result = await this.port.submit({ draftId: draft.draftId, revision: draft.revision, text: draft.text, operationId: draft.operationId });
+        result = await this.port.submit({ draftId: draft.draftId, revision: draft.revision, text: draft.text, operationId: draft.operationId }, via);
       } catch (error) {
         result = { status: "failed", operationId: draft.operationId, code: "submit_unknown", message: "送出結果不明，請在畫面上查看任務留言" };
         this.log("voice_relay_submit_unknown", { error: safeError(error) });
@@ -511,7 +582,7 @@ export class GeminiLiveRelay {
         this.browser.sendEvent({ type: "submitted", draftId: draft.draftId, revision: draft.revision, operationId: result.operationId, via });
       } else {
         // Keep the same operation id: a retry of an unknown outcome must stay idempotent.
-        this.browser.sendEvent({ type: "submit_failed", draftId: draft.draftId, code: result.code ?? "submit_failed", message: result.message ?? "送出失敗" });
+        this.browser.sendEvent({ type: "submit_failed", draftId: draft.draftId, revision: draft.revision, code: result.code ?? "submit_failed", message: result.message ?? "送出失敗" });
       }
       return result;
     })();
@@ -522,8 +593,13 @@ export class GeminiLiveRelay {
 
   private scheduleReplyCheck() {
     if (this.closed) return;
+    const debounce = this.options.replyDebounceMs ?? 3000;
+    const now = this.now();
+    // Debounce bursts of activity, but never delay a check by more than three debounce windows.
+    this.replyCheckDueAt ??= now + debounce * 3;
     if (this.replyTimer !== null) this.clearTimer(this.replyTimer);
-    this.replyTimer = this.setTimer(() => { this.replyTimer = null; void this.checkReplies(); }, this.options.replyDebounceMs ?? 3000);
+    const wait = Math.max(0, Math.min(debounce, this.replyCheckDueAt - now));
+    this.replyTimer = this.setTimer(() => { this.replyTimer = null; this.replyCheckDueAt = null; void this.checkReplies(); }, wait);
   }
 
   private async checkReplies() {
@@ -586,6 +662,8 @@ export class GeminiLiveRelay {
     for (const timer of this.timers) this.clearTimer(timer);
     if (this.replyTimer !== null) this.clearTimer(this.replyTimer);
     this.unwatch?.();
+    for (const abort of this.setupAborts) abort(new Error("call ended during upstream setup"));
+    this.setupAborts.clear();
     try { this.upstream?.close(); } catch { /* already closed */ }
     this.upstream = null;
     this.log("voice_relay_ended", {

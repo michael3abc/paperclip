@@ -1,5 +1,5 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { agents, issueComments, issues, type Db } from "@paperclipai/db";
 import { HttpError, forbidden, notFound } from "../../errors.js";
 import { subscribeCompanyLiveEvents } from "../live-events.js";
@@ -112,14 +112,14 @@ export function createLocalVoiceTaskPort(db: Db, service: VoiceSessionService, i
       });
     },
 
-    async submit(draft): Promise<VoiceSubmitResult> {
+    async submit(draft, via): Promise<VoiceSubmitResult> {
       const failed = (error: unknown): VoiceSubmitResult => {
         const details = error instanceof HttpError && error.details && typeof error.details === "object" ? error.details as { code?: unknown } : {};
         return { status: "failed", operationId: draft.operationId, code: typeof details.code === "string" ? details.code : error instanceof HttpError ? `http_${error.status}` : "submit_failed",
           message: error instanceof HttpError ? error.message : "送出失敗" };
       };
       try {
-        await service.local.confirm(session.companyId, session.id, input.caller, { draftId: draft.draftId, revision: draft.revision, text: draft.text, via: "spoken_relay" });
+        await service.local.confirm(session.companyId, session.id, input.caller, { draftId: draft.draftId, revision: draft.revision, text: draft.text, via: via === "spoken" ? "spoken_relay" : "ui_relay" });
       } catch (error) {
         // A retry after an unknown outcome finds its own consumed confirmation; the
         // same operation id then returns the original receipt below.
@@ -144,8 +144,9 @@ export function createLocalVoiceTaskPort(db: Db, service: VoiceSessionService, i
           .from(issueComments)
           .where(and(eq(issueComments.issueId, session.issueId), eq(issueComments.companyId, session.companyId), eq(issueComments.authorAgentId, session.assignedAgentId),
             isNull(issueComments.deletedAt), gte(issueComments.createdAt, since)))
-          .orderBy(asc(issueComments.createdAt), asc(issueComments.id)).limit(50);
-        const fresh = rows.filter((row) => !seen.has(row.id));
+          // Newest first, so a long thread never hides new replies behind old ones.
+          .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(20);
+        const fresh = rows.reverse().filter((row) => !seen.has(row.id));
         for (const row of fresh) seen.add(row.id);
         return fresh.map(replyProjection);
       });

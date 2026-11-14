@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalVoiceRelayServerEvent } from "@paperclipai/shared";
 import { GeminiLiveRelay, type VoiceAgentReply, type VoiceTaskPort, type VoiceUpstreamHandlers } from "../services/voice/gemini-live-relay.js";
-import { containsConfirmationPhrase, extractVoiceSummary, spokenFallback } from "../services/voice/voice-summary.js";
+import { extractVoiceSummary, isConfirmationUtterance, recitationCoverage, spokenFallback } from "../services/voice/voice-summary.js";
 
 interface FakeUpstream { handlers: VoiceUpstreamHandlers; sent: any[]; closed: boolean }
 
@@ -85,7 +85,18 @@ describe("GeminiLiveRelay", () => {
     expect(h.current().sent.at(-1)).toEqual({ realtimeInput: { audioStreamEnd: true } });
   });
 
-  it("submits a draft only after the recitation and the caller's spoken confirmation phrase", async () => {
+  /** The model reads the draft back (audio + transcription), finishes its turn, and the browser drains playback. */
+  async function recite(h: ReturnType<typeof harness>, text: string, options: { drain?: boolean } = {}) {
+    h.fromModel({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: "AAA=" } }] } } });
+    h.fromModel({ serverContent: { outputTranscription: { text: `草稿是：${text}。請說確認送出。` } } });
+    h.fromModel({ serverContent: { turnComplete: true } });
+    if (options.drain !== false) await h.relay.handleBrowserMessage({ type: "playback", playing: false });
+  }
+  const say = (h: ReturnType<typeof harness>, ...chunks: string[]) => {
+    for (const text of chunks) h.fromModel({ serverContent: { inputTranscription: { text } } });
+  };
+
+  it("submits a draft only after the read-back and the caller's own spoken confirmation", async () => {
     const h = harness();
     const started = h.relay.start(); await h.ready(); await started;
     h.toolCall("p1", "prepare_request", { text: "  請 michael 查昨天部署失敗的原因  " });
@@ -93,20 +104,20 @@ describe("GeminiLiveRelay", () => {
     expect(prepared).toMatchObject({ status: "draft_ready", revision: 1, text: "請 michael 查昨天部署失敗的原因" });
     expect(h.events.find((e) => e.type === "draft")).toMatchObject({ draft: { draftId: prepared.draftId, revision: 1 } });
 
-    // The caller says the phrase while the model is still reciting: not accepted.
-    h.fromModel({ serverContent: { inputTranscription: { text: "確認送出" } } });
+    // Said before any read-back: not accepted.
+    say(h, "確認送出");
     h.toolCall("s1", "submit_request", { draftId: prepared.draftId });
     expect(await h.toolResponse("s1")).toMatchObject({ status: "confirmation_required" });
     expect(h.port.submit).not.toHaveBeenCalled();
 
-    h.fromModel({ serverContent: { turnComplete: true } });
-    h.fromModel({ serverContent: { inputTranscription: { text: "好，确认" } } });
-    h.fromModel({ serverContent: { inputTranscription: { text: "送出。" } } });
+    await recite(h, "請 michael 查昨天部署失敗的原因");
+    say(h, "好，确认", "送出。"); // one utterance, simplified transcription
     h.toolCall("s2", "submit_request", { draftId: prepared.draftId });
     expect(await h.toolResponse("s2")).toMatchObject({ status: "accepted" });
     expect(h.port.submit).toHaveBeenCalledTimes(1);
-    const submitted = h.port.submit.mock.calls[0]![0];
+    const [submitted, via] = h.port.submit.mock.calls[0]!;
     expect(submitted).toMatchObject({ draftId: prepared.draftId, revision: 1, text: "請 michael 查昨天部署失敗的原因" });
+    expect(via).toBe("spoken");
     expect(h.events.find((e) => e.type === "submitted")).toMatchObject({ via: "spoken", operationId: submitted.operationId });
 
     h.toolCall("s3", "submit_request", { draftId: prepared.draftId });
@@ -114,7 +125,42 @@ describe("GeminiLiveRelay", () => {
     expect(h.port.submit).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses negated or vague confirmations and keeps the operation id across a failed attempt", async () => {
+  it("ignores speaker echo: speech while the model talks or the browser still plays does not confirm", async () => {
+    const h = harness();
+    const started = h.relay.start(); await h.ready(); await started;
+    h.toolCall("p1", "prepare_request", { text: "請 michael 重新部署" });
+    const prepared = await h.toolResponse("p1");
+    // Echo of 「確認送出」 while the read-back is still playing in the browser.
+    await recite(h, "請 michael 重新部署", { drain: false });
+    say(h, "確認送出");
+    h.toolCall("s1", "submit_request", { draftId: prepared.draftId });
+    expect(await h.toolResponse("s1")).toMatchObject({ status: "confirmation_required" });
+    // An interrupted read-back never counts as recited.
+    const h2 = harness();
+    const started2 = h2.relay.start(); await h2.ready(); await started2;
+    h2.toolCall("p1", "prepare_request", { text: "請 michael 重新部署" });
+    const draft2 = await h2.toolResponse("p1");
+    h2.fromModel({ serverContent: { outputTranscription: { text: "草稿是：請 michael 重新部署" } } });
+    h2.fromModel({ serverContent: { interrupted: true } });
+    say(h2, "確認送出");
+    h2.toolCall("s1", "submit_request", { draftId: draft2.draftId });
+    expect(await h2.toolResponse("s1")).toMatchObject({ status: "confirmation_required" });
+    // A turn that did not read the draft back does not count either.
+    const h3 = harness();
+    const started3 = h3.relay.start(); await h3.ready(); await started3;
+    h3.toolCall("p1", "prepare_request", { text: "請 michael 檢查備份與磁碟空間" });
+    const draft3 = await h3.toolResponse("p1");
+    h3.fromModel({ serverContent: { outputTranscription: { text: "好的，要送出嗎？" } } });
+    h3.fromModel({ serverContent: { turnComplete: true } });
+    say(h3, "確認送出");
+    h3.toolCall("s1", "submit_request", { draftId: draft3.draftId });
+    expect(await h3.toolResponse("s1")).toMatchObject({ status: "confirmation_required" });
+    expect(h.port.submit).not.toHaveBeenCalled();
+    expect(h2.port.submit).not.toHaveBeenCalled();
+    expect(h3.port.submit).not.toHaveBeenCalled();
+  });
+
+  it("refuses negated, vague or embedded phrases and keeps the operation id across a failed attempt", async () => {
     let attempts = 0;
     const h = harness({ submit: async (draft) => (++attempts === 1
       ? { status: "failed", operationId: draft.operationId, code: "submit_unknown" }
@@ -122,37 +168,70 @@ describe("GeminiLiveRelay", () => {
     const started = h.relay.start(); await h.ready(); await started;
     h.toolCall("p1", "prepare_request", { text: "留言給 michael" });
     const prepared = await h.toolResponse("p1");
-    h.fromModel({ serverContent: { turnComplete: true } });
-    h.fromModel({ serverContent: { inputTranscription: { text: "好，可以" } } });
-    h.toolCall("s1", "submit_request", { draftId: prepared.draftId });
-    expect(await h.toolResponse("s1")).toMatchObject({ status: "confirmation_required" });
-    h.fromModel({ serverContent: { inputTranscription: { text: "不要確認送出" } } });
-    h.toolCall("s2", "submit_request", { draftId: prepared.draftId });
-    expect(await h.toolResponse("s2")).toMatchObject({ status: "confirmation_required" });
+    await recite(h, "留言給 michael");
+    for (const phrase of ["好，可以", "不要確認送出", "我不想確認送出", "確認送出嗎？", "請說確認送出"]) {
+      say(h, phrase);
+      h.toolCall(`s-${phrase}`, "submit_request", { draftId: prepared.draftId });
+      expect(await h.toolResponse(`s-${phrase}`)).toMatchObject({ status: "confirmation_required" });
+    }
+    expect(h.port.submit).not.toHaveBeenCalled();
 
     await h.relay.handleBrowserMessage({ type: "confirm_draft", draftId: prepared.draftId, revision: 1 });
     await h.relay.handleBrowserMessage({ type: "confirm_draft", draftId: prepared.draftId, revision: 1 });
     expect(h.port.submit).toHaveBeenCalledTimes(2);
     expect(h.port.submit.mock.calls[0]![0].operationId).toBe(h.port.submit.mock.calls[1]![0].operationId);
-    expect(h.events.filter((e) => e.type === "submit_failed")).toHaveLength(1);
+    expect(h.port.submit.mock.calls[1]![1]).toBe("ui");
+    expect(h.events.filter((e) => e.type === "submit_failed")).toMatchObject([{ revision: 1 }]);
     expect(h.events.find((e) => e.type === "submitted")).toMatchObject({ via: "ui" });
   });
 
-  it("a revised draft needs a fresh recitation and confirmation", async () => {
+  it("a revised draft needs a fresh read-back, and drafts cannot change while a submit is in flight", async () => {
     const h = harness();
     const started = h.relay.start(); await h.ready(); await started;
-    h.toolCall("p1", "prepare_request", { text: "第一版" });
+    h.toolCall("p1", "prepare_request", { text: "第一版內容" });
     const first = await h.toolResponse("p1");
-    h.fromModel({ serverContent: { turnComplete: true } });
-    h.fromModel({ serverContent: { inputTranscription: { text: "確認送出" } } });
-    h.toolCall("p2", "prepare_request", { text: "第二版" });
+    await recite(h, "第一版內容");
+    say(h, "確認送出");
+    h.toolCall("p2", "prepare_request", { text: "第二版內容" });
     const second = await h.toolResponse("p2");
     expect(second).toMatchObject({ draftId: first.draftId, revision: 2 });
     h.toolCall("s1", "submit_request", { draftId: first.draftId });
     expect(await h.toolResponse("s1")).toMatchObject({ status: "confirmation_required" });
     await h.relay.handleBrowserMessage({ type: "confirm_draft", draftId: first.draftId, revision: 1 });
-    expect(h.events.at(-1)).toMatchObject({ type: "submit_failed", code: "voice_draft_stale" });
+    expect(h.events.at(-1)).toMatchObject({ type: "submit_failed", code: "voice_draft_stale", revision: 1 });
     expect(h.port.submit).not.toHaveBeenCalled();
+
+    let release!: () => void;
+    const slow = harness({ submit: (draft) => new Promise((resolve) => { release = () => resolve({ status: "accepted", operationId: draft.operationId }); }) });
+    const s2 = slow.relay.start(); await slow.ready(); await s2;
+    slow.toolCall("p1", "prepare_request", { text: "送出中" });
+    const draft = await slow.toolResponse("p1");
+    const confirming = slow.relay.handleBrowserMessage({ type: "confirm_draft", draftId: draft.draftId, revision: 1 });
+    slow.toolCall("p2", "prepare_request", { text: "改內容" });
+    expect(await slow.toolResponse("p2")).toMatchObject({ status: "busy" });
+    await slow.relay.handleBrowserMessage({ type: "cancel_draft", draftId: draft.draftId });
+    expect(slow.events.some((e) => e.type === "draft_cleared")).toBe(false);
+    release();
+    await confirming;
+    expect(slow.events.find((e) => e.type === "submitted")).toMatchObject({ revision: 1 });
+  });
+
+  it("survives malformed gateway frames and closes an upstream that connects after the call ended", async () => {
+    const h = harness();
+    const started = h.relay.start(); await h.ready(); await started;
+    expect(() => h.fromModel({ toolCall: { functionCalls: "nope" }, serverContent: { modelTurn: { parts: 5 } } })).not.toThrow();
+    expect(() => h.fromModel({ toolCall: { functionCalls: [null, 3] } })).not.toThrow();
+    expect(() => h.current().handlers.onMessage("null")).not.toThrow();
+    expect(h.relay.isClosed).toBe(false);
+
+    const late = harness();
+    const pending = late.relay.start();
+    await vi.waitFor(() => expect(late.upstreams).toHaveLength(1));
+    await late.relay.handleBrowserMessage({ type: "end" });
+    late.fromModel({ setupComplete: {} });
+    await pending;
+    expect(late.upstreams[0]!.closed).toBe(true);
+    expect(late.events.filter((e) => e.type === "ready")).toHaveLength(0);
   });
 
   it("resumes with the latest handle on GoAway and replays buffered microphone audio", async () => {
@@ -248,10 +327,14 @@ describe("voice summary helpers", () => {
     const text = spokenFallback("# 標題\n```sh\nrm -rf x\n```\n| a | b |\n|---|---|\n- 看 [連結](http://x) 與 `code`");
     expect(text).toBe("標題 （程式碼略） 看 連結 與 code");
   });
-  it("matches the confirmation phrase in traditional or simplified transcription only", () => {
-    expect(containsConfirmationPhrase("好 確認 送出！", "確認送出")).toBe(true);
-    expect(containsConfirmationPhrase("确认送出", "確認送出")).toBe(true);
-    expect(containsConfirmationPhrase("不要確認送出", "確認送出")).toBe(false);
-    expect(containsConfirmationPhrase("好啊送出", "確認送出")).toBe(false);
+  it("accepts only a short confirmation utterance in traditional or simplified transcription", () => {
+    expect(isConfirmationUtterance("好 確認 送出！", "確認送出")).toBe(true);
+    expect(isConfirmationUtterance("确认送出", "確認送出")).toBe(true);
+    expect(isConfirmationUtterance("確認送出吧", "確認送出")).toBe(true);
+    for (const text of ["不要確認送出", "還不能確認送出", "等一下再確認送出", "確認送出嗎", "請說確認送出", "好啊送出"]) expect(isConfirmationUtterance(text, "確認送出")).toBe(false);
+  });
+  it("measures how much of a draft the model read back", () => {
+    expect(recitationCoverage("請 michael 查部署", "草稿是：請 Michael 查部署。")).toBe(1);
+    expect(recitationCoverage("請 michael 查部署", "要送出嗎")).toBeLessThan(0.2);
   });
 });

@@ -392,7 +392,8 @@ Frames: binary browser→server is PCM16 mono 16 kHz microphone audio,
 binary server→browser is PCM16 mono 24 kHz model audio, text frames are the
 JSON `LocalVoiceRelayClientMessage` / `LocalVoiceRelayServerEvent` unions in
 `packages/shared/src/types/voice-sessions.ts`. At most 2 relays per caller and
-16 per server. Closing the browser socket ends the voice session.
+16 per server, and one relay per voice session (a second upgrade with the same
+token gets `409`). Closing the browser socket ends the voice session.
 
 ### Model session
 
@@ -410,14 +411,24 @@ are pushed as new `clientContent` turns once the model finishes speaking.
 | `get_updates()` | agent replies on the voice task since the call started |
 
 `submit_request` succeeds only when the Owner pressed "Confirm and send" for
-that revision, or when the caller's own transcribed speech contains
-「確認送出」 after the model finished the turn that read the draft back
-(traditional and simplified transcription are normalized; 「不要確認送出」
-and similar refusals do not count; text notices injected by Paperclip are
-never transcription). The relay then creates the confirmation receipt in the
-caller's authenticated session (`voice.confirmation.created` audit
-`details.via = "spoken_relay"`) and submits with the draft's operation id, so
-a retry after an unknown outcome is idempotent. No other write exists by voice.
+that revision, or when all of these hold for a spoken confirmation:
+
+- the draft was read back: a model turn completed (not interrupted) whose
+  output transcription contains at least 60% of the draft's character bigrams;
+- one caller utterance started after that turn, while the model was not
+  generating and the browser reported (`{"type":"playback","playing":false}`)
+  that its audio had drained, so speaker echo of the model cannot confirm;
+- that utterance is 「確認送出」 itself, optionally with a short acknowledgement
+  such as 好 / 對 / 嗯 before it or 吧 / 喔 after it, after traditional and
+  simplified normalization. Questions, refusals and sentences that merely
+  contain the phrase (「請說確認送出」, 「我不想確認送出」, 「確認送出嗎」) do not
+  count. Text notices injected by Paperclip are never transcription.
+
+The relay then creates the confirmation receipt in the caller's authenticated
+session (`voice.confirmation.created` audit `details.via` is `spoken_relay` or
+`ui_relay`) and submits with the draft's operation id, so a retry after an
+unknown outcome is idempotent. While a submit is in flight the draft cannot be
+revised or discarded. No other write exists by voice.
 
 GoAway and unexpected upstream closes reconnect with the latest resumption
 handle (up to four attempts; without a handle the browser is told that context

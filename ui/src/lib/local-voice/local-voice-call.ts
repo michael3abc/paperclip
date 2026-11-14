@@ -105,6 +105,8 @@ export class LocalVoiceCall {
   private openTurn: { role: "user" | "model"; id: number } | null = null;
   private wakeLock: { release(): Promise<void> } | null = null;
   private ending = false;
+  /** Each start owns one attempt; end() or a newer start makes older attempts stale. */
+  private attempt = 0;
 
   constructor(private readonly deps: LocalVoiceCallDependencies) {}
 
@@ -120,12 +122,23 @@ export class LocalVoiceCall {
   async start(input: { companyId: string; agentId: string; issueId?: string; newConversation?: boolean }) {
     if (this.snapshot.phase === "starting" || this.snapshot.phase === "live" || this.snapshot.phase === "ending") return;
     this.ending = false;
+    const attempt = ++this.attempt;
+    const stale = () => attempt !== this.attempt || this.ending;
+    let createdSession: { companyId: string; sessionId: string } | null = null;
+    const abandon = async () => {
+      // A newer start or end() took over: release only what this attempt created.
+      await audio.close().catch(() => undefined);
+      if (createdSession && this.session?.sessionId !== createdSession.sessionId) {
+        await this.deps.api.end(createdSession.companyId, createdSession.sessionId).catch(() => undefined);
+      }
+    };
     const audio = this.deps.createAudio();
     this.audio = audio;
     this.snapshot = { ...initialSnapshot(), phase: "starting", replies: [], transcript: [] };
     this.update({});
     try {
       const endpoint = await this.deps.api.ensureEndpoint(input.companyId, input.agentId);
+      if (stale()) return void await abandon();
       const startOnce = (newConversation: boolean) => this.deps.api.start(input.companyId, {
         endpointId: endpoint.endpointId, ...(input.issueId && !newConversation ? { issueId: input.issueId } : {}), ...(newConversation ? { newConversation: true } : {}),
         idempotencyKey: this.deps.randomId(), maxDurationSeconds: LOCAL_VOICE_CALL_MAX_SECONDS + 30,
@@ -142,14 +155,21 @@ export class LocalVoiceCall {
           this.update({ notice: "Another call is still open on the previous voice task, so this call uses a new voice task." });
         } else throw error;
       }
+      createdSession = { companyId: input.companyId, sessionId: started.session.id };
+      if (stale()) return void await abandon();
       if (!started.media) throw new Error("This voice call was already started elsewhere. End it there or start a new one.");
-      this.session = { companyId: input.companyId, sessionId: started.session.id };
+      this.session = createdSession;
       this.update({ issue: { id: started.session.issueId, identifier: null }, agentName: endpoint.agentName });
       await audio.start({
         onFrame: (pcm, rms) => this.onMicFrame(pcm, rms),
-        onPlaying: (playing) => { if (playing) this.lastActivityAt = this.deps.now(); this.update({ modelSpeaking: playing }); },
+        onPlaying: (playing) => {
+          if (playing) this.lastActivityAt = this.deps.now();
+          this.update({ modelSpeaking: playing });
+          // The relay accepts a spoken confirmation only after playback has drained.
+          this.send({ type: "playback", playing });
+        },
       });
-      if (this.ending) return;
+      if (stale()) return void await abandon();
       const socket = this.deps.createSocket(buildSameOriginWebSocketUrl(this.deps.api.relayPath(input.companyId, started.session.id)),
         [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}${started.media.transportToken}`]);
       socket.binaryType = "arraybuffer";
@@ -163,6 +183,7 @@ export class LocalVoiceCall {
       socket.onclose = () => { if (this.socket === socket) this.onSocketClosed(); };
       this.socket = socket;
     } catch (error) {
+      if (stale()) return void await abandon();
       await this.cleanup({ endRemote: true });
       this.update({ phase: "error", error: errorMessage(error) });
     }
@@ -194,10 +215,10 @@ export class LocalVoiceCall {
       case "draft": this.update({ draft: { ...event.draft, status: "pending" } }); return;
       case "draft_cleared": if (this.snapshot.draft?.draftId === event.draftId) this.update({ draft: null }); return;
       case "submitted":
-        if (this.snapshot.draft?.draftId === event.draftId) this.update({ draft: { ...this.snapshot.draft, status: "submitted", via: event.via, error: undefined } });
+        if (this.snapshot.draft?.draftId === event.draftId && this.snapshot.draft.revision === event.revision) this.update({ draft: { ...this.snapshot.draft, status: "submitted", via: event.via, error: undefined } });
         return;
       case "submit_failed":
-        if (this.snapshot.draft?.draftId === event.draftId) this.update({ draft: { ...this.snapshot.draft, status: "failed", error: event.message } });
+        if (this.snapshot.draft?.draftId === event.draftId && this.snapshot.draft.revision === event.revision) this.update({ draft: { ...this.snapshot.draft, status: "failed", error: event.message } });
         return;
       case "agent_reply":
         if (!this.snapshot.replies.some((reply) => reply.commentId === event.commentId)) {
@@ -271,6 +292,7 @@ export class LocalVoiceCall {
   async end() {
     if (this.snapshot.phase === "idle" || this.snapshot.phase === "ended" || this.snapshot.phase === "ending") return;
     this.ending = true;
+    this.attempt += 1;
     const socketOpen = this.socket?.readyState === OPEN;
     this.update({ phase: "ending" });
     if (socketOpen) this.send({ type: "end" });
@@ -320,12 +342,15 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
   let player: AudioWorkletNode | null = null;
   let capture: AudioWorkletNode | null = null;
   let source: MediaStreamAudioSourceNode | null = null;
+  let closed = false;
   return {
     async start(handlers) {
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
         throw new Error("Voice needs a secure page (HTTPS) with microphone access. Open Paperclip through its HTTPS address.");
       }
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const granted = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      if (closed) { for (const track of granted.getTracks()) track.stop(); throw new Error("The call ended before the microphone opened."); }
+      stream = granted;
       await loadVoiceWorklets(context);
       player = new AudioWorkletNode(context, "pc-voice-player", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       player.port.onmessage = (event) => { if (event.data?.type === "playing") handlers.onPlaying(Boolean(event.data.playing)); };
@@ -339,6 +364,7 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
     play(pcm) { player?.port.postMessage({ type: "pcm", data: pcm }, [pcm]); },
     flush() { player?.port.postMessage({ type: "flush" }); },
     async close() {
+      closed = true;
       try { source?.disconnect(); capture?.disconnect(); player?.disconnect(); } catch { /* already disconnected */ }
       for (const track of stream?.getTracks() ?? []) track.stop();
       if (context.state !== "closed") await context.close().catch(() => undefined);
