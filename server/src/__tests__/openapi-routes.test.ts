@@ -100,6 +100,7 @@ const apiPrefixes: Record<string, string> = {
   "workspace-preferences.ts": "/api",
   "web-push.ts": "/api",
   "session-bridge.ts": "/api",
+  "main-managed-worktrees.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -154,6 +155,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   "POST /api/agents/me/session-bridge/tools-search",
   "POST /api/agents/me/session-bridge/tools-call",
   "GET /api/agents/me/session-bridge/events",
+  "GET /api/agents/me/session-bridge/worker-card-proof",
   "POST /api/issues/{id}/external-turns",
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
