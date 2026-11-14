@@ -250,7 +250,8 @@ All changes are additive.
 
 | column | constraint |
 | --- | --- |
-| `binding_mode` | `null`, `'voice_task'` or (migration `0442_typical_toro`) `'agent_chat'` |
+| `binding_mode` | `null`, `'voice_task'` or (migration `0442_loose_masque`) `'agent_chat'` |
+| `conversation_id` | required except for `agent_chat` (migration `0442_loose_masque`) |
 | `binding_project_id` | none |
 
 `chat_voice_confirmations` has these constraints:
@@ -544,30 +545,44 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   requires `issueId`, rejects `newConversation`, and accepts the Chat only
   when `conversationAgentId` and `assigneeAgentId` equal the endpoint's agent
   and `conversationUserId` is the caller (`409 voice_chat_binding_invalid`
-  otherwise). No task is created. The session is anchored to one
-  `chat_conversations` row (`local_voice:<uuid>` thread, no inbound
-  deliveries or message links) per endpoint and Chat, reused by later calls.
+  otherwise). No task and no `chat_conversations` row are created: the
+  session's `conversation_id` is null (allowed only for `agent_chat`), so the
+  Chat never looks like an externally bound issue (workspace isolation,
+  external retry policy, assignee lock and blocker text stay unchanged).
   `voice_task` starts refuse a Chat with the same code. A second live call on
   the same Chat gets `409 voice_call_already_active`; the page ends that
-  older call of the same caller and starts again once.
-- **Authority.** Every relay and reply check re-runs `authorizeSession`,
-  which for `agent_chat` also requires the Chat to still belong to the caller
-  and the agent. Local tools, confirmations and operation receipts stay
-  `voice_task` only (`404`, and `runCommand` refuses `agent_chat` sessions).
+  older call of the same caller and starts again once. Without Agent Chat
+  (`enableAgentChat` off) the page keeps the `voice_task` flow.
+- **Authority.** Relay, reconcile and recovery checks use
+  `authorizeAnySession`, which for `agent_chat` also requires the Chat to
+  still belong to the caller and the agent. Channel work (`authorizeSession`:
+  tools, deliveries, publications, replies) refuses `agent_chat` sessions with
+  `404`; local tools, confirmations and operation receipts stay `voice_task`
+  only, and `runCommand` refuses `agent_chat` sessions.
 - **Dictation.** The model session has no tools and, for OpenAI, server VAD
   with `create_response: false`, so the model never answers caller speech on
   its own. Each caller transcription (Taiwan Traditional) is buffered; 2 s
   after the last words (a new `speech_started` holds the buffer up to 20 s)
   the relay merges them and sends `{ type: "dictation", operationId, text,
   body }`. Fillers (「嗯」「好」「對」…), known transcription hallucinations and
-  speaker echo (a transcription that repeats recent model speech; strict when
-  the utterance began during playback) are dropped. Pausing the microphone,
-  typed text and ending the call flush the buffer first. Nothing rewrites the
-  caller's words.
+  speaker echo are dropped and shown to the caller as
+  `{ type: "dictation_dropped", text, reason: "echo" | "noise" }`. Echo is
+  judged only for a whole utterance (Gemini fragments are regrouped) of at
+  least 4 characters that began during model playback or within 1.5 s after
+  it, and that repeats at least 60% of the last two model turns. Typed text
+  is sent at once. Pausing the microphone or ending the call (by the caller
+  or by the relay, e.g. the time limit) commits an utterance in progress,
+  waits up to 3 s for its transcription and flushes the buffer before
+  `ended`. Nothing rewrites the caller's words.
 - **Posting.** The browser posts `body` as the caller through the normal Chat
   composer path, `POST /issues/{chat}/comments` with
-  `clientRequestId = operationId`, so Chat delivery, native session bridges,
-  read state and retries behave exactly like typing. `body` is the words
+  `clientRequestId = operationId` and `metadata.voiceInput.sessionId`, so
+  Chat delivery, native session bridges, read state and retries behave exactly
+  like typing. The server accepts that marker only for the caller's own
+  `agent_chat` session on that Chat and stores it with a "Voice input"
+  section; it only restricts the message: `resolve-from-comment` refuses to
+  accept a confirmation card from a voice-marked message (declining is
+  allowed). `body` is the words
   followed by one italic line telling the agent that the text came from speech
   recognition, that it is not an approval, deployment or settings
   authorization, and asking for a last `語音摘要：` line. The browser reports
@@ -584,7 +599,9 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
 
 | file | coverage |
 | --- | --- |
-| `server/src/__tests__/local-voice-agent-chat-relay.test.ts` | agent_chat on both engines: no tools, no automatic answers, merge and hold, fillers and echo, typed text, pause and end flush, acknowledgement and failure notices, replies |
+| `server/src/__tests__/local-voice-agent-chat-relay.test.ts` | agent_chat on both engines: no tools, no automatic answers, merge and hold, fillers and echo (only during playback, whole utterances), typed text, pause and end drain (caller and relay ends), acknowledgement and failure notices, replies |
+| `server/src/__tests__/local-voice.integration.test.ts` (agent_chat block) | own Chat only, no task or channel conversation, channel paths refused, revocation on owner change |
+| `server/src/__tests__/confirmation-comment-resolution.test.ts` | a voice-marked message cannot accept a confirmation, may decline |
 | `server/src/__tests__/local-voice-relay.test.ts` | Gemini engine and shared core: setup, audio, spoken and UI confirmation, refusals, resumption, limits, reply announcements, summary helpers |
 | `server/src/__tests__/local-voice-openai-relay.test.ts` | OpenAI engine: session config, audio, tool round trip, confirmation with a late transcript, echo and cut-off read-backs, barge-in truncation, notices, reconnect context, usage, engine configuration, Taiwan Traditional conversion |
 | `server/src/__tests__/local-voice-relay.integration.test.ts` | embedded Postgres, loopback upgrade with fake gateways for both engines: provisioning, rejected upgrades, spoken confirmation into one delivery, replies, end on disconnect |
@@ -602,6 +619,6 @@ server environment and restart Paperclip; new calls use Gemini at 16 kHz
 (the browser follows the relay's `inputSampleRate`), calls in progress are
 not moved. To turn voice off, unset the two gateway variables (the relay then
 rejects upgrades with 503) or turn off `enableLocalVoice`. Endpoints, sessions and voice tasks are ordinary
-additive rows and need no migration. Migration `0442_typical_toro` only widens
-the `binding_mode` check; a previous release keeps working on it and
+additive rows and need no migration. Migration `0442_loose_masque` only widens
+the `binding_mode` check and lets `agent_chat` rows omit `conversation_id`; a previous release keeps working on it and
 ends any live `agent_chat` session as revoked on its next local reconcile.

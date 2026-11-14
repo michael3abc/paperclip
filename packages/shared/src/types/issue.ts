@@ -1222,6 +1222,8 @@ export interface IssueCommentMetadata {
   recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */
   sourceChannel?: ChatProvider;
+  /** HOM-326: dictated in a live agent_chat voice call; such a message cannot accept a confirmation card. */
+  voiceInput?: { sessionId: string };
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;

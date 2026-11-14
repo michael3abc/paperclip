@@ -94,6 +94,7 @@ import {
   approvals,
   authUsers,
   chatConversations,
+  chatVoiceSessions,
   chatEndpoints,
   chatPublications,
   companyMemberships,
@@ -19511,8 +19512,21 @@ export function issueRoutes(
             eq(issueComments.issueId, issue.id), eq(issueComments.authorUserId, userId),
             eq(issueComments.clientRequestId, req.body.clientRequestId),
           ));
+          // HOM-326: the only metadata a Chat composer may set is the voice-input marker, and only
+          // for the caller's own live agent_chat call on this Chat. It only ever restricts the message.
+          const voiceSessionId = req.body.metadata?.voiceInput?.sessionId;
+          if (voiceSessionId) {
+            const [voice] = await tx.select({ id: chatVoiceSessions.id }).from(chatVoiceSessions).where(and(
+              eq(chatVoiceSessions.id, voiceSessionId), eq(chatVoiceSessions.companyId, issue.companyId),
+              eq(chatVoiceSessions.issueId, issue.id), eq(chatVoiceSessions.callerId, userId),
+              eq(chatVoiceSessions.bindingMode, "agent_chat"),
+            ));
+            if (!voice) throw unprocessable("Unknown voice call for this Chat");
+          }
           const saved = await svc.addComment(issue.id, req.body.body, { userId }, {
             clientRequestId: req.body.clientRequestId, authorType: "user", attachmentIds: req.body.attachmentIds,
+            ...(voiceSessionId ? { metadata: { version: 1 as const, voiceInput: { sessionId: voiceSessionId },
+              sections: [{ title: "Voice input", rows: [{ type: "key_value" as const, label: "Source", value: "Speech recognition; not an approval" }] }] } } : {}),
           }, tx);
           if (!existing) await logActivity(tx as unknown as Db, {
             companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,

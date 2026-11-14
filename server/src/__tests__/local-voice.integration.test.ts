@@ -556,10 +556,10 @@ const support = await getEmbeddedPostgresTestSupport();
       const started = await f.startChat();
       expect(started.media).toMatchObject({ provider: "local_voice", bindingMode: "agent_chat" });
       const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, started.session.id));
-      expect(session).toMatchObject({ bindingMode: "agent_chat", issueId: f.chatId, assignedAgentId: f.agentId, mode: "browser" });
+      expect(session).toMatchObject({ bindingMode: "agent_chat", issueId: f.chatId, assignedAgentId: f.agentId, mode: "browser", conversationId: null });
       expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(issuesBefore.length);
-      const [anchor] = await db.select().from(chatConversations).where(eq(chatConversations.id, session.conversationId));
-      expect(anchor).toMatchObject({ issueId: f.chatId, endpointId: f.endpointId, state: "active" });
+      // The Chat never gains a channel conversation, so it never looks externally bound.
+      expect(await db.select().from(chatConversations).where(eq(chatConversations.issueId, f.chatId))).toHaveLength(0);
 
       const binding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId, sessionId: session.id, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
       expect(binding).toMatchObject({ mode: "agent_chat", issue: { id: f.chatId } });
@@ -578,11 +578,11 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(f.service.local.confirm(f.companyId, session.id, f.caller, { draftId, revision: 1, text: "x" })).rejects.toMatchObject({ status: 404 });
       await expect(f.service.local.tool(f.companyId, session.id, f.caller, Buffer.from(JSON.stringify({ v: 1, type: "tool", toolCallId: "call_1", tool: "get_updates", args: { cursor: 0 } })), started.media!.transportToken)).rejects.toMatchObject({ status: 404 });
 
-      // A second call on the same Chat reuses the anchor after the first one ends.
+      // Channel paths refuse it; a second call on the same Chat works after the first one ends.
+      await expect(db.transaction((tx) => f.store.authorizeSession(tx, f.companyId, session.id))).rejects.toMatchObject({ status: 404 });
       await f.service.end(f.companyId, session.id, f.caller);
       const again = await f.startChat();
-      const [second] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, again.session.id));
-      expect(second.conversationId).toBe(session.conversationId);
+      expect(again.media).toMatchObject({ bindingMode: "agent_chat" });
     });
 
     it("rejects another user's Chat, a Chat with another agent and a voice_task start on a Chat", async () => {
@@ -602,10 +602,10 @@ const support = await getEmbeddedPostgresTestSupport();
     it("revokes a live agent_chat session when the Chat changes owner", async () => {
       const f = await chatFixture();
       const started = await f.startChat();
-      await db.transaction((tx) => f.store.authorizeSession(tx, f.companyId, started.session.id));
+      await db.transaction((tx) => f.store.authorizeAnySession(tx, f.companyId, started.session.id));
       const otherUser = `user-${randomUUID()}`;
       await db.update(issues).set({ conversationUserId: otherUser }).where(eq(issues.id, f.chatId));
-      await expect(db.transaction((tx) => f.store.authorizeSession(tx, f.companyId, started.session.id))).rejects.toMatchObject({ status: 403 });
+      await expect(db.transaction((tx) => f.store.authorizeAnySession(tx, f.companyId, started.session.id))).rejects.toMatchObject({ status: 403 });
     });
   });
 

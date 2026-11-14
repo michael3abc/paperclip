@@ -71,25 +71,16 @@ export function voiceSessionService(db: Db, options: {
   type BindingInput = { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; bindingMode?: VoiceBindingMode };
   /**
    * agent_chat (HOM-326): bind the caller's own Agent Chat with the endpoint's
-   * agent. No task is created; the voice conversation row only anchors the
-   * session. Dictated messages are posted by the caller's Chat composer.
+   * agent. No task and no channel conversation are created, so the Chat never
+   * looks like an externally bound issue; the session row alone carries the
+   * binding. Dictated messages are posted by the caller's Chat composer.
    */
   async function prepareChatBinding(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: BindingInput, endpoint: Endpoint) {
     if (!input.issueId || input.newConversation) throw conflict("Choose the Chat to bind", { code: "voice_chat_binding_invalid" });
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-binding:${input.companyId}:${input.endpointId}:${input.issueId}`}, 0))`);
     const [chat] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
     if (!chat) throw notFound("Chat not found");
     if (!isAgentChatFor(chat, endpoint.assignedAgentId, input.caller.id)) throw conflict("Choose your own Chat with this voice connection's agent", { code: "voice_chat_binding_invalid" });
-    const existing = await tx.select().from(chatConversations).where(and(eq(chatConversations.companyId, input.companyId), eq(chatConversations.endpointId, input.endpointId), eq(chatConversations.issueId, chat.id))).limit(1).then((rows) => rows[0]);
-    if (existing) {
-      // The anchor carries no provider thread; a Chat stays callable however that row was settled.
-      if (!["active", "waiting"].includes(existing.state)) await tx.update(chatConversations).set({ state: "active", updatedAt: new Date() }).where(eq(chatConversations.id, existing.id));
-      return { issueId: chat.id, conversationId: existing.id };
-    }
-    const conversationId = randomUUID(), threadId = `local_voice:${conversationId}`;
-    const [resource] = await tx.insert(chatEndpointResources).values({ companyId: input.companyId, endpointId: input.endpointId, type: "direct_message", providerResourceId: threadId, label: "Voice", enabled: true, availability: "available" }).returning();
-    await tx.insert(chatConversations).values({ id: conversationId, companyId: input.companyId, endpointId: input.endpointId, resourceId: resource.id, issueId: chat.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Voice", isDirectMessage: true });
-    return { issueId: chat.id, conversationId };
+    return { issueId: chat.id, conversationId: null };
   }
   /** Shared task/conversation binding. The thread id prefix names the provider (`speko:` or `local_voice:`). */
   async function prepareBinding(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], input: BindingInput, endpoint: Endpoint, threadProvider: VoiceProvider) {
@@ -304,7 +295,7 @@ export function voiceSessionService(db: Db, options: {
     for (const { session } of rows) {
       let authorized = false;
       if (enabled) {
-        try { await db.transaction((tx) => store.authorizeSession(tx, session.companyId, session.id)); authorized = true; }
+        try { await db.transaction((tx) => store.authorizeAnySession(tx, session.companyId, session.id)); authorized = true; }
         catch (error) { if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error; }
       }
       if (authorized) continue;
@@ -341,6 +332,8 @@ export function voiceSessionService(db: Db, options: {
     authorize: async session => {
       if (isLocal(session)) await localEnabled();
       await db.transaction(async tx => {
+        // agent_chat sessions have no channel replies to schedule.
+        if (session.bindingMode === "agent_chat") { await store.authorizeAnySession(tx, session.companyId, session.id); return; }
         await store.authorizeSession(tx, session.companyId, session.id);
         await replies.authorityAvailable(tx, session.id);
       });

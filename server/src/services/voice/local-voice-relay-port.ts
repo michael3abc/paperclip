@@ -34,7 +34,7 @@ export async function authorizeLocalVoiceRelay(db: Db, service: VoiceSessionServ
   await service.local.assertEnabled();
   const store = voiceSessionStore(db, { allowLocalBoard: input.allowLocalBoard });
   return db.transaction(async (tx) => {
-    const context = await store.authorizeSession(tx, input.companyId, input.sessionId);
+    const context = await store.authorizeAnySession(tx, input.companyId, input.sessionId);
     const session = context.session;
     if (context.endpoint.provider !== "local_voice" || !isLocalBindingMode(session.bindingMode)) throw notFound("Voice session not found");
     if (session.callerId !== input.caller.id || session.callerAuthority !== input.caller.authority) throw forbidden("This voice session belongs to another caller");
@@ -56,7 +56,7 @@ export function createLocalVoiceTaskPort(db: Db, service: VoiceSessionService, i
 
   async function authorized<T>(work: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) {
     return db.transaction(async (tx) => {
-      await store.authorizeSession(tx, session.companyId, session.id);
+      await store.authorizeAnySession(tx, session.companyId, session.id);
       return work(tx);
     });
   }

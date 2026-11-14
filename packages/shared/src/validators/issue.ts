@@ -1132,6 +1132,8 @@ export const issueCommentMetadataSchema = z
     }).strict().optional(),
     recoveryResponsibility: z.enum(["system", "user"]).optional(),
     sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
+    /** HOM-326: posted from a live agent_chat voice call; never an approval of a confirmation card. */
+    voiceInput: z.object({ sessionId: z.uuid() }).strict().optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()

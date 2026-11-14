@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX } from "@paperclipai/shared";
-import { LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
+import { AGENT_CHAT_END_WAIT_MS, LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
 
 class FakeSocket {
   readyState = 1;
@@ -260,7 +260,8 @@ describe("LocalVoiceCall", () => {
       h.socket.emit({ type: "ended", reason: "caller_ended" });
       await Promise.resolve();
       expect(ended).toBe(false);
-      expect(h.audio.closed).toBe(false);
+      // The microphone is released at once; only the post is awaited.
+      expect(h.audio.closed).toBe(true);
       finish({ id: COMMENT_ID });
       await ending;
       expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "最後一句 (voice)", OPERATION_ID);
@@ -270,12 +271,23 @@ describe("LocalVoiceCall", () => {
       expect(h.api.end).not.toHaveBeenCalled();
     });
 
+    it("shows heard words that the relay did not send", async () => {
+      const h = await live();
+      h.socket.emit({ type: "dictation_dropped", text: "等你確認部署", reason: "echo" });
+      h.socket.emit({ type: "dictation_dropped", text: "嗯", reason: "noise" });
+      expect(h.call.getSnapshot().sentLog).toMatchObject([
+        { text: "等你確認部署", status: "dropped", error: expect.stringContaining("assistant's own voice") },
+        { text: "嗯", status: "dropped", error: expect.stringContaining("too short") },
+      ]);
+      expect(h.postChatMessage).not.toHaveBeenCalled();
+    });
+
     it("stops waiting for the relay after the end timeout", async () => {
       vi.useFakeTimers();
       try {
         const h = await live();
         const ending = h.call.end();
-        await vi.advanceTimersByTimeAsync(2_500);
+        await vi.advanceTimersByTimeAsync(AGENT_CHAT_END_WAIT_MS);
         await ending;
         expect(h.call.getSnapshot().phase).toBe("ended");
         expect(h.audio.closed).toBe(true);

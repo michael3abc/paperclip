@@ -12,7 +12,7 @@ type Candidate<T = Pick<Session, "id" | "companyId" | "endpointId" | "providerSe
 export function voiceSessionRecoveryAt(row: Candidate, featureEnabled: boolean, localVoiceEnabled = false): number {
   const session = row.session;
   if (!session.providerSessionId) return session.expiresAt.getTime() + 120_001;
-  const local = session.bindingMode === "voice_task";
+  const local = session.bindingMode === "voice_task" || session.bindingMode === "agent_chat";
   const changed = !featureEnabled || (local && !localVoiceEnabled) || !row.enabled || !["active", "verifying"].includes(row.endpointStatus)
     || session.generation !== row.generation || session.state === "ending";
   if (changed) return session.errorCode === "cleanup_pending" ? session.updatedAt.getTime() + 30_000 : 0;
@@ -144,7 +144,7 @@ export function voiceSessionRecovery(db: Db, operations: {
       const session = row.session;
       try {
         let authorized = false;
-        if (enabled && (session.bindingMode !== "voice_task" || settings.enableLocalVoice) && ["connecting", "active"].includes(session.state) && session.expiresAt.getTime() > Date.now()) {
+        if (enabled && (!(session.bindingMode === "voice_task" || session.bindingMode === "agent_chat") || settings.enableLocalVoice) && ["connecting", "active"].includes(session.state) && session.expiresAt.getTime() > Date.now()) {
           try { await operations.authorize(session); authorized = true; }
           catch (error) { if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error; }
         }

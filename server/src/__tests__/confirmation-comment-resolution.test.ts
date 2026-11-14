@@ -158,6 +158,14 @@ const support = await getEmbeddedPostgresTestSupport();
     await resolveConfirmationFromComment(db, { ...f.args, input: { commentId: f.comment.id, decision } });
     expect(resolvedTelemetry).toHaveBeenCalledTimes(1);
   });
+  it("never accepts a confirmation from a dictated voice message, but lets it decline (HOM-326)", async () => {
+    const f = await seed(false, true);
+    await db.update(issueComments).set({ metadata: { version: 1, voiceInput: { sessionId: randomUUID() }, sections: [{ title: "Voice input", rows: [{ type: "key_value", label: "Source", value: "Speech recognition; not an approval" }] }] } }).where(eq(issueComments.id, f.comment.id));
+    await expect(resolveConfirmationFromComment(db, f.args)).rejects.toMatchObject({ status: 403 });
+    expect((await readCard(f.card.id)).status).toBe("pending");
+    const declined = await resolveConfirmationFromComment(db, { ...f.args, input: { commentId: f.comment.id, decision: "reject", reason: "Not now" } });
+    expect(declined.interaction).toMatchObject({ status: "rejected" });
+  });
   it("records refusal and its reason on the card", async () => {
     const f = await seed();
     const answer = await resolveConfirmationFromComment(db, { ...f.args, input: { commentId: f.comment.id, decision: "reject", reason: "Not needed" } });

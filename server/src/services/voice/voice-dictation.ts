@@ -11,6 +11,10 @@ export const DICTATION_MERGE_MS = 2000;
 /** While the caller is speaking, a missing transcription still flushes after this long. */
 export const DICTATION_HOLD_MS = 20_000;
 export const DICTATION_MAX_CHARS = 8000;
+/** On pause or end, wait at most this long for a transcription still in progress. */
+export const DICTATION_DRAIN_MS = 3000;
+/** Speech that starts this soon after model audio stops may still be its echo. */
+export const ECHO_TAIL_MS = 1500;
 
 /** Short fillers that carry no request on their own; 「好」 alone must never read as an approval. */
 const FILLERS = new Set([
@@ -36,14 +40,13 @@ export function isDictationNoise(text: string) {
 }
 
 /**
- * A caller transcription that mostly repeats what the model just said is
- * speaker echo, not the caller. Speech that began while model audio was
- * playing is judged strictly; later speech only when it is a near copy.
+ * A whole caller utterance that began while (or just after) model audio
+ * played and mostly repeats what the model just said is speaker echo. Short
+ * utterances are never judged: a few shared characters prove nothing.
  */
-export function isLikelyEcho(part: string, recentModelOutput: string, duringPlayback: boolean) {
-  if (!recentModelOutput.trim()) return false;
-  const coverage = recitationCoverage(part, recentModelOutput);
-  return coverage >= (duringPlayback ? 0.5 : 0.85);
+export function isLikelyEcho(utterance: string, recentModelOutput: string) {
+  if (!recentModelOutput.trim() || Array.from(normalizeTranscript(utterance)).length < 4) return false;
+  return recitationCoverage(utterance, recentModelOutput) >= 0.6;
 }
 
 /**

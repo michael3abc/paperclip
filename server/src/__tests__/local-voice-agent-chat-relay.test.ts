@@ -9,7 +9,7 @@ import { joinDictation, type VoiceAgentReply, type VoiceRelayOptions, type Voice
 
 interface FakeUpstream { handlers: VoiceUpstreamHandlers; sent: any[]; closed: boolean }
 
-function harness(engine: "openai" | "gemini", options: { replies?: VoiceAgentReply[][]; mergeMs?: number; holdMs?: number } = {}) {
+function harness(engine: "openai" | "gemini", options: { replies?: VoiceAgentReply[][]; mergeMs?: number; holdMs?: number; drainMs?: number } = {}) {
   const events: LocalVoiceRelayServerEvent[] = [];
   const upstreams: FakeUpstream[] = [];
   const replyBatches = [...(options.replies ?? [])];
@@ -34,6 +34,7 @@ function harness(engine: "openai" | "gemini", options: { replies?: VoiceAgentRep
     reconnectDelaysMs: [0],
     dictationMergeMs: options.mergeMs ?? 30,
     dictationHoldMs: options.holdMs ?? 2000,
+    dictationDrainMs: options.drainMs ?? 1000,
   };
   const relay = engine === "openai" ? new OpenAIRealtimeRelay(relayOptions) : new GeminiLiveRelay(relayOptions);
   const current = () => upstreams[upstreams.length - 1]!;
@@ -69,10 +70,11 @@ describe("agent_chat dictation helpers", () => {
 
   it("treats a transcription that repeats recent model speech as echo", () => {
     const spoken = "momo 回覆了：測試都通過，等你在畫面上確認部署。";
-    expect(isLikelyEcho("測試都通過，等你在畫面上確認部署", spoken, true)).toBe(true);
-    expect(isLikelyEcho("測試都通過", spoken, false)).toBe(true);
-    expect(isLikelyEcho("先不要部署，我晚點看", spoken, true)).toBe(false);
-    expect(isLikelyEcho("隨便一句話", "", true)).toBe(false);
+    expect(isLikelyEcho("測試都通過，等你在畫面上確認部署", spoken)).toBe(true);
+    expect(isLikelyEcho("先不要部署，我晚點看", spoken)).toBe(false);
+    expect(isLikelyEcho("隨便一句話", "")).toBe(false);
+    // Too short to judge: a few shared characters prove nothing.
+    expect(isLikelyEcho("部署", spoken)).toBe(false);
   });
 
   it("keeps the caller's words first and unchanged in the Chat body", () => {
@@ -123,6 +125,20 @@ describe("OpenAI relay, agent_chat binding", () => {
     expect(h.dictations()[0]!.text).toBe("第一句第二句");
   });
 
+  it("waits for an utterance still being transcribed before sending the earlier one", async () => {
+    const h = harness("openai", { mergeMs: 30 });
+    await h.start();
+    // The second utterance starts before the first one's transcription arrives.
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "a", audio_start_ms: 0 });
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "b", audio_start_ms: 900 });
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "a", transcript: "明天早上九點" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(h.dictations()).toHaveLength(0);
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "b", transcript: "提醒我開會" });
+    await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
+    expect(h.dictations()[0]!.text).toBe("明天早上九點提醒我開會");
+  });
+
   it("acknowledges a sent dictation briefly and reports a failed one", async () => {
     const h = harness("openai");
     await h.start();
@@ -157,6 +173,47 @@ describe("OpenAI relay, agent_chat binding", () => {
     h.say("real", "先不要部署");
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     expect(h.dictations()[0]!.text).toBe("先不要部署");
+    // The caller sees what was not sent.
+    expect(h.events).toContainEqual({ type: "dictation_dropped", text: "測試都通過了，等你確認部署", reason: "echo" });
+    expect(h.events).toContainEqual({ type: "dictation_dropped", text: "嗯", reason: "noise" });
+  });
+
+  it("never treats speech after playback as echo, even when it repeats the model", async () => {
+    const h = harness("openai");
+    await h.start();
+    h.fromModel({ type: "response.created", response: { id: "r1" } });
+    h.fromModel({ type: "response.output_audio.delta", response_id: "r1", item_id: "a1", content_index: 0, delta: Buffer.alloc(4_800).toString("base64") });
+    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "r1", delta: "等你在畫面上確認部署。" });
+    h.fromModel({ type: "response.done", response: { id: "r1", status: "completed" } });
+    await h.relay.handleBrowserMessage({ type: "playback", playing: false });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    h.say("later", "等你在畫面上確認部署", 5_000);
+    await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
+    expect(h.dictations()[0]!.text).toBe("等你在畫面上確認部署");
+  });
+
+  it("on End commits the caller's unfinished utterance and waits for its transcription", async () => {
+    const h = harness("openai", { mergeMs: 5000, drainMs: 2000 });
+    await h.start();
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "tail", audio_start_ms: 100 });
+    const ending = h.relay.handleBrowserMessage({ type: "end" });
+    await vi.waitFor(() => expect(h.current().sent.some((m) => m.type === "input_audio_buffer.commit")).toBe(true));
+    expect(h.events.some((event) => event.type === "ended")).toBe(false);
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "tail", transcript: "最後補一句" });
+    await ending;
+    const types = h.events.map((event) => event.type);
+    expect(h.dictations().map((d) => d.text)).toEqual(["最後補一句"]);
+    expect(types.indexOf("dictation")).toBeLessThan(types.indexOf("ended"));
+  });
+
+  it("flushes buffered words when the relay itself ends the call", async () => {
+    const h = harness("openai", { mergeMs: 5000 });
+    await h.start();
+    h.say("i1", "時間到之前說的話");
+    await h.relay.end("max_duration");
+    const types = h.events.map((event) => event.type);
+    expect(h.dictations().map((d) => d.text)).toEqual(["時間到之前說的話"]);
+    expect(types.indexOf("dictation")).toBeLessThan(types.indexOf("ended"));
   });
 
   it("sends typed text at once and flushes buffered words on pause and on end", async () => {
@@ -196,6 +253,12 @@ describe("Gemini relay, agent_chat binding", () => {
     h.fromModel({ serverContent: { inputTranscription: { text: "看看进度" } } });
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     expect(h.dictations()[0]!.text).toBe("幫我看看進度");
+    // A short fragment that happens to share words with the model's acknowledgement is kept.
+    h.fromModel({ serverContent: { modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: Buffer.alloc(480).toString("base64") } }] }, outputTranscription: { text: "收到，部署前再確認" } } });
+    h.fromModel({ serverContent: { inputTranscription: { text: "部署" } } });
+    h.fromModel({ serverContent: { inputTranscription: { text: "先暫停" } } });
+    await vi.waitFor(() => expect(h.dictations()).toHaveLength(2));
+    expect(h.dictations()[1]!.text).toBe("部署先暫停");
     const before = h.current().sent.length;
     await h.relay.handleBrowserMessage({ type: "dictation_result", operationId: h.dictations()[0]!.operationId, status: "sent" });
     expect(h.current().sent.length).toBe(before);

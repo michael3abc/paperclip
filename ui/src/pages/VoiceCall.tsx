@@ -8,6 +8,7 @@ import { LocalVoicePanel } from "@/components/voice/LocalVoicePanel";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { usePrimaryAgent } from "@/hooks/usePrimaryAgent";
+import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { queryKeys } from "@/lib/queryKeys";
 import { chooseDefaultVoiceAgentId, readLastVoiceAgentId, saveLastVoiceAgentId } from "@/lib/local-voice/voice-agent-choice";
 import { useSearchParams } from "@/lib/router";
@@ -47,12 +48,14 @@ export function VoiceCall() {
   const agentId = chosen ?? pinned;
   const agent = available.find((item) => item.id === agentId);
   const issueId = searchParams.get("issueId") ?? undefined;
-  const mode = issueId ? "voice_task" : "agent_chat";
+  const agentChat = useAgentChatEnabled();
+  // Without Agent Chat the page keeps the voice-task flow instead of failing to bind a Chat.
+  const mode = issueId || (agentChat.loaded && !agentChat.enabled) ? "voice_task" : "agent_chat";
 
   if (!selectedCompanyId) return <EmptyState icon={Mic} message="Select an organization to start a voice call." />;
   // Only the first load gates the page; a failed background refetch keeps a live call mounted.
   if (!status.data && status.isError) return <p role="alert" className="text-sm text-destructive">Voice status could not be loaded. Reload the page to try again.</p>;
-  if (!status.data || agents.isPending || !defaultReady) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (!status.data || agents.isPending || !defaultReady || !agentChat.loaded) return <p className="text-sm text-muted-foreground">Loading…</p>;
   if (!status.data.enabled) {
     return <EmptyState icon={Mic} message="Voice is off. Turn on chat connectors and local voice in Settings → Instance → Experimental." />;
   }
@@ -86,7 +89,7 @@ export function VoiceCall() {
           </select>
         </label>
       </div>
-      <LocalVoicePanel key={`${agent.id}:${issueId ?? ""}`} companyId={selectedCompanyId} agentId={agent.id} agentName={agent.name} issueId={issueId} mode={mode} />
+      <LocalVoicePanel key={`${agent.id}:${issueId ?? ""}:${mode}`} companyId={selectedCompanyId} agentId={agent.id} agentName={agent.name} issueId={issueId} mode={mode} />
     </div>
   );
 }

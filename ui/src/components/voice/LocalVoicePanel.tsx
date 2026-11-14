@@ -37,6 +37,7 @@ export interface LocalVoicePanelProps {
 function SentStatus({ entry }: { entry: LocalVoiceSentEntry }) {
   if (entry.status === "sending") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" aria-hidden /> Sending…</span>;
   if (entry.status === "sent") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Check className="size-3" aria-hidden /> Sent</span>;
+  if (entry.status === "dropped") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><X className="size-3" aria-hidden /> {entry.error ?? "Not sent"}</span>;
   return <span className="flex items-center gap-1 text-xs text-destructive"><AlertTriangle className="size-3" aria-hidden /> Not sent</span>;
 }
 

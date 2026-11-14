@@ -24,7 +24,8 @@ export type LocalVoicePhase = "idle" | "starting" | "live" | "ending" | "ended" 
  */
 export type LocalVoiceMode = "agent_chat" | "voice_task";
 /** agent_chat: one dictated message and the result of posting it to the Chat. */
-export interface LocalVoiceSentEntry { operationId: string; text: string; status: "sending" | "sent" | "failed"; error?: string }
+/** `dropped`: heard but not sent because it sounded like the assistant's own voice (echo) or a lone filler (noise). */
+export interface LocalVoiceSentEntry { operationId: string; text: string; status: "sending" | "sent" | "failed" | "dropped"; error?: string }
 export interface LocalVoiceTranscriptEntry { id: number; role: "user" | "model"; text: string }
 export interface LocalVoiceDraftView {
   draftId: string; revision: number; text: string;
@@ -85,7 +86,7 @@ export interface LocalVoiceCallDependencies {
 const MAX_TRANSCRIPT = 60;
 const MAX_SENT_LOG = 50;
 /** agent_chat end: how long to wait for the relay to flush buffered words and confirm the end. */
-export const AGENT_CHAT_END_WAIT_MS = 2_500;
+export const AGENT_CHAT_END_WAIT_MS = 5_000;
 /** agent_chat end: how long to wait for Chat posts that are still in flight. */
 export const AGENT_CHAT_POST_SETTLE_MS = 5_000;
 const OPEN = 1;
@@ -288,6 +289,11 @@ export class LocalVoiceCall {
         this.silenceTimer = this.deps.setInterval(() => this.checkSilence(), 1000);
         return;
       case "dictation": this.onDictation(event); return;
+      case "dictation_dropped":
+        if (this.mode !== "agent_chat") return;
+        this.update({ sentLog: [...this.snapshot.sentLog, { operationId: `dropped-${this.nextTranscriptId++}`, text: event.text, status: "dropped" as const,
+          error: event.reason === "echo" ? "Not sent: it sounded like the assistant's own voice." : "Not sent: too short to be a request." }].slice(-MAX_SENT_LOG) });
+        return;
       case "transcript": this.appendTranscript(event.role, event.text); return;
       case "interrupted":
         this.audio?.flush();
@@ -408,8 +414,14 @@ export class LocalVoiceCall {
     this.update({ phase: "ending" });
     if (socketOpen) this.send({ type: "end" });
     if (socketOpen && this.mode === "agent_chat") {
-      // The relay flushes words it is still merging as a final dictation, then reports `ended`.
-      await this.waitFor((resolve) => { this.relayEnded = resolve; }, AGENT_CHAT_END_WAIT_MS);
+      // The relay finishes and flushes what the caller already said as a final dictation, then reports `ended`.
+      const relayDone = this.waitFor((resolve) => { this.relayEnded = resolve; }, AGENT_CHAT_END_WAIT_MS);
+      // Release the microphone and speaker now; only the relay's final words are awaited.
+      const audio = this.audio;
+      this.audio = null;
+      await audio?.close().catch(() => undefined);
+      this.update({ modelSpeaking: false });
+      await relayDone;
       this.relayEnded = null;
     }
     if (this.pendingPosts.size > 0) {
