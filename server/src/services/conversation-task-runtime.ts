@@ -17,6 +17,7 @@ export async function conversationTaskRuntime(db: Db, companyId: string, issueId
       e.payload->'context'->>'provider' as invoked_provider,
       e.payload->'context'->>'model' as invoked_model,
       e.payload->'context'->>'billingRoute' as invoked_route,
+      left(e.payload->'context'->'route'->>'description', 500) as invoked_route_description,
       e.id as invocation_id, c.model as used_model, c.biller as used_route,
       a.adapter_type as configured_adapter,
       coalesce(i.assignee_adapter_overrides->'adapterConfig'->>'model', a.adapter_config->>'model') as configured_model,
@@ -50,7 +51,8 @@ export async function conversationTaskRuntime(db: Db, companyId: string, issueId
     }
     identities.set(String(row.id), { basis: observed ? "run" : configured ? "configured" : "unknown",
       runId: text(row.run_id), harness, model,
-      billingRoute: observed ? text(row.used_route ?? row.invoked_route) : null });
+      billingRoute: observed ? text(row.used_route ?? row.invoked_route) : null,
+      routeDescription: observed ? text(row.invoked_route_description) : null });
   }
   return identities;
 }

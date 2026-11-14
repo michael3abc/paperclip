@@ -1317,6 +1317,8 @@ export interface ConversationTaskHandoff {
     harness: string | null;
     model: string | null;
     billingRoute: string | null;
+    /** CC Pocket subscription-first family: source, reason and expected subscription return (null when not routed). */
+    routeDescription?: string | null;
   };
 }
 

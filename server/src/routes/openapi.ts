@@ -8521,7 +8521,7 @@ registry.registerPath({
   tags: ["issues"],
   summary: "List tasks created from your conversation",
   description:
-    "Requires a board user who owns the conversation and has current issue read access. Returns a ConversationTaskHandoffPage for the current conversation session, newest first, omitting tasks the user can no longer read. Each runtimeIdentity contains basis (run/configured/unknown), runId, harness, model and billingRoute (nullable). It uses only that task's latest run invocation/usage evidence, or explicitly labelled current assignment settings before execution; unavailable historical values remain null. Accepts only cursor and limit; the default page size is 40. This read does not create tasks or wake agents.",
+    "Requires a board user who owns the conversation and has current issue read access. Returns a ConversationTaskHandoffPage for the current conversation session, newest first, omitting tasks the user can no longer read. Each runtimeIdentity contains basis (run/configured/unknown), runId, harness, model and billingRoute (nullable), plus routeDescription (nullable): the CC Pocket subscription-first route, its reason and the expected subscription return, from the latest invocation only. It uses only that task's latest run invocation/usage evidence, or explicitly labelled current assignment settings before execution; unavailable historical values remain null. Accepts only cursor and limit; the default page size is 40. This read does not create tasks or wake agents.",
   request: {
     params: z.object({ id: z.string() }),
     query: z.object({

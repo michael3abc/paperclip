@@ -113,7 +113,8 @@ describe("MainAgentLiveWorkPanel", () => {
     fixture.runs = [run({ id: "run-active", status: "running" })];
     fixture.transcript = new Map([["run-active", [
       { kind: "provider_activity", ts: "1", family: "model_identity", eventType: "model.identity", status: "completed", title: "Runtime", summary: "",
-        payload: { harness: "codex", model: "compass-6-astra", billingRoute: "compass" } },
+        payload: { harness: "codex", model: "compass-6-astra", billingRoute: "compass",
+          route: { schema: "paperclip.route-decision.v1", route: "compass", description: "GPT-6 Astra 走Compass（compass-6-astra）；訂閱額度用盡" } } },
       { kind: "provider_activity", ts: "2", family: "delegation", eventType: "delegation.started", status: "running", title: "Audit", summary: "",
         payload: { delegationId: "child", description: "Audit", harness: "codex", model: "gpt-6-luna", billingRoute: "openai_subscription" } },
       { kind: "provider_activity", ts: "3", family: "delegation", eventType: "delegation.started", status: "running", title: "Unknown", summary: "",
@@ -121,6 +122,7 @@ describe("MainAgentLiveWorkPanel", () => {
     ]]]);
     await render();
     expect(container.querySelector('[data-testid="main-agent-runtime"]')?.textContent).toBe("codex · 6 Astra · compass");
+    expect(container.querySelector('[data-testid="main-agent-route"]')?.textContent).toBe("GPT-6 Astra 走Compass（compass-6-astra）；訂閱額度用盡");
     const children = container.querySelectorAll('[data-testid="subagent-runtime"]');
     expect(children[0].textContent).toBe("codex · 6 Luna · subscription");
     expect(children[1].textContent).toBe("codex · model unknown · source unknown");

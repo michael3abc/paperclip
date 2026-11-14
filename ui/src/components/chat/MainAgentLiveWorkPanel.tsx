@@ -164,6 +164,8 @@ export function MainAgentLiveWorkPanel({ companyId, agentId }: { companyId: stri
         {doing && <p className={cn("mt-1 text-sm", active ? "text-foreground" : "line-clamp-4 text-muted-foreground")}>{doing}</p>}
         {work.runtime && <p data-testid="main-agent-runtime" className="mt-1 break-words text-xs text-muted-foreground"
           title={work.runtime.model ?? undefined}>{runtimeIdentityLabel(work.runtime)}</p>}
+        {work.runtime?.routeDescription && <p data-testid="main-agent-route" className="mt-0.5 break-words text-xs text-muted-foreground">
+          {work.runtime.routeDescription}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {work.steps.length > 0 && <span>{doneSteps}/{work.steps.length} steps</span>}
           {lastTool && <span className="inline-flex items-center gap-1"><Wrench className="h-3 w-3" /><span className="font-mono">{lastTool}</span></span>}

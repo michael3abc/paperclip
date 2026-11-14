@@ -34,6 +34,7 @@ describe("Coordinator task commitment", () => {
     await act(() => root.render(<>
       <CoordinatorCreatedTaskLink task={{ issueId: "one", identifier: "T-1", title: "Executed", runtimeIdentity: {
         basis: "run", runId: "run-1", harness: "codex", model: "gpt-6-astra", billingRoute: "openai_subscription",
+        routeDescription: "GPT-6 Astra 走訂閱（gpt-6-astra）；訂閱額度已恢復",
       } }} />
       <CoordinatorCreatedTaskLink task={{ issueId: "two", identifier: "T-2", title: "Waiting", runtimeIdentity: {
         basis: "configured", runId: null, harness: "claude", model: "sonnet", billingRoute: null,
@@ -45,6 +46,9 @@ describe("Coordinator task commitment", () => {
     expect([...host.querySelectorAll('[data-testid="task-runtime-identity"]')].map(node => node.textContent)).toEqual([
       "Last run: codex · 6 Astra · subscription", "Configured: claude · sonnet · source unknown",
       "Unknown run: harness unknown · model unknown · source unknown",
+    ]);
+    expect([...host.querySelectorAll('[data-testid="task-route"]')].map(node => node.textContent?.trim())).toEqual([
+      "GPT-6 Astra 走訂閱（gpt-6-astra）；訂閱額度已恢復",
     ]);
   });
   it("does not claim creation when acceptance is still pending or failed", async () => {
