@@ -364,6 +364,28 @@ describe("Owner-issued layered decision authority", () => {
       payload: { proposal: "Worker asks for an ordinary operation" } }, { runId: workerRunId });
     expect(workerApproval.delegation).toMatchObject({ level: "pm", projectId, recipientAgentId: mainId });
   });
+  it("lets the lead main approve a worker's permission grant while other actors keep the reserved-reason gate", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const mainRunId = await runningRun(mainId), workerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: workerRunId, companyId, agentId: workerId, status: "running", contextSnapshot: { issueId } });
+    const requestGrant = (proposal: string) => approvalRecords(db).create(companyId, { type: "request_board_approval", requestedByAgentId: workerId,
+      payload: { proposal, permissions: { repositoryAdmin: true } } }, { runId: workerRunId });
+    const grant = await requestGrant("Grant the worker repository admin for this project");
+    expect(grant.delegation).toMatchObject({ level: "pm", recipientAgentId: mainId, reservedReasons: [] });
+    await expect(approvalService(db).approve(grant.id, { agentId: momoId, runId, revision: grant.delegation!.revision },
+      "Not the recipient")).rejects.toThrow(/human Owner/);
+    expect((await approvalService(db).approve(grant.id, { agentId: mainId, runId: mainRunId, revision: grant.delegation!.revision },
+      "The main owns this project's access")).approval).toMatchObject({ status: "approved", decidedByAgentId: mainId, decidedByUserId: null });
+    // Escalated to the company delegate, the same request keeps the existing reserved-reason gate.
+    const escalated = await requestGrant("Grant the worker repository admin for another tool");
+    const next = await escalateDelegatedRequest(db, { companyId, agentId: mainId, runId: mainRunId }, { kind: "approval",
+      requestId: escalated.id, revision: escalated.delegation!.revision, reason: "Let the company delegate decide" });
+    expect(next.delegation).toMatchObject({ level: "delegate", recipientAgentId: momoId });
+    await expect(approvalService(db).approve(escalated.id, { agentId: momoId, runId, revision: next.delegation.revision },
+      "Delegate tries")).rejects.toThrow(/human Owner/);
+    expect((await approvalRecords(db).getById(escalated.id))?.status).toBe("pending");
+  });
   it("delivers a worker decision once to the lead main's conversation", async () => {
     const mainId = await addLeadMain();
     await activate();
