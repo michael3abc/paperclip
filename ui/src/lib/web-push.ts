@@ -99,5 +99,11 @@ export async function disableWebPush() {
 export async function reconcilePushAccount(userId: string) {
   if (activeAccount !== userId) { activeAccount = userId; accountGeneration++; }
   const binding = currentPushBinding();
-  if (binding && binding.userId !== userId) await clearLocalPush();
+  if (binding && binding.userId !== userId) { await clearLocalPush(); return; }
+  // Self-heal: the worker's IndexedDB copy can be lost (storage eviction,
+  // reinstall) while this enrollment remains; re-send it on every app start.
+  if (binding && "serviceWorker" in navigator) {
+    const registration = await navigator.serviceWorker.getRegistration("/").catch(() => undefined);
+    if (registration?.active) await bindWorker(registration, binding).catch(() => undefined);
+  }
 }
