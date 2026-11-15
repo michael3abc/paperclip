@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ModelCostPie } from "./ModelCostPies";
+import { ModelCostPie, PeriodPicker } from "./ModelCostPies";
 import type { ModelCostWhole } from "../lib/model-cost-split";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,6 +56,22 @@ describe("ModelCostPie", () => {
     expect(container.querySelectorAll("path")).toHaveLength(0);
 
     render({ totalCents: 0, unpriced: [], slices: [] });
-    expect(container.textContent).toContain("No priced usage this month");
+    expect(container.textContent).toContain("No priced usage in this period");
+  });
+
+  it("offers this year, this month, this week and today as periods", () => {
+    const picked: string[] = [];
+    flushSync(() => {
+      root.render(<PeriodPicker value="month" onChange={(period) => picked.push(period)} />);
+    });
+    const buttons = [...container.querySelectorAll("button")];
+    expect(buttons.map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([
+      ["This year", "false"],
+      ["This month", "true"],
+      ["This week", "false"],
+      ["Today", "false"],
+    ]);
+    flushSync(() => buttons[3]!.click());
+    expect(picked).toEqual(["today"]);
   });
 });

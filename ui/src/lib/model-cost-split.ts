@@ -178,7 +178,36 @@ export function splitModelCosts(rows: readonly CostByProviderModel[]): ModelCost
   return { compass: buildWhole(compass), subscription: buildWhole(subscription) };
 }
 
-/** First instant of the current UTC month, the dashboard's Month Spend window. */
-export function currentUtcMonthStartIso(now = new Date()): string {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+export type ModelCostPeriod = "year" | "month" | "week" | "today";
+
+export const MODEL_COST_PERIODS: ReadonlyArray<{ key: ModelCostPeriod; label: string; detail: string }> = [
+  { key: "year", label: "This year", detail: "This year (UTC)" },
+  { key: "month", label: "This month", detail: "This month (UTC)" },
+  { key: "week", label: "This week", detail: "This week (from Monday, local time)" },
+  { key: "today", label: "Today", detail: "Today (local time)" },
+];
+
+export function isModelCostPeriod(value: unknown): value is ModelCostPeriod {
+  return MODEL_COST_PERIODS.some((period) => period.key === value);
+}
+
+/**
+ * Start of the selected period. Year and month follow the UTC calendar like
+ * Month Spend, budgets and the Costs page presets; week (Monday start) and
+ * today follow the viewer's local calendar like the Costs page week view.
+ */
+export function modelCostPeriodStartIso(period: ModelCostPeriod, now = new Date()): string {
+  switch (period) {
+    case "year":
+      return new Date(Date.UTC(now.getUTCFullYear(), 0, 1)).toISOString();
+    case "month":
+      return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    case "week": {
+      const day = now.getDay();
+      const diffToMonday = day === 0 ? -6 : 1 - day;
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMonday).toISOString();
+    }
+    case "today":
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  }
 }

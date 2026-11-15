@@ -41,3 +41,6 @@ Moved verbatim from `FORK.md` on 2026-11-13. These rules and records stay bindin
   tokens (`ui/src/lib/model-cost-split.ts`, rates mirror the server cards; cache
   writes priced as input). Families without a card (Gemini) and unpriced Compass
   runs are listed, never guessed. UI-only (T1 overlay), no schema or API change.
+  Period picker (same day): This year / This month (UTC calendar, like Month Spend
+  and the Costs presets), This week (local Monday) / Today (local midnight); the
+  choice is remembered per browser.

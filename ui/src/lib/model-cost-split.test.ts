@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CostByProviderModel } from "@paperclipai/shared";
-import { currentUtcMonthStartIso, modelColorVar, modelFamily, OTHER_SLICE_KEY, splitModelCosts } from "./model-cost-split";
+import { modelColorVar, modelCostPeriodStartIso, modelFamily, OTHER_SLICE_KEY, splitModelCosts } from "./model-cost-split";
 
 function row(partial: Partial<CostByProviderModel>): CostByProviderModel {
   return {
@@ -82,6 +82,16 @@ describe("splitModelCosts", () => {
   });
 });
 
-it("uses the UTC month start", () => {
-  expect(currentUtcMonthStartIso(new Date("2026-11-15T09:00:00Z"))).toBe("2026-11-01T00:00:00.000Z");
+describe("modelCostPeriodStartIso", () => {
+  // Sunday 2026-11-15 18:30 local time; process TZ is pinned by the UI test setup or system.
+  const now = new Date(2026, 10, 15, 18, 30);
+  it("starts year and month on the UTC calendar", () => {
+    expect(modelCostPeriodStartIso("year", new Date("2026-11-15T09:00:00Z"))).toBe("2026-01-01T00:00:00.000Z");
+    expect(modelCostPeriodStartIso("month", new Date("2026-11-15T09:00:00Z"))).toBe("2026-11-01T00:00:00.000Z");
+  });
+  it("starts week on local Monday and today at local midnight", () => {
+    expect(modelCostPeriodStartIso("week", now)).toBe(new Date(2026, 10, 9).toISOString());
+    expect(modelCostPeriodStartIso("week", new Date(2026, 10, 9, 0, 0))).toBe(new Date(2026, 10, 9).toISOString());
+    expect(modelCostPeriodStartIso("today", now)).toBe(new Date(2026, 10, 15).toISOString());
+  });
 });

@@ -1,12 +1,16 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { costsApi } from "../api/costs";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens } from "../lib/utils";
 import {
-  currentUtcMonthStartIso,
+  isModelCostPeriod,
+  MODEL_COST_PERIODS,
+  modelCostPeriodStartIso,
   splitModelCosts,
+  type ModelCostPeriod,
   type ModelCostSlice,
   type ModelCostWhole,
 } from "../lib/model-cost-split";
@@ -37,7 +41,7 @@ function sliceTitle(slice: ModelCostSlice, valueLabel: string): string {
 
 export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCostWhole; valueLabel: string; ariaLabel: string }) {
   if (whole.slices.length === 0) {
-    return <p className="text-xs text-muted-foreground">No priced usage this month</p>;
+    return <p className="text-xs text-muted-foreground">No priced usage in this period</p>;
   }
   let cursor = 0;
   return (
@@ -105,8 +109,47 @@ function UnpricedNote({ whole, kind }: { whole: ModelCostWhole; kind: "subscript
   );
 }
 
+const PERIOD_STORAGE_KEY = "paperclip.dashboard.modelCostPeriod";
+
+function readStoredPeriod(): ModelCostPeriod {
+  try {
+    const stored = window.localStorage.getItem(PERIOD_STORAGE_KEY);
+    return isModelCostPeriod(stored) ? stored : "month";
+  } catch {
+    return "month";
+  }
+}
+
+export function PeriodPicker({ value, onChange }: { value: ModelCostPeriod; onChange: (period: ModelCostPeriod) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Cost period">
+      {MODEL_COST_PERIODS.map((period) => (
+        <Button
+          key={period.key}
+          variant={value === period.key ? "secondary" : "ghost"}
+          size="sm"
+          onClick={() => onChange(period.key)}
+          aria-pressed={value === period.key}
+        >
+          {period.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 export function ModelCostPies({ companyId }: { companyId: string }) {
-  const from = currentUtcMonthStartIso();
+  const [period, setPeriodState] = useState<ModelCostPeriod>(readStoredPeriod);
+  const setPeriod = (next: ModelCostPeriod) => {
+    setPeriodState(next);
+    try {
+      window.localStorage.setItem(PERIOD_STORAGE_KEY, next);
+    } catch {
+      // Remembering the choice is a convenience only.
+    }
+  };
+  const from = modelCostPeriodStartIso(period);
+  const detail = MODEL_COST_PERIODS.find((entry) => entry.key === period)!.detail;
   const { data, error } = useQuery({
     queryKey: queryKeys.usageByProvider(companyId, from, undefined),
     queryFn: () => costsApi.byProvider(companyId, from),
@@ -115,15 +158,33 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
   });
   const split = useMemo(() => splitModelCosts(data ?? []), [data]);
 
+  const header = (
+    <div className="flex flex-wrap items-center justify-between gap-2 md:col-span-2">
+      <span className="text-(length:--text-nano) text-muted-foreground">{detail}</span>
+      <PeriodPicker value={period} onChange={setPeriod} />
+    </div>
+  );
+
   if (error) {
-    return <p className="text-xs text-destructive">Could not load model costs</p>;
+    return (
+      <div className="grid gap-3 md:grid-cols-2">
+        {header}
+        <p className="text-xs text-destructive">Could not load model costs</p>
+      </div>
+    );
   }
   if (!data) {
-    return <p className="text-xs text-muted-foreground">Loading…</p>;
+    return (
+      <div className="grid gap-3 md:grid-cols-2">
+        {header}
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      </div>
+    );
   }
 
   return (
     <div className="grid gap-6 md:grid-cols-2">
+      {header}
       <section className="space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <h4 className="text-xs font-medium">Compass</h4>

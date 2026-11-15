@@ -482,7 +482,7 @@ export function Dashboard() {
             </ChartCard>
           </div>
 
-          <ChartCard title="Cost by Model" subtitle="This month (UTC) · Compass and subscriptions counted separately">
+          <ChartCard title="Cost by Model" subtitle="Compass and subscriptions counted separately">
             <ModelCostPies companyId={selectedCompanyId!} />
           </ChartCard>
 
