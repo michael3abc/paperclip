@@ -19257,7 +19257,9 @@ export function issueRoutes(
         ? await currentPmCoordinationScope(db, { agentId: req.actor.agentId, companyId: req.actor.companyId }) : null;
       const [mainAgent] = req.actor.type === "agent" && !pm && req.actor.agentId
         ? await db.select().from(agents).where(and(eq(agents.id, req.actor.agentId), eq(agents.companyId, issue.companyId))) : [];
-      const main = mainAgent && mainAgentDispatchScope(mainAgent);
+      // The main-handoff path continues a worker's task. A main continuing its own
+      // task is an ordinary assignee continuation (Owner 2026-11-15, HOM-327).
+      const main = mainAgent && issue.assigneeAgentId !== mainAgent.id ? mainAgentDispatchScope(mainAgent) : null;
       if (req.actor.type === "agent") {
         const runId = requireAgentRunId(req, res);
         if (!runId) return;
