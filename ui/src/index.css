@@ -283,6 +283,16 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  /* Categorical series (dataviz reference palette, validated light/dark); model cost pies. */
+  --chart-series-1: #2a78d6;
+  --chart-series-2: #eb6834;
+  --chart-series-3: #1baf7a;
+  --chart-series-4: #eda100;
+  --chart-series-5: #e87ba4;
+  --chart-series-6: #008300;
+  --chart-series-7: #6250d6;
+  --chart-series-8: #e34948;
+  --chart-series-other: #8a8984;
   --sidebar: oklch(0.985 0 0);
   --primary-sidebar-background: color-mix(in srgb, var(--border) 50%, var(--background));
   --sidebar-foreground: oklch(0.145 0 0);
@@ -700,6 +710,15 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
+  --chart-series-1: #3987e5;
+  --chart-series-2: #d95926;
+  --chart-series-3: #199e70;
+  --chart-series-4: #c98500;
+  --chart-series-5: #d55181;
+  --chart-series-6: #008300;
+  --chart-series-7: #9085e9;
+  --chart-series-8: #e66767;
+  --chart-series-other: #6f6e69;
   --sidebar: oklch(0.205 0 0);
   --primary-sidebar-background: var(--muted);
   --sidebar-foreground: oklch(0.985 0 0);

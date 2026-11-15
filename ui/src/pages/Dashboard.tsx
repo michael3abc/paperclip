@@ -42,6 +42,7 @@ import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import { SubscriptionQuotaCards } from "../components/SubscriptionQuotaCards";
+import { ModelCostPies } from "../components/ModelCostPies";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -480,6 +481,10 @@ export function Dashboard() {
               <SuccessRateChart activity={data.runActivity} />
             </ChartCard>
           </div>
+
+          <ChartCard title="Cost by Model" subtitle="This month (UTC) · Compass and subscriptions counted separately">
+            <ModelCostPies companyId={selectedCompanyId!} />
+          </ChartCard>
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
