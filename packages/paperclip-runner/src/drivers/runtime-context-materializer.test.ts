@@ -113,6 +113,18 @@ describe("runtime context materialization", () => {
       PAPERCLIP_NATIVE_MCP_URL: "http://paperclip.example/mcp",
       PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
     })).toThrow("requires HTTPS or loopback HTTP");
+    // An address this host owns is host-local; another LAN address is not.
+    const own = () => ["127.0.0.1", "192.168.66.200"];
+    expect(nativeMcpLaunchBinding({
+      PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
+      PAPERCLIP_NATIVE_MCP_URL: "http://192.168.66.200:3100/mcp/runtime-tools",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
+    }, own)?.url).toBe("http://192.168.66.200:3100/mcp/runtime-tools");
+    expect(() => nativeMcpLaunchBinding({
+      PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
+      PAPERCLIP_NATIVE_MCP_URL: "http://192.168.66.11:3100/mcp/runtime-tools",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
+    }, own)).toThrow("requires HTTPS or loopback HTTP");
     expect(() => nativeMcpLaunchBinding({
       PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
       PAPERCLIP_NATIVE_MCP_URL: "https://user:pass@paperclip.example/mcp#secret",
