@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Check, Loader2, Mic, MicOff, Phone, PhoneOff, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Loader2, Mic, MicOff, Phone, PhoneOff, X } from "lucide-react";
 import { localVoiceApi } from "@/api/localVoice";
 import { Button } from "@/components/ui/button";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
@@ -42,7 +42,9 @@ function SentMark({ entry }: { entry: LocalVoiceSentEntry }) {
  * Phone button in a Chat's top bar (HOM-265): starts a voice call bound to the
  * caller's Chat with this agent (the HOM-326 `agent_chat` flow) without leaving
  * the conversation. Each finished utterance is posted to the Chat; the reply's
- * voice summary is read aloud. A small floating card holds the call controls.
+ * voice summary is read aloud. While a call is open, its status, timer and
+ * listening toggle sit inline in the top bar so nothing covers the page; the
+ * captions and errors open in a details panel on demand (or by themselves on an error).
  * Hidden when local voice or Agent Chat is off.
  */
 export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injected }: ChatVoiceCallButtonProps) {
@@ -56,63 +58,62 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
   const call = useMemo(() => injected ?? createLocalVoiceCall(), [injected]);
   useEffect(() => () => call.dispose(), [call]);
   const state = useSyncExternalStore(call.subscribe, call.getSnapshot);
-  const [cardOpen, setCardOpen] = useState(false);
+  const [callShown, setCallShown] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const live = state.phase === "live";
   const active = state.phase === "starting" || live || state.phase === "ending";
   const elapsed = useElapsed(state.startedAt, live);
   const available = status.data?.enabled === true && status.data.relayConfigured === true && agentChat.enabled;
+  useEffect(() => { if (state.phase === "error") setDetailsOpen(true); }, [state.phase]);
 
-  if (!available && !active && !cardOpen) return null;
+  if (!available && !active && !callShown) return null;
 
   const start = () => {
-    setCardOpen(true);
+    setCallShown(true);
+    setDetailsOpen(false);
     // Must stay inside the click: the call creates its AudioContext synchronously.
     void call.start({ companyId, agentId, mode: "agent_chat" });
   };
   const onButton = () => {
     if (active) {
-      setCardOpen(true);
       if (live || state.phase === "starting") void call.end();
       return;
     }
     start();
   };
+  const dismiss = () => { setCallShown(false); setDetailsOpen(false); };
+  const replyAgent = state.agentName ?? agentName;
   const caption = [...state.transcript].reverse().find((entry) => entry.role === "user") ?? null;
   const recentSent = state.sentLog.slice(-3);
+  const statusText = state.phase === "starting" ? "Connecting…"
+    : live ? (state.modelSpeaking ? "Speaking" : state.mic === "live" ? "Listening" : "Paused")
+    : state.phase === "ending" ? "Ending…"
+    : state.phase === "ended" ? "Call ended"
+    : state.phase === "error" ? "Call failed"
+    : "Not connected";
+  const dot = live ? (state.mic === "live" ? "bg-green-500" : "bg-amber-500") : state.phase === "error" ? "bg-destructive" : "bg-muted-foreground";
 
-  const card = cardOpen ? (
+  const details = callShown && detailsOpen ? (
     <section
-      aria-label={`Voice call with ${agentName}`}
-      className="fixed left-4 right-4 top-16 z-50 flex sm:left-auto sm:w-88 flex-col gap-3 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
+      aria-label={`Voice call details with ${replyAgent}`}
+      className="fixed left-4 right-4 top-16 z-50 flex flex-col gap-3 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg sm:left-auto sm:w-88"
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-medium">Voice call · {state.agentName ?? agentName}</h2>
-          <p role="status" className="text-xs text-muted-foreground">
-            {state.phase === "starting" && "Connecting…"}
-            {live && (state.modelSpeaking ? "Speaking" : state.mic === "live" ? "Listening" : "Listening paused")}
-            {state.phase === "ending" && "Ending…"}
-            {state.phase === "ended" && (state.endedReason ?? "Call ended.")}
-            {state.phase === "error" && "Call failed."}
-            {state.phase === "idle" && "Not connected."}
-            {live && <span className={cn("ml-2 tabular-nums", state.timeWarning && "text-destructive")}>{formatClock(elapsed)} / {formatClock(state.maxSeconds)}</span>}
-          </p>
-        </div>
-        {!active && (
-          <Button variant="ghost" size="icon-xs" aria-label="Close voice call" onClick={() => setCardOpen(false)}>
-            <X aria-hidden />
-          </Button>
-        )}
+        <h2 className="truncate text-sm font-medium">Voice call · {replyAgent}</h2>
+        <Button variant="ghost" size="icon-xs" aria-label="Hide call details" onClick={() => setDetailsOpen(false)}>
+          <X aria-hidden />
+        </Button>
       </div>
-
+      {state.phase === "ended" && <p className="text-xs text-muted-foreground">{state.endedReason ?? "Call ended."}</p>}
       {state.error && <p role="alert" className="text-xs text-destructive">{state.error}</p>}
       {state.notice && <p className="text-xs text-muted-foreground">{state.notice}</p>}
+      {live && state.timeWarning && <p className="text-xs text-destructive">The call ends automatically in {formatClock(state.maxSeconds - elapsed)}.</p>}
       {live && state.mic === "paused" && state.micPausedReason === "silence" && (
         <p className="text-xs text-muted-foreground">Listening paused after 60 seconds without speech.</p>
       )}
-      {live && caption && <p className="line-clamp-3 break-words text-sm"><span className="text-xs text-muted-foreground">You: </span>{caption.text}</p>}
+      {caption && <p className="line-clamp-3 break-words text-sm"><span className="text-xs text-muted-foreground">You: </span>{caption.text}</p>}
       {recentSent.length > 0 && (
-        <ol className="space-y-1" aria-label={`Sent to ${state.agentName ?? agentName}`}>
+        <ol className="space-y-1" aria-label={`Sent to ${replyAgent}`}>
           {recentSent.map((entry) => (
             <li key={entry.operationId} className="flex gap-1.5 text-xs text-muted-foreground">
               <SentMark entry={entry} />
@@ -121,21 +122,6 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
           ))}
         </ol>
       )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        {active ? (
-          <>
-            {live && (state.mic === "live"
-              ? <Button variant="outline" size="sm" onClick={() => call.pauseMic("manual")}><MicOff aria-hidden /> Pause</Button>
-              : <Button variant="outline" size="sm" onClick={() => call.resumeMic()}><Mic aria-hidden /> Resume</Button>)}
-            <Button variant="destructive" size="sm" disabled={state.phase === "ending"} onClick={() => void call.end()}>
-              <PhoneOff aria-hidden /> End call
-            </Button>
-          </>
-        ) : available ? (
-          <Button size="sm" onClick={start}><Phone aria-hidden /> Call again</Button>
-        ) : null}
-      </div>
       <p className="text-xs leading-snug text-muted-foreground">
         What you say is posted to this Chat when you stop talking. Approvals and deployments still need the on-screen controls.
       </p>
@@ -144,7 +130,35 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
 
   const label = active ? `End voice call with ${agentName}` : `Voice call with ${agentName}`;
   return (
-    <>
+    <div className="flex shrink-0 items-center gap-1">
+      {callShown && (
+        <div role="group" aria-label={`Voice call with ${replyAgent}`} className="flex items-center gap-1">
+          <button
+            type="button"
+            className="flex h-8 items-center gap-1.5 rounded-full px-2 text-xs text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+            aria-expanded={detailsOpen}
+            aria-label={`${statusText}. Show call details`}
+            title="Call details"
+            onClick={() => setDetailsOpen((open) => !open)}
+          >
+            {state.phase === "starting" || state.phase === "ending"
+              ? <Loader2 className="size-3 animate-spin" aria-hidden />
+              : <span className={cn("size-2 rounded-full", dot)} aria-hidden />}
+            <span role="status" className="hidden sm:inline">{statusText}</span>
+            {live && <span className={cn("tabular-nums", state.timeWarning && "text-destructive")}>{formatClock(elapsed)}</span>}
+            {state.error && <AlertTriangle className="size-3 text-destructive" aria-hidden />}
+            <ChevronDown className={cn("size-3 transition-transform", detailsOpen && "rotate-180")} aria-hidden />
+          </button>
+          {live && (state.mic === "live"
+            ? <Button variant="ghost" size="icon-sm" className="size-8" aria-label="Pause listening" title="Pause listening" onClick={() => call.pauseMic("manual")}><MicOff className="h-4 w-4" /></Button>
+            : <Button variant="ghost" size="icon-sm" className="size-8 text-amber-500" aria-label="Resume listening" title="Resume listening" onClick={() => call.resumeMic()}><Mic className="h-4 w-4" /></Button>)}
+          {!active && (
+            <Button variant="ghost" size="icon-sm" className="size-8" aria-label="Close voice call" title="Close" onClick={dismiss}>
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      )}
       <Button
         variant="ghost"
         size="icon-sm"
@@ -157,7 +171,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
       >
         {active ? <PhoneOff className="h-4 w-4" /> : <Phone className="h-4 w-4" />}
       </Button>
-      {card && typeof document !== "undefined" ? createPortal(card, document.body) : null}
-    </>
+      {details && typeof document !== "undefined" ? createPortal(details, document.body) : null}
+    </div>
   );
 }

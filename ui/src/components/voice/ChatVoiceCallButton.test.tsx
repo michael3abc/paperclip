@@ -43,25 +43,44 @@ describe("ChatVoiceCallButton", () => {
   }
   const callButton = () => container.querySelector<HTMLButtonElement>('button[aria-label$="voice call with michael"], button[aria-label="Voice call with michael"]');
 
-  it("starts an agent_chat call for this Chat's agent and shows the call card", async () => {
+  it("starts an agent_chat call inline in the top bar without covering the page", async () => {
     mocks.status.mockResolvedValue({ companyId: "company", enabled: true, relayConfigured: true });
-    const { call, spies } = fakeCall();
+    const { call, spies, set } = fakeCall();
     await render(call);
     await vi.waitFor(() => expect(callButton()).not.toBeNull());
     await act(async () => callButton()!.click());
     expect(spies.start).toHaveBeenCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat" });
-    const card = document.body.querySelector('section[aria-label="Voice call with michael"]');
-    expect(card?.textContent).toContain("Listening");
+    const group = container.querySelector('[role="group"][aria-label="Voice call with michael"]');
+    expect(group?.textContent).toContain("Listening");
+    // No floating panel opens by itself while the call runs.
+    expect(document.body.querySelector('section[aria-label^="Voice call details"]')).toBeNull();
     expect(callButton()?.getAttribute("aria-label")).toBe("End voice call with michael");
 
-    await act(async () => [...card!.querySelectorAll("button")].find((button) => button.textContent?.includes("Pause"))!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Pause listening"]')!.click());
     expect(spies.pauseMic).toHaveBeenCalledWith("manual");
+    expect(container.querySelector('button[aria-label="Resume listening"]')).not.toBeNull();
+
+    await act(async () => set({ transcript: [{ id: 1, role: "user", text: "報告一下進度" }] }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    expect(document.body.querySelector('section[aria-label="Voice call details with michael"]')?.textContent).toContain("報告一下進度");
+    await act(async () => document.body.querySelector<HTMLButtonElement>('button[aria-label="Hide call details"]')!.click());
+    expect(document.body.querySelector('section[aria-label^="Voice call details"]')).toBeNull();
 
     await act(async () => callButton()!.click());
     expect(spies.end).toHaveBeenCalledOnce();
-    expect(document.body.querySelector('section[aria-label="Voice call with michael"]')?.textContent).toContain("Call ended.");
-    await act(async () => document.body.querySelector<HTMLButtonElement>('button[aria-label="Close voice call"]')!.click());
-    expect(document.body.querySelector('section[aria-label="Voice call with michael"]')).toBeNull();
+    expect(container.querySelector('[role="group"]')?.textContent).toContain("Call ended");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close voice call"]')!.click());
+    expect(container.querySelector('[role="group"]')).toBeNull();
+  });
+
+  it("opens the details by itself when the call fails", async () => {
+    mocks.status.mockResolvedValue({ companyId: "company", enabled: true, relayConfigured: true });
+    const { call, set } = fakeCall();
+    await render(call);
+    await vi.waitFor(() => expect(callButton()).not.toBeNull());
+    await act(async () => callButton()!.click());
+    await act(async () => set({ phase: "error", error: "Microphone blocked." }));
+    expect(document.body.querySelector('section[aria-label="Voice call details with michael"] [role="alert"]')?.textContent).toBe("Microphone blocked.");
   });
 
   it.each([
