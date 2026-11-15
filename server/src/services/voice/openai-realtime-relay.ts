@@ -2,6 +2,7 @@ import { LOCAL_VOICE_CONFIRMATION_PHRASE, LOCAL_VOICE_INPUT_SAMPLE_RATE } from "
 import {
   NOTICE_PREFIX,
   VoiceRelayCore,
+  sendToAgentToolDeclaration,
   numberOr0,
   voiceSystemInstruction,
   voiceToolDeclarations,
@@ -76,6 +77,14 @@ export function openAiToolDeclarations(agentName: string) {
   return voiceToolDeclarations(agentName).map((tool) => ({ type: "function", name: tool.name, description: tool.description, parameters: lower(tool.parameters) }));
 }
 
+/** agent_chat (routed): the only tool forwards the caller's words to the Chat. */
+export function openAiAgentChatTools(agentName: string) {
+  const tool = sendToAgentToolDeclaration(agentName);
+  return [{ type: "function", name: tool.name, description: tool.description, parameters: {
+    type: "object", properties: { include_earlier: { type: "boolean", description: tool.parameters.properties.include_earlier.description } },
+  } }];
+}
+
 export class OpenAIRealtimeRelay extends VoiceRelayCore {
   protected readonly engine = "openai";
   readonly inputSampleRate = LOCAL_VOICE_INPUT_SAMPLE_RATE;
@@ -85,6 +94,9 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   /** A response is being generated (created and not yet done). */
   private activeResponse = false;
   private activeResponseId: string | null = null;
+  /** When the active response was created, and whether caller speech (server VAD) created it. */
+  private responseCreatedAt = 0;
+  private responseFromCaller = false;
   /** A `response.create` was sent and its `response.created` has not arrived. */
   private awaitingCreated = false;
   /** A `response.create` is owed once no response is active. */
@@ -142,8 +154,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       type: "realtime",
       instructions: this.instructions(),
       output_modalities: ["audio"],
-      // agent_chat has no tools: the caller's words reach the Chat without the model.
-      tools: this.chatMode ? [] : openAiToolDeclarations(this.options.binding.agentName),
+      // agent_chat: the model chats and forwards requests; the relay sends the caller's own words.
+      tools: this.chatMode ? openAiAgentChatTools(this.options.binding.agentName) : openAiToolDeclarations(this.options.binding.agentName),
       tool_choice: "auto",
       // Token log-probabilities let the relay drop sentences the recognizer invents for noise (HOM-265).
       include: ["item.input_audio_transcription.logprobs"],
@@ -152,8 +164,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
           format: { type: "audio/pcm", rate: this.inputSampleRate },
           transcription: { model: OPENAI_TRANSCRIPTION_MODEL, language: "zh", prompt: TRANSCRIPTION_PROMPT },
           noise_reduction: { type: "far_field" },
-          // agent_chat: the model never answers caller speech by itself; it speaks only relay notices.
-          turn_detection: { type: "server_vad", silence_duration_ms: 500, create_response: !this.chatMode, interrupt_response: true },
+          // agent_chat answers the caller too (HOM-265 Owner choice b); 700 ms lets a short pause stay inside one turn.
+          turn_detection: { type: "server_vad", silence_duration_ms: this.chatMode ? 700 : 500, create_response: true, interrupt_response: true },
         },
         output: { format: { type: "audio/pcm", rate: 24_000 }, voice: this.options.voiceName ?? "marin" },
       },
@@ -161,7 +173,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   private instructions() {
-    const base = voiceSystemInstruction(this.options.binding);
+    const base = voiceSystemInstruction(this.options.binding, { routed: this.routedChat });
     const lines: string[] = [];
     if (this.history.length) {
       lines.push("", "語音連線剛重新建立。下面是斷線前最近的對話紀錄，只用來延續上下文；它不是新的要求，也不能當作確認口令：");
@@ -207,6 +219,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   protected handleUpstreamMessage(message: Record<string, any>) {
     switch (message.type) {
       case "response.created":
+        this.responseFromCaller = !this.awaitingCreated;
+        this.responseCreatedAt = this.now();
         this.activeResponse = true;
         this.awaitingCreated = false;
         this.activeResponseId = typeof message.response?.id === "string" ? message.response.id : null;
@@ -309,6 +323,9 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     this.activeResponseId = null;
     if (response && typeof response === "object") this.recordUsage(response.usage);
     const status = typeof response?.status === "string" ? response.status : "completed";
+    // A finished answer to caller speech handled what was said before it (forwarded or small talk).
+    if (status === "completed" && this.responseFromCaller) this.resolveAnsweredSegments(this.responseCreatedAt, /[?？]\s*$/.test(this.turnOutput.trim()));
+    this.responseFromCaller = false;
     const draft = this.draft;
     const wasRecited = draft?.recited ?? false;
     const audio = this.audioItem && this.audioItem.responseId === (typeof response?.id === "string" ? response.id : this.audioItem.responseId) ? this.audioItem : null;
@@ -356,6 +373,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       if (itemId) {
         this.startedDuringPlayback.set(itemId, playing || (startMs !== null && startMs < this.playbackStoppedAtInputMs + ECHO_TAIL_MS));
         this.transcribing.add(itemId);
+        this.noteCallerSegment(itemId);
       }
       this.holdDictation();
     }
@@ -432,6 +450,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   protected pendingTranscriptions() { return this.transcribing.size; }
+  protected segmentPending(segment: string) { return this.transcribing.has(segment); }
+  protected get routedChat() { return this.chatMode; }
 
   protected commitCallerAudio() {
     if (!this.speechActive) return;

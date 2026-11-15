@@ -103,13 +103,42 @@ describe("agent_chat dictation helpers", () => {
 });
 
 describe("OpenAI relay, agent_chat binding", () => {
-  it("has no tools, never answers caller speech by itself and announces the binding", async () => {
+  /** The model answers caller speech (server VAD): it forwards with send_to_agent, or it just talks. */
+  let responseSeq = 0;
+  /** The model forwards; after the tool output the relay asks for the spoken follow-up, which completes too. */
+  const forward = async (h: ReturnType<typeof harness>, args: Record<string, unknown> = {}) => {
+    const id = `r${++responseSeq}`;
+    h.fromModel({ type: "response.created", response: { id } });
+    h.fromModel({ type: "response.function_call_arguments.done", response_id: id, item_id: `fc-${id}`, call_id: `call-${id}`, name: "send_to_agent", arguments: JSON.stringify(args) });
+    h.fromModel({ type: "response.done", response: { id, status: "completed" } });
+    const creates = () => h.current().sent.filter((m) => m.type === "response.create").length;
+    const before = creates();
+    await vi.waitFor(() => expect(toolOutputs(h).some((entry) => entry.callId === `call-${id}`)).toBe(true));
+    if (creates() > before) {
+      h.fromModel({ type: "response.created", response: { id: `${id}-say` } });
+      h.fromModel({ type: "response.output_audio_transcript.delta", response_id: `${id}-say`, delta: "已經轉給 momo 了。" });
+      h.fromModel({ type: "response.done", response: { id: `${id}-say`, status: "completed" } });
+    }
+    return `call-${id}`;
+  };
+  const chat = (h: ReturnType<typeof harness>, answer: string) => {
+    const id = `r${++responseSeq}`;
+    h.fromModel({ type: "response.created", response: { id } });
+    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: id, delta: answer });
+    h.fromModel({ type: "response.done", response: { id, status: "completed" } });
+  };
+  const toolOutputs = (h: ReturnType<typeof harness>) => h.current().sent
+    .filter((m) => m.type === "conversation.item.create" && m.item?.type === "function_call_output")
+    .map((m) => ({ callId: m.item.call_id as string, output: JSON.parse(m.item.output) as { status: string } }));
+
+  it("talks with the caller, forwards with send_to_agent only and announces the binding (HOM-265)", async () => {
     const h = harness("openai");
     await h.start();
     const [update] = h.current().sent.filter((m) => m.type === "session.update");
-    expect(update.session.tools).toEqual([]);
-    expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: false, interrupt_response: true });
-    expect(update.session.instructions).toContain("Chat");
+    expect(update.session.tools.map((tool: { name: string }) => tool.name)).toEqual(["send_to_agent"]);
+    expect(update.session.audio.input.turn_detection).toMatchObject({ type: "server_vad", create_response: true, interrupt_response: true });
+    expect(update.session.instructions).toContain("send_to_agent");
+    expect(update.session.instructions).toContain("不要猜測或編造");
     expect(update.session.instructions).not.toContain("prepare_request");
     expect(h.events[0]).toMatchObject({ type: "ready", bindingMode: "agent_chat", agentName: "momo" });
   });
@@ -136,6 +165,7 @@ describe("OpenAI relay, agent_chat binding", () => {
     h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "s1", audio_start_ms: 8000 });
     h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "s1", transcript: "幫我看一下測試結果",
       logprobs: [{ token: "幫", logprob: -0.02 }, { token: "我", logprob: -0.1 }] });
+    await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     expect(h.dictations()[0]!.text).toBe("幫我看一下測試結果");
     const dropped = h.events.filter((event) => event.type === "dictation_dropped");
@@ -143,41 +173,61 @@ describe("OpenAI relay, agent_chat binding", () => {
       { type: "dictation_dropped", text: "你好，我想了解一下HOM-123專案的進展。", reason: "unclear" },
       { type: "dictation_dropped", text: "臺灣繁體中文口語。", reason: "unclear" },
     ]);
-    expect(h.events.filter((event) => event.type === "transcript").map((event) => (event as { text: string }).text)).toEqual(["幫我看一下測試結果"]);
+    expect(h.events.filter((event) => event.type === "transcript" && event.role === "user").map((event) => (event as { text: string }).text)).toEqual(["幫我看一下測試結果"]);
   });
 
-  it("merges utterances after a quiet gap into one verbatim Taiwan Traditional dictation", async () => {
+  it("sends nothing until the model forwards, then the caller's own words in order (HOM-265)", async () => {
     const h = harness("openai");
     await h.start();
     h.say("i1", "帮我看一下");
     h.say("i2", "HOM-326 的进度");
+    await new Promise((resolve) => setTimeout(resolve, 120));
     expect(h.dictations()).toHaveLength(0);
+    const callId = await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     const [dictation] = h.dictations();
     expect(dictation!.text).toBe("幫我看一下HOM-326 的進度");
     expect(dictation!.body).toBe(agentChatVoiceMessageBody(dictation!.text));
-    // Caller speech alone never starts a model response.
-    expect(h.current().sent.filter((m) => m.type === "response.create")).toHaveLength(0);
+    expect(toolOutputs(h)).toEqual([{ callId, output: expect.objectContaining({ status: "ok" }) }]);
+    // A second forward with nothing new sends nothing.
+    const again = await forward(h);
+    await vi.waitFor(() => expect(toolOutputs(h).find((entry) => entry.callId === again)?.output.status).toBe("nothing_to_send"));
+    expect(h.dictations()).toHaveLength(1);
   });
 
-  it("keeps merging while the caller is still speaking", async () => {
-    const h = harness("openai", { mergeMs: 40, holdMs: 5000 });
+  it("keeps small talk in the call, and earlier words only when the model includes them (HOM-265)", async () => {
+    const h = harness("openai");
     await h.start();
-    h.say("i1", "第一句");
-    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "i2", audio_start_ms: 10 });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    expect(h.dictations()).toHaveLength(0);
-    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "i2", transcript: "第二句" });
+    h.say("hi", "你好啊，今天好累");
+    chat(h, "辛苦了，先休息一下。");
+    h.say("rhetorical", "對啊");
+    chat(h, "要不要喝杯水？");
+    h.say("req", "幫我查 HOM-328");
+    await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
-    expect(h.dictations()[0]!.text).toBe("第一句第二句");
+    expect(h.dictations()[0]!.text).toBe("幫我查 HOM-328");
+    h.events.length = 0;
+    h.say("ask", "幫我查一下");
+    chat(h, "好，要查哪一個專案？");
+    h.say("what", "Driving 昨天的測試");
+    await forward(h, { include_earlier: true });
+    await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
+    expect(h.dictations()[0]!.text).toBe("幫我查一下Driving 昨天的測試");
+    // Small talk whose transcript arrives after the model answered is not sent either.
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "late", audio_start_ms: 30_000 });
+    chat(h, "哈哈，對啊。");
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "late", transcript: "今天天氣真好" });
+    await h.relay.end("caller_ended");
+    expect(h.dictations().map((d) => d.text)).toEqual(["幫我查一下Driving 昨天的測試"]);
   });
 
-  it("waits for an utterance still being transcribed before sending the earlier one", async () => {
-    const h = harness("openai", { mergeMs: 30 });
+  it("waits for an utterance still being transcribed before sending a forward", async () => {
+    const h = harness("openai");
     await h.start();
-    // The second utterance starts before the first one's transcription arrives.
+    // The tool call usually arrives before the transcriptions.
     h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "a", audio_start_ms: 0 });
     h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "b", audio_start_ms: 900 });
+    await forward(h);
     h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "a", transcript: "明天早上九點" });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(h.dictations()).toHaveLength(0);
@@ -186,61 +236,58 @@ describe("OpenAI relay, agent_chat binding", () => {
     expect(h.dictations()[0]!.text).toBe("明天早上九點提醒我開會");
   });
 
-  it("acknowledges a sent dictation briefly and reports a failed one", async () => {
+  it("adds no relay acknowledgement to a sent dictation and reports a failed one", async () => {
     const h = harness("openai");
     await h.start();
     h.say("i1", "請把測試跑完");
+    await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     const { operationId } = h.dictations()[0]!;
     await h.relay.handleBrowserMessage({ type: "dictation_result", operationId, status: "sent", commentId: "11111111-1111-4111-8111-111111111111" });
-    expect(h.userTurns().at(-1)).toContain("只說「收到」");
-    expect(h.current().sent.filter((m) => m.type === "response.create")).toHaveLength(1);
-    // A repeated or unknown result is ignored.
-    await h.relay.handleBrowserMessage({ type: "dictation_result", operationId, status: "sent" });
-    expect(h.userTurns().filter((text) => text.includes("收到"))).toHaveLength(1);
-
-    h.fromModel({ type: "response.done", response: { id: "r1", status: "completed" } });
+    expect(h.userTurns().filter((text) => text.includes("收到"))).toHaveLength(0);
     h.say("i2", "再幫我檢查一次");
+    await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(2));
     await h.relay.handleBrowserMessage({ type: "dictation_result", operationId: h.dictations()[1]!.operationId, status: "failed", message: "403" });
-    expect(h.userTurns().at(-1)).toContain("沒有送到");
+    await vi.waitFor(() => expect(h.userTurns().some((text) => text.includes("沒有送到"))).toBe(true));
   });
 
   it("drops fillers and speaker echo of the model's own speech", async () => {
     const h = harness("openai");
     await h.start();
     h.say("i1", "嗯");
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await forward(h);
+    await vi.waitFor(() => expect(h.events).toContainEqual({ type: "dictation_dropped", text: "嗯", reason: "noise" }));
     expect(h.dictations()).toHaveLength(0);
     // The model reads a reply summary; its echo is transcribed while it plays.
-    h.fromModel({ type: "response.created", response: { id: "r1" } });
-    h.fromModel({ type: "response.output_audio.delta", response_id: "r1", item_id: "a1", content_index: 0, delta: Buffer.alloc(48_000).toString("base64") });
-    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "r1", delta: "momo 回覆了：測試都通過了，等你確認部署。" });
+    h.fromModel({ type: "response.created", response: { id: "play" } });
+    h.fromModel({ type: "response.output_audio.delta", response_id: "play", item_id: "a1", content_index: 0, delta: Buffer.alloc(48_000).toString("base64") });
+    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "play", delta: "momo 回覆了：測試都通過了，等你確認部署。" });
     h.say("echo", "測試都通過了，等你確認部署");
     h.say("real", "先不要部署");
+    await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     expect(h.dictations()[0]!.text).toBe("先不要部署");
-    // The caller sees what was not sent.
     expect(h.events).toContainEqual({ type: "dictation_dropped", text: "測試都通過了，等你確認部署", reason: "echo" });
-    expect(h.events).toContainEqual({ type: "dictation_dropped", text: "嗯", reason: "noise" });
   });
 
   it("never treats speech after playback as echo, even when it repeats the model", async () => {
     const h = harness("openai");
     await h.start();
-    h.fromModel({ type: "response.created", response: { id: "r1" } });
-    h.fromModel({ type: "response.output_audio.delta", response_id: "r1", item_id: "a1", content_index: 0, delta: Buffer.alloc(4_800).toString("base64") });
-    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "r1", delta: "等你在畫面上確認部署。" });
-    h.fromModel({ type: "response.done", response: { id: "r1", status: "completed" } });
+    h.fromModel({ type: "response.created", response: { id: "p1" } });
+    h.fromModel({ type: "response.output_audio.delta", response_id: "p1", item_id: "a1", content_index: 0, delta: Buffer.alloc(4_800).toString("base64") });
+    h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "p1", delta: "等你在畫面上確認部署。" });
+    h.fromModel({ type: "response.done", response: { id: "p1", status: "completed" } });
     await h.relay.handleBrowserMessage({ type: "playback", playing: false });
     await new Promise((resolve) => setTimeout(resolve, 150));
     h.say("later", "等你在畫面上確認部署", 5_000);
+    await forward(h);
     await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
     expect(h.dictations()[0]!.text).toBe("等你在畫面上確認部署");
   });
 
-  it("on End commits the caller's unfinished utterance and waits for its transcription", async () => {
-    const h = harness("openai", { mergeMs: 5000, drainMs: 2000 });
+  it("on End forwards the caller's unanswered last words after their transcription", async () => {
+    const h = harness("openai", { drainMs: 2000 });
     await h.start();
     h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "tail", audio_start_ms: 100 });
     const ending = h.relay.handleBrowserMessage({ type: "end" });
@@ -253,8 +300,8 @@ describe("OpenAI relay, agent_chat binding", () => {
     expect(types.indexOf("dictation")).toBeLessThan(types.indexOf("ended"));
   });
 
-  it("flushes buffered words when the relay itself ends the call", async () => {
-    const h = harness("openai", { mergeMs: 5000 });
+  it("forwards unanswered words when the relay itself ends the call", async () => {
+    const h = harness("openai");
     await h.start();
     h.say("i1", "時間到之前說的話");
     await h.relay.end("max_duration");
@@ -263,14 +310,16 @@ describe("OpenAI relay, agent_chat binding", () => {
     expect(types.indexOf("dictation")).toBeLessThan(types.indexOf("ended"));
   });
 
-  it("sends typed text at once and flushes buffered words on pause and on end", async () => {
-    const h = harness("openai", { mergeMs: 5000 });
+  it("sends typed text at once; a pause leaves the decision to the model", async () => {
+    const h = harness("openai");
     await h.start();
     await h.relay.handleBrowserMessage({ type: "text", text: "  打字的訊息  " });
     expect(h.dictations().map((d) => d.text)).toEqual(["打字的訊息"]);
     h.say("i1", "說到一半就暫停");
     await h.relay.handleBrowserMessage({ type: "mic", state: "paused" });
-    expect(h.dictations().map((d) => d.text)).toEqual(["打字的訊息", "說到一半就暫停"]);
+    expect(h.dictations()).toHaveLength(1);
+    await forward(h);
+    await vi.waitFor(() => expect(h.dictations().map((d) => d.text)).toEqual(["打字的訊息", "說到一半就暫停"]));
     await h.relay.handleBrowserMessage({ type: "mic", state: "live" });
     h.say("i2", "最後一句話");
     await h.relay.handleBrowserMessage({ type: "end" });

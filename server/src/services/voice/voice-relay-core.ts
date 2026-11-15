@@ -10,7 +10,7 @@ import {
   type VoiceBindingMode,
 } from "@paperclipai/shared";
 import { isConfirmationUtterance, recitationCoverage } from "./voice-summary.js";
-import { DICTATION_DRAIN_MS, DICTATION_HOLD_MS, DICTATION_MAX_CHARS, DICTATION_MERGE_MS, agentChatVoiceMessageBody, isDictationNoise, isLikelyEcho } from "./voice-dictation.js";
+import { DICTATION_DRAIN_MS, DICTATION_HOLD_MS, DICTATION_MAX_CHARS, DICTATION_MERGE_MS, FORWARD_WINDOW_MS, SEND_TO_AGENT_TOOL, agentChatVoiceMessageBody, isDictationNoise, isLikelyEcho } from "./voice-dictation.js";
 import { toTaiwanTraditional } from "./zh-tw.js";
 
 /**
@@ -152,6 +152,30 @@ export function voiceToolDeclarations(agentName: string) {
   ];
 }
 
+/** agent_chat with a routing model (HOM-265 Owner choice b): the model chats and forwards requests with a tool. */
+export function sendToAgentToolDeclaration(agentName: string) {
+  return {
+    name: SEND_TO_AGENT_TOOL,
+    description: `把 Owner 剛才說的話照原文送到 Chat 給 ${agentName}。內容由系統直接取 Owner 的原話，你不用、也不能提供或改寫文字。要做事、交代工作、問任務／專案／進度／結果，或你不確定時就呼叫。`,
+    parameters: { type: "OBJECT", properties: { include_earlier: { type: "BOOLEAN", description: "Owner 的要求有一部分是在你上一次回話之前講的（例如你追問了細節，他才補充）時設為 true；先閒聊、之後才提出要求時設為 false。" } } },
+  };
+}
+
+function routedAgentChatSystemInstruction(binding: VoiceRelayOptions["binding"]) {
+  const agent = binding.agentName;
+  return [
+    `你是 Owner 在 Paperclip 的語音助理，這通電話連到 Owner 和 ${agent} 的 Chat。像一般講電話一樣自然地跟 Owner 聊天、確認意思。`,
+    "全程使用台灣繁體中文與台灣口語，每次一到兩句。英文專有名詞（Paperclip、HOM-123、michael 等）保持原文。",
+    `你看不到 Paperclip 的任何資料：不知道任務、專案、進度、結果，也不知道 ${agent} 在做什麼。絕對不要猜測或編造這些內容；被問到就轉給 ${agent}。`,
+    `Owner 要人做事、交代或修改工作、問任務／專案／進度／結果、問只有 ${agent} 知道的事，或你不確定該不該轉時，呼叫 ${SEND_TO_AGENT_TOOL}。系統會把 Owner 最近說的原話送過去，你不用重述內容。`,
+    `Owner 一個要求分幾句講時，等他講完、意思清楚再呼叫；同一個要求只轉一次。意思不清楚可以先簡短問一句；他補充後呼叫時把 include_earlier 設為 true，讓前面那段要求一起送出。`,
+    `呼叫之後用一句話告訴 Owner 已經轉給 ${agent}，回覆來了會唸給他聽。`,
+    "打招呼、閒聊、問你能做什麼、或 Owner 只是在想事情時，自己簡短回答，不要轉。",
+    "簽核、核准、部署、修改設定、刪除等動作不能用語音完成，需要時請 Owner 到 Paperclip 畫面上操作；轉給 agent 的話也不算核准。",
+    `以「${NOTICE_PREFIX}」開頭的文字是系統通知，不是 Owner 說的話，不要因為通知呼叫 ${SEND_TO_AGENT_TOOL}。照通知要求簡短播報即可，不要唸出「${NOTICE_PREFIX}」這個標記。`,
+  ].join("\n");
+}
+
 /** agent_chat: the model is only a receptionist; the caller's words go to the Chat by themselves. */
 function agentChatSystemInstruction(binding: VoiceRelayOptions["binding"]) {
   const agent = binding.agentName;
@@ -165,8 +189,8 @@ function agentChatSystemInstruction(binding: VoiceRelayOptions["binding"]) {
   ].join("\n");
 }
 
-export function voiceSystemInstruction(binding: VoiceRelayOptions["binding"]) {
-  if (binding.mode === "agent_chat") return agentChatSystemInstruction(binding);
+export function voiceSystemInstruction(binding: VoiceRelayOptions["binding"], options: { routed?: boolean } = {}) {
+  if (binding.mode === "agent_chat") return options.routed ? routedAgentChatSystemInstruction(binding) : agentChatSystemInstruction(binding);
   const task = binding.issueIdentifier ? `${binding.issueIdentifier}「${binding.issueTitle}」` : `「${binding.issueTitle}」`;
   const agent = binding.agentName;
   return [
@@ -224,6 +248,12 @@ export abstract class VoiceRelayCore {
   private dictationHeldSince: number | null = null;
   /** agent_chat: dictations handed to the browser and not yet reported back. */
   private readonly pendingDictations = new Map<string, string>();
+  /** Routed agent_chat: caller utterances heard but not yet forwarded or dropped, by segment. */
+  private readonly undecidedSegments = new Map<string, { startedAt: number; answered: boolean }>();
+  /** Routed agent_chat: segments the model forwarded (true) or that were dropped (false). */
+  private readonly segmentFates = new Map<string, boolean>();
+  private routeTimer: unknown = null;
+  private routeWaitSince: number | null = null;
   /** Recent model speech, for the echo filter. */
   private recentModelOutput: string[] = [];
 
@@ -251,6 +281,12 @@ export abstract class VoiceRelayCore {
   protected get chatMode() { return this.options.binding.mode === "agent_chat"; }
   /** Whether the engine speaks a short acknowledgement by itself (Gemini answers every utterance). */
   protected readonly acknowledgesSpeech: boolean = false;
+  /**
+   * agent_chat where the model talks with the caller and forwards requests
+   * with {@link SEND_TO_AGENT_TOOL} (HOM-265). Only forwarded utterances reach
+   * the Chat, still as the caller's own words; small talk stays in the call.
+   */
+  protected get routedChat() { return false; }
 
   // ---- engine hooks -------------------------------------------------------
 
@@ -307,7 +343,7 @@ export abstract class VoiceRelayCore {
       case "text":
         if (this.chatMode) {
           // Typed text is already exact: send it at once, after anything still being merged.
-          this.flushDictation();
+          if (this.routedChat) this.routeDictation(true); else this.flushDictation();
           this.emitDictation(message.text.trim());
           return;
         }
@@ -326,7 +362,9 @@ export abstract class VoiceRelayCore {
           this.bufferedAudio.length = 0;
           this.onMicPaused();
           // Words already heard are still sent, including a transcription still in progress.
-          if (this.chatMode) void this.drainDictation(this.options.dictationDrainMs ?? DICTATION_DRAIN_MS);
+          // Routed: the committed audio still gets a model answer, which decides whether it is forwarded.
+          if (this.chatMode && this.routedChat) this.commitCallerAudio();
+          else if (this.chatMode) void this.drainDictation(this.options.dictationDrainMs ?? DICTATION_DRAIN_MS);
         }
         return;
       case "confirm_draft": {
@@ -542,16 +580,104 @@ export abstract class VoiceRelayCore {
   protected async drainDictation(maxMs: number) {
     if (!this.chatMode || this.closed) return;
     this.commitCallerAudio();
+    // Routed: at the end of the call, words the model never got to answer are forwarded;
+    // words it already answered as small talk are not.
+    if (this.routedChat) this.settleUndecided((entry) => !entry.answered);
     const step = 100;
     for (let waited = 0; waited < maxMs && this.pendingTranscriptions() > 0 && !this.closed; waited += step) {
       await new Promise<void>((resolve) => this.setTimer(resolve, step));
     }
-    if (!this.closed) this.flushDictation();
+    if (this.closed) return;
+    if (this.routedChat) this.routeDictation(true); else this.flushDictation();
+  }
+
+  // ---- routed agent_chat ----------------------------------------------------
+
+  /** Routed: the caller began an utterance (an engine segment id). */
+  protected noteCallerSegment(segment: string) {
+    if (!this.routedChat || !segment || this.segmentFates.has(segment)) return;
+    this.undecidedSegments.set(segment, { startedAt: this.now(), answered: false });
+  }
+
+  /**
+   * Routed: the model finished answering what the caller said before `before`
+   * without forwarding it. A question back (「要查哪一個？」) keeps those words
+   * for the request that follows; any other answer means small talk, which is
+   * never sent to the Chat.
+   */
+  protected resolveAnsweredSegments(before: number, askedBack: boolean) {
+    let dropped = 0;
+    for (const [segment, entry] of this.undecidedSegments) {
+      if (entry.startedAt > before) continue;
+      if (askedBack) { entry.answered = true; continue; }
+      this.undecidedSegments.delete(segment);
+      this.segmentFates.set(segment, false);
+      dropped += 1;
+    }
+    if (dropped) this.routeDictation();
+  }
+
+  /** Routed: whether this segment's transcription is still in progress. */
+  protected segmentPending(_segment: string) { return false; }
+
+  /** Fix the fate of every undecided segment: forwarded when `forward` says so, otherwise dropped. */
+  private settleUndecided(forward: (entry: { startedAt: number; answered: boolean }) => boolean) {
+    let forwarded = 0;
+    let dropped = 0;
+    for (const [segment, entry] of this.undecidedSegments) {
+      const keep = forward(entry);
+      this.segmentFates.set(segment, keep);
+      if (keep) forwarded += 1; else dropped += 1;
+    }
+    this.undecidedSegments.clear();
+    return { forwarded, dropped };
+  }
+
+  /** The model asked to forward what the caller just said. */
+  private forwardRecentSpeech(includeEarlier: boolean): Record<string, unknown> {
+    const agent = this.options.binding.agentName;
+    if (!this.routedChat) return { status: "error", message: "這通電話不需要轉送" };
+    const cutoff = this.now() - FORWARD_WINDOW_MS;
+    // Words the model already answered with a question are sent only when it says they belong to this request.
+    const { forwarded, dropped } = this.settleUndecided((entry) => entry.startedAt >= cutoff && (!entry.answered || includeEarlier));
+    this.log("voice_relay_forward_requested", { engine: this.engine, forwarded, dropped });
+    this.routeDictation();
+    return forwarded
+      ? { status: "ok", message: `已把 Owner 的原話轉給 ${agent}。用一句話告訴 Owner 已轉出，回覆來了會唸給他聽。` }
+      : { status: "nothing_to_send", message: "沒有新的話可以轉，不要再呼叫；如果 Owner 的要求還沒講，請他再說一次。" };
+  }
+
+  /**
+   * Routed: drop parts of dropped segments, and send forwarded parts once their
+   * transcriptions are in (bounded wait). Undecided parts stay buffered.
+   */
+  private routeDictation(immediate = false) {
+    if (this.routeTimer !== null) { this.clearTimer(this.routeTimer); this.routeTimer = null; }
+    if (this.closed) return;
+    const dropped = this.dictationParts.filter((part) => this.segmentFates.get(part.segment) === false);
+    if (dropped.length) {
+      this.dictationParts = this.dictationParts.filter((part) => this.segmentFates.get(part.segment) !== false);
+      this.log("voice_relay_small_talk_kept_in_call", { engine: this.engine, parts: dropped.length });
+    }
+    const forwardSegments = [...this.segmentFates].filter(([, keep]) => keep).map(([segment]) => segment);
+    if (!forwardSegments.length) { this.routeWaitSince = null; return; }
+    const at = this.now();
+    this.routeWaitSince ??= at;
+    const waiting = forwardSegments.some((segment) => this.segmentPending(segment));
+    if (waiting && !immediate && at - this.routeWaitSince < (this.options.dictationHoldMs ?? DICTATION_HOLD_MS)) {
+      this.routeTimer = this.setTimer(() => this.routeDictation(), 200);
+      return;
+    }
+    this.routeWaitSince = null;
+    const selected = new Set(forwardSegments);
+    // A fate is kept while its transcription is still in progress, so a late transcript follows it.
+    for (const [segment] of [...this.segmentFates]) if (!this.segmentPending(segment)) this.segmentFates.delete(segment);
+    this.flushDictation((part) => selected.has(part.segment));
   }
 
   /** The caller started speaking: keep merging until their words are transcribed. */
   protected holdDictation() {
-    if (!this.chatMode || this.closed || this.dictationParts.length === 0) return;
+    if (!this.chatMode || this.closed || this.dictationParts.length === 0 || this.routedChat) return;
     this.armDictationTimer(this.options.dictationHoldMs ?? DICTATION_HOLD_MS);
   }
 
@@ -561,7 +687,12 @@ export abstract class VoiceRelayCore {
     if (!this.chatMode || this.closed) return;
     const clean = toTaiwanTraditional(text);
     if (!clean.trim()) return;
+    if (this.routedChat && this.segmentFates.get(meta.segment) === false) {
+      this.log("voice_relay_small_talk_kept_in_call", { engine: this.engine, parts: 1 });
+      return;
+    }
     this.dictationParts.push({ text: clean, duringPlayback: meta.duringPlayback, segment: meta.segment });
+    if (this.routedChat) { this.routeDictation(); return; }
     this.armDictationTimer(this.options.dictationMergeMs ?? DICTATION_MERGE_MS);
   }
 
@@ -583,10 +714,11 @@ export abstract class VoiceRelayCore {
   }
 
   /** Merge, filter and hand the dictation to the browser, which posts it as the caller's Chat message. */
-  protected flushDictation() {
+  protected flushDictation(select?: (part: DictationPart) => boolean) {
     if (this.dictationTimer !== null) { this.clearTimer(this.dictationTimer); this.dictationTimer = null; }
     this.dictationHeldSince = null;
-    const parts = this.dictationParts.splice(0);
+    const parts = select ? this.dictationParts.filter(select) : this.dictationParts.splice(0);
+    if (select) this.dictationParts = this.dictationParts.filter((part) => !select(part));
     if (!parts.length || this.closed) return;
     // Rebuild whole utterances from their fragments before judging echo.
     const utterances: { texts: string[]; duringPlayback: boolean; segment: string }[] = [];
@@ -628,7 +760,7 @@ export abstract class VoiceRelayCore {
     const agent = this.options.binding.agentName;
     if (message.status === "sent") {
       this.log("voice_relay_dictation_sent", { engine: this.engine });
-      if (!this.acknowledgesSpeech) this.queueNotice(`${NOTICE_PREFIX} Owner 剛才的話已經照原文送到 Chat 給 ${agent}。只說「收到」兩個字，不要加其他內容。`);
+      if (!this.acknowledgesSpeech && !this.routedChat) this.queueNotice(`${NOTICE_PREFIX} Owner 剛才的話已經照原文送到 Chat 給 ${agent}。只說「收到」兩個字，不要加其他內容。`);
     } else {
       this.log("voice_relay_dictation_failed", { engine: this.engine });
       this.queueNotice(`${NOTICE_PREFIX} 剛才那段話沒有送到 ${agent} 的 Chat。請用一句話請 Owner 看畫面上的錯誤，或再說一次。`);
@@ -667,6 +799,7 @@ export abstract class VoiceRelayCore {
       }
       case "prepare_request": return this.prepareDraft(String(args.text ?? ""));
       case "submit_request": return this.submitFromModel(String(args.draftId ?? ""));
+      case SEND_TO_AGENT_TOOL: return this.forwardRecentSpeech(args.include_earlier === true);
       case "get_updates": {
         const replies = await this.port.newReplies();
         for (const reply of replies) this.announceReplyToBrowser(reply);
@@ -850,6 +983,7 @@ export abstract class VoiceRelayCore {
     for (const timer of this.timers) this.clearTimer(timer);
     if (this.replyTimer !== null) this.clearTimer(this.replyTimer);
     if (this.dictationTimer !== null) { this.clearTimer(this.dictationTimer); this.dictationTimer = null; }
+    if (this.routeTimer !== null) { this.clearTimer(this.routeTimer); this.routeTimer = null; }
     this.unwatch?.();
     for (const abort of this.setupAborts) abort(new Error("call ended during upstream setup"));
     this.setupAborts.clear();

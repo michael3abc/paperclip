@@ -13,6 +13,10 @@ export const DICTATION_HOLD_MS = 20_000;
 export const DICTATION_MAX_CHARS = 8000;
 /** On pause or end, wait at most this long for a transcription still in progress. */
 export const DICTATION_DRAIN_MS = 3000;
+/** Routed agent_chat: the model forwards with this tool; the relay sends the caller's own words. */
+export const SEND_TO_AGENT_TOOL = "send_to_agent";
+/** Routed agent_chat: a forward takes the caller's undecided utterances from this far back; older small talk is not sent. */
+export const FORWARD_WINDOW_MS = 90_000;
 /** Speech that starts this soon after model audio stops may still be its echo. */
 export const ECHO_TAIL_MS = 1500;
 
@@ -20,6 +24,7 @@ export const ECHO_TAIL_MS = 1500;
 const FILLERS = new Set([
   "嗯", "嗯嗯", "恩", "啊", "阿", "喔", "哦", "噢", "欸", "誒", "呃", "額", "唉", "哈", "哈哈", "好", "好的", "好喔", "對", "對對", "是", "是的",
   "ok", "okay", "謝謝", "謝謝你", "那個", "然後", "就是", "這個", "收到", "hello", "hi", "喂",
+  "掰掰", "拜拜", "再見", "bye", "byebye", "好掰掰", "好拜拜",
 ]);
 /** Well-known speech-recognition hallucinations on silence or background noise. */
 const HALLUCINATIONS = [
