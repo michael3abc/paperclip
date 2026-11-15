@@ -297,12 +297,14 @@ export abstract class VoiceRelayCore {
           state: turn.state, ...(turn.inputCommentId ? { inputCommentId: turn.inputCommentId } : {}),
           ...(turn.answerCommentId ? { answerCommentId: turn.answerCommentId } : {}),
           ...(turn.error ? { error: turn.error } : {}) });
-        const reply = turn.answerCommentId ? this.answerViews.get(turn.answerCommentId) : undefined;
+        this.log("voice_turn_state", { turnId: turn.turnId, state: turn.state, elapsedMs: this.now() - turn.createdAt });
+      },
+      onAnswer: (answer) => {
+        const reply = this.answerViews.get(answer.commentId);
         if (reply) this.browser.sendEvent({ type: "agent_reply", commentId: reply.commentId, body: reply.body,
           voiceSummary: reply.voiceSummary, createdAt: reply.createdAt,
-          turnIds: this.turns.getTurns().filter((item) => item.answerCommentId === reply.commentId).map((item) => item.turnId),
-          playbackState: turn.state === "completed" ? "completed" : turn.state === "interrupted" ? "interrupted" : "queued" });
-        this.log("voice_turn_state", { turnId: turn.turnId, state: turn.state, elapsedMs: this.now() - turn.createdAt });
+          turnIds: answer.turnIds,
+          playbackState: answer.state === "answer_ready" || answer.state === "speaking" ? "queued" : answer.state });
       },
       onNotice: (text, key) => this.queueNotice(this.exactSpeech(text), key),
       onSpeechReady: () => this.flushNotices(),
@@ -389,12 +391,7 @@ export abstract class VoiceRelayCore {
         await this.onDictationResult(message);
         return;
       case "replay_reply":
-        if (this.mainAnswerChat && this.turns.replay(message.commentId)) {
-          const reply = this.answerViews.get(message.commentId);
-          if (reply) this.browser.sendEvent({ type: "agent_reply", commentId: reply.commentId, body: reply.body,
-            voiceSummary: reply.voiceSummary, createdAt: reply.createdAt, playbackState: "queued" });
-          this.flushNotices();
-        }
+        if (this.mainAnswerChat && this.turns.replay(message.commentId)) this.flushNotices();
         return;
       case "playback":
         this.browserPlaying = message.playing;

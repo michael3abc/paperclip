@@ -284,6 +284,10 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
           this.awaitingCreated = false;
           this.activeResponse = false;
           this.modelTurnActive = false;
+          if (this.mainAnswerChat) {
+            this.interruptChatPlayback();
+            this.browser.sendEvent({ type: "error", code: "playback_failed", message: "這次語音播放失敗，回答仍保留在原 Chat；可稍後選擇重播。" });
+          }
           this.flushNotices();
         }
         if (!BENIGN_ERROR_CODES.has(code)) this.log("voice_relay_upstream_error", { engine: this.engine, code });

@@ -63,6 +63,31 @@ const receipt: Record<string, unknown> = { case: "synthetic_main_answer_gateway"
 const times = receipt.timingsMs as Record<string, number>;
 const bytes = receipt.audioBytes as Record<string, number>;
 let relayConnections = 0, mainRequests = 0, ttsConnections = 0;
+// Error messages, stacks and provider/DB payloads can contain sensitive inputs.
+// Copy only known diagnostic identifiers, including wrapped driver causes.
+function safeFailure(error: unknown) {
+  const classes = new Set(["Error", "AssertionError", "TypeError", "RangeError", "HttpError", "PostgresError", "DrizzleQueryError", "AbortError", "ZodError", "TestPostgresShutdownError"]);
+  const codes = new Set(["ENOENT", "EACCES", "EPERM", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EADDRINUSE", "ERR_ASSERTION",
+    "23502", "23503", "23505", "23514", "42P01", "42703", "53300", "57P01", "08006"]);
+  const labels = new Set(["gateway_key_missing", "missing_media", "tts_audio_length", "relay_reconnect_forbidden",
+    "synthetic_transcription_mismatch", "main_answer_missing_or_incorrect", "main_summary_missing_or_incorrect",
+    "answer_provenance_missing", "answer_recitation_mismatch", "duplicate_input", "smoke_deadline", "db_start_deadline",
+    "tts_transport", "tts_closed", "tts_failed", "tts_provider", "tts_protocol", "relay_transport"]);
+  const chain: { class: string; code?: string; label?: string; constraint?: string }[] = [];
+  let current = error;
+  for (let depth = 0; depth < 3 && current && typeof current === "object"; depth++) {
+    const candidate = current as { name?: unknown; code?: unknown; message?: unknown; constraint_name?: unknown; cause?: unknown };
+    const name = typeof candidate.name === "string" ? candidate.name : "";
+    const code = typeof candidate.code === "string" ? candidate.code : "";
+    const message = typeof candidate.message === "string" ? candidate.message : "";
+    chain.push({ class: classes.has(name) ? name : "OtherError",
+      ...(codes.has(code) ? { code } : {}),
+      ...(labels.has(message) || /^main_http_[1-5]\d\d$/.test(message) ? { label: message } : {}),
+      ...(candidate.constraint_name === "issues_conversation_identity_check" ? { constraint: "issues_conversation_identity_check" } : {}) });
+    current = candidate.cause;
+  }
+  return chain;
+}
 function check() { abort.signal.throwIfAborted(); }
 function bounded<T>(work: Promise<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -117,34 +142,48 @@ async function synthesize(): Promise<Buffer> {
   } finally { socket.terminate(); sockets.delete(socket); }
 }
 try {
+  stage = "setup_gateway_credential";
   key = (await readFile(path.join(homedir(), ".config/ccpocket/compass-gateway-key"), "utf8")).trim();
   assert(key.length > 0, "gateway_key_missing");
   // This helper allocates and owns its cluster. It never consumes DATABASE_URL.
+  stage = "setup_owned_database";
   const allocation = startEmbeddedPostgresTestDatabase("paperclip-voice-main-smoke-").then(async (owned) => {
     if (abort.signal.aborted) { await owned.cleanup(); throw new Error("db_start_deadline"); }
     return owned;
   });
   database = await bounded(allocation);
+  stage = "setup_database_client";
   db = createDb(database.connectionString, { maxConnections: 3 });
   const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), userId = `voice-smoke-${randomUUID()}`;
+  stage = "setup_company";
   await db.insert(companies).values({ id: companyId, name: "Owned synthetic voice smoke", issuePrefix: "VSM" });
+  stage = "setup_agent";
   await db.insert(agents).values({ id: agentId, companyId, name: "Fixture main", role: "operator", status: "idle", adapterType: "paperclip_runner" });
+  stage = "setup_membership";
   await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+  stage = "setup_chat";
   await db.insert(issues).values({ id: issueId, companyId, title: "Synthetic main voice smoke", assigneeAgentId: agentId,
-    status: "in_review", conversationAgentId: agentId, conversationUserId: userId, conversationSessionGeneration: 0, createdByUserId: userId });
+    status: "in_review", conversationAgentId: agentId, conversationUserId: userId, conversationState: "waiting", conversationSessionGeneration: 0, createdByUserId: userId });
+  stage = "setup_feature_settings";
   await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true, enableLocalVoice: true, enableAgentChat: true });
+  stage = "setup_voice_service";
   service = voiceSessionService(db, { allowLocalBoard: false, credentials: async () => { throw new Error("unexpected_provider_credentials"); }, onQuestionAnswered: () => { throw new Error("unexpected_question_mutation"); } });
   const caller = { id: userId, authority: "member" as const };
+  stage = "setup_voice_endpoint";
   const endpoint = await ensureLocalVoiceEndpoint(db, { companyId, agentId, caller, allowLocalBoard: false });
+  stage = "setup_voice_session";
   const session = await service.local.start({ companyId, endpointId: endpoint.endpointId, issueId, caller,
     idempotencyKey: randomUUID(), maxDurationSeconds: 180, bindingMode: "agent_chat" });
   assert(session.media, "missing_media");
+  stage = "setup_relay_authorization";
   const binding = await authorizeLocalVoiceRelay(db, service, { companyId, sessionId: session.session.id, caller, token: session.media.transportToken, allowLocalBoard: false });
+  stage = "setup_relay_port";
   const port = createLocalVoiceTaskPort(db, service, { binding, caller, token: session.media.transportToken, allowLocalBoard: false });
   const comments = issueService(db);
   const events: LocalVoiceRelayServerEvent[] = [];
   let answerId: string | undefined, answerStarted = false, playbackUntil = 0;
-  let spokenAnswer = "";
+  let spokenAnswer = "", expectedSummary = "", answerRequested = false;
+  stage = "setup_relay_controller";
   relay = new OpenAIRealtimeRelay({ binding: { ...binding.issue, issueId, issueIdentifier: null, issueTitle: binding.issue.title,
     agentName: "Fixture main", mode: "agent_chat", policyVersion: MAIN_ANSWER_POLICY },
     model: values["realtime-model"], voiceName: "marin", port, reconnectDelaysMs: [],
@@ -152,7 +191,9 @@ try {
       sendEvent(event) {
         events.push(event);
         if (event.type === "voice_turn" && event.state === "speaking" && event.answerCommentId === answerId) answerStarted = true;
-        if (event.type === "transcript" && event.role === "model" && answerStarted) spokenAnswer += event.text;
+        // Caption deltas may precede the first audio packet; capture from the
+        // actual answer request, not the first playback callback.
+        if (event.type === "transcript" && event.role === "model" && answerRequested) spokenAnswer += event.text;
       },
       sendAudio(pcm) {
         bytes.relay += pcm.length;
@@ -170,7 +211,12 @@ try {
       socket.on("message", (data: Buffer) => handlers.onMessage(data.toString()));
       socket.on("close", (code: number) => handlers.onClose(code, "smoke_transport_closed"));
       await bounded(new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", () => reject(new Error("relay_transport"))); }));
-      return { send: (json: string) => socket.send(json), close: () => { socket.terminate(); sockets.delete(socket); } };
+      return { send: (json: string) => {
+        const frame = JSON.parse(json);
+        if (expectedSummary && frame.type === "conversation.item.create"
+          && frame.item?.content?.some((part: { text?: string }) => part.text?.includes(JSON.stringify(expectedSummary)))) answerRequested = true;
+        socket.send(json);
+      }, close: () => { socket.terminate(); sockets.delete(socket); } };
     },
   });
   stage = "tts"; const pcm = await synthesize(); bytes.tts = pcm.length; times.ttsReady = elapsed();
@@ -204,6 +250,7 @@ try {
   const body = (generated.output ?? []).flatMap(item => item.content ?? []).filter(item => item.type === "output_text").map(item => item.text ?? "").join("\n");
   assert(body.length > 0 && /13|十三/u.test(body), "main_answer_missing_or_incorrect");
   const summary = extractVoiceSummary(body); assert(summary && /13|十三/u.test(summary), "main_summary_missing_or_incorrect");
+  expectedSummary = summary;
   stage = "verified_answer";
   const answer = await comments.addComment(issueId, body, { agentId, runId });
   assert.deepEqual(answer.metadata?.voiceReply?.sourceCommentIds, [input.id], "answer_provenance_missing");
@@ -213,15 +260,19 @@ try {
   publishLiveEvent({ companyId, type: "activity.logged", payload: { entityId: issueId, entityType: "issue" } });
   stage = "answer_audio";
   await until(() => bytes.answer > 0 && events.some(event => event.type === "voice_turn" && event.answerCommentId === answerId && event.state === "completed"));
-  assert(recitationCoverage(summary.replaceAll("13", "十三"), spokenAnswer.replaceAll("13", "十三")) >= 0.8, "answer_recitation_mismatch");
+  const normalizeNumbers = (text: string) => text.replaceAll("13", "十三").replaceAll("8", "八").replaceAll("5", "五").replaceAll("+", "加").replaceAll("=", "等於");
+  const coverage = recitationCoverage(normalizeNumbers(summary), normalizeNumbers(spokenAnswer));
+  receipt.recitation = { coverage, expectedCharacters: summary.length, spokenCharacters: spokenAnswer.length, answerRequested };
+  assert(coverage >= 0.8, "answer_recitation_mismatch");
   assert.equal(events.filter(event => event.type === "dictation").length, 1, "duplicate_input");
   times.speechToStored = times.chatStored - times.speechEnd;
   times.replyToAudio = times.answerAudioStart - times.mainReply;
   receipt.passed = true;
 } catch (error) {
-  // Stage and allowlisted assertion label are sufficient; never emit provider bodies.
+  // Keep the failed stage and safe identifiers; never emit provider bodies.
   receipt.failedStage = stage;
   receipt.failure = abort.signal.aborted ? "deadline" : error instanceof assert.AssertionError ? "assertion" : "operation_failed";
+  receipt.diagnostics = safeFailure(error);
   process.exitCode = 1;
 } finally {
   clearTimeout(deadline); if (mic) clearInterval(mic); if (playback) clearTimeout(playback);

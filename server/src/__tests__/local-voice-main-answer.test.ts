@@ -245,9 +245,61 @@ describe.each<Engine>(["openai", "gemini"])("%s main-answer policy", (engine) =>
     expect(h.spoken()).toHaveLength(2);
     expect(h.spoken()[0]).toBe(h.spoken()[1]);
   });
+
+  it("publishes complete combined-answer sources and a terminal receipt when replaying an older answer", async () => {
+    const h = harness(engine);
+    await h.start();
+    h.say("s-1", "第一個問題");
+    await vi.advanceTimersByTimeAsync(31);
+    const first = await h.store();
+    h.say("s-2", "再補充第二個問題");
+    await vi.advanceTimersByTimeAsync(31);
+    const second = await h.store();
+    await h.reply("combined", [first, second]);
+    const combined = h.events.filter((event) => event.type === "agent_reply" && event.commentId === "combined");
+    expect(combined.some((event) => event.type === "agent_reply" && event.playbackState === "interrupted")).toBe(false);
+    expect(combined.at(-1)).toMatchObject({ playbackState: "queued", turnIds: h.dictations().map((entry) => entry.turnId) });
+    h.audio("combined-audio");
+    await h.finish("combined-audio");
+    await h.reply("newer", [first, second], "補上更完整的答案。");
+    h.audio("newer-audio");
+    await h.finish("newer-audio");
+    const turnsBeforeReplay = h.turns().length;
+    await h.relay.handleBrowserMessage({ type: "replay_reply", commentId: "combined" });
+    h.audio("replay-audio");
+    await h.finish("replay-audio");
+    expect(h.events.filter((event) => event.type === "agent_reply" && event.commentId === "combined").at(-1))
+      .toMatchObject({ playbackState: "completed" });
+    expect(h.turns()).toHaveLength(turnsBeforeReplay);
+  });
 });
 
 describe("main-answer transport boundaries", () => {
+  it("releases rejected OpenAI playback so an explicit replay and subsequent answer can proceed", async () => {
+    const h = harness("openai");
+    await h.start();
+    h.say("s-1", "請確認第一個問題");
+    await vi.advanceTimersByTimeAsync(31);
+    const source = await h.store();
+    await h.reply("first", [source]);
+    h.fromModel({ type: "error", error: { code: "server_error", message: "response.create rejected" } });
+    expect(h.events.some((event) => event.type === "error" && event.code === "playback_failed")).toBe(true);
+    expect(h.turns().at(-1)).toMatchObject({ answerCommentId: "first", state: "interrupted" });
+    await h.relay.handleBrowserMessage({ type: "replay_reply", commentId: "first" });
+    expect(h.spoken()).toHaveLength(2);
+    h.audio("replay-first");
+    await h.finish("replay-first");
+    h.say("s-2", "接著請確認第二個問題");
+    await vi.advanceTimersByTimeAsync(31);
+    await h.reply("second", [await h.store()]);
+    expect(h.spoken()).toHaveLength(3);
+    h.audio("second-response");
+    await h.finish("second-response");
+    expect(h.events.filter((event) => event.type === "agent_reply" && event.commentId === "second").at(-1))
+      .toMatchObject({ playbackState: "completed" });
+    expect(h.dictations()).toHaveLength(2);
+  });
+
   it("rejects unsolicited OpenAI answers even if a provider ignores create_response=false", async () => {
     const h = harness("openai");
     await h.start();

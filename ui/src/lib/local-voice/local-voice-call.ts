@@ -183,6 +183,8 @@ export class LocalVoiceCall {
   private readonly pendingPosts = new Set<Promise<void>>();
   private readonly postedOperations = new Set<string>();
   private readonly requestedReplays = new Set<string>();
+  /** Answer identity scopes playback progress; superseded answers cannot take over on redelivery. */
+  private readonly turnAnswerHistory = new Map<string, Set<string>>();
   /** agent_chat end(): resolved by the relay's `ended` event or the socket closing. */
   private relayEnded: (() => void) | null = null;
 
@@ -219,6 +221,7 @@ export class LocalVoiceCall {
     this.mode = mode;
     this.postedOperations.clear();
     this.requestedReplays.clear();
+    this.turnAnswerHistory.clear();
     this.chatIssueId = null;
     this.snapshot = { ...initialSnapshot(), phase: "starting", mode, replies: [], transcript: [], sentLog: [] };
     this.inputSampleRate = null;
@@ -426,9 +429,17 @@ export class LocalVoiceCall {
 
   private updateTurn(turn: LocalVoiceTurnView) {
     const previous = this.snapshot.turns.find((item) => item.turnId === turn.turnId);
+    const answerChanged = Boolean(turn.answerCommentId && turn.answerCommentId !== previous?.answerCommentId);
+    if (turn.answerCommentId) {
+      const history = this.turnAnswerHistory.get(turn.turnId) ?? new Set<string>();
+      if (answerChanged && history.has(turn.answerCommentId)) return;
+      history.add(turn.answerCommentId);
+      this.turnAnswerHistory.set(turn.turnId, history);
+    }
+    // Rank applies within one answer; a new answer to the same input starts fresh.
     // Terminal playback stays terminal until the caller explicitly selects replay.
     const rank: Record<LocalVoiceTurnState, number> = { transcribing: 0, sending: 1, stored: 2, processing: 3, answer_ready: 4, speaking: 5, interrupted: 6, completed: 6, failed: 6, unknown: 1 };
-    const regresses = previous && (rank[turn.state] < rank[previous.state] || (previous.state === "interrupted" && turn.state === "completed"));
+    const regresses = previous && !answerChanged && (rank[turn.state] < rank[previous.state] || (previous.state === "interrupted" && turn.state === "completed"));
     const defined = Object.fromEntries(Object.entries(turn).filter(([, value]) => value !== undefined));
     const merged = { ...previous, ...defined, state: regresses ? previous.state : turn.state } as LocalVoiceTurnView;
     this.update({ turns: previous ? this.snapshot.turns.map((item) => item.turnId === turn.turnId ? merged : item)
@@ -440,7 +451,13 @@ export class LocalVoiceCall {
     if (this.snapshot.phase !== "live" || this.snapshot.policyVersion !== "main_answer_v1" || !reply || !reply.voiceSummary || this.requestedReplays.has(commentId)) return false;
     if (!this.send({ type: "replay_reply", commentId })) return false;
     this.requestedReplays.add(commentId);
-    this.update({ turns: this.snapshot.turns.map((turn) => turn.answerCommentId === commentId ? { ...turn, state: "answer_ready" } : turn) });
+    this.update({ turns: this.snapshot.turns.map((turn) => {
+      if (turn.answerCommentId !== commentId && !reply.turnIds?.includes(turn.turnId) && !this.turnAnswerHistory.get(turn.turnId)?.has(commentId)) return turn;
+      const history = this.turnAnswerHistory.get(turn.turnId) ?? new Set<string>();
+      history.add(commentId);
+      this.turnAnswerHistory.set(turn.turnId, history);
+      return { ...turn, answerCommentId: commentId, state: "answer_ready" as const };
+    }) });
     return true;
   }
 

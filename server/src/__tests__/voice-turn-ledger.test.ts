@@ -7,14 +7,15 @@ function answer(commentId: string, sourceCommentIds: string[], voiceSummary = "å
 
 function harness(options: { maxTurns?: number; maxReplies?: number } = {}) {
   const onTurn = vi.fn();
+  const onAnswer = vi.fn();
   const onNotice = vi.fn();
   const onSpeechReady = vi.fn();
-  const ledger = new VoiceTurnLedger({ onTurn, onNotice, onSpeechReady, ...options });
+  const ledger = new VoiceTurnLedger({ onTurn, onAnswer, onNotice, onSpeechReady, ...options });
   const store = (id: string) => {
     ledger.register(id, [`segment-${id}`]);
     ledger.stored(id, `input-${id}`);
   };
-  return { ledger, store, onTurn, onNotice, onSpeechReady };
+  return { ledger, store, onTurn, onAnswer, onNotice, onSpeechReady };
 }
 
 describe("VoiceTurnLedger", () => {
@@ -192,6 +193,42 @@ describe("VoiceTurnLedger", () => {
     store("b");
     ledger.reply(answer("combined", ["input-a", "input-b"]));
     expect(ledger.takeNextSpeech()?.turnIds).toEqual(["a", "b"]);
+  });
+
+  it("publishes a combined answer only after all known sources are attached", () => {
+    const { ledger, store, onAnswer } = harness();
+    store("a");
+    ledger.interrupt();
+    store("b");
+    ledger.reply(answer("combined", ["input-a", "input-b"]));
+    expect(onAnswer.mock.calls).toEqual([[{ commentId: "combined", turnIds: ["a", "b"], state: "answer_ready" }]]);
+    const speech = ledger.takeNextSpeech()!;
+    ledger.playbackStarted(speech.key);
+    ledger.playbackDrained(speech.key);
+    expect(onAnswer).toHaveBeenLastCalledWith({ commentId: "combined", turnIds: ["a", "b"], state: "completed" });
+  });
+
+  it("emits old-answer replay receipts without changing the newer answer that owns its turn", () => {
+    const { ledger, store, onAnswer } = harness();
+    store("a");
+    ledger.reply(answer("old", ["input-a"]));
+    const old = ledger.takeNextSpeech()!;
+    ledger.playbackDrained(old.key);
+    ledger.reply(answer("new", ["input-a"]));
+    const current = ledger.takeNextSpeech()!;
+    ledger.playbackDrained(current.key);
+    const before = ledger.getTurns();
+    onAnswer.mockClear();
+    ledger.replay("old");
+    const replay = ledger.takeNextSpeech()!;
+    ledger.playbackStarted(replay.key);
+    ledger.playbackDrained(replay.key);
+    expect(onAnswer.mock.calls.map(([entry]) => entry)).toEqual([
+      { commentId: "old", turnIds: ["a"], state: "answer_ready" },
+      { commentId: "old", turnIds: ["a"], state: "speaking" },
+      { commentId: "old", turnIds: ["a"], state: "completed" },
+    ]);
+    expect(ledger.getTurns()).toEqual(before);
   });
 
   it("does not let an old answer drain complete a newer answer on the same turn", () => {

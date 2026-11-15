@@ -43,11 +43,18 @@ interface AnswerRecord {
   sourceCommentIds: Set<string>;
   runId: string | null;
   autoScheduled: boolean;
-  playbackState: LocalVoiceTurnState;
+  playbackState: VoiceAnswerPlayback["state"];
+}
+
+export interface VoiceAnswerPlayback {
+  commentId: string;
+  turnIds: string[];
+  state: "available" | "answer_ready" | "speaking" | "interrupted" | "completed";
 }
 
 export interface VoiceTurnLedgerOptions {
   onTurn?: (turn: VoiceTurn) => void;
+  onAnswer?: (answer: VoiceAnswerPlayback) => void;
   onNotice?: (text: string, key: string) => void;
   onSpeechReady?: () => void;
   now?: () => number;
@@ -124,7 +131,9 @@ export class VoiceTurnLedger {
     for (const answer of this.answers.values()) {
       if (answer.sourceCommentIds.has(commentId)) {
         this.attachAnswer(record, answer);
-        this.scheduleAnswer(answer);
+        const scheduled = this.scheduleAnswer(answer);
+        this.emitAnswer(answer);
+        if (scheduled) this.options.onSpeechReady?.();
       }
     }
     if (!record.turn.answerCommentId && !record.suppressed) {
@@ -178,7 +187,11 @@ export class VoiceTurnLedger {
     };
     this.answers.set(reply.commentId, answer);
     for (const record of matched) this.attachAnswer(record, answer);
-    this.scheduleAnswer(answer);
+    const scheduled = this.scheduleAnswer(answer);
+    if (!scheduled) answer.playbackState = "available";
+    // A combined answer is published once, after every known source is attached.
+    this.emitAnswer(answer);
+    if (scheduled) this.options.onSpeechReady?.();
     return true;
   }
 
@@ -234,6 +247,8 @@ export class VoiceTurnLedger {
     if (this.disposed || !answer) return false;
     if (this.active?.commentId === commentId || this.queue.some((item) => item.commentId === commentId)) return false;
     this.queue.push({ ...this.copySpeech(answer.speech), key: `replay:${++this.replaySequence}:${commentId}`, replay: true });
+    answer.playbackState = "answer_ready";
+    this.emitAnswer(answer);
     this.options.onSpeechReady?.();
     return true;
   }
@@ -255,15 +270,16 @@ export class VoiceTurnLedger {
     return record.sequence < this.turns.size - 1;
   }
 
-  private scheduleAnswer(answer: AnswerRecord): void {
-    if (answer.autoScheduled) return;
+  private scheduleAnswer(answer: AnswerRecord): boolean {
+    if (answer.autoScheduled) return false;
     if (!answer.speech.turnIds.some((id) => {
       const record = this.turns.get(id)!;
       return !record.suppressed && !this.hasNewerTurn(record);
-    })) return;
+    })) return false;
     answer.autoScheduled = true;
+    answer.playbackState = "answer_ready";
     this.queue.push(answer.speech);
-    this.options.onSpeechReady?.();
+    return true;
   }
 
   private attachAnswer(record: TurnRecord, answer: AnswerRecord): void {
@@ -271,7 +287,8 @@ export class VoiceTurnLedger {
     answer.speech.turnIds.push(record.turn.turnId);
     record.turn.answerCommentId = answer.speech.commentId;
     record.turn.runId = answer.runId;
-    record.turn.state = record.suppressed || this.hasNewerTurn(record) ? "interrupted" : answer.playbackState;
+    record.turn.state = record.suppressed || this.hasNewerTurn(record) ? "interrupted"
+      : answer.playbackState === "available" ? "answer_ready" : answer.playbackState;
     this.clearNotices(record);
     this.emit(record);
   }
@@ -298,7 +315,7 @@ export class VoiceTurnLedger {
     record.notices.clear();
   }
 
-  private setSpeechState(speech: VoiceTurnSpeech, state: LocalVoiceTurnState): void {
+  private setSpeechState(speech: VoiceTurnSpeech, state: "speaking" | "interrupted" | "completed"): void {
     const answer = this.answers.get(speech.commentId);
     if (answer) answer.playbackState = state;
     for (const id of speech.turnIds) {
@@ -308,6 +325,12 @@ export class VoiceTurnLedger {
       record.turn.state = state;
       this.emit(record);
     }
+    // Old-answer replay still owns playback receipts when a newer answer owns the turn.
+    if (answer) this.emitAnswer(answer);
+  }
+
+  private emitAnswer(answer: AnswerRecord): void {
+    this.options.onAnswer?.({ commentId: answer.speech.commentId, turnIds: [...answer.speech.turnIds], state: answer.playbackState });
   }
 
   private snapshot(record: TurnRecord): VoiceTurn { return { ...record.turn, segmentIds: [...record.turn.segmentIds] }; }

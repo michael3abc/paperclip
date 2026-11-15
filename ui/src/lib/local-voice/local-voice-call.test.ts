@@ -305,6 +305,27 @@ describe("LocalVoiceCall", () => {
       expect(localVoiceActivity(h.call.getSnapshot())).toBe("等待回答");
     });
 
+    it("tracks a new answer on a completed turn and ignores the superseded answer's late events", async () => {
+      const h = await live();
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-a", state: "completed" });
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "answer_ready" });
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-b", state: "answer_ready" });
+      expect(localVoiceActivity(h.call.getSnapshot())).toBe("等待回答");
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "speaking" });
+      for (const state of ["completed", "answer_ready", "speaking"]) {
+        h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-a", state });
+      }
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "answer_ready" });
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-b", state: "speaking" });
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "completed" });
+      h.socket.emit({ type: "agent_reply", commentId: "answer-a", body: "舊答案", voiceSummary: "舊答案", createdAt: "now", turnIds: ["one"], playbackState: "completed" });
+      expect(h.call.replayReply("answer-a")).toBe(true);
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-a", state: "speaking" });
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "completed" });
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-a", state: "speaking" });
+      expect(h.socket.json()).toEqual([{ type: "replay_reply", commentId: "answer-a" }]);
+    });
+
     it("keeps same-text answers distinct and replays only a selected interrupted answer", async () => {
       const h = await live();
       for (const id of ["first", "second"]) {
