@@ -32,11 +32,13 @@ function render(whole: ModelCostWhole) {
 describe("ModelCostPie", () => {
   it("draws one slice per model with a legend of names, shares and amounts", () => {
     render({
+      measure: "cost",
       totalCents: 10000,
+      totalTokens: 0,
       unpriced: [],
       slices: [
-        { key: "opus", label: "Opus 5.5", cents: 7500, share: 0.75, color: "var(--chart-series-1)", models: ["compass-opus5.5[1m]"] },
-        { key: "gpt-6-astra", label: "GPT-6 Astra", cents: 2500, share: 0.25, color: "var(--chart-series-2)", models: ["compass-6-astra"] },
+        { key: "opus", label: "Opus 5.5", cents: 7500, tokens: 0, share: 0.75, color: "var(--chart-series-1)", models: ["compass-opus5.5[1m]"] },
+        { key: "gpt-6-astra", label: "GPT-6 Astra", cents: 2500, tokens: 0, share: 0.25, color: "var(--chart-series-2)", models: ["compass-6-astra"] },
       ],
     });
     expect(container.querySelector("svg[aria-label='Compass cost by model']")).not.toBeNull();
@@ -46,17 +48,35 @@ describe("ModelCostPie", () => {
     expect(container.querySelector("path title")?.textContent).toContain("Opus 5.5: $75.00 (75%) Compass estimate");
   });
 
+  it("shows token amounts for a token-sized whole", () => {
+    render({
+      measure: "tokens",
+      totalCents: 0,
+      totalTokens: 3_000_000,
+      unpriced: [],
+      slices: [
+        { key: "opus", label: "Opus 5.5", cents: 0, tokens: 2_000_000, share: 2 / 3, color: "var(--chart-series-1)", models: ["opus[1m]"] },
+        { key: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", cents: 0, tokens: 1_000_000, share: 1 / 3, color: "var(--chart-series-5)", models: ["gemini-4-hydrogen-high"] },
+      ],
+    });
+    const items = [...container.querySelectorAll("li")].map((li) => li.textContent);
+    expect(items[0]).toMatch(/^Opus 5\.567%2(\.0)?M tokens$/);
+    expect(container.textContent).not.toContain("$");
+  });
+
   it("uses a full circle for a single model and an empty state for no usage", () => {
     render({
+      measure: "cost",
       totalCents: 100,
+      totalTokens: 0,
       unpriced: [],
-      slices: [{ key: "opus", label: "Opus 5.5", cents: 100, share: 1, color: "var(--chart-series-1)", models: ["opus"] }],
+      slices: [{ key: "opus", label: "Opus 5.5", cents: 100, tokens: 0, share: 1, color: "var(--chart-series-1)", models: ["opus"] }],
     });
     expect(container.querySelectorAll("circle")).toHaveLength(1);
     expect(container.querySelectorAll("path")).toHaveLength(0);
 
-    render({ totalCents: 0, unpriced: [], slices: [] });
-    expect(container.textContent).toContain("No priced usage in this period");
+    render({ measure: "cost", totalCents: 0, totalTokens: 0, unpriced: [], slices: [] });
+    expect(container.textContent).toContain("No usage in this period");
   });
 
   it("offers this year, this month, this week and today as periods", () => {

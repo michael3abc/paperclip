@@ -37,10 +37,10 @@ Moved verbatim from `FORK.md` on 2026-11-13. These rules and records stay bindin
 - Dashboard cost-by-model pies (michael/model-cost-pie, HOM-265, 2026-11-15): a
   "Cost by Model" card shows two pies for the current UTC month from the existing
   `costs/by-provider` report. Compass is the recorded list-price estimate per model
-  family; subscription usage (recorded at $0) is the API list-price equivalent of its
-  tokens (`ui/src/lib/model-cost-split.ts`, rates mirror the server cards; cache
-  writes priced as input). Families without a card (Gemini) and unpriced Compass
-  runs are listed, never guessed. UI-only (T1 overlay), no schema or API change.
+  family; subscription usage draws on fixed plan limits and counts as $0 (Owner,
+  same day), so its pie is sliced by tokens (`ui/src/lib/model-cost-split.ts`).
+  Unpriced Compass runs are listed, never guessed. UI-only (T1 overlay), no schema
+  or API change.
   Period picker (same day): This year / This month (UTC calendar, like Month Spend
   and the Costs presets), This week (local Monday) / Today (local midnight); the
   choice is remembered per browser.

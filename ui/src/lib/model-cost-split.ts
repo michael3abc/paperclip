@@ -1,13 +1,12 @@
 import type { CostByProviderModel } from "@paperclipai/shared";
 
 /**
- * Split model spend into two wholes for the dashboard pies:
+ * Split model usage into two wholes for the dashboard pies:
  *
  * - Compass: the recorded (estimated, list-price) cost of runs that went
- *   through the Compass gateway.
- * - Subscription: runs included in a subscription record $0, so their share is
- *   the API list-price equivalent of their tokens. It is a comparison figure,
- *   not money paid.
+ *   through the Compass gateway, sliced by cost.
+ * - Subscription: runs draw on the plan's fixed limits and cost $0 (Owner,
+ *   HOM-265), so that pie is sliced by tokens and its total cost is $0.
  *
  * Model IDs are folded into families so `opus`, `opus[1m]` and
  * `compass-opus5.5[1m]` read as one slice and keep one color in both pies.
@@ -15,26 +14,21 @@ import type { CostByProviderModel } from "@paperclipai/shared";
 
 const SUBSCRIPTION_BILLING_TYPES = new Set(["subscription_included", "subscription_overage"]);
 
-/** USD per million tokens: [input, cache read, output]. Public list prices,
- * matching the server rate cards (compass-pricing.ts, codex-pricing.ts). */
-type Rates = readonly [number, number, number];
-
 interface Family {
   key: string;
   label: string;
-  rates: Rates | null;
 }
 
 const FAMILIES: ReadonlyArray<{ test: RegExp } & Family> = [
-  { test: /opus/i, key: "opus", label: "Opus 5.5", rates: [4, 0.2, 20] },
-  { test: /sonnet/i, key: "sonnet", label: "Sonnet 5.5", rates: [2, 0.1, 10] },
-  { test: /haiku/i, key: "haiku", label: "Haiku 4.5", rates: [1, 0.1, 5] },
-  { test: /(^|[-/])(gpt-)?6-astra$/i, key: "gpt-6-astra", label: "GPT-6 Astra", rates: [10, 1, 50] },
-  { test: /(^|[-/])(gpt-)?6\.1-sol$/i, key: "gpt-6.1-sol", label: "GPT-6.1 Sol", rates: [2, 0.1, 10] },
-  { test: /(^|[-/])(gpt-)?6-sol$/i, key: "gpt-6-sol", label: "GPT-6 Sol", rates: [2, 0.2, 10] },
-  { test: /(^|[-/])(gpt-)?6-luna$/i, key: "gpt-6-luna", label: "GPT-6 Luna", rates: [0.1, 0.01, 0.5] },
-  { test: /gemini-4-hydrogen/i, key: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", rates: null },
-  { test: /gemini-4-argon/i, key: "gemini-4-argon", label: "Gemini 4 Argon", rates: null },
+  { test: /opus/i, key: "opus", label: "Opus 5.5" },
+  { test: /sonnet/i, key: "sonnet", label: "Sonnet 5.5" },
+  { test: /haiku/i, key: "haiku", label: "Haiku 4.5" },
+  { test: /(^|[-/])(gpt-)?6-astra$/i, key: "gpt-6-astra", label: "GPT-6 Astra" },
+  { test: /(^|[-/])(gpt-)?6\.1-sol$/i, key: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+  { test: /(^|[-/])(gpt-)?6-sol$/i, key: "gpt-6-sol", label: "GPT-6 Sol" },
+  { test: /(^|[-/])(gpt-)?6-luna$/i, key: "gpt-6-luna", label: "GPT-6 Luna" },
+  { test: /gemini-4-hydrogen/i, key: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen" },
+  { test: /gemini-4-argon/i, key: "gemini-4-argon", label: "Gemini 4 Argon" },
 ];
 
 /** Fixed color slot per family: color follows the model, never its rank. */
@@ -54,9 +48,9 @@ const MAX_SLICES = 6;
 
 export function modelFamily(model: string): Family {
   const found = FAMILIES.find((family) => family.test.test(model));
-  if (found) return { key: found.key, label: found.label, rates: found.rates };
+  if (found) return { key: found.key, label: found.label };
   const bare = model.split("/").pop() || model;
-  return { key: bare, label: bare, rates: null };
+  return { key: bare, label: bare };
 }
 
 export function modelColorVar(key: string): string {
@@ -64,25 +58,23 @@ export function modelColorVar(key: string): string {
   return slot ? `var(--chart-series-${slot})` : "var(--chart-series-other)";
 }
 
-export function listPriceCents(rates: Rates, row: Pick<CostByProviderModel, "inputTokens" | "cachedInputTokens" | "outputTokens">): number {
-  const usd =
-    (row.inputTokens * rates[0] + row.cachedInputTokens * rates[1] + row.outputTokens * rates[2]) / 1_000_000;
-  return usd * 100;
-}
-
 export interface ModelCostSlice {
   key: string;
   label: string;
   cents: number;
+  tokens: number;
   share: number;
   color: string;
   models: string[];
 }
 
 export interface ModelCostWhole {
+  /** What sizes the slices: Compass by cost, subscription by tokens. */
+  measure: "cost" | "tokens";
   totalCents: number;
+  totalTokens: number;
   slices: ModelCostSlice[];
-  /** Families with usage but no rate card (or unpriced Compass runs). */
+  /** Compass families with unpriced runs, not in the total. */
   unpriced: { key: string; label: string; tokens: number; events: number }[];
 }
 
@@ -106,46 +98,56 @@ interface Bucket {
   cents: number;
   tokens: number;
   unpricedEvents: number;
-  priced: boolean;
   models: Set<string>;
 }
 
-function buildWhole(buckets: Map<string, Bucket>): ModelCostWhole {
-  const priced = [...buckets.values()].filter((bucket) => bucket.priced && bucket.cents > 0);
-  priced.sort((a, b) => b.cents - a.cents || a.label.localeCompare(b.label));
-  const totalCents = priced.reduce((sum, bucket) => sum + bucket.cents, 0);
-  const head = priced.length > MAX_SLICES ? priced.slice(0, MAX_SLICES - 1) : priced;
-  const tail = priced.length > MAX_SLICES ? priced.slice(MAX_SLICES - 1) : [];
+function buildWhole(buckets: Map<string, Bucket>, measure: ModelCostWhole["measure"]): ModelCostWhole {
+  const valueOf = (bucket: Pick<Bucket, "cents" | "tokens">) => (measure === "cost" ? bucket.cents : bucket.tokens);
+  const included = [...buckets.values()].filter((bucket) => valueOf(bucket) > 0);
+  included.sort((a, b) => valueOf(b) - valueOf(a) || a.label.localeCompare(b.label));
+  const total = included.reduce((sum, bucket) => sum + valueOf(bucket), 0);
+  const head = included.length > MAX_SLICES ? included.slice(0, MAX_SLICES - 1) : included;
+  const tail = included.length > MAX_SLICES ? included.slice(MAX_SLICES - 1) : [];
   const slices: ModelCostSlice[] = head.map((bucket) => ({
     key: bucket.key,
     label: bucket.label,
     cents: bucket.cents,
-    share: totalCents > 0 ? bucket.cents / totalCents : 0,
+    tokens: bucket.tokens,
+    share: total > 0 ? valueOf(bucket) / total : 0,
     color: modelColorVar(bucket.key),
     models: [...bucket.models].sort(),
   }));
   if (tail.length > 0) {
-    const cents = tail.reduce((sum, bucket) => sum + bucket.cents, 0);
+    const other = {
+      cents: tail.reduce((sum, bucket) => sum + bucket.cents, 0),
+      tokens: tail.reduce((sum, bucket) => sum + bucket.tokens, 0),
+    };
     slices.push({
       key: OTHER_SLICE_KEY,
       label: "Other",
-      cents,
-      share: totalCents > 0 ? cents / totalCents : 0,
+      ...other,
+      share: total > 0 ? valueOf(other) / total : 0,
       color: "var(--chart-series-other)",
       models: tail.flatMap((bucket) => [...bucket.models]).sort(),
     });
   }
   const unpriced = [...buckets.values()]
-    .filter((bucket) => (!bucket.priced && bucket.tokens > 0) || bucket.unpricedEvents > 0)
+    .filter((bucket) => bucket.unpricedEvents > 0)
     .map((bucket) => ({ key: bucket.key, label: bucket.label, tokens: bucket.tokens, events: bucket.unpricedEvents }))
-    .sort((a, b) => b.tokens - a.tokens);
-  return { totalCents, slices, unpriced };
+    .sort((a, b) => b.events - a.events);
+  return {
+    measure,
+    totalCents: included.reduce((sum, bucket) => sum + bucket.cents, 0),
+    totalTokens: included.reduce((sum, bucket) => sum + bucket.tokens, 0),
+    slices,
+    unpriced,
+  };
 }
 
 function bucketFor(buckets: Map<string, Bucket>, family: Family): Bucket {
   let bucket = buckets.get(family.key);
   if (!bucket) {
-    bucket = { key: family.key, label: family.label, cents: 0, tokens: 0, unpricedEvents: 0, priced: false, models: new Set() };
+    bucket = { key: family.key, label: family.label, cents: 0, tokens: 0, unpricedEvents: 0, models: new Set() };
     buckets.set(family.key, bucket);
   }
   return bucket;
@@ -161,21 +163,17 @@ export function splitModelCosts(rows: readonly CostByProviderModel[]): ModelCost
       if (tokens <= 0) continue;
       const bucket = bucketFor(subscription, family);
       bucket.models.add(row.model);
+      // Drawn from the plan's fixed limits: no money is spent per run.
       bucket.tokens += tokens;
-      if (family.rates) {
-        bucket.priced = true;
-        bucket.cents += listPriceCents(family.rates, row);
-      }
     } else if (isCompassRow(row)) {
       const bucket = bucketFor(compass, family);
       bucket.models.add(row.model);
       bucket.tokens += tokens;
-      bucket.priced = true;
       bucket.cents += row.costCents;
       bucket.unpricedEvents += row.unpricedEventCount ?? 0;
     }
   }
-  return { compass: buildWhole(compass), subscription: buildWhole(subscription) };
+  return { compass: buildWhole(compass, "cost"), subscription: buildWhole(subscription, "tokens") };
 }
 
 export type ModelCostPeriod = "year" | "month" | "week" | "today";
