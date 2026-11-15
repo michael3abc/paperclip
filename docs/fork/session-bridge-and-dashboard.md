@@ -34,3 +34,10 @@ Moved verbatim from `FORK.md` on 2026-11-13. These rules and records stay bindin
   Native SeaTalk acceptance exposed an expired upstream login and a masked 500.
 
 
+- Dashboard cost-by-model pies (michael/model-cost-pie, HOM-265, 2026-11-15): a
+  "Cost by Model" card shows two pies for the current UTC month from the existing
+  `costs/by-provider` report. Compass is the recorded list-price estimate per model
+  family; subscription usage (recorded at $0) is the API list-price equivalent of its
+  tokens (`ui/src/lib/model-cost-split.ts`, rates mirror the server cards; cache
+  writes priced as input). Families without a card (Gemini) and unpriced Compass
+  runs are listed, never guessed. UI-only (T1 overlay), no schema or API change.
