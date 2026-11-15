@@ -40,6 +40,48 @@ export function isDictationNoise(text: string) {
 }
 
 /**
+ * Prompt for gpt-4o-transcribe. It is deliberately plain: on audio without
+ * speech the model tends to read the prompt back, so it must not contain
+ * anything that looks like a request (HOM-265: an example task id in the old
+ * prompt came back as 「我想了解一下HOM-123專案的進展」). A read-back of
+ * this prompt is dropped by {@link inventedTranscriptReason}.
+ */
+export const TRANSCRIPTION_PROMPT = "台灣繁體中文口語。";
+/**
+ * Mean token log-probability below which a transcript is treated as invented.
+ * Probe (HOM-265, gateway gpt-4o-transcribe, 2026-11-15): sentences invented
+ * for noise or silence averaged -1.1 to -4.1; real speech, also under road
+ * noise, -0.29 to 0.
+ */
+export const INVENTED_MEAN_LOGPROB = -0.7;
+
+export type InventedTranscriptReason = "prompt_echo" | "low_confidence";
+
+/**
+ * Why a caller transcript was most likely invented by the speech recognizer
+ * for noise or silence, or null when it should be kept. Missing log
+ * probabilities never drop a transcript.
+ */
+export function inventedTranscriptReason(transcript: string, logprobs: readonly number[] | null, prompt = TRANSCRIPTION_PROMPT): InventedTranscriptReason | null {
+  const text = normalizeTranscript(transcript).toLowerCase();
+  const promptText = normalizeTranscript(prompt).toLowerCase();
+  if (text && promptText && (text === promptText || (Array.from(text).length >= 4 && promptText.includes(text)) || text.includes(promptText))) return "prompt_echo";
+  if (logprobs && logprobs.length > 0) {
+    const mean = logprobs.reduce((sum, value) => sum + value, 0) / logprobs.length;
+    if (mean < INVENTED_MEAN_LOGPROB) return "low_confidence";
+  }
+  return null;
+}
+
+/** Token log-probabilities of a transcription event, or null when the engine did not send them. */
+export function transcriptLogprobs(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const numbers = value.map((entry) => (entry && typeof entry === "object" ? (entry as { logprob?: unknown }).logprob : undefined))
+    .filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry));
+  return numbers.length ? numbers : null;
+}
+
+/**
  * A whole caller utterance that began while (or just after) model audio
  * played and mostly repeats what the model just said is speaker echo. Short
  * utterances are never judged: a few shared characters prove nothing.

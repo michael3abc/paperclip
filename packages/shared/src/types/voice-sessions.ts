@@ -183,7 +183,7 @@ export type LocalVoiceRelayServerEvent =
    */
   | { type: "dictation"; operationId: string; text: string; body: string }
   /** agent_chat: heard words that were not sent, shown to the caller (speaker echo or a lone filler). */
-  | { type: "dictation_dropped"; text: string; reason: "echo" | "noise" }
+  | { type: "dictation_dropped"; text: string; reason: "echo" | "noise" | "unclear" }
   | { type: "transcript"; role: "user" | "model"; text: string }
   | { type: "interrupted" }
   | { type: "turn_complete" }

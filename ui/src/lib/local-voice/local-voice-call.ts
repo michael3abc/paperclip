@@ -24,7 +24,7 @@ export type LocalVoicePhase = "idle" | "starting" | "live" | "ending" | "ended" 
  */
 export type LocalVoiceMode = "agent_chat" | "voice_task";
 /** agent_chat: one dictated message and the result of posting it to the Chat. */
-/** `dropped`: heard but not sent because it sounded like the assistant's own voice (echo) or a lone filler (noise). */
+/** `dropped`: heard but not sent: the assistant's own voice (echo), a lone filler (noise) or a sentence invented for background noise (unclear). */
 export interface LocalVoiceSentEntry { operationId: string; text: string; status: "sending" | "sent" | "failed" | "dropped"; error?: string }
 export interface LocalVoiceTranscriptEntry { id: number; role: "user" | "model"; text: string }
 export interface LocalVoiceDraftView {
@@ -296,7 +296,9 @@ export class LocalVoiceCall {
       case "dictation_dropped":
         if (this.mode !== "agent_chat") return;
         this.update({ sentLog: [...this.snapshot.sentLog, { operationId: `dropped-${this.nextTranscriptId++}`, text: event.text, status: "dropped" as const,
-          error: event.reason === "echo" ? "Not sent: it sounded like the assistant's own voice." : "Not sent: too short to be a request." }].slice(-MAX_SENT_LOG) });
+          error: event.reason === "echo" ? "Not sent: it sounded like the assistant's own voice."
+            : event.reason === "unclear" ? "Not sent: background noise, not clear speech."
+            : "Not sent: too short to be a request." }].slice(-MAX_SENT_LOG) });
         return;
       case "transcript": this.appendTranscript(event.role, event.text); return;
       case "interrupted":

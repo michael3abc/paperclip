@@ -11,7 +11,7 @@ import {
   type VoiceUpstream,
 } from "./voice-relay-core.js";
 import { toTaiwanTraditional } from "./zh-tw.js";
-import { ECHO_TAIL_MS } from "./voice-dictation.js";
+import { ECHO_TAIL_MS, TRANSCRIPTION_PROMPT, inventedTranscriptReason, transcriptLogprobs } from "./voice-dictation.js";
 
 /**
  * OpenAI Realtime (GA protocol) engine for the local voice relay (HOM-318),
@@ -36,7 +36,6 @@ import { ECHO_TAIL_MS } from "./voice-dictation.js";
  */
 
 export const OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-transcribe";
-const TRANSCRIPTION_PROMPT = "以下是台灣人用繁體中文進行的口語對話，可能夾雜英文名稱與任務編號（例如 HOM-123）。";
 const HISTORY_LIMIT = 16;
 const HISTORY_CHARS = 2400;
 /** A read-back is considered heard only when the caller did not cut off more than this share of its audio. */
@@ -146,10 +145,13 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       // agent_chat has no tools: the caller's words reach the Chat without the model.
       tools: this.chatMode ? [] : openAiToolDeclarations(this.options.binding.agentName),
       tool_choice: "auto",
+      // Token log-probabilities let the relay drop sentences the recognizer invents for noise (HOM-265).
+      include: ["item.input_audio_transcription.logprobs"],
       audio: {
         input: {
           format: { type: "audio/pcm", rate: this.inputSampleRate },
           transcription: { model: OPENAI_TRANSCRIPTION_MODEL, language: "zh", prompt: TRANSCRIPTION_PROMPT },
+          noise_reduction: { type: "far_field" },
           // agent_chat: the model never answers caller speech by itself; it speaks only relay notices.
           turn_detection: { type: "server_vad", silence_duration_ms: 500, create_response: !this.chatMode, interrupt_response: true },
         },
@@ -377,13 +379,25 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       this.usage.transcriptionInputTokens += numberOr0(usage.input_tokens);
       this.usage.transcriptionOutputTokens += numberOr0(usage.output_tokens);
     }
-    this.transcribing.delete(typeof message.item_id === "string" ? message.item_id : "");
+    const itemId = typeof message.item_id === "string" ? message.item_id : "";
+    this.transcribing.delete(itemId);
     const raw = typeof message.transcript === "string" ? message.transcript.trim() : "";
     if (!raw) return;
     const text = toTaiwanTraditional(raw);
+    const logprobs = transcriptLogprobs(message.logprobs);
+    // The recognizer reads the prompt back as written; OpenCC may then change characters (台 → 臺).
+    const invented = inventedTranscriptReason(raw, logprobs) ?? inventedTranscriptReason(text, logprobs);
+    if (invented) {
+      // Noise or silence the recognizer turned into a sentence: never a caption, draft or Chat message.
+      const meanLogprob = logprobs ? Math.round((logprobs.reduce((sum, value) => sum + value, 0) / logprobs.length) * 1000) / 1000 : null;
+      this.log("voice_relay_transcript_invented_dropped", { engine: this.engine, reason: invented, meanLogprob, chars: Array.from(text).length });
+      this.utterances.delete(itemId);
+      this.startedDuringPlayback.delete(itemId);
+      if (this.chatMode) this.browser.sendEvent({ type: "dictation_dropped", text, reason: "unclear" });
+      return;
+    }
     this.browser.sendEvent({ type: "transcript", role: "user", text });
     this.remember("Owner", text);
-    const itemId = typeof message.item_id === "string" ? message.item_id : "";
     const utterance = this.utterances.get(itemId);
     if (utterance) {
       utterance.text += text;

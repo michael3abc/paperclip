@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LocalVoiceRelayServerEvent } from "@paperclipai/shared";
 import { GeminiLiveRelay } from "../services/voice/gemini-live-relay.js";
 import { OpenAIRealtimeRelay } from "../services/voice/openai-realtime-relay.js";
-import { agentChatVoiceMessageBody, isDictationNoise, isLikelyEcho } from "../services/voice/voice-dictation.js";
+import { TRANSCRIPTION_PROMPT, agentChatVoiceMessageBody, inventedTranscriptReason, isDictationNoise, isLikelyEcho, transcriptLogprobs } from "../services/voice/voice-dictation.js";
 import { joinDictation, type VoiceAgentReply, type VoiceRelayOptions, type VoiceTaskPort, type VoiceUpstreamHandlers } from "../services/voice/voice-relay-core.js";
 
 /** HOM-326: the agent_chat binding dictates every finished utterance to the caller's Chat. */
@@ -77,6 +77,21 @@ describe("agent_chat dictation helpers", () => {
     expect(isLikelyEcho("部署", spoken)).toBe(false);
   });
 
+  it("treats a read-back of the transcription prompt or a low-confidence sentence as invented (HOM-265)", () => {
+    // Probe 2026-11-15: noise came back as the prompt itself, or as a sentence with mean logprob <= -1.1.
+    expect(inventedTranscriptReason(TRANSCRIPTION_PROMPT, [-0.05, -0.02])).toBe("prompt_echo");
+    expect(inventedTranscriptReason("台灣繁體中文口語", null)).toBe("prompt_echo");
+    expect(inventedTranscriptReason("你好，我想了解一下HOM-123專案的進展。", [-1.2, -2.1, -0.9])).toBe("low_confidence");
+    // Real speech, also under road noise, stayed above -0.3; missing logprobs never drop a transcript.
+    expect(inventedTranscriptReason("幫我看一下Driving專案昨天的測試結果", [-0.288, -0.01, -0.2])).toBeNull();
+    expect(inventedTranscriptReason("我覺得他們的計劃很有趣。", null)).toBeNull();
+    // A short real reply that happens to share characters with the prompt is kept.
+    expect(inventedTranscriptReason("中文", [-0.01])).toBeNull();
+    expect(transcriptLogprobs([{ token: "a", logprob: -0.5 }, { token: "b" }, null])).toEqual([-0.5]);
+    expect(transcriptLogprobs(undefined)).toBeNull();
+    expect(transcriptLogprobs([])).toBeNull();
+  });
+
   it("keeps the caller's words first and unchanged in the Chat body", () => {
     const body = agentChatVoiceMessageBody("幫我查 HOM-326 的進度");
     expect(body.startsWith("幫我查 HOM-326 的進度\n\n")).toBe(true);
@@ -97,6 +112,38 @@ describe("OpenAI relay, agent_chat binding", () => {
     expect(update.session.instructions).toContain("Chat");
     expect(update.session.instructions).not.toContain("prepare_request");
     expect(h.events[0]).toMatchObject({ type: "ready", bindingMode: "agent_chat", agentName: "momo" });
+  });
+
+  it("asks for transcription logprobs with noise reduction and a prompt that holds no request (HOM-265)", async () => {
+    const h = harness("openai");
+    await h.start();
+    const [update] = h.current().sent.filter((m) => m.type === "session.update");
+    expect(update.session.include).toEqual(["item.input_audio_transcription.logprobs"]);
+    expect(update.session.audio.input.noise_reduction).toEqual({ type: "far_field" });
+    expect(update.session.audio.input.transcription.prompt).toBe(TRANSCRIPTION_PROMPT);
+    expect(update.session.audio.input.transcription.prompt).not.toMatch(/HOM-|例如/);
+  });
+
+  it("never sends a sentence the recognizer invented for noise, and shows it as not sent (HOM-265)", async () => {
+    const h = harness("openai");
+    await h.start();
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "n1", audio_start_ms: 0 });
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "n1", transcript: "你好，我想了解一下HOM-123專案的進展。",
+      logprobs: [{ token: "你", logprob: -1.4 }, { token: "好", logprob: -2.2 }] });
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "n2", audio_start_ms: 4000 });
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "n2", transcript: TRANSCRIPTION_PROMPT,
+      logprobs: [{ token: "台", logprob: -0.05 }] });
+    h.fromModel({ type: "input_audio_buffer.speech_started", item_id: "s1", audio_start_ms: 8000 });
+    h.fromModel({ type: "conversation.item.input_audio_transcription.completed", item_id: "s1", transcript: "幫我看一下測試結果",
+      logprobs: [{ token: "幫", logprob: -0.02 }, { token: "我", logprob: -0.1 }] });
+    await vi.waitFor(() => expect(h.dictations()).toHaveLength(1));
+    expect(h.dictations()[0]!.text).toBe("幫我看一下測試結果");
+    const dropped = h.events.filter((event) => event.type === "dictation_dropped");
+    expect(dropped).toEqual([
+      { type: "dictation_dropped", text: "你好，我想了解一下HOM-123專案的進展。", reason: "unclear" },
+      { type: "dictation_dropped", text: "臺灣繁體中文口語。", reason: "unclear" },
+    ]);
+    expect(h.events.filter((event) => event.type === "transcript").map((event) => (event as { text: string }).text)).toEqual(["幫我看一下測試結果"]);
   });
 
   it("merges utterances after a quiet gap into one verbatim Taiwan Traditional dictation", async () => {
