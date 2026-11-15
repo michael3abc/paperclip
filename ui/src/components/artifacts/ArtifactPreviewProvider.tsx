@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { Download, ExternalLink, FileText, MessageSquare } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { ZoomableGalleryImage } from "@/components/ZoomableGalleryImage";
 import { PdfContent, usePdfLink } from "@/components/PdfPreviewProvider";
 import type { ArtifactFileLink } from "@/lib/artifact-file-link";
 import { isPlainPrimaryClick, pdfPreviewSource } from "@/lib/pdf-preview";
@@ -55,7 +56,11 @@ export function useArtifactPreviewClick() {
 function PreviewBody({ input }: { input: ArtifactPreviewInput }) {
   const kind = previewKind(input);
   if (kind === "image") {
-    return <img src={input.href} alt={input.filename} className="mx-auto max-h-(--sz-70vh) w-auto max-w-full rounded-md object-contain" data-testid="artifact-preview-image" />;
+    return (
+      <div className="h-(--sz-70vh) overflow-hidden rounded-md" data-testid="artifact-preview-image">
+        <ZoomableGalleryImage src={input.href} alt={input.filename} />
+      </div>
+    );
   }
   if (kind === "video") {
     return <video src={input.href} controls playsInline className="mx-auto max-h-(--sz-70vh) w-full rounded-md" data-testid="artifact-preview-video" />;

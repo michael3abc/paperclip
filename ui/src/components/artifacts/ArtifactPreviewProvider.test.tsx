@@ -29,6 +29,7 @@ describe("the artifact preview window", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     where.length = 0;
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   });
 
   afterEach(() => {
@@ -68,11 +69,28 @@ describe("the artifact preview window", () => {
       downloadHref: "/api/attachments/hero/content?download=1", taskHref: "/PAP/issues/PAP-1#attachment-hero", taskLabel: "PAP-1" });
     expect(click(tile).defaultPrevented).toBe(true);
     expect(dialog()).not.toBeNull();
-    expect(dialog()?.querySelector('[data-testid="artifact-preview-image"]')?.getAttribute("src")).toBe("/api/attachments/hero/content");
+    expect(dialog()?.querySelector('[data-testid="artifact-preview-image"] img')?.getAttribute("src")).toBe("/api/attachments/hero/content");
     expect(dialog()?.querySelector('[aria-label="Open PAP-1"]')?.getAttribute("href")).toBe("/PAP/issues/PAP-1#attachment-hero");
     expect(dialog()?.querySelector('[aria-label="Open in new tab"]')?.getAttribute("target")).toBe("_blank");
     expect(dialog()?.querySelector('[aria-label="Download"]')?.getAttribute("href")).toBe("/api/attachments/hero/content?download=1");
     expect(where.at(-1)).toBe("/PAP/artifacts");
+  });
+
+  it("zooms the artifact image and resets when the preview is reopened", () => {
+    const tile = renderTile({ href: "/api/attachments/hero/content", filename: "hero.png", contentType: "image/png" });
+    click(tile);
+    const level = () => dialog()?.querySelector('[aria-label="Zoom level"]')?.textContent;
+    expect(level()).toBe("100%");
+    click(dialog()!.querySelector<HTMLElement>('[aria-label="Zoom in"]')!);
+    expect(level()).toBe("125%");
+    expect(dialog()?.querySelector("img")?.style.transform).toContain("scale(1.25)");
+    click(dialog()!.querySelector<HTMLElement>('[aria-label="Fit image"]')!);
+    expect(level()).toBe("100%");
+    click(dialog()!.querySelector<HTMLElement>('[aria-label="Zoom in"]')!);
+    click(Array.from(dialog()!.querySelectorAll("button")).find((button) => button.textContent === "Close")!);
+    expect(dialog()).toBeNull();
+    click(tile);
+    expect(level()).toBe("100%");
   });
 
   it("keeps a modifier click as the native new-tab link", () => {
@@ -85,6 +103,7 @@ describe("the artifact preview window", () => {
     const tile = renderTile({ href: "/api/attachments/reel/content", filename: "reel.mp4", contentType: "video/mp4" }, "video");
     click(tile);
     expect(dialog()?.querySelector('[data-testid="artifact-preview-video"]')?.getAttribute("src")).toBe("/api/attachments/reel/content");
+    expect(dialog()?.querySelector('[aria-label="Image zoom"]')).toBeNull();
   });
 
   it("previews a PDF in the window through the validated viewer", () => {

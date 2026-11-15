@@ -149,6 +149,10 @@ spinner replaces the icon. The adapter drops fast on a family's Compass route in
 
 ## Image gallery zoom
 
+Artifacts image previews also use `ZoomableGalleryImage` in a bounded 70vh viewport,
+with the same controls and gestures. Closing and reopening resets zoom; task, new-tab
+and download actions remain available in the preview header.
+
 The shared ImageGalleryModal uses ZoomableGalleryImage for images in chat, attachments
 and artifacts. Zoom is relative to the fitted image (100%, not native pixel size),
 bounded to 100–500%. Buttons, wheel and +/− keys zoom; Fit/0 restores the fitted view.

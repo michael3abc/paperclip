@@ -9,6 +9,8 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Artifact image preview zoom (HOM-265): reuse the shared zoom/pan viewer in the Artifacts dialog, including fit/reset and existing file actions. UI-only overlay.
+
 - Local voice call continuity (HOM-265): a company/user-scoped provider keeps media and the original agent binding across chat/page navigation; a global call bar preserves hang-up and microphone controls. Scope changes still clean up media.
 
 - Agent chat pin buttons (HOM-265): roster and detail header share explicit nullable `chatPinned` membership preferences. Unpin hides even the primary agent while preserving its identity and stars. Additive database column, agent membership API and UI; existing automatic defaults remain until changed.
