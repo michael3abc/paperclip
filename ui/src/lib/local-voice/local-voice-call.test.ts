@@ -33,6 +33,7 @@ function setup(options: { startError?: unknown; firstStartError?: unknown; postC
     play(pcm) { this.played.push(pcm); },
     flush() { this.flushes += 1; },
     setInputSampleRate(rate) { this.inputRates.push(rate); },
+    ringback: vi.fn(),
     async close() { this.closed = true; },
   };
   let firstStartError = options.firstStartError;
@@ -66,6 +67,16 @@ function setup(options: { startError?: unknown; firstStartError?: unknown; postC
 }
 
 describe("LocalVoiceCall", () => {
+  it("plays the ringback tone while connecting and stops it when the relay is ready", async () => {
+    const h = setup();
+    await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+    expect(h.audio.ringback).toHaveBeenCalledWith(true);
+    expect(h.audio.ringback).not.toHaveBeenCalledWith(false);
+    h.sockets[0]!.emit(READY);
+    expect(h.audio.ringback).toHaveBeenLastCalledWith(false);
+    expect(h.call.getSnapshot().phase).toBe("live");
+  });
+
   it("starts a voice_task session and opens the relay with the token subprotocol", async () => {
     const h = setup();
     await h.call.start({ companyId: "c1", agentId: "agent-1" });

@@ -62,6 +62,8 @@ export interface VoiceAudioEngine {
   flush(): void;
   /** Microphone frame rate the relay expects (sent in its `ready` event). */
   setInputSampleRate(rate: number): void;
+  /** Ringback (dialing) tone while the call connects; stopped by `ringback(false)` or `close()`. */
+  ringback?(on: boolean): void;
   close(): Promise<void>;
 }
 
@@ -183,6 +185,7 @@ export class LocalVoiceCall {
     };
     const audio = this.deps.createAudio();
     this.audio = audio;
+    audio.ringback?.(true);
     const mode: LocalVoiceMode = input.mode ?? "voice_task";
     this.mode = mode;
     this.chatIssueId = null;
@@ -282,6 +285,7 @@ export class LocalVoiceCall {
         this.lastActivityAt = this.deps.now();
         // Older relays did not announce a rate; they expected 16 kHz.
         this.inputSampleRate = event.inputSampleRate ?? 16_000;
+        this.audio?.ringback?.(false);
         this.audio?.setInputSampleRate(this.inputSampleRate);
         this.update({ phase: "live", issue: { id: event.issueId, identifier: event.issueIdentifier }, agentName: event.agentName,
           startedAt: this.deps.now(), maxSeconds: event.maxSeconds, warningSeconds: event.warningSeconds });
@@ -503,7 +507,38 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
   let source: MediaStreamAudioSourceNode | null = null;
   let inputRate = VOICE_CONTEXT_SAMPLE_RATE;
   let closed = false;
+  // Taiwan ringback: 440 Hz + 480 Hz, 1 s on / 2 s off, quietly, until the relay is ready.
+  let ring: { gain: GainNode; oscillators: OscillatorNode[] } | null = null;
+  const stopRing = () => {
+    if (!ring) return;
+    for (const oscillator of ring.oscillators) { try { oscillator.stop(); oscillator.disconnect(); } catch { /* already stopped */ } }
+    try { ring.gain.disconnect(); } catch { /* already disconnected */ }
+    ring = null;
+  };
+  const startRing = () => {
+    if (ring || closed || context.state === "closed") return;
+    try {
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      gain.connect(context.destination);
+      const t0 = context.currentTime + 0.05;
+      for (let cycle = 0; cycle < 40; cycle += 1) {
+        const on = t0 + cycle * 3;
+        gain.gain.setTargetAtTime(0.05, on, 0.01);
+        gain.gain.setTargetAtTime(0, on + 1, 0.01);
+      }
+      const oscillators = [440, 480].map((frequency) => {
+        const oscillator = context.createOscillator();
+        oscillator.frequency.value = frequency;
+        oscillator.connect(gain);
+        oscillator.start(t0);
+        return oscillator;
+      });
+      ring = { gain, oscillators };
+    } catch { ring = null; /* a missing tone never blocks the call */ }
+  };
   return {
+    ringback(on) { if (on) startRing(); else stopRing(); },
     async start(handlers) {
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
         throw new Error("Voice needs a secure page (HTTPS) with microphone access. Open Paperclip through its HTTPS address.");
@@ -516,9 +551,12 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
       } catch (error) {
         // Some browsers cannot connect a microphone to a context whose rate differs from the device rate.
         if (context.sampleRate !== VOICE_CONTEXT_SAMPLE_RATE) throw error;
+        const ringing = ring !== null;
+        stopRing();
         await context.close().catch(() => undefined);
         context = createContext();
         source = context.createMediaStreamSource(stream);
+        if (ringing) startRing();
       }
       await loadVoiceWorklets(context);
       player = new AudioWorkletNode(context, "pc-voice-player", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
@@ -540,6 +578,7 @@ export function createBrowserAudioEngine(): VoiceAudioEngine {
     },
     async close() {
       closed = true;
+      stopRing();
       try { source?.disconnect(); capture?.disconnect(); player?.disconnect(); } catch { /* already disconnected */ }
       for (const track of stream?.getTracks() ?? []) track.stop();
       if (context.state !== "closed") await context.close().catch(() => undefined);
