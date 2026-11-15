@@ -86,6 +86,8 @@ The first-parent inventory below includes retained consolidation history; it is 
 - `c7d7c4add7`, `bc43362bae` feat(ui): voice-call button at the right end of every Chat's top bar (HOM-265; agent_chat call in place via a floating card; Breadcrumb gains `actions`/`actionsKey`; T1 UI overlay)
 - `06f057e366`, `85438a6ff1` feat(ui): ringback tone while a voice call connects; call status, timer and Pause stay inline in the Chat top bar, captions open on demand (HOM-265)
 - `b80e056a9d` fix(voice): drop transcripts gpt-4o-transcribe invents for noise — plain transcription prompt with read-back drop, transcription logprobs (mean < -0.7 dropped), far_field noise reduction; dropped lines show as not sent (HOM-265; T3 server)
+- `c7310498b5` feat(voice): agent_chat model chats with the caller and forwards requests with `send_to_agent` (caller's own words only; small talk stays in the call; Gemini unchanged) (HOM-265 Owner choice b)
+- `d4458d7cd0` feat(voice): per-agent OpenAI voice remembered in the browser, sent as the `pcvv.<voice>` subprotocol, validated server-side (HOM-265 Owner choice a)
 - `708c47741e` merge: consolidate rebased Paperclip while preserving local main history
 - `b337eafaaa` fix(agents): recognize proven pre-dispatch PM rejection during stop
 - `4e5fe15ef8` fix(ui): show only CEO and PM agents in coordinator sidebar
