@@ -3,6 +3,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { attachmentDownloadPath, attachmentFilename } from "@/lib/issue-attachments";
 import { isVideoLikeOutput } from "@/lib/issue-output";
+import { ZoomableGalleryImage } from "./ZoomableGalleryImage";
 
 export interface GalleryMediaItem {
   id: string;
@@ -139,7 +140,7 @@ export function ImageGalleryModal({
           {/* Main area: nav buttons outside image */}
           <div className="flex-1 flex items-center min-h-0">
             {/* Left nav zone */}
-            <div className="w-16 md:w-24 shrink-0 flex items-center justify-center h-full">
+            <div className="w-10 md:w-24 shrink-0 flex items-center justify-center h-full">
               {items.length > 1 && (
                 <button
                   type="button"
@@ -163,18 +164,16 @@ export function ImageGalleryModal({
                   playsInline
                 />
               ) : (
-                <img
-                  ref={setMediaRef}
+                <ZoomableGalleryImage
+                  key={`${open}:${currentIndex}:${current.id}:${current.contentPath}`}
                   src={current.contentPath}
                   alt={filename}
-                  className="max-w-full max-h-full object-contain select-none rounded-lg"
-                  draggable={false}
                 />
               )}
             </div>
 
             {/* Right nav zone */}
-            <div className="w-16 md:w-24 shrink-0 flex items-center justify-center h-full">
+            <div className="w-10 md:w-24 shrink-0 flex items-center justify-center h-full">
               {items.length > 1 && (
                 <button
                   type="button"

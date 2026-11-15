@@ -238,6 +238,11 @@ When adding endpoints:
 
 ## 9. UI Expectations
 
+ImageGalleryModal owns shared media navigation; ZoomableGalleryImage owns image-only
+zoom/pan gestures. Reset its view on item changes and reopen, bound pan to the viewport,
+and preserve video controls, download, Escape and focus restoration. See
+`docs/agents/ui-features.md` for the interaction contract.
+
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors

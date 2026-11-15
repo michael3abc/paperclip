@@ -9,6 +9,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Shared image gallery zoom (HOM-265): fitted 1–5x images with zoom controls,
+  wheel/keyboard/double-click, bounded drag and touch pinch; reset on navigation
+  and reopen. Video/download/focus behavior stays in the existing gallery.
+  UI-only overlay release; related gallery interaction tests.
+
 The first-parent inventory below includes retained consolidation history; it is not a claim that every upstream change was authored locally.
 
 - `088f43e2ae` Port managed AI, native runner, SSH execution and chat fixes to source

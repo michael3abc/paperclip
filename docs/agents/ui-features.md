@@ -123,3 +123,17 @@ at a time and a failure reverts with a toast. Display names use a human catalog 
 humanized ID (`claude-fable-5-1[1m]` -> "Claude Fable 5.1 · 1M", `compass-opus5.5` -> "Opus 5.5");
 the stored ID never changes.
 
+
+## Image gallery zoom
+
+The shared ImageGalleryModal uses ZoomableGalleryImage for images in chat, attachments
+and artifacts. Zoom is relative to the fitted image (100%, not native pixel size),
+bounded to 100–500%. Buttons, wheel and +/− keys zoom; Fit/0 restores the fitted view.
+Double-click toggles 200% and fit. Pointer drag pans enlarged images; two touch
+pointers pinch and pan. Pan stays within image bounds and re-clamps on viewport
+resize. Switching items or reopening resets the view. Gesture clicks must not close
+the curtain; empty backdrop clicks, Escape, navigation, downloads and return focus
+keep their existing behavior. Video playback has no image zoom controls.
+
+Verify ImageGalleryModal interaction tests and actual browser layout/gestures at
+desktop and narrow viewport sizes; no backend, schema or API changes are needed.
