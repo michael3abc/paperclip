@@ -5,10 +5,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   activityLog, agents, agentWakeupRequests, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceConfirmations,
   chatVoiceOperations, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, connectionGrants, createDb,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issueComments, issueThreadInteractions, issues, projects, toolApplications, toolConnectionInstalls, toolConnections,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issueThreadInteractions, issues, projects, toolApplications, toolConnectionInstalls, toolConnections,
 } from "@paperclipai/db";
 import { chatChannelService } from "../services/chat-channels.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { issueService } from "../services/issues.js";
 import { voiceSessionService } from "../services/voice/voice-session-service.js";
 import { voiceSessionStore } from "../services/voice/voice-session-store.js";
 import { LocalVoiceProtocolError } from "../services/voice/local-voice-protocol.js";
@@ -552,6 +553,79 @@ const support = await getEmbeddedPostgresTestSupport();
         companyId: f.companyId, endpointId: f.endpointId, issueId: chatId, caller: f.caller, idempotencyKey: randomUUID(), maxDurationSeconds: 600, bindingMode: "agent_chat", ...overrides });
       return { ...f, chatId, startChat };
     }
+
+    it("resolves only the caller's original operation in this company, Chat and voice session", async () => {
+      const f = await chatFixture();
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+      const started = await f.startChat();
+      const binding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId, sessionId: started.session.id,
+        caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
+      const port = createLocalVoiceTaskPort(db, f.service, { binding, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
+      const operationId = randomUUID();
+      // Exercise the normal user-comment writer and its clientRequestId receipt.
+      const input = await issueService(db).addComment(f.chatId, "請說明目前測試結果", { userId: f.callerId }, {
+        authorType: "user", clientRequestId: operationId, metadata: { voiceInput: { sessionId: started.session.id } },
+      });
+      expect(await port.resolveInput!(operationId)).toBe(input.id);
+      expect(await port.resolveInput!(operationId, input.id)).toBe(input.id);
+      expect(await port.resolveInput!(operationId, randomUUID())).toBeNull();
+
+      const rejected = [
+        { authorUserId: `other-${randomUUID()}`, authorType: "user" as const },
+        { authorUserId: f.callerId, authorType: "agent" as const, authorAgentId: f.agentId },
+        { authorUserId: f.callerId, authorType: "user" as const, metadata: { voiceInput: { sessionId: randomUUID() } } },
+        { authorUserId: f.callerId, authorType: "user" as const, issueId: f.issueId },
+      ];
+      for (const override of rejected) {
+        const id = randomUUID();
+        await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.chatId, body: "not this voice input",
+          metadata: { voiceInput: { sessionId: started.session.id } }, clientRequestId: id, ...override });
+        expect(await port.resolveInput!(id)).toBeNull();
+      }
+      const foreign = await fixture();
+      const foreignOperation = randomUUID();
+      await db.insert(issueComments).values({ companyId: foreign.companyId, issueId: foreign.issueId, authorType: "user",
+        authorUserId: f.callerId, clientRequestId: foreignOperation, body: "foreign company",
+        metadata: { voiceInput: { sessionId: started.session.id } } });
+      expect(await port.resolveInput!(foreignOperation)).toBeNull();
+      await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, input.id));
+      expect(await port.resolveInput!(operationId)).toBeNull();
+      await f.service.end(f.companyId, started.session.id, f.caller);
+      await expect(port.resolveInput!(operationId)).rejects.toMatchObject({ status: 403 });
+    });
+
+    it("projects only run-matched reply provenance and finds late commits without duplicating answers", async () => {
+      const f = await chatFixture();
+      const started = await f.startChat();
+      const binding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId, sessionId: started.session.id,
+        caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
+      const port = createLocalVoiceTaskPort(db, f.service, { binding, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
+      const runId = randomUUID(), sourceId = randomUUID(), verifiedId = randomUUID(), plainId = randomUUID(), mismatchedId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, issueId: f.chatId,
+        scopeKind: "issue", status: "succeeded" });
+      const base = { companyId: f.companyId, issueId: f.chatId, authorAgentId: f.agentId, authorType: "agent" as const,
+        createdByRunId: runId, createdAt: new Date(Date.now() + 2000), body: "測試通過。\n語音摘要：測試通過。" };
+      const metadata = { voiceReply: { version: 1 as const, runId, sourceCommentIds: [sourceId] } };
+      await db.insert(issueComments).values([
+        { ...base, id: verifiedId, metadata },
+        { ...base, id: plainId },
+        { ...base, id: mismatchedId, metadata: { voiceReply: { ...metadata.voiceReply, runId: randomUUID() } } },
+        { ...base, metadata, origin: "fast_response" },
+        { ...base, metadata, origin: "workspace_recovery" },
+      ]);
+      const first = await port.newReplies();
+      expect(first).toHaveLength(3);
+      expect(first.find((reply) => reply.commentId === verifiedId)).toMatchObject({ sourceCommentIds: [sourceId], runId, voiceSummary: "測試通過。" });
+      for (const id of [plainId, mismatchedId]) {
+        expect(first.find((reply) => reply.commentId === id)?.sourceCommentIds).toBeUndefined();
+      }
+      expect(await port.newReplies()).toEqual([]);
+      // An earlier transaction timestamp can become visible after a newer answer.
+      const lateId = randomUUID();
+      await db.insert(issueComments).values({ ...base, id: lateId, metadata, createdAt: new Date(Date.now() + 1000) });
+      expect((await port.newReplies()).map((reply) => reply.commentId)).toEqual([lateId]);
+      expect(await port.newReplies()).toEqual([]);
+    });
 
     it("binds the caller's own Chat without creating a task, and the relay reads only agent answers there", async () => {
       const f = await chatFixture();

@@ -106,7 +106,9 @@ describe("LocalVoiceCallProvider route and identity lifetime", () => {
 
   it("keeps the original call and dictation route alive across chat changes and control remounts", async () => {
     await live();
+    await act(async () => h.sockets[0].emit({ type: "voice_turn", turnId: "question", state: "stored" }));
     await render("bob");
+    expect(container.textContent).toContain("等待回答");
     expect(h.dispose).not.toHaveBeenCalled();
     expect(h.audio.close).not.toHaveBeenCalled();
     expect(button("Voice call with Bob").disabled).toBe(true);
@@ -125,6 +127,8 @@ describe("LocalVoiceCallProvider route and identity lifetime", () => {
     await act(async () => button("Resume listening").click());
     expect(h.call.getSnapshot().mic).toBe("live");
     await render("alice");
+    expect(container.textContent).toContain("等待回答");
+    expect(h.call.getSnapshot().turns).toHaveLength(1);
     expect(container.querySelector('aside[aria-label^="Current voice call"]')).toBeNull();
     expect(container.querySelector('[role="group"][aria-label="Voice call with Alice"]')).not.toBeNull();
     expect(h.start).toHaveBeenCalledOnce();

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
-import { type LocalVoiceMode, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
+import { localVoiceActivity, localVoiceDeliveryError, type LocalVoiceMode, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
 
 function formatClock(seconds: number) {
   const safe = Math.max(0, Math.floor(seconds));
@@ -38,6 +38,7 @@ export interface LocalVoicePanelProps {
 function SentStatus({ entry }: { entry: LocalVoiceSentEntry }) {
   if (entry.status === "sending") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" aria-hidden /> Sending…</span>;
   if (entry.status === "sent") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><Check className="size-3" aria-hidden /> Sent</span>;
+  if (entry.status === "unknown") return <span className="text-xs text-destructive">送出結果不明</span>;
   if (entry.status === "dropped") return <span className="flex items-center gap-1 text-xs text-muted-foreground"><X className="size-3" aria-hidden /> {entry.error ?? "Not sent"}</span>;
   return <span className="flex items-center gap-1 text-xs text-destructive"><AlertTriangle className="size-3" aria-hidden /> Not sent</span>;
 }
@@ -103,7 +104,7 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
           : <Button variant="outline" size="sm" onClick={() => call.resumeMic()}><Mic aria-hidden /> {chatMode ? "Resume listening" : "Resume mic"}</Button>)}
         <span role="status" className="text-sm text-muted-foreground">
           {state.phase === "starting" && "Connecting…"}
-          {live && (state.modelSpeaking ? "Speaking" : state.mic === "live" ? "Listening" : "Mic paused")}
+          {live && localVoiceActivity(state)}
           {state.phase === "ending" && "Ending…"}
           {state.phase === "ended" && (state.endedReason ?? "Call ended.")}
         </span>
@@ -129,6 +130,7 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
           {" · "}assigned to {state.agentName ?? agentName}
         </p>
       )}
+      {localVoiceDeliveryError(state) && <p role="alert" className="text-sm text-destructive">{localVoiceDeliveryError(state)}</p>}
       {state.error && <p role="alert" className="text-sm text-destructive">{state.error}</p>}
       {state.notice && <p className="text-sm text-muted-foreground">{state.notice}</p>}
       {live && state.timeWarning && (
@@ -176,7 +178,7 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
               <li key={entry.operationId} className="space-y-1 rounded-lg border border-border p-3">
                 <p className="whitespace-pre-wrap break-words text-sm">{entry.text}</p>
                 <SentStatus entry={entry} />
-                {entry.status === "failed" && entry.error && <p role="alert" className="text-xs text-destructive">{entry.error}</p>}
+                {(entry.status === "failed" || entry.status === "unknown") && entry.error && <p role="alert" className="text-xs text-destructive">{entry.error}</p>}
               </li>
             ))}
           </ol>
@@ -190,6 +192,8 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
             <article key={reply.commentId} className="space-y-2 rounded-lg border border-border p-4">
               {reply.voiceSummary && <p className="text-sm font-medium">{reply.voiceSummary}</p>}
               <MarkdownBody>{reply.body}</MarkdownBody>
+              {chatMode && reply.playbackState === "interrupted" && <p className="text-xs text-muted-foreground">播音已中斷，回答保留於 Chat。</p>}
+              {chatMode && live && state.policyVersion === "main_answer_v1" && reply.voiceSummary && <Button size="sm" variant="ghost" onClick={() => call.replayReply(reply.commentId)}>重播</Button>}
             </article>
           ))}
         </div>

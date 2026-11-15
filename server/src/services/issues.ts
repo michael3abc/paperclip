@@ -1,4 +1,5 @@
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
+import { verifiedVoiceReplyProvenance } from "./heartbeat/chat-input-provenance.js";
 import type { IssueDisplayStatus } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
@@ -13212,6 +13213,9 @@ export function issueService(db: Db) {
       if (options?.metadata?.chatMessage && !options.proactiveChatMessage) {
         throw forbidden("Chat message provenance is server-owned");
       }
+      if (options?.metadata && "voiceReply" in options.metadata) {
+        throw forbidden("Voice reply provenance is server-owned");
+      }
       if (issue.conversationAgentId && actor.agentId && issue.conversationAgentId !== actor.agentId) {
         throw forbidden("Only this conversation's agent can post agent messages");
       }
@@ -13354,14 +13358,17 @@ export function issueService(db: Db) {
             actor.onBehalfOfUserId,
           )
         : null;
+      const voiceReply = actor.agentId && createdByRunId && issue.conversationAgentId && !options?.proactiveChatMessage
+        ? await verifiedVoiceReplyProvenance(dbOrTx, { companyId: issue.companyId, issueId, agentId: actor.agentId, runId: createdByRunId }, redactedBody)
+        : null;
       const metadata = issueCommentMetadataSchema
         .nullable()
         .parse(
           actor.agentId
-            ? withAgentCommentAuthorizationMetadata(
+            ? { ...withAgentCommentAuthorizationMetadata(
                 options?.metadata ?? null,
                 options?.authorizationReason,
-              )
+              ), ...(voiceReply ? { voiceReply } : {}) }
             : (options?.metadata ?? null),
         );
       let comment: typeof issueComments.$inferSelect | null = null;
@@ -13431,6 +13438,9 @@ export function issueService(db: Db) {
                     metadata: {
                       ...(existing.metadata ?? {}),
                       ...(metadata ?? {}),
+                      // Presentation upgrades cannot retroactively associate an
+                      // answer with input that was acknowledged after its write.
+                      voiceReply: existing.metadata?.voiceReply,
                     },
                     updatedAt: new Date(),
                   })

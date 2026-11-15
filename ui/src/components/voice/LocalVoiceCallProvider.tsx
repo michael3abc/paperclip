@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, u
 import { Mic, MicOff, PhoneOff, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
-import { createLocalVoiceCall, type LocalVoiceCall, type LocalVoiceCallSnapshot, type LocalVoiceMode } from "@/lib/local-voice/local-voice-call";
+import { localVoiceActivity, localVoiceDeliveryError, createLocalVoiceCall, type LocalVoiceCall, type LocalVoiceCallSnapshot, type LocalVoiceMode } from "@/lib/local-voice/local-voice-call";
 
 type CallTarget = { companyId: string; agentId: string; mode: LocalVoiceMode; issueId?: string };
 export type LocalVoiceCallBinding = CallTarget & { agentName: string; voiceName?: string | null; newConversation?: boolean };
@@ -95,12 +95,14 @@ function LocalVoiceCallBar() {
     : `/voice?agentId=${encodeURIComponent(binding.agentId)}${issueId ? `&issueId=${encodeURIComponent(issueId)}` : ""}`;
   const live = state.phase === "live";
   const status = state.phase === "starting" ? "Connecting…" : state.phase === "ending" ? "Ending…"
-    : live ? state.mic === "paused" ? "Listening paused" : state.modelSpeaking ? "Speaking" : "Listening"
+    : live ? localVoiceActivity(state)
     : state.phase === "error" ? "Call failed" : "Call ended";
   return <aside aria-label={`Current voice call with ${name}`} className="fixed inset-x-4 bottom-20 z-50 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-background p-3 shadow-lg sm:left-auto sm:bottom-4 sm:max-w-96">
     <div className="min-w-0 flex-1 text-sm">
       <Link className="font-medium underline" to={href}>{name}</Link>
       <p role="status" className="text-xs text-muted-foreground">{status}</p>
+      {state.notice && <p className="text-xs text-muted-foreground">{state.notice}</p>}
+      {localVoiceDeliveryError(state) && <p role="alert" className="text-xs text-destructive">{localVoiceDeliveryError(state)}</p>}
       {state.error && <p role="alert" className="text-xs text-destructive">{state.error}</p>}
     </div>
     {live && <Button variant="ghost" size="icon-sm" aria-label={state.mic === "live" ? "Pause listening" : "Resume listening"}

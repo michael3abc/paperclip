@@ -55,6 +55,16 @@ describe("issue validators", () => {
     }
   });
 
+  it("preserves bounded voice answer input provenance and rejects malformed records", () => {
+    const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Voice answer" }] }] };
+    const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const voiceReply = { version: 1, runId: id, sourceCommentIds: [id] };
+    expect(issueCommentMetadataSchema.parse({ ...metadata, voiceReply }).voiceReply).toEqual(voiceReply);
+    for (const patch of [{ version: 2 }, { runId: "bad" }, { sourceCommentIds: [] }, { sourceCommentIds: ["bad"] }, { sourceCommentIds: Array(65).fill(id) }]) {
+      expect(issueCommentMetadataSchema.safeParse({ ...metadata, voiceReply: { ...voiceReply, ...patch } }).success).toBe(false);
+    }
+  });
+
   it("uses the same bounded unique upload ID contract for comment and update requests", () => {
     const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
     expect(

@@ -201,8 +201,10 @@ A transaction-scoped advisory lock serializes concurrent first submits.
 | same key, different content | `409 voice_operation_conflict` |
 | unknown outcome | `GET …/operations/{operationId}` returns `{state:"not_found"}` before acceptance and the stored receipt after |
 
-When the outcome is unknown, the client must retry with the same
+For these `voice_task` tools, a retry after an unknown outcome must reuse the same
 `operationId`. The UI may show "saved" only together with a durable receipt.
+Agent Chat posting uses the normal comment idempotency key instead: its browser
+checks the existing receipt and does not automatically repeat the POST; see below.
 
 ## Updates and questions
 
@@ -423,6 +425,9 @@ agent replies and notices, the 10/15-minute limits and the reconnect loop.
 `openai-realtime-relay.ts` and `gemini-live-relay.ts` translate their wire
 protocols.
 
+The tool/read-back details below describe `voice_task`. New Agent Chat calls use
+the separate `main_answer_v1` contract in [Agent Chat binding](#agent-chat-binding-hom-326).
+
 #### OpenAI Realtime (default)
 
 After `session.created` the relay sends one `session.update`:
@@ -468,7 +473,7 @@ buffered during a reconnect is not replayed while a read-back draft awaits
 confirmation, because it could hold the phrase spoken over (or echoed from)
 the read-back.
 
-#### Gemini Live (fallback)
+#### Gemini Live (explicit engine selection)
 
 The relay sends a flat Live setup: audio responses, voice, zh-TW system
 instruction, input and output transcription, `sessionResumption` and
@@ -509,7 +514,7 @@ may be lost). Microphone audio is buffered briefly during the switch. A 403 or
 404 while reading replies (revoked access, ended or expired session) ends the
 call.
 
-Agent replies are found through company live events for the voice task plus
+For `voice_task`, agent replies are found through company live events plus
 a 30-second safety check. The browser gets every new reply in full; the model
 speaks the newest reply's `語音摘要：` line (or a short plain-text fallback),
 once per distinct summary.
@@ -557,6 +562,13 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   session's `conversation_id` is null (allowed only for `agent_chat`), so the
   Chat never looks like an externally bound issue (workspace isolation,
   external retry policy, assignee lock and blocker text stay unchanged).
+  New `agent_chat` sessions store
+  `providerSessionId = local:main_answer_v1:<uuid>`. `voice-chat-policy.ts`
+  derives the fixed call policy from that prefix; `ready.policyVersion` exposes
+  it to the browser. Existing sessions with the older `local:` prefix keep the
+  previous engine path, even when their upstream transport reconnects. No
+  historical comments or session IDs are rewritten. `voice_task` keeps its
+  existing prefix, tools, drafts and confirmation flow.
   `voice_task` starts refuse a Chat with the same code. A second live call on
   the same Chat gets `409 voice_call_already_active`; the page ends that
   older call of the same caller and starts again once. Without Agent Chat
@@ -567,12 +579,21 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   tools, deliveries, publications, replies) refuses `agent_chat` sessions with
   `404`; local tools, confirmations and operation receipts stay `voice_task`
   only, and `runCommand` refuses `agent_chat` sessions.
-- **Dictation.** The model session has no tools and, for OpenAI, server VAD
-  with `create_response: false`, so the model never answers caller speech on
-  its own. Each caller transcription (Taiwan Traditional) is buffered; 2 s
+- **One role, two transports (`main_answer_v1`, HOM-335).** Realtime handles
+  listening and speaking as the same first-person agent. Substantive discussion,
+  project facts, suggestions, decisions and content clarification go to main in
+  the original Chat. An exact greeting whitelist can reply locally; meaningful
+  short replies such as 「好」「對」 go to Chat and still cannot grant approval.
+  OpenAI has no tools and uses server VAD with `create_response: false`; unsolicited
+  responses are suppressed. Gemini has no tools and suppresses its automatic
+  caller-response audio/captions; only a scheduled notice or main-answer playback
+  may reach the browser. Both engines follow the same main-answer contract. There
+  is no automatic engine switch. The prior OpenAI routed-chat and Gemini behavior
+  remains available only to existing sessions without the new policy prefix.
+- **Dictation.** Each caller transcription (Taiwan Traditional) is buffered; 2 s
   after the last words (a new `speech_started` holds the buffer up to 20 s)
   the relay merges them and sends `{ type: "dictation", operationId, text,
-  body }`. Fillers (「嗯」「好」「對」…), known transcription hallucinations and
+  body, turnId, segmentIds }`. Noise fillers, known transcription hallucinations and
   speaker echo are dropped and shown to the caller as
   `{ type: "dictation_dropped", text, reason: "echo" | "noise" }`. Echo is
   judged only for a whole utterance (Gemini fragments are regrouped) of at
@@ -581,7 +602,9 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   is sent at once. Pausing the microphone or ending the call (by the caller
   or by the relay, e.g. the time limit) commits an utterance in progress,
   waits up to 3 s for its transcription and flushes the buffer before
-  `ended`. Nothing rewrites the caller's words.
+  `ended`. Nothing rewrites the caller's words. A segment is submitted only once
+  during the call. Missing transcription produces a bounded, visible failure;
+  successful transcription does not depend on a model-generated routing tool.
 - **Posting.** The browser posts `body` as the caller through the normal Chat
   composer path, `POST /issues/{chat}/comments` with
   `clientRequestId = operationId` and `metadata.voiceInput.sessionId`, so
@@ -593,34 +616,106 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   allowed). `body` is the words
   followed by one italic line telling the agent that the text came from speech
   recognition, that it is not an approval, deployment or settings
-  authorization, and asking for a last `語音摘要：` line. The browser reports
-  `{ type: "dictation_result", operationId, status }`; on `sent` the OpenAI
-  model says only 「收到」 (Gemini already answers each utterance), on
-  `failed` it asks the Owner to look at the screen.
-- **Replies.** New agent comments on the Chat since the call started are read
-  as for `voice_task` (the `語音摘要：` line, else a short spoken summary),
-  except that `fast_response`, `workspace_recovery` and
-  `session_bridge_input` comments are skipped. The Chat status is never
-  changed by voice.
+  authorization, and asking for a last `語音摘要：` line. Under the new policy it
+  also asks main to emit exactly one standalone
+  `語音回覆來源：<operationId>[, <operationId>...]` line, listing only the inputs
+  actually handled by this answer. The summary is two or three spoken sentences;
+  when main needs clarification, the summary asks main's question directly.
+  The browser reports `{ type: "dictation_result", operationId, status,
+  commentId?, message? }`, where status is `sent`, `failed` or `unknown`.
+  Relay verifies the saved comment against company, Chat, caller, operation and
+  `voiceInput.sessionId`; a client-provided comment ID alone is insufficient.
+  After 15 s without a confirmed receipt, it checks the original operation and
+  reports an unknown result when no stored comment can be established. A browser
+  transport/5xx failure also triggers a read of existing comments by
+  `clientRequestId`, never an automatic repeat POST. Definite rejection and unknown
+  outcome remain distinct; neither is presented as main having started work.
+- **Per-answer provenance.** `heartbeat/chat-input-provenance.ts` freezes the
+  initial launch envelope in `runnerProfileJson.chatInputDispatch`. It validates
+  each declared operation against this Chat owner's voice-marked comment and that
+  fixed envelope or an acknowledged same-run steering receipt. Mutable final
+  `wakeCommentIds`, temporal proximity and another same-agent run are not evidence.
+  The launch envelope is dispatch evidence, not a provider-native acceptance
+  receipt; the authenticated main's explicit source declaration supplies the
+  assertion of which delivered inputs the answer actually handled. Only a fully
+  matched declaration creates server-owned
+  `metadata.voiceReply = {version:1, runId, sourceCommentIds}`. Clients cannot set
+  this metadata. Each answer's metadata is immutable through duplicate writes and
+  later publication upgrades, including when a later steering ACK arrives.
+  A single answer may cover several inputs, and two answers with identical spoken
+  text remain distinct by comment ID. Missing or unverifiable declarations stay
+  in Chat without automatic playback. `fast_response`, `workspace_recovery` and
+  `session_bridge_input` comments are excluded from answer playback.
+- **Waiting and speaking.** The call-scoped `VoiceTurnLedger` links segment,
+  operation, stored input comment, answer comment and run identities. The browser
+  receives `voice_turn` states and answer playback state; these identifiers are
+  protocol details, not product labels. Only a verified stored input starts the
+  one-time 800 ms 「我確認一下。」 and 20 s 「還在等結果。」 timers. An answer that
+  arrives first suppresses queued notices; obsolete notices never replay later.
+  These are experience parameters, not network-latency promises. A stored comment
+  or running unrelated run cannot justify 「正在查」. The protocol reserves
+  `processing` for execution evidence; the current relay does not infer it.
+  Playback reads the main-provided summary without adding a conclusion; without a
+  summary it says only 「我已經回覆在對話中，請看畫面的文字。」.
+- **Interruption and replay.** Barge-in flushes audio, cancels/truncates only the
+  Realtime playback response where supported, and preserves the Chat run. A newer
+  input suppresses automatic playback of obsolete older answers; interrupted and
+  delayed answers remain in Chat. Explicit `replay_reply {commentId}` requests
+  playback of a retained answer. Deduplication uses answer ID and playback phase,
+  not summary text. Upstream reconnect retains the ledger, segment identities and
+  reply cursor, interrupts unfinished playback, and never reposts Owner text or
+  automatically restarts an interrupted answer. Closing the browser socket ends
+  this call, not the main's work; a new call does not replay historical answers.
+  Voice never changes Chat status or starts a second main executor. Neither
+  meaningful short replies nor source markers can accept a confirmation card.
+
+The company/user-scoped call provider keeps the selected agent, voice and policy
+while pages change. The call bar shows 「聆聽中」「等待回答」「正在回答」 and explicit
+submission errors, with microphone, hang-up, return-to-original-Chat and replay
+controls. Deployment/restart can end a live call; route continuity is not restart
+continuity. Main tool-progress narration and token-level speech streaming remain
+outside this phase.
 
 ### Tests
 
 | file | coverage |
 | --- | --- |
-| `server/src/__tests__/local-voice-agent-chat-relay.test.ts` | agent_chat on both engines: no tools, no automatic answers, merge and hold, fillers and echo (only during playback, whole utterances), typed text, pause and end drain (caller and relay ends), acknowledgement and failure notices, replies |
+| `server/src/__tests__/local-voice-main-answer.test.ts` | new-policy contracts on both engines: substantive routing, short answers, timed waits, same-text answers, missing summary, interruption/replay, early reply, unknown receipt, reconnect and unsolicited audio |
+| `server/src/__tests__/voice-turn-ledger.test.ts` | per-turn state, reordered/duplicate events, combined sources, obsolete answers, one-time notices, interruption and disposal |
+| `server/src/services/heartbeat/chat-input-provenance.test.ts` | fixed launch boundary, scoped operation/source validation, ACK-only supplements, immutable answer metadata, forged metadata rejection |
+| `server/src/services/heartbeat/runtime-execution.test.ts` | native and legacy dispatch capture the launch envelope rather than a later coalesced run snapshot |
+| `packages/shared/src/validators/issue.test.ts` | strict voice-answer metadata schema |
+| `server/src/__tests__/local-voice-agent-chat-relay.test.ts` | previous-policy agent_chat regression: engine routing, merge/hold, noise and echo, typed input, pause/end drain, notices and replies |
 | `server/src/__tests__/local-voice.integration.test.ts` (agent_chat block) | own Chat only, no task or channel conversation, channel paths refused, revocation on owner change |
 | `server/src/__tests__/confirmation-comment-resolution.test.ts` | a voice-marked message cannot accept a confirmation, may decline |
 | `server/src/__tests__/local-voice-relay.test.ts` | Gemini engine and shared core: setup, audio, spoken and UI confirmation, refusals, resumption, limits, reply announcements, summary helpers |
 | `server/src/__tests__/local-voice-openai-relay.test.ts` | OpenAI engine: session config, audio, tool round trip, confirmation with a late transcript, echo and cut-off read-backs, barge-in truncation, notices, reconnect context, usage, engine configuration, Taiwan Traditional conversion |
 | `server/src/__tests__/local-voice-relay.integration.test.ts` | embedded Postgres, loopback upgrade with fake gateways for both engines: provisioning, rejected upgrades, spoken confirmation into one delivery, replies, end on disconnect |
-| `ui/src/lib/local-voice/local-voice-call.test.ts` | browser call controller |
+| `ui/src/lib/local-voice/local-voice-call.test.ts` | browser controller: stored/unknown receipts, no repeat POST, stale/duplicate states, playback and explicit replay |
+| `ui/src/components/voice/{ChatVoiceCallButton,LocalVoicePanel,LocalVoiceCallProvider}.test.tsx` | status/error presentation, replay controls, route continuity and scope cleanup |
 | `ui/src/lib/local-voice/worklets.test.ts` | capture and playback resampling, flush |
 
 A live check against the LAN gateway (synthesized speech, simulated browser,
 fake task port) is `systemd/routing/compass-codex/bench/paperclip-voice-relay-smoke.mts`
 in the services repository.
 
+These are verification entry points, not evidence that a release passed. HOM-335
+acceptance additionally requires affected-package typechecks, UI build/token
+gates, desktop/mobile-size browser fixtures and a bounded synthetic-audio
+Realtime → actual test Chat → main answer → playback smoke. Record input-end to
+stored-comment, first acknowledgement and main-answer to playback latency; do not
+claim reduced main reasoning time. A fake task-port smoke does not establish the
+full Chat path, and synthetic audio does not qualify a physical microphone or
+naturalness on real devices. Only related suites run; retain actual outcomes and
+limitations with the issue's deployment receipts.
+
 ### Rollback
+
+For HOM-335, retain the previous sealed server/UI release and its configuration.
+No migration is introduced by `main_answer_v1`; rollback does not rewrite Chat
+history. Restarts can end current calls. Session policy is selected when a new
+call starts, and a deployment must not reinterpret an existing old-prefix call
+as the new policy.
 
 To go back to Gemini Live, set `PAPERCLIP_LOCAL_VOICE_ENGINE=gemini` in the
 server environment and restart Paperclip; new calls use Gemini at 16 kHz

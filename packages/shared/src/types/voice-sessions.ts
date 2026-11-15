@@ -170,6 +170,8 @@ export interface LocalVoiceDraft {
   text: string;
 }
 
+export type LocalVoiceTurnState = "transcribing" | "sending" | "stored" | "processing" | "answer_ready" | "speaking" | "interrupted" | "completed" | "failed" | "unknown";
+
 export type LocalVoiceRelayClientMessage =
   | { type: "text"; text: string }
   | { type: "mic"; state: "live" | "paused" }
@@ -177,21 +179,22 @@ export type LocalVoiceRelayClientMessage =
   | { type: "playback"; playing: boolean }
   | { type: "confirm_draft"; draftId: string; revision: number }
   /** agent_chat: the browser posted (or failed to post) a dictated message through the normal Chat API. */
-  | { type: "dictation_result"; operationId: string; status: "sent" | "failed"; commentId?: string; message?: string }
+  | { type: "dictation_result"; operationId: string; status: "sent" | "failed" | "unknown"; commentId?: string; message?: string }
+  | { type: "replay_reply"; commentId: string }
   | { type: "cancel_draft"; draftId: string }
   | { type: "end" };
 
 export type LocalVoiceRelayEndReason = "caller_ended" | "max_duration" | "session_unavailable" | "upstream_unavailable" | "server_shutdown" | "relay_error";
 
 export type LocalVoiceRelayServerEvent =
-  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number; bindingMode?: VoiceBindingMode }
+  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number; bindingMode?: VoiceBindingMode; policyVersion?: "main_answer_v1" }
   /**
    * agent_chat: one merged caller utterance, verbatim (Taiwan Traditional) in
    * `text`. The browser posts the server-built `body` (the words plus a short
    * voice-input note for the agent) to the bound Chat with `operationId` as
    * clientRequestId and reports `dictation_result`.
    */
-  | { type: "dictation"; operationId: string; text: string; body: string }
+  | { type: "dictation"; operationId: string; turnId?: string; segmentIds?: string[]; text: string; body: string }
   /** agent_chat: heard words that were not sent, shown to the caller (speaker echo or a lone filler). */
   | { type: "dictation_dropped"; text: string; reason: "echo" | "noise" | "unclear" }
   | { type: "transcript"; role: "user" | "model"; text: string }
@@ -201,7 +204,8 @@ export type LocalVoiceRelayServerEvent =
   | { type: "draft_cleared"; draftId: string }
   | { type: "submitted"; draftId: string; revision: number; operationId: string; via: "spoken" | "ui" }
   | { type: "submit_failed"; draftId: string; revision: number; code: string; message: string }
-  | { type: "agent_reply"; commentId: string; body: string; voiceSummary: string | null; createdAt: string }
+  | { type: "voice_turn"; turnId: string; runId?: string; segmentIds?: string[]; operationId?: string; inputCommentId?: string; answerCommentId?: string; state: LocalVoiceTurnState; error?: string }
+  | { type: "agent_reply"; commentId: string; body: string; voiceSummary: string | null; createdAt: string; turnIds?: string[]; playbackState?: "queued" | "interrupted" | "completed" | "available" }
   | { type: "time_warning"; remainingSeconds: number }
   | { type: "reconnecting"; reason: string }
   | { type: "resumed"; contextKept: boolean }

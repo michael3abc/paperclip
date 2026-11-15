@@ -9,6 +9,14 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Main-agent voice answers (HOM-335): new agent_chat calls pin `main_answer_v1`;
+  OpenAI and Gemini carry speech while the original main Chat supplies substantive
+  answers. Explicit source-operation declarations are verified against scoped
+  input comments and the fixed dispatch/steering boundary, then saved per answer.
+  Turn-based waiting, playback deduplication, interruption and explicit replay
+  preserve agent work and existing calls. No migration; see
+  `doc/connections/LOCAL-VOICE.md`. Test and deployment receipts belong to HOM-335.
+
 - Artifact image preview zoom (HOM-265): reuse the shared zoom/pan viewer in the Artifacts dialog, including fit/reset and existing file actions. UI-only overlay.
 
 - Local voice call continuity (HOM-265): a company/user-scoped provider keeps media and the original agent binding across chat/page navigation; a global call bar preserves hang-up and microphone controls. Scope changes still clean up media.

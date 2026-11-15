@@ -34,6 +34,8 @@ export class GeminiLiveRelay extends VoiceRelayCore {
   protected readonly dropStaleToolResults = false;
   /** Gemini Live answers every utterance, so the relay does not add its own acknowledgement. */
   protected readonly acknowledgesSpeech = true;
+  private noticeResponse = false;
+  private callerResponsePending = false;
   private resumeHandle: string | null = null;
   /** The caller utterance being transcribed, closed when the model reacts. */
   private openUtterance: CallerUtterance | null = null;
@@ -81,35 +83,49 @@ export class GeminiLiveRelay extends VoiceRelayCore {
     }
     const content = message.serverContent;
     if (!content || typeof content !== "object") return;
-    const parts = content.modelTurn?.parts;
-    for (const part of Array.isArray(parts) ? parts : []) {
-      const data = part?.inlineData;
-      if (typeof data?.data === "string" && String(data.mimeType ?? "").startsWith("audio/pcm")) {
-        if (!this.modelTurnActive) this.openUtterance = null;
-        this.modelTurnActive = true;
-        this.browserPlaying = true;
-        this.browser.sendAudio(Buffer.from(data.data, "base64"));
-      }
-    }
     if (typeof content.inputTranscription?.text === "string" && content.inputTranscription.text) {
       const text = content.inputTranscription.text;
+      if (this.mainAnswerChat) this.callerResponsePending = true;
+      if (this.mainAnswerChat && !this.openUtterance) {
+        this.interruptChatPlayback();
+        this.noticeResponse = false;
+        this.browser.sendEvent({ type: "interrupted" });
+        this.browserPlaying = false;
+      }
       this.browser.sendEvent({ type: "transcript", role: "user", text });
       if (!this.openUtterance) { this.openUtterance = this.beginUtterance(); this.utteranceSegment += 1; }
       this.openUtterance.text += text;
       // Gemini streams fragments; the core merges them after a quiet gap and judges echo per utterance.
       if (this.chatMode) this.collectDictation(text, { duringPlayback: this.browserPlaying || this.modelTurnActive, segment: `g${this.utteranceSegment}` });
     }
-    if (typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
+    const parts = content.modelTurn?.parts;
+    for (const part of Array.isArray(parts) ? parts : []) {
+      const data = part?.inlineData;
+      if (typeof data?.data === "string" && String(data.mimeType ?? "").startsWith("audio/pcm")) {
+        if (!this.modelTurnActive) this.openUtterance = null;
+        this.modelTurnActive = true;
+        if (this.mainAnswerChat && !this.noticeResponse) continue;
+        this.browserPlaying = true;
+        this.noteChatAudio();
+        this.browser.sendAudio(Buffer.from(data.data, "base64"));
+      }
+    }
+    if ((!this.mainAnswerChat || this.noticeResponse) && typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
       this.turnOutput += content.outputTranscription.text;
       this.browser.sendEvent({ type: "transcript", role: "model", text: content.outputTranscription.text });
     }
     if (content.interrupted) {
+      this.interruptChatPlayback();
+      this.noticeResponse = false;
       this.browser.sendEvent({ type: "interrupted" });
       // The browser flushes its playback on barge-in.
       this.browserPlaying = false;
       this.finishModelTurn({ completed: false });
     }
     if (content.turnComplete) {
+      this.openUtterance = null;
+      this.callerResponsePending = false;
+      this.noticeResponse = false;
       this.browser.sendEvent({ type: "turn_complete" });
       this.finishModelTurn({ completed: true });
     }
@@ -123,6 +139,12 @@ export class GeminiLiveRelay extends VoiceRelayCore {
     return () => hadHandle && this.resumeHandle !== null;
   }
 
+  protected onReconnected() {
+    this.callerResponsePending = false;
+    this.noticeResponse = false;
+    this.openUtterance = null;
+  }
+
   protected onReconnectAttemptFailed() {
     // A stale handle must not block a fresh session on the next attempt.
     this.resumeHandle = null;
@@ -132,7 +154,10 @@ export class GeminiLiveRelay extends VoiceRelayCore {
     this.sendUpstream({ realtimeInput: { audio: { mimeType: `audio/pcm;rate=${this.inputSampleRate}`, data: pcm.toString("base64") } } });
   }
 
+  protected engineBusy() { return this.mainAnswerChat && (this.callerResponsePending || this.browserPlaying); }
+
   protected sendUserTurn(text: string) {
+    this.noticeResponse = true;
     return this.sendUpstream({ clientContent: { turns: [{ role: "user", parts: [{ text }] }], turnComplete: true } });
   }
 

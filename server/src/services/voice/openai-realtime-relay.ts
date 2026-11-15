@@ -105,6 +105,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   private readonly pendingCalls = new Set<string>();
   /** Response cut off by barge-in; its late audio and captions are dropped. */
   private cancelledResponseId: string | null = null;
+  private cancelNextCreated = false;
+  private readonly cancelledResponses = new Set<string>();
   /** function_call items by item id, for name lookup. */
   private readonly callNames = new Map<string, string>();
   /** Caller utterances by input item id. */
@@ -113,6 +115,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   private readonly startedDuringPlayback = new Map<string, boolean>();
   /** agent_chat: caller utterances whose transcription has not completed yet. */
   private readonly transcribing = new Set<string>();
+  private readonly completedTranscripts = new Set<string>();
   /** Server VAD hears the caller speaking right now. */
   private speechActive = false;
   private audioItem: AudioItem | null = null;
@@ -155,7 +158,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       instructions: this.instructions(),
       output_modalities: ["audio"],
       // agent_chat: the model chats and forwards requests; the relay sends the caller's own words.
-      tools: this.chatMode ? openAiAgentChatTools(this.options.binding.agentName) : openAiToolDeclarations(this.options.binding.agentName),
+      tools: this.mainAnswerChat ? [] : this.chatMode ? openAiAgentChatTools(this.options.binding.agentName) : openAiToolDeclarations(this.options.binding.agentName),
       tool_choice: "auto",
       // Token log-probabilities let the relay drop sentences the recognizer invents for noise (HOM-265).
       include: ["item.input_audio_transcription.logprobs"],
@@ -165,7 +168,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
           transcription: { model: OPENAI_TRANSCRIPTION_MODEL, language: "zh", prompt: TRANSCRIPTION_PROMPT },
           noise_reduction: { type: "far_field" },
           // agent_chat answers the caller too (HOM-265 Owner choice b); 700 ms lets a short pause stay inside one turn.
-          turn_detection: { type: "server_vad", silence_duration_ms: this.chatMode ? 700 : 500, create_response: true, interrupt_response: true },
+          turn_detection: { type: "server_vad", silence_duration_ms: this.chatMode ? 700 : 500, create_response: !this.mainAnswerChat, interrupt_response: true },
         },
         output: { format: { type: "audio/pcm", rate: 24_000 }, voice: this.options.voiceName ?? "marin" },
       },
@@ -203,6 +206,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     this.responseWanted = false;
     this.pendingCalls.clear();
     this.cancelledResponseId = null;
+    this.cancelNextCreated = false;
+    this.cancelledResponses.clear();
     this.callNames.clear();
     this.utterances.clear();
     this.startedDuringPlayback.clear();
@@ -219,6 +224,11 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   protected handleUpstreamMessage(message: Record<string, any>) {
     switch (message.type) {
       case "response.created":
+        if (this.mainAnswerChat && (this.cancelNextCreated || !this.awaitingCreated)) {
+          this.cancelNextCreated = false;
+          if (typeof message.response?.id === "string") this.cancelledResponses.add(message.response.id);
+          this.sendUpstream({ type: "response.cancel" });
+        }
         this.responseFromCaller = !this.awaitingCreated;
         this.responseCreatedAt = this.now();
         this.activeResponse = true;
@@ -261,6 +271,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
         return;
       case "conversation.item.input_audio_transcription.failed":
         if (typeof message.item_id === "string") this.transcribing.delete(message.item_id);
+        if (this.mainAnswerChat) this.browser.sendEvent({ type: "error", code: "transcription_failed", message: "這段語音無法辨識，尚未送出，請再說一次。" });
         this.log("voice_relay_transcription_failed", { engine: this.engine, code: errorCode(message) });
         return;
       case "error": {
@@ -284,7 +295,9 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   private isCancelled(message: Record<string, any>) {
-    return this.cancelledResponseId !== null && message.response_id === this.cancelledResponseId;
+    return this.cancelledResponseId !== null && message.response_id === this.cancelledResponseId
+      || this.mainAnswerChat && (this.cancelNextCreated || this.cancelledResponses.has(message.response_id)
+        || !this.activeResponse || message.response_id !== this.activeResponseId);
   }
 
   private forwardAudio(message: Record<string, any>) {
@@ -304,6 +317,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     this.playbackEndsAt = Math.max(now, this.playbackEndsAt) + bytesToMs(pcm.length);
     this.modelTurnActive = true;
     this.browserPlaying = true;
+    this.noteChatAudio();
     this.browser.sendAudio(pcm);
   }
 
@@ -318,6 +332,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   private onResponseDone(response: Record<string, any> | undefined) {
+    if (this.mainAnswerChat && typeof response?.id === "string"
+      && (this.activeResponseId && response.id !== this.activeResponseId || !this.activeResponseId && this.awaitingCreated)) return;
     this.activeResponse = false;
     this.awaitingCreated = false;
     this.activeResponseId = null;
@@ -343,9 +359,14 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
 
   /** Server VAD heard the caller start speaking: barge-in plus a new utterance. */
   private onSpeechStarted(message: Record<string, any>) {
+    this.interruptChatPlayback();
     const now = this.now();
     const playing = this.browserPlaying || now < this.playbackEndsAt;
     if (this.activeResponse) {
+      if (this.mainAnswerChat) {
+        if (this.activeResponseId) this.cancelledResponses.add(this.activeResponseId);
+        else this.cancelNextCreated = true;
+      }
       this.cancelledResponseId = this.activeResponseId;
       this.sendUpstream({ type: "response.cancel" });
     }
@@ -373,6 +394,15 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       if (itemId) {
         this.startedDuringPlayback.set(itemId, playing || (startMs !== null && startMs < this.playbackStoppedAtInputMs + ECHO_TAIL_MS));
         this.transcribing.add(itemId);
+        if (this.mainAnswerChat) this.timers.push(this.setTimer(() => {
+          if (this.closed || !this.transcribing.delete(itemId)) return;
+          this.completedTranscripts.add(itemId);
+          this.utterances.delete(itemId);
+          this.startedDuringPlayback.delete(itemId);
+          this.speechActive = false;
+          this.browser.sendEvent({ type: "error", code: "transcription_timeout", message: "這段語音未完成辨識，尚未送出，請再說一次。" });
+          this.flushNotices();
+        }, this.options.dictationHoldMs ?? 20_000));
         this.noteCallerSegment(itemId);
       }
       this.holdDictation();
@@ -399,6 +429,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
     }
     const itemId = typeof message.item_id === "string" ? message.item_id : "";
     this.transcribing.delete(itemId);
+    if (this.mainAnswerChat && this.completedTranscripts.has(itemId)) return;
+    if (this.mainAnswerChat) this.completedTranscripts.add(itemId);
     const raw = typeof message.transcript === "string" ? message.transcript.trim() : "";
     if (!raw) return;
     const text = toTaiwanTraditional(raw);
@@ -451,7 +483,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
 
   protected pendingTranscriptions() { return this.transcribing.size; }
   protected segmentPending(segment: string) { return this.transcribing.has(segment); }
-  protected get routedChat() { return this.chatMode; }
+  protected get routedChat() { return this.chatMode && !this.mainAnswerChat; }
 
   protected commitCallerAudio() {
     if (!this.speechActive) return;

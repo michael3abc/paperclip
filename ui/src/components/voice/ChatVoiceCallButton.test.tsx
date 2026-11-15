@@ -13,9 +13,9 @@ vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ en
 
 function fakeCall() {
   let snapshot: LocalVoiceCallSnapshot = {
-    phase: "idle", mode: "agent_chat", mic: "live", micPausedReason: null, modelSpeaking: false, issue: null,
+    phase: "idle", mode: "agent_chat", policyVersion: "main_answer_v1", mic: "live", micPausedReason: null, modelSpeaking: false, issue: null,
     agentName: null, startedAt: null, maxSeconds: 600, warningSeconds: 60, timeWarning: false, transcript: [],
-    draft: null, replies: [], sentLog: [], notice: null, error: null, endedReason: null,
+    draft: null, replies: [], sentLog: [], turns: [], notice: null, error: null, endedReason: null,
   };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<LocalVoiceCallSnapshot>) => { snapshot = { ...snapshot, ...patch }; listeners.forEach((listener) => listener()); };
@@ -26,6 +26,7 @@ function fakeCall() {
     end: vi.fn(async () => set({ phase: "ended", endedReason: "Call ended." })),
     pauseMic: vi.fn(() => set({ mic: "paused", micPausedReason: "manual" })),
     resumeMic: vi.fn(() => set({ mic: "live", micPausedReason: null })),
+    replayReply: vi.fn(),
     dispose: vi.fn(),
   };
   return { call: call as unknown as LocalVoiceCall, spies: call, set };
@@ -52,7 +53,7 @@ describe("ChatVoiceCallButton", () => {
     await act(async () => callButton()!.click());
     expect(spies.start).toHaveBeenCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat" });
     const group = container.querySelector('[role="group"][aria-label="Voice call with michael"]');
-    expect(group?.textContent).toContain("Listening");
+    expect(group?.textContent).toContain("聆聽中");
     // No floating panel opens by itself while the call runs.
     expect(document.body.querySelector('section[aria-label^="Voice call details"]')).toBeNull();
     expect(callButton()?.getAttribute("aria-label")).toBe("End voice call with michael");
@@ -72,6 +73,26 @@ describe("ChatVoiceCallButton", () => {
     expect(container.querySelector('[role="group"]')?.textContent).toContain("Call ended");
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close voice call"]')!.click());
     expect(container.querySelector('[role="group"]')).toBeNull();
+  });
+
+  it("shows receipt-backed waiting, unknown delivery and explicit per-answer replay", async () => {
+    mocks.status.mockResolvedValue({ companyId: "company", enabled: true, relayConfigured: true });
+    const { call, spies, set } = fakeCall();
+    await render(call);
+    await vi.waitFor(() => expect(callButton()).not.toBeNull());
+    await act(async () => callButton()!.click());
+    await act(async () => set({ turns: [{ turnId: "one", state: "stored" }] }));
+    expect(container.textContent).toContain("等待回答");
+    await act(async () => set({ modelSpeaking: true }));
+    expect(container.textContent).toContain("正在回答");
+    await act(async () => set({ modelSpeaking: false, turns: [{ turnId: "one", state: "unknown" }],
+      sentLog: [{ operationId: "one", text: "問題", status: "unknown", error: "無法確認訊息是否已送出；請查看原 Chat。" }],
+      replies: [{ commentId: "answer-one", body: "回答", voiceSummary: "這是回答", createdAt: "now", playbackState: "interrupted" }] }));
+    expect(container.textContent).toContain("送出結果不明");
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("無法確認");
+    expect(spies.replayReply).not.toHaveBeenCalled();
+    await act(async () => [...document.body.querySelectorAll("button")].find((button) => button.textContent === "重播")!.click());
+    expect(spies.replayReply).toHaveBeenCalledWith("answer-one");
   });
 
   it("remembers a voice per agent on the call card and uses it from the next call on (HOM-265)", async () => {

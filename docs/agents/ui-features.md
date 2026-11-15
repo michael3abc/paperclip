@@ -176,8 +176,38 @@ The current call remains identifiable and controllable (pause/resume listening,
 hang up) through a global call bar when its original page controls are absent.
 User/company changes, logout and application unmount dispose media. Start must
 invoke the audio constructor synchronously inside the user's click, preserving
-browser audio permission. Keep voice_task confirmation and agent_chat submission
-semantics unchanged. This local controller is separate from the existing Speko
+browser audio permission. Keep voice_task confirmation unchanged. This local
+controller is separate from the existing Speko
 VoiceCallProvider. Test route unmount/remount, return to the original chat, scope
 cleanup and no duplicate start; browser fixtures are not live microphone/gateway
 acceptance.
+
+New Agent Chat calls pin `main_answer_v1` through the server-created
+`local:main_answer_v1:<uuid>` session identity. Existing old-prefix calls keep
+their previous policy; page navigation or upstream reconnection cannot upgrade
+or retarget one. The relay carries speech and main answers in the original Chat.
+Only verified per-answer source metadata permits automatic playback. Full text
+stays in Chat; absent summaries use the fixed text-reply notice, never a model's
+new substantive answer. See `doc/connections/LOCAL-VOICE.md` for the protocol.
+
+Show 「聆聽中」「等待回答」「正在回答」 from actual call/turn/playback state. A
+saved input is not proof that main has started; waiting notices say only
+「我確認一下。」 once after about 800 ms and 「還在等結果。」 once after about
+20 s, and are omitted when an answer arrives first. Show readable submission
+failure or unknown-result errors. Keep run/operation IDs out of user-facing
+labels. Meaningful short answers return to the same Chat without granting
+approval. The microphone, hang-up and return-to-original-Chat controls remain
+available across routes.
+
+Barge-in stops audio and retains the answer; it never cancels main work. Older
+or interrupted answers do not restart automatically. A live new-policy call can
+explicitly replay an available summarized answer with 「重播」. Hang-up ends
+media only. Unknown comment submission checks the original receipt without
+another POST. Controller deduplication and terminal playback state survive
+duplicate/out-of-order events and upstream transport reconnects. A server
+deployment may end the call; do not promise continuity through a restart.
+
+Verify these controller, call-button, panel and provider behaviors together with
+related relay/provenance tests and token gates. Desktop/mobile-size browser
+fixtures and a bounded real-gateway test are separate evidence; neither proves
+physical-device microphone quality. Do not report unexecuted checks as passed.

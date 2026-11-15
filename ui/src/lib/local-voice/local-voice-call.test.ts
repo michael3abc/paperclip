@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX, LOCAL_VOICE_RELAY_VOICE_PREFIX } from "@paperclipai/shared";
-import { AGENT_CHAT_END_WAIT_MS, LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
+import { AGENT_CHAT_END_WAIT_MS, localVoiceActivity, LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
 
 class FakeSocket {
   readyState = 1;
@@ -19,9 +19,9 @@ class FakeSocket {
 const CHAT_ID = "33333333-3333-4333-8333-333333333333";
 const OPERATION_ID = "44444444-4444-4444-8444-444444444444";
 const COMMENT_ID = "55555555-5555-4555-8555-555555555555";
-const READY = { type: "ready", issueId: CHAT_ID, issueIdentifier: "HOM-1", agentName: "momo", maxSeconds: 900, warningSeconds: 600, inputSampleRate: 24_000, bindingMode: "agent_chat" };
+const READY = { type: "ready", issueId: CHAT_ID, issueIdentifier: "HOM-1", agentName: "momo", maxSeconds: 900, warningSeconds: 600, inputSampleRate: 24_000, bindingMode: "agent_chat", policyVersion: "main_answer_v1" };
 
-function setup(options: { startError?: unknown; firstStartError?: unknown; postChatMessage?: (issueId: string, body: string, clientRequestId: string) => Promise<{ id: string }> } = {}) {
+function setup(options: { startError?: unknown; firstStartError?: unknown; findChatMessage?: LocalVoiceCallDependencies["findChatMessage"]; postChatMessage?: LocalVoiceCallDependencies["postChatMessage"] } = {}) {
   let now = 1_000_000;
   const sockets: FakeSocket[] = [];
   const intervals: (() => void)[] = [];
@@ -55,6 +55,7 @@ function setup(options: { startError?: unknown; firstStartError?: unknown; postC
     api,
     ensureChat,
     postChatMessage,
+    findChatMessage: options.findChatMessage,
     createSocket: (url, protocols) => { const socket = new FakeSocket(url, protocols); sockets.push(socket); return socket as unknown as WebSocket; },
     createAudio: () => audio,
     now: () => now,
@@ -233,7 +234,7 @@ describe("LocalVoiceCall", () => {
       let finish!: (value: { id: string }) => void;
       const h = await live({ postChatMessage: () => new Promise((resolve) => { finish = resolve; }) });
       h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "幫我看部署", body: "幫我看部署\n\n(voice input)" });
-      expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "幫我看部署\n\n(voice input)", OPERATION_ID);
+      expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "幫我看部署\n\n(voice input)", OPERATION_ID, "session-1");
       expect(h.call.getSnapshot().sentLog).toEqual([{ operationId: OPERATION_ID, text: "幫我看部署", status: "sending" }]);
       // A repeated event for the same operation is not posted twice.
       h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "幫我看部署", body: "幫我看部署\n\n(voice input)" });
@@ -244,10 +245,137 @@ describe("LocalVoiceCall", () => {
     });
 
     it("reports a failed post to the relay and in the sent log", async () => {
-      const h = await live({ postChatMessage: async () => { throw Object.assign(new Error("Request failed"), { body: { error: "Chat is closed" } }); } });
+      const h = await live({ postChatMessage: async () => { throw Object.assign(new Error("Request failed"), { status: 403, body: { error: "Chat is closed" } }); } });
       h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "你好", body: "你好 (voice)" });
       await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]).toEqual({ operationId: OPERATION_ID, text: "你好", status: "failed", error: "Chat is closed" }));
       expect(h.socket.json().at(-1)).toEqual({ type: "dictation_result", operationId: OPERATION_ID, status: "failed", message: "Chat is closed" });
+    });
+
+    it("looks up an uncertain POST once and reports the stored receipt without resending", async () => {
+      const findChatMessage = vi.fn(async () => ({ id: COMMENT_ID }));
+      const h = await live({ postChatMessage: async () => { throw new TypeError("Network lost"); }, findChatMessage });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, turnId: "turn-one", text: "對", body: "對" });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]?.status).toBe("sent"));
+      expect(findChatMessage).toHaveBeenCalledWith(CHAT_ID, OPERATION_ID);
+      expect(findChatMessage).toHaveBeenCalledTimes(1);
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ state: "stored", inputCommentId: COMMENT_ID });
+      h.socket.emit({ type: "resumed", contextKept: true });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "對", body: "對" });
+      expect(h.postChatMessage).toHaveBeenCalledTimes(1);
+      expect(h.socket.json().at(-1)).toEqual({ type: "dictation_result", operationId: OPERATION_ID, status: "sent", commentId: COMMENT_ID });
+    });
+
+    it.each([undefined, 500])("keeps unresolved delivery visibly unknown for status %s", async (status) => {
+      const findChatMessage = vi.fn(async () => null);
+      const h = await live({ postChatMessage: async () => { throw Object.assign(new Error("Lost"), { status }); }, findChatMessage });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, turnId: "turn-one", text: "問題", body: "問題" });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]?.status).toBe("unknown"));
+      expect(h.socket.json().at(-1)).toMatchObject({ type: "dictation_result", status: "unknown" });
+      expect(localVoiceActivity(h.call.getSnapshot())).toBe("送出結果不明");
+      expect(h.postChatMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("surfaces a failed receipt lookup without retrying either request", async () => {
+      const findChatMessage = vi.fn(async () => { throw new Error("Lookup unavailable"); });
+      const h = await live({ postChatMessage: async () => { throw new Error("Connection lost"); }, findChatMessage });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, turnId: "one", text: "問題", body: "問題" });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]?.error).toContain("收據查詢失敗：Lookup unavailable"));
+      expect(h.postChatMessage).toHaveBeenCalledTimes(1);
+      expect(findChatMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains operation deduplication beyond the visible log", async () => {
+      const h = await live();
+      for (let index = 0; index < 51; index++) h.socket.emit({ type: "dictation", operationId: `op-${index}`, text: "對", body: "對" });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog.at(-1)?.status).toBe("sent"));
+      expect(h.call.getSnapshot().sentLog).toHaveLength(50);
+      h.socket.emit({ type: "dictation", operationId: "op-0", text: "對", body: "對" });
+      expect(h.postChatMessage).toHaveBeenCalledTimes(51);
+    });
+
+    it("does not regress a processed turn on late stored receipts or duplicate events", async () => {
+      let finish!: (value: { id: string }) => void;
+      const h = await live({ postChatMessage: () => new Promise((resolve) => { finish = resolve; }) });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, turnId: "one", text: "查一下", body: "查一下" });
+      h.socket.emit({ type: "voice_turn", turnId: "one", state: "processing", runId: "run" });
+      finish({ id: COMMENT_ID });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]?.status).toBe("sent"));
+      h.socket.emit({ type: "voice_turn", turnId: "one", state: "sending" });
+      expect(h.call.getSnapshot().turns).toEqual([expect.objectContaining({ state: "processing", inputCommentId: COMMENT_ID, runId: "run" })]);
+      expect(localVoiceActivity(h.call.getSnapshot())).toBe("等待回答");
+    });
+
+    it("keeps same-text answers distinct and replays only a selected interrupted answer", async () => {
+      const h = await live();
+      for (const id of ["first", "second"]) {
+        h.socket.emit({ type: "agent_reply", commentId: id, body: "好", voiceSummary: "好", createdAt: "now", turnIds: [id], playbackState: "queued" });
+      }
+      h.socket.emit({ type: "voice_turn", turnId: "first", answerCommentId: "first", state: "speaking" });
+      h.socket.emit({ type: "interrupted" });
+      h.socket.emit({ type: "voice_turn", turnId: "first", state: "completed" });
+      h.socket.emit({ type: "agent_reply", commentId: "first", body: "好", voiceSummary: "好", createdAt: "now", playbackState: "queued" });
+      expect(h.call.getSnapshot().turns[0].state).toBe("interrupted");
+      expect(h.call.getSnapshot().replies).toHaveLength(2);
+      expect(h.call.getSnapshot().replies[0].playbackState).toBe("interrupted");
+      expect(h.socket.json()).toEqual([]);
+      expect(h.call.replayReply("missing")).toBe(false);
+      expect(h.call.replayReply("first")).toBe(true);
+      expect(h.call.replayReply("first")).toBe(false);
+      expect(h.socket.json()).toEqual([{ type: "replay_reply", commentId: "first" }]);
+      h.socket.emit({ type: "voice_turn", turnId: "first", state: "speaking" });
+      expect(h.call.getSnapshot().turns[0].state).toBe("speaking");
+      expect(h.api.end).not.toHaveBeenCalled();
+    });
+
+    it("keeps legacy sessions off the replay policy and treats duplicate ready as a no-op", async () => {
+      const h = setup();
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      const socket = h.sockets[0];
+      socket.emit({ ...READY, policyVersion: undefined });
+      socket.emit(READY);
+      socket.emit({ type: "agent_reply", commentId: "legacy", body: "Answer", voiceSummary: "Answer", createdAt: "now" });
+      expect(h.call.getSnapshot().policyVersion).toBeUndefined();
+      expect(h.call.replayReply("legacy")).toBe(false);
+      expect(socket.json()).toEqual([]);
+    });
+
+    it("ignores a closed call's late socket messages after a new call starts", async () => {
+      const h = await live();
+      const old = h.socket;
+      const ending = h.call.end();
+      old.emit({ type: "ended", reason: "caller_ended" });
+      await ending;
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      old.emit({ type: "dictation", operationId: OPERATION_ID, text: "舊問題", body: "舊問題" });
+      old.onmessage?.({ data: new ArrayBuffer(8) });
+      expect(h.postChatMessage).not.toHaveBeenCalled();
+      expect(h.audio.played).toHaveLength(0);
+      expect(h.call.getSnapshot().sentLog).toEqual([]);
+    });
+
+    it("binds each POST to its captured session and ignores the previous call's late receipt", async () => {
+      let finish!: (value: { id: string }) => void;
+      let count = 0;
+      const h = await live({ postChatMessage: async () => ++count === 1
+        ? new Promise<{ id: string }>((resolve) => { finish = resolve; }) : { id: COMMENT_ID } });
+      h.socket.emit({ type: "dictation", operationId: OPERATION_ID, text: "舊問題", body: "舊問題" });
+      h.socket.close();
+      h.socket.onclose?.();
+      await vi.waitFor(() => expect(h.call.getSnapshot().phase).toBe("error"));
+      h.api.start.mockResolvedValueOnce({ session: { id: "session-2", issueId: CHAT_ID } as never,
+        media: { transportToken: "T".repeat(43) } as never });
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      const current = h.sockets.at(-1)!;
+      current.emit(READY);
+      current.emit({ type: "dictation", operationId: "new-operation", text: "新問題", body: "新問題" });
+      await vi.waitFor(() => expect(h.call.getSnapshot().sentLog[0]?.status).toBe("sent"));
+      finish({ id: "old-comment" });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(h.postChatMessage).toHaveBeenNthCalledWith(1, CHAT_ID, "舊問題", OPERATION_ID, "session-1");
+      expect(h.postChatMessage).toHaveBeenNthCalledWith(2, CHAT_ID, "新問題", "new-operation", "session-2");
+      expect(h.call.getSnapshot().sentLog).toEqual([expect.objectContaining({ operationId: "new-operation", commentId: COMMENT_ID })]);
+      expect(current.json()).toEqual([{ type: "dictation_result", operationId: "new-operation", status: "sent", commentId: COMMENT_ID }]);
     });
 
     it("sends typed text to the relay instead of creating a draft", async () => {
@@ -289,7 +417,7 @@ describe("LocalVoiceCall", () => {
       expect(h.audio.closed).toBe(true);
       finish({ id: COMMENT_ID });
       await ending;
-      expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "最後一句 (voice)", OPERATION_ID);
+      expect(h.postChatMessage).toHaveBeenCalledWith(CHAT_ID, "最後一句 (voice)", OPERATION_ID, "session-1");
       expect(h.socket.json().at(-1)).toEqual({ type: "dictation_result", operationId: OPERATION_ID, status: "sent", commentId: COMMENT_ID });
       expect(h.call.getSnapshot()).toMatchObject({ phase: "ended", endedReason: "Call ended.", sentLog: [{ status: "sent" }] });
       expect(h.audio.closed).toBe(true);

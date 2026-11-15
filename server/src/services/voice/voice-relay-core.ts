@@ -1,3 +1,5 @@
+import { MAIN_ANSWER_POLICY, localGreeting, mainAnswerInstruction } from "./voice-chat-policy.js";
+import { VoiceTurnLedger } from "./voice-turn-ledger.js";
 import { randomUUID } from "node:crypto";
 import {
   LOCAL_VOICE_CALL_MAX_SECONDS,
@@ -46,6 +48,8 @@ export interface VoiceAgentReply {
   voiceSummary: string | null;
   spoken: string;
   createdAt: string;
+  sourceCommentIds?: string[];
+  runId?: string;
 }
 
 export interface VoiceSubmitResult {
@@ -63,6 +67,8 @@ export interface VoiceTaskPort {
   submit(draft: LocalVoiceDraft & { operationId: string }, via: "spoken" | "ui"): Promise<VoiceSubmitResult>;
   /** Agent replies on the voice task not returned before (oldest first). */
   newReplies(): Promise<VoiceAgentReply[]>;
+  /** Verify the browser receipt against this caller/session, without resending. */
+  resolveInput?(operationId: string, commentId?: string): Promise<string | null>;
   /** Wake the relay when the voice task may have new replies. Returns an unsubscribe. */
   watch(onChange: () => void): () => void;
   /** End the persisted voice session. */
@@ -74,7 +80,7 @@ export interface VoiceRelayOptions {
   port: VoiceTaskPort;
   connectUpstream: VoiceUpstreamFactory;
   /** `mode` defaults to voice_task; agent_chat (HOM-326) dictates every finished utterance to the bound Chat. */
-  binding: { issueId: string; issueIdentifier: string | null; issueTitle: string; agentName: string; mode?: VoiceBindingMode };
+  binding: { issueId: string; issueIdentifier: string | null; issueTitle: string; agentName: string; mode?: VoiceBindingMode; policyVersion?: typeof MAIN_ANSWER_POLICY };
   voiceName?: string;
   /** Upstream model id, used for logs and the OpenAI session. */
   model?: string;
@@ -190,6 +196,7 @@ function agentChatSystemInstruction(binding: VoiceRelayOptions["binding"]) {
 }
 
 export function voiceSystemInstruction(binding: VoiceRelayOptions["binding"], options: { routed?: boolean } = {}) {
+  if (binding.mode === "agent_chat" && binding.policyVersion === MAIN_ANSWER_POLICY) return mainAnswerInstruction(binding.agentName);
   if (binding.mode === "agent_chat") return options.routed ? routedAgentChatSystemInstruction(binding) : agentChatSystemInstruction(binding);
   const task = binding.issueIdentifier ? `${binding.issueIdentifier}「${binding.issueTitle}」` : `「${binding.issueTitle}」`;
   const agent = binding.agentName;
@@ -230,10 +237,19 @@ export abstract class VoiceRelayCore {
   protected turnOutput = "";
   private replyCheckDueAt: number | null = null;
   protected draft: DraftState | null = null;
-  private readonly pendingNotices: string[] = [];
+  private readonly pendingNotices: { text: string; key?: string }[] = [];
+  private readonly turns: VoiceTurnLedger;
+  private activeSpeechKey: string | null = null;
+  private readonly answerViews = new Map<string, VoiceAgentReply>();
+  private readonly unmatchedReplies = new Map<string, VoiceAgentReply>();
+  private readonly receivedSegments = new Set<string>();
+  private readonly unresolvedDictations = new Set<string>();
+  private readonly receiptTimers = new Map<string, unknown>();
+  private replyCheckRunning = false;
+  private replyCheckAgain = false;
   private readonly bufferedAudio: Buffer[] = [];
   private readonly spokenSummaries = new Set<string>();
-  private readonly timers: unknown[] = [];
+  protected readonly timers: unknown[] = [];
   private replyTimer: unknown = null;
   private unwatch: (() => void) | null = null;
   protected reconnects = 0;
@@ -272,12 +288,32 @@ export abstract class VoiceRelayCore {
     this.setTimer = options.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
     this.log = options.log ?? (() => undefined);
+    this.turns = new VoiceTurnLedger({
+      now: this.now,
+      setTimer: (fn, ms) => this.setTimer(fn, ms) as ReturnType<typeof setTimeout>,
+      clearTimer: (timer) => this.clearTimer(timer),
+      onTurn: (turn) => {
+        this.browser.sendEvent({ type: "voice_turn", turnId: turn.turnId, operationId: turn.operationId,
+          state: turn.state, ...(turn.inputCommentId ? { inputCommentId: turn.inputCommentId } : {}),
+          ...(turn.answerCommentId ? { answerCommentId: turn.answerCommentId } : {}),
+          ...(turn.error ? { error: turn.error } : {}) });
+        const reply = turn.answerCommentId ? this.answerViews.get(turn.answerCommentId) : undefined;
+        if (reply) this.browser.sendEvent({ type: "agent_reply", commentId: reply.commentId, body: reply.body,
+          voiceSummary: reply.voiceSummary, createdAt: reply.createdAt,
+          turnIds: this.turns.getTurns().filter((item) => item.answerCommentId === reply.commentId).map((item) => item.turnId),
+          playbackState: turn.state === "completed" ? "completed" : turn.state === "interrupted" ? "interrupted" : "queued" });
+        this.log("voice_turn_state", { turnId: turn.turnId, state: turn.state, elapsedMs: this.now() - turn.createdAt });
+      },
+      onNotice: (text, key) => this.queueNotice(this.exactSpeech(text), key),
+      onSpeechReady: () => this.flushNotices(),
+    });
     this.startedAt = this.now();
     this.maxSeconds = options.maxSeconds ?? LOCAL_VOICE_CALL_MAX_SECONDS;
     this.warningSeconds = options.warningSeconds ?? LOCAL_VOICE_CALL_WARNING_SECONDS;
   }
 
   /** agent_chat binding (HOM-326): no tools, no drafts; every finished utterance is dictated to the Chat. */
+  protected get mainAnswerChat() { return this.chatMode && this.options.binding.policyVersion === MAIN_ANSWER_POLICY; }
   protected get chatMode() { return this.options.binding.mode === "agent_chat"; }
   /** Whether the engine speaks a short acknowledgement by itself (Gemini answers every utterance). */
   protected readonly acknowledgesSpeech: boolean = false;
@@ -350,11 +386,28 @@ export abstract class VoiceRelayCore {
         this.sendUserTurn(message.text);
         return;
       case "dictation_result":
-        this.onDictationResult(message);
+        await this.onDictationResult(message);
+        return;
+      case "replay_reply":
+        if (this.mainAnswerChat && this.turns.replay(message.commentId)) {
+          const reply = this.answerViews.get(message.commentId);
+          if (reply) this.browser.sendEvent({ type: "agent_reply", commentId: reply.commentId, body: reply.body,
+            voiceSummary: reply.voiceSummary, createdAt: reply.createdAt, playbackState: "queued" });
+          this.flushNotices();
+        }
         return;
       case "playback":
         this.browserPlaying = message.playing;
+        if (this.mainAnswerChat && this.activeSpeechKey) {
+          if (message.playing) this.turns.playbackStarted(this.activeSpeechKey);
+          else if (!this.modelTurnActive) {
+            const key = this.activeSpeechKey;
+            this.activeSpeechKey = null;
+            this.turns.playbackDrained(key);
+          }
+        }
         this.onBrowserPlayback(message.playing);
+        if (!message.playing) this.flushNotices();
         return;
       case "mic":
         this.micPaused = message.state === "paused";
@@ -468,7 +521,7 @@ export abstract class VoiceRelayCore {
     this.readyAnnounced = true;
     const { issueId, issueIdentifier, agentName } = this.options.binding;
     this.browser.sendEvent({ type: "ready", issueId, issueIdentifier, agentName, maxSeconds: this.maxSeconds, warningSeconds: this.warningSeconds, inputSampleRate: this.inputSampleRate,
-      bindingMode: this.options.binding.mode ?? "voice_task" });
+      bindingMode: this.options.binding.mode ?? "voice_task", ...(this.mainAnswerChat ? { policyVersion: MAIN_ANSWER_POLICY } : {}) });
   }
 
   private handleUpstreamClosed(code: number, reason: string) {
@@ -480,6 +533,7 @@ export abstract class VoiceRelayCore {
 
   protected async reconnect(reason: string) {
     if (this.closed || this.reconnecting) return;
+    if (this.mainAnswerChat) this.interruptChatPlayback();
     this.reconnecting = true;
     this.reconnects += 1;
     this.browser.sendEvent({ type: "reconnecting", reason });
@@ -546,6 +600,11 @@ export abstract class VoiceRelayCore {
       if (this.recentModelOutput.length > 2) this.recentModelOutput.shift();
     }
     this.turnOutput = "";
+    if (this.mainAnswerChat && this.activeSpeechKey && !this.browserPlaying) {
+      const key = this.activeSpeechKey;
+      this.activeSpeechKey = null;
+      if (outcome.completed) this.turns.playbackDrained(key); else this.turns.interrupt();
+    }
     this.flushNotices();
   }
 
@@ -687,6 +746,12 @@ export abstract class VoiceRelayCore {
     if (!this.chatMode || this.closed) return;
     const clean = toTaiwanTraditional(text);
     if (!clean.trim()) return;
+    if (this.mainAnswerChat && this.receivedSegments.size >= 2048) {
+      this.browser.sendEvent({ type: "error", code: "voice_segment_limit", message: "這通電話的語音段數已達上限，請重新通話。" });
+      void this.end("relay_error");
+      return;
+    }
+    if (this.mainAnswerChat && meta.segment && this.receivedSegments.has(meta.segment)) return;
     if (this.routedChat && this.segmentFates.get(meta.segment) === false) {
       this.log("voice_relay_small_talk_kept_in_call", { engine: this.engine, parts: 1 });
       return;
@@ -739,24 +804,61 @@ export abstract class VoiceRelayCore {
     }
     const text = joinDictation(kept);
     if (!text) return;
-    if (isDictationNoise(text)) {
+    if (this.mainAnswerChat) {
+      for (const part of parts) if (part.segment) this.receivedSegments.add(part.segment);
+      const greeting = localGreeting(text);
+      if (greeting) { this.queueNotice(this.exactSpeech(greeting)); return; }
+    }
+    if (isDictationNoise(text, this.mainAnswerChat)) {
       this.log("voice_relay_dictation_noise_dropped", { engine: this.engine, chars: Array.from(text).length });
       if (text.trim()) this.browser.sendEvent({ type: "dictation_dropped", text, reason: "noise" });
       return;
     }
-    this.emitDictation(text);
+    this.emitDictation(text, [...new Set(parts.map((part) => part.segment).filter(Boolean))]);
   }
 
-  private emitDictation(raw: string) {
+  private emitDictation(raw: string, segmentIds: string[] = []) {
     const text = Array.from(raw).slice(0, DICTATION_MAX_CHARS).join("");
     if (!text) return;
     const operationId = randomUUID();
+    if (this.mainAnswerChat) {
+      try { if (this.turns.register(operationId, segmentIds).operationId !== operationId) return; }
+      catch { this.browser.sendEvent({ type: "error", code: "voice_turn_limit", message: "這通電話的對話輪數已達上限，請重新通話。" }); return; }
+    }
     this.pendingDictations.set(operationId, text);
-    this.browser.sendEvent({ type: "dictation", operationId, text, body: agentChatVoiceMessageBody(text) });
+    this.browser.sendEvent({ type: "dictation", operationId, text, body: agentChatVoiceMessageBody(text, this.mainAnswerChat ? operationId : undefined),
+      ...(this.mainAnswerChat ? { turnId: operationId, segmentIds } : {}) });
+    if (this.mainAnswerChat) this.receiptTimers.set(operationId, this.setTimer(() => {
+      this.receiptTimers.delete(operationId);
+      void this.onDictationResult({ type: "dictation_result", operationId, status: "unknown", message: "送出結果尚未確認，請查看原對話。" });
+    }, 15_000));
   }
 
-  private onDictationResult(message: Extract<LocalVoiceRelayClientMessage, { type: "dictation_result" }>) {
-    if (!this.chatMode || !this.pendingDictations.delete(message.operationId)) return;
+  private async onDictationResult(message: Extract<LocalVoiceRelayClientMessage, { type: "dictation_result" }>) {
+    if (!this.chatMode || !this.pendingDictations.has(message.operationId)) return;
+    const timer = this.receiptTimers.get(message.operationId);
+    if (timer !== undefined) this.clearTimer(timer);
+    this.receiptTimers.delete(message.operationId);
+    if (this.mainAnswerChat) {
+      let commentId: string | null = null;
+      try { commentId = await this.port.resolveInput?.(message.operationId, message.commentId) ?? null; }
+      catch { this.log("voice_input_receipt_check_failed", { operationId: message.operationId }); }
+      if (this.closed) return;
+      if (commentId) {
+        this.pendingDictations.delete(message.operationId);
+        this.unresolvedDictations.delete(message.operationId);
+        this.turns.stored(message.operationId, commentId);
+        for (const [id, reply] of this.unmatchedReplies) {
+          if (this.turns.reply({ ...reply, sourceCommentIds: reply.sourceCommentIds ?? [] })) this.unmatchedReplies.delete(id);
+        }
+        this.scheduleReplyCheck();
+      } else {
+        if (message.status !== "failed") this.unresolvedDictations.add(message.operationId);
+        this.turns.fail(message.operationId, message.status === "failed" ? "failed" : "unknown", message.message ?? "尚未確認留言收據，請查看原對話。");
+      }
+      return;
+    }
+    this.pendingDictations.delete(message.operationId);
     const agent = this.options.binding.agentName;
     if (message.status === "sent") {
       this.log("voice_relay_dictation_sent", { engine: this.engine });
@@ -901,7 +1003,7 @@ export abstract class VoiceRelayCore {
 
   private scheduleReplyCheck() {
     if (this.closed) return;
-    const debounce = this.options.replyDebounceMs ?? 3000;
+    const debounce = this.options.replyDebounceMs ?? (this.mainAnswerChat ? 100 : 3000);
     const now = this.now();
     // Debounce bursts of activity, but never delay a check by more than three debounce windows.
     this.replyCheckDueAt ??= now + debounce * 3;
@@ -912,15 +1014,43 @@ export abstract class VoiceRelayCore {
 
   private async checkReplies() {
     if (this.closed) return;
+    if (this.replyCheckRunning) { this.replyCheckAgain = true; return; }
+    this.replyCheckRunning = true;
+    try { await this.readReplies(); } catch (error) {
+      this.log("voice_reply_processing_failed", { error: safeError(error) });
+      this.browser.sendEvent({ type: "error", code: "voice_reply_processing_failed", message: "回答無法繼續播報，請查看原對話或重新通話。" });
+      await this.end("relay_error");
+    } finally {
+      this.replyCheckRunning = false;
+      if (this.replyCheckAgain) { this.replyCheckAgain = false; this.scheduleReplyCheck(); }
+    }
+  }
+
+  private async readReplies() {
+    if (this.closed) return;
+    if (this.mainAnswerChat) for (const operationId of [...this.unresolvedDictations]) {
+      await this.onDictationResult({ type: "dictation_result", operationId, status: "unknown", message: "仍未確認送出收據，請查看原對話。" });
+    }
     let replies: VoiceAgentReply[];
     try { replies = await this.port.newReplies(); } catch (error) {
       this.log("voice_relay_reply_check_failed", { engine: this.engine, error: safeError(error) });
+      if (this.mainAnswerChat) this.browser.sendEvent({ type: "error", code: "voice_reply_read_failed", message: "暫時無法讀取回答，請查看原對話。" });
       // Revoked access, an ended or expired session: stop the call instead of talking without authority.
       const status = (error as { status?: unknown })?.status;
       if (status === 403 || status === 404) await this.end("session_unavailable");
       return;
     }
-    if (!replies.length) return;
+    if (!replies.length || this.closed) return;
+    if (this.mainAnswerChat) {
+      for (const reply of replies) {
+        if (!reply.sourceCommentIds?.length) continue;
+        this.answerViews.set(reply.commentId, reply);
+        this.announceReplyToBrowser(reply);
+        if (!this.turns.reply({ ...reply, sourceCommentIds: reply.sourceCommentIds }) && this.unmatchedReplies.size < 256) this.unmatchedReplies.set(reply.commentId, reply);
+      }
+      this.flushNotices();
+      return;
+    }
     for (const reply of replies) this.announceReplyToBrowser(reply);
     // Speak one reply per batch: the newest one with an explicit voice summary,
     // otherwise the newest reply. A run-completion copy of the same answer
@@ -935,7 +1065,7 @@ export abstract class VoiceRelayCore {
   }
 
   private announceReplyToBrowser(reply: VoiceAgentReply) {
-    this.browser.sendEvent({ type: "agent_reply", commentId: reply.commentId, body: reply.body, voiceSummary: reply.voiceSummary, createdAt: reply.createdAt });
+    this.browser.sendEvent({ type: "agent_reply", commentId: reply.commentId, body: reply.body, voiceSummary: reply.voiceSummary, createdAt: reply.createdAt, ...(this.mainAnswerChat ? { playbackState: "available" as const } : {}) });
   }
 
   private warnDuration() {
@@ -946,20 +1076,44 @@ export abstract class VoiceRelayCore {
   }
 
   /** Emulates WHEN_IDLE scheduling: notices wait until the model finishes speaking. */
-  protected queueNotice(text: string) {
-    this.pendingNotices.push(text);
+  protected queueNotice(text: string, key?: string) {
+    this.pendingNotices.push({ text, key });
     this.flushNotices();
   }
 
   protected flushNotices() {
-    if (this.modelTurnActive || this.engineBusy() || !this.upstreamReady || this.reconnecting) return;
-    const text = this.pendingNotices.shift();
-    if (!text) return;
-    if (!this.sendUserTurn(text)) {
-      this.pendingNotices.unshift(text);
-      return;
+    if (this.closed || this.modelTurnActive || this.engineBusy() || !this.upstreamReady || this.reconnecting
+      || this.mainAnswerChat && (this.browserPlaying || this.pendingTranscriptions() > 0)) return;
+    if (this.mainAnswerChat && !this.activeSpeechKey) {
+      const speech = this.turns.takeNextSpeech();
+      if (speech) {
+        this.activeSpeechKey = speech.key;
+        if (this.sendUserTurn(this.exactSpeech(speech.text))) this.modelTurnActive = true;
+        else this.interruptChatPlayback();
+        return;
+      }
     }
+    let notice = this.pendingNotices.shift();
+    while (notice?.key && !this.turns.isNoticeCurrent(notice.key)) notice = this.pendingNotices.shift();
+    if (!notice) return;
+    if (!this.sendUserTurn(notice.text)) { this.pendingNotices.unshift(notice); return; }
     this.modelTurnActive = true;
+  }
+
+  private exactSpeech(text: string) {
+    return `${NOTICE_PREFIX} 只逐字唸出以下播報文字，不加前言或結論：${JSON.stringify(text)}`;
+  }
+
+  /** Only audio is interrupted; the original Chat run continues. */
+  protected interruptChatPlayback() {
+    if (!this.mainAnswerChat) return;
+    this.turns.interrupt();
+    this.activeSpeechKey = null;
+    this.pendingNotices.length = 0;
+  }
+
+  protected noteChatAudio() {
+    if (this.mainAnswerChat && this.activeSpeechKey) this.turns.playbackStarted(this.activeSpeechKey);
   }
 
   // ---- lifecycle ----------------------------------------------------------
@@ -980,6 +1134,9 @@ export abstract class VoiceRelayCore {
     }
     if (this.closed) return;
     this.closed = true;
+    this.turns.dispose();
+    for (const timer of this.receiptTimers.values()) this.clearTimer(timer);
+    this.receiptTimers.clear();
     for (const timer of this.timers) this.clearTimer(timer);
     if (this.replyTimer !== null) this.clearTimer(this.replyTimer);
     if (this.dictationTimer !== null) { this.clearTimer(this.dictationTimer); this.dictationTimer = null; }

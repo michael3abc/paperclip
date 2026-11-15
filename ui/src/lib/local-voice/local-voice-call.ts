@@ -5,6 +5,7 @@ import {
   LOCAL_VOICE_RELAY_TOKEN_PREFIX,
   LOCAL_VOICE_RELAY_VOICE_PREFIX,
   LOCAL_VOICE_SILENCE_PAUSE_SECONDS,
+  type LocalVoiceTurnState,
   type LocalVoiceRelayClientMessage,
   type LocalVoiceRelayServerEvent,
 } from "@paperclipai/shared";
@@ -27,14 +28,15 @@ export type LocalVoicePhase = "idle" | "starting" | "live" | "ending" | "ended" 
 export type LocalVoiceMode = "agent_chat" | "voice_task";
 /** agent_chat: one dictated message and the result of posting it to the Chat. */
 /** `dropped`: heard but not sent: the assistant's own voice (echo), a lone filler (noise) or a sentence invented for background noise (unclear). */
-export interface LocalVoiceSentEntry { operationId: string; text: string; status: "sending" | "sent" | "failed" | "dropped"; error?: string }
+export interface LocalVoiceSentEntry { operationId: string; text: string; status: "sending" | "sent" | "failed" | "unknown" | "dropped"; turnId?: string; commentId?: string; error?: string }
 export interface LocalVoiceTranscriptEntry { id: number; role: "user" | "model"; text: string }
 export interface LocalVoiceDraftView {
   draftId: string; revision: number; text: string;
   status: "pending" | "submitting" | "submitted" | "failed";
   via?: "spoken" | "ui"; error?: string;
 }
-export interface LocalVoiceReplyView { commentId: string; body: string; voiceSummary: string | null; createdAt: string }
+export type LocalVoiceReplyView = Omit<Extract<LocalVoiceRelayServerEvent, { type: "agent_reply" }>, "type">;
+export type LocalVoiceTurnView = Omit<Extract<LocalVoiceRelayServerEvent, { type: "voice_turn" }>, "type">;
 export interface LocalVoiceCallSnapshot {
   phase: LocalVoicePhase;
   mode: LocalVoiceMode;
@@ -52,6 +54,8 @@ export interface LocalVoiceCallSnapshot {
   replies: LocalVoiceReplyView[];
   /** agent_chat: dictated messages posted (or being posted) to the Chat, oldest first. */
   sentLog: LocalVoiceSentEntry[];
+  turns: LocalVoiceTurnView[];
+  policyVersion?: "main_answer_v1";
   notice: string | null;
   error: string | null;
   endedReason: string | null;
@@ -74,7 +78,9 @@ export interface LocalVoiceCallDependencies {
   /** agent_chat: the caller's Chat issue with the agent, created when missing. */
   ensureChat(companyId: string, agentId: string): Promise<{ id: string; identifier?: string | null }>;
   /** agent_chat: post a dictated message to the Chat as the caller; clientRequestId keeps retries idempotent. */
-  postChatMessage(issueId: string, body: string, clientRequestId: string): Promise<{ id: string }>;
+  postChatMessage(issueId: string, body: string, clientRequestId: string, voiceSessionId: string): Promise<{ id: string }>;
+  /** One read-only receipt lookup after an uncertain POST; never resend the utterance. */
+  findChatMessage?(issueId: string, clientRequestId: string): Promise<{ id: string } | null>;
   createSocket(url: string, protocols: string[]): WebSocket;
   createAudio(): VoiceAudioEngine;
   now(): number;
@@ -108,8 +114,24 @@ function initialSnapshot(): LocalVoiceCallSnapshot {
   return {
     phase: "idle", mode: "voice_task", mic: "live", micPausedReason: null, modelSpeaking: false, issue: null, agentName: null, startedAt: null,
     maxSeconds: LOCAL_VOICE_CALL_MAX_SECONDS, warningSeconds: LOCAL_VOICE_CALL_WARNING_SECONDS, timeWarning: false,
-    transcript: [], draft: null, replies: [], sentLog: [], notice: null, error: null, endedReason: null,
+    transcript: [], draft: null, replies: [], sentLog: [], turns: [], notice: null, error: null, endedReason: null,
   };
+}
+
+/** Call UI reflects receipts, not elapsed time or inferred agent activity. */
+export function localVoiceDeliveryError(state: LocalVoiceCallSnapshot) {
+  return state.turns.filter((turn) => turn.state === "failed" || turn.state === "unknown").at(-1)?.error
+    ?? state.sentLog.filter((entry) => entry.status === "failed" || entry.status === "unknown").at(-1)?.error
+    ?? null;
+}
+
+export function localVoiceActivity(state: LocalVoiceCallSnapshot) {
+  if (state.mode !== "agent_chat") return state.modelSpeaking ? "Speaking" : state.mic === "live" ? "Listening" : "Mic paused";
+  if (state.modelSpeaking) return "正在回答";
+  if (state.turns.some((turn) => ["sending", "stored", "processing", "answer_ready"].includes(turn.state))) return "等待回答";
+  if (state.turns.some((turn) => turn.state === "unknown")) return "送出結果不明";
+  if (state.turns.some((turn) => turn.state === "failed")) return "送出失敗";
+  return state.mic === "live" ? "聆聽中" : "已暫停聆聽";
 }
 
 export function errorMessage(error: unknown, fallback = "Voice could not start.") {
@@ -153,11 +175,14 @@ export class LocalVoiceCall {
   private ending = false;
   /** Each start owns one attempt; end() or a newer start makes older attempts stale. */
   private attempt = 0;
+  private callEpoch = 0;
   private mode: LocalVoiceMode = "voice_task";
   /** agent_chat: the bound Chat issue that dictations are posted to. */
   private chatIssueId: string | null = null;
   /** agent_chat: Chat posts that have not settled yet. */
   private readonly pendingPosts = new Set<Promise<void>>();
+  private readonly postedOperations = new Set<string>();
+  private readonly requestedReplays = new Set<string>();
   /** agent_chat end(): resolved by the relay's `ended` event or the socket closing. */
   private relayEnded: (() => void) | null = null;
 
@@ -176,6 +201,7 @@ export class LocalVoiceCall {
   async start(input: { companyId: string; agentId: string; issueId?: string; newConversation?: boolean; mode?: LocalVoiceMode; voiceName?: string | null }) {
     if (this.snapshot.phase === "starting" || this.snapshot.phase === "live" || this.snapshot.phase === "ending") return;
     this.ending = false;
+    this.callEpoch += 1;
     const attempt = ++this.attempt;
     const stale = () => attempt !== this.attempt || this.ending;
     let createdSession: { companyId: string; sessionId: string } | null = null;
@@ -191,6 +217,8 @@ export class LocalVoiceCall {
     audio.ringback?.(true);
     const mode: LocalVoiceMode = input.mode ?? "voice_task";
     this.mode = mode;
+    this.postedOperations.clear();
+    this.requestedReplays.clear();
     this.chatIssueId = null;
     this.snapshot = { ...initialSnapshot(), phase: "starting", mode, replies: [], transcript: [], sentLog: [] };
     this.inputSampleRate = null;
@@ -241,8 +269,9 @@ export class LocalVoiceCall {
       this.session = createdSession;
       this.update({ issue: { id: started.session.issueId, identifier: this.snapshot.issue?.identifier ?? null }, agentName: endpoint.agentName });
       await audio.start({
-        onFrame: (pcm, rms, rate) => this.onMicFrame(pcm, rms, rate),
+        onFrame: (pcm, rms, rate) => { if (this.audio === audio) this.onMicFrame(pcm, rms, rate); },
         onPlaying: (playing) => {
+          if (this.audio !== audio) return;
           if (playing) this.lastActivityAt = this.deps.now();
           this.update({ modelSpeaking: playing });
           // The relay accepts a spoken confirmation only after playback has drained.
@@ -256,6 +285,7 @@ export class LocalVoiceCall {
           ...(voiceName ? [`${LOCAL_VOICE_RELAY_VOICE_PREFIX}${voiceName}`] : [])]);
       socket.binaryType = "arraybuffer";
       socket.onmessage = (event) => {
+        if (this.socket !== socket) return;
         if (typeof event.data === "string") {
           try { this.onEvent(JSON.parse(event.data) as LocalVoiceRelayServerEvent); } catch { /* ignore malformed */ }
         } else if (event.data instanceof ArrayBuffer) {
@@ -287,16 +317,18 @@ export class LocalVoiceCall {
   private onEvent(event: LocalVoiceRelayServerEvent) {
     switch (event.type) {
       case "ready":
+        if (this.snapshot.phase !== "starting") return;
         this.lastActivityAt = this.deps.now();
         // Older relays did not announce a rate; they expected 16 kHz.
         this.inputSampleRate = event.inputSampleRate ?? 16_000;
         this.audio?.ringback?.(false);
         this.audio?.setInputSampleRate(this.inputSampleRate);
         this.update({ phase: "live", issue: { id: event.issueId, identifier: event.issueIdentifier }, agentName: event.agentName,
-          startedAt: this.deps.now(), maxSeconds: event.maxSeconds, warningSeconds: event.warningSeconds });
+          policyVersion: event.policyVersion, startedAt: this.deps.now(), maxSeconds: event.maxSeconds, warningSeconds: event.warningSeconds });
         void this.deps.wakeLock?.().then((lock) => { if (this.snapshot.phase === "live") this.wakeLock = lock; else void lock?.release(); }).catch(() => undefined);
         this.silenceTimer = this.deps.setInterval(() => this.checkSilence(), 1000);
         return;
+      case "voice_turn": this.updateTurn(event); return;
       case "dictation": this.onDictation(event); return;
       case "dictation_dropped":
         if (this.mode !== "agent_chat") return;
@@ -309,7 +341,10 @@ export class LocalVoiceCall {
       case "interrupted":
         this.audio?.flush();
         this.openTurn = null;
-        this.update({ modelSpeaking: false });
+        this.update({ modelSpeaking: false,
+          turns: this.snapshot.turns.map((turn) => turn.state === "speaking" ? { ...turn, state: "interrupted" } : turn),
+          replies: this.snapshot.replies.map((reply) => this.snapshot.turns.some((turn) => turn.state === "speaking" && turn.answerCommentId === reply.commentId)
+            ? { ...reply, playbackState: "interrupted" } : reply) });
         return;
       case "turn_complete": if (this.openTurn?.role === "model") this.openTurn = null; return;
       case "draft": this.update({ draft: { ...event.draft, status: "pending" } }); return;
@@ -321,14 +356,21 @@ export class LocalVoiceCall {
         if (this.snapshot.draft?.draftId === event.draftId && this.snapshot.draft.revision === event.revision) this.update({ draft: { ...this.snapshot.draft, status: "failed", error: event.message } });
         return;
       case "agent_reply":
-        if (!this.snapshot.replies.some((reply) => reply.commentId === event.commentId)) {
-          this.update({ replies: [...this.snapshot.replies, { commentId: event.commentId, body: event.body, voiceSummary: event.voiceSummary, createdAt: event.createdAt }] });
+        {
+          const { type: _type, ...reply } = event;
+          const previous = this.snapshot.replies.find((item) => item.commentId === event.commentId);
+          const terminal = previous?.playbackState === "interrupted" || previous?.playbackState === "completed";
+          const replay = this.requestedReplays.has(event.commentId);
+          if (terminal && event.playbackState && event.playbackState !== previous.playbackState && !replay) return;
+          if (event.playbackState) this.requestedReplays.delete(event.commentId);
+          this.update({ replies: previous ? this.snapshot.replies.map((item) => item.commentId === event.commentId ? { ...item, ...reply } : item)
+            : [...this.snapshot.replies, reply] });
         }
         return;
       case "time_warning": this.update({ timeWarning: true }); return;
       case "reconnecting": this.update({ notice: "Reconnecting to the voice model…" }); return;
       case "resumed": this.update({ notice: event.contextKept ? null : "Reconnected. Earlier conversation context may be lost." }); return;
-      case "error": this.update({ notice: event.message }); return;
+      case "error": this.requestedReplays.clear(); this.update({ notice: event.message }); return;
       case "ended":
         this.update({ endedReason: END_REASONS[event.reason] ?? "Call ended." });
         // end() is waiting for the relay's final dictation; it cleans up itself.
@@ -341,27 +383,65 @@ export class LocalVoiceCall {
   /** agent_chat: post one dictated utterance to the Chat as the caller and report the result to the relay. */
   private onDictation(event: Extract<LocalVoiceRelayServerEvent, { type: "dictation" }>) {
     const issueId = this.chatIssueId;
-    if (this.mode !== "agent_chat" || !issueId) return;
-    if (this.snapshot.sentLog.some((entry) => entry.operationId === event.operationId)) return;
-    const { operationId } = event;
+    const sessionId = this.session?.sessionId;
+    if (this.mode !== "agent_chat" || !issueId || !sessionId) return;
+    if (this.postedOperations.has(event.operationId)) return;
+    this.postedOperations.add(event.operationId);
+    const { operationId, turnId } = event;
     const socket = this.socket;
-    this.update({ sentLog: [...this.snapshot.sentLog, { operationId, text: event.text, status: "sending" as const }].slice(-MAX_SENT_LOG) });
-    const settle = (patch: Pick<LocalVoiceSentEntry, "status" | "error">) => {
-      this.update({ sentLog: this.snapshot.sentLog.map((entry) => entry.operationId === operationId ? { operationId, text: entry.text, ...patch } : entry) });
+    const epoch = this.callEpoch;
+    const belongsToSession = () => this.callEpoch === epoch && this.chatIssueId === issueId && this.session?.sessionId === sessionId;
+    this.update({ sentLog: [...this.snapshot.sentLog, { operationId, ...(turnId ? { turnId } : {}), text: event.text, status: "sending" as const }].slice(-MAX_SENT_LOG) });
+    if (turnId) this.updateTurn({ turnId, operationId, state: "sending" });
+    const settle = (patch: Pick<LocalVoiceSentEntry, "status" | "error" | "commentId">) => {
+      if (!belongsToSession()) return;
+      this.update({ sentLog: this.snapshot.sentLog.map((entry) => entry.operationId === operationId ? { ...entry, ...patch } : entry) });
+      if (turnId) this.updateTurn({ turnId, operationId, inputCommentId: patch.commentId,
+        state: patch.status === "sent" ? "stored" : patch.status === "failed" ? "failed" : "unknown", error: patch.error });
     };
-    const task = this.deps.postChatMessage(issueId, event.body, operationId).then(
-      (comment) => {
-        settle({ status: "sent" });
-        this.sendOn(socket, { type: "dictation_result", operationId, status: "sent", ...(comment?.id ? { commentId: comment.id } : {}) });
-      },
-      (error: unknown) => {
-        const message = errorMessage(error, "The message could not be sent to the Chat.");
-        settle({ status: "failed", error: message });
-        this.sendOn(socket, { type: "dictation_result", operationId, status: "failed", message: message.slice(0, 500) });
-      },
-    );
+    const sent = (comment: { id: string }) => {
+      if (!comment?.id) throw new Error("Chat 回條缺少留言識別碼。");
+      settle({ status: "sent", commentId: comment.id });
+      this.sendOn(socket, { type: "dictation_result", operationId, status: "sent", commentId: comment.id });
+    };
+    const task = this.deps.postChatMessage(issueId, event.body, operationId, sessionId).then(sent).catch(async (error: unknown) => {
+      const statusCode = (error as { status?: number } | null)?.status;
+      const definite = typeof statusCode === "number" && statusCode >= 400 && statusCode < 500;
+      let lookupError: unknown;
+      if (!definite && this.deps.findChatMessage) {
+        try {
+          const comment = await this.deps.findChatMessage(issueId, operationId);
+          if (comment) return sent(comment);
+        } catch (failure) { lookupError = failure; }
+      }
+      const status = definite ? "failed" : "unknown";
+      const message = definite ? errorMessage(error, "訊息未送出。請在原 Chat 確認。")
+        : `無法確認訊息是否已送出；請查看原 Chat。${lookupError ? `收據查詢失敗：${errorMessage(lookupError)}` : ""}`;
+      settle({ status, error: message });
+      this.sendOn(socket, { type: "dictation_result", operationId, status, message: message.slice(0, 500) });
+    });
     this.pendingPosts.add(task);
     void task.finally(() => this.pendingPosts.delete(task));
+  }
+
+  private updateTurn(turn: LocalVoiceTurnView) {
+    const previous = this.snapshot.turns.find((item) => item.turnId === turn.turnId);
+    // Terminal playback stays terminal until the caller explicitly selects replay.
+    const rank: Record<LocalVoiceTurnState, number> = { transcribing: 0, sending: 1, stored: 2, processing: 3, answer_ready: 4, speaking: 5, interrupted: 6, completed: 6, failed: 6, unknown: 1 };
+    const regresses = previous && (rank[turn.state] < rank[previous.state] || (previous.state === "interrupted" && turn.state === "completed"));
+    const defined = Object.fromEntries(Object.entries(turn).filter(([, value]) => value !== undefined));
+    const merged = { ...previous, ...defined, state: regresses ? previous.state : turn.state } as LocalVoiceTurnView;
+    this.update({ turns: previous ? this.snapshot.turns.map((item) => item.turnId === turn.turnId ? merged : item)
+      : [...this.snapshot.turns, merged] });
+  }
+
+  replayReply(commentId: string) {
+    const reply = this.snapshot.replies.find((item) => item.commentId === commentId);
+    if (this.snapshot.phase !== "live" || this.snapshot.policyVersion !== "main_answer_v1" || !reply || !reply.voiceSummary || this.requestedReplays.has(commentId)) return false;
+    if (!this.send({ type: "replay_reply", commentId })) return false;
+    this.requestedReplays.add(commentId);
+    this.update({ turns: this.snapshot.turns.map((turn) => turn.answerCommentId === commentId ? { ...turn, state: "answer_ready" } : turn) });
+    return true;
   }
 
   private appendTranscript(role: "user" | "model", text: string) {
@@ -597,7 +677,11 @@ export function createLocalVoiceCall() {
   return new LocalVoiceCall({
     api: localVoiceApi,
     ensureChat: (companyId, agentId) => agentChatsApi.ensure(companyId, agentId),
-    postChatMessage: (issueId, body, clientRequestId) => issuesApi.addComment(issueId, body, undefined, undefined, undefined, clientRequestId),
+    postChatMessage: (issueId, body, clientRequestId, voiceSessionId) => issuesApi.addComment(issueId, body, undefined, undefined, undefined, clientRequestId, voiceSessionId),
+    findChatMessage: async (issueId, clientRequestId) => {
+      const comments = await issuesApi.listComments(issueId, { order: "desc", limit: 100 }, { timeoutMs: 5_000, cache: "no-store" });
+      return comments.find((comment) => comment.clientRequestId === clientRequestId) ?? null;
+    },
     createSocket: (url, protocols) => new WebSocket(url, protocols),
     createAudio: createBrowserAudioEngine,
     now: () => Date.now(),

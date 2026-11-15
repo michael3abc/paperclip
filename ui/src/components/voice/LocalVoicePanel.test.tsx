@@ -13,7 +13,7 @@ function fakeCall() {
   let snapshot: LocalVoiceCallSnapshot = {
     phase: "idle", mode: "voice_task", mic: "live", micPausedReason: null, modelSpeaking: false, issue: null,
     agentName: null, startedAt: null, maxSeconds: 900, warningSeconds: 600, timeWarning: false, transcript: [],
-    draft: null, replies: [], sentLog: [], notice: null, error: null, endedReason: null,
+    draft: null, replies: [], sentLog: [], turns: [], notice: null, error: null, endedReason: null,
   };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<LocalVoiceCallSnapshot>) => { snapshot = { ...snapshot, ...patch }; listeners.forEach((listener) => listener()); };

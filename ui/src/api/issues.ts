@@ -711,11 +711,14 @@ export const issuesApi = {
     interrupt?: boolean,
     attachmentIds?: string[],
     clientRequestId?: string,
+    voiceSessionId?: string,
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
         ...(clientRequestId ? { clientRequestId } : {}),
+        ...(voiceSessionId ? { metadata: { version: 1, voiceInput: { sessionId: voiceSessionId },
+          sections: [{ title: "Voice input", rows: [{ type: "key_value", label: "Source", value: "Speech recognition; not an approval" }] }] } } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
         ...(attachmentIds?.length ? { attachmentIds } : {}),

@@ -1,3 +1,4 @@
+import { MAIN_ANSWER_SESSION_PREFIX } from "./voice-chat-policy.js";
 import { voiceReplySchedule } from "./voice-reply-schedule.js";
 import { registerVoiceReplyWork } from "./voice-reply-work.js";
 import { voiceSessionRecovery } from "./voice-session-recovery.js";
@@ -249,7 +250,7 @@ export function voiceSessionService(db: Db, options: {
     const endpoint = await endpointFor(input.companyId, input.endpointId, ["local_voice"]);
     const requestFingerprint = createHash("sha256").update(JSON.stringify({ provider: "local_voice", bindingMode, endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
     const reserved = await store.reserve({ companyId: input.companyId, endpointId: input.endpointId, caller: input.caller, idempotencyKey: input.idempotencyKey, requestFingerprint,
-      maxDurationSeconds: input.maxDurationSeconds, providers: ["local_voice"], bindingMode, providerSessionId: `${LOCAL_PROVIDER_SESSION_PREFIX}${randomUUID()}`,
+      maxDurationSeconds: input.maxDurationSeconds, providers: ["local_voice"], bindingMode, providerSessionId: `${bindingMode === "agent_chat" ? MAIN_ANSWER_SESSION_PREFIX : LOCAL_PROVIDER_SESSION_PREFIX}${randomUUID()}`,
       prepareBinding: (tx) => bindingMode === "agent_chat" ? prepareChatBinding(tx, input, endpoint) : prepareBinding(tx, input, endpoint, "local_voice") });
     // Like Speko media credentials, the control token is shown once and never reissued.
     if (!reserved.created) return { session: serializeVoiceSession(reserved.session) };

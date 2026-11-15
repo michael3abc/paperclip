@@ -27,6 +27,8 @@ Agent chat pins use an explicit nullable personal chatPinned preference, indepen
 
 Local voice media belongs to the company/user-scoped provider above routes; navigating chats must neither dispose it nor retarget the active agent. See `docs/agents/ui-features.md`.
 
+New agent_chat voice sessions pin main_answer_v1 in providerSessionId; substantive answers come from the original main Chat and require per-answer, server-verified input provenance before automatic playback. Saved input is not execution evidence; barge-in stops audio only, and an unknown browser write is reconciled without resending. Preserve voice_task and existing calls' policies. See `doc/connections/LOCAL-VOICE.md`.
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.

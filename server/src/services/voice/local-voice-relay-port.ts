@@ -61,9 +61,11 @@ export function createLocalVoiceTaskPort(db: Db, service: VoiceSessionService, i
     });
   }
 
-  function replyProjection(row: { id: string; body: string; createdAt: Date }): VoiceAgentReply {
+  function replyProjection(row: { id: string; body: string; createdAt: Date; metadata?: { voiceReply?: { version: 1; runId: string; sourceCommentIds: string[] } } | null; createdByRunId?: string | null }): VoiceAgentReply {
     const voiceSummary = extractVoiceSummary(row.body);
-    return { commentId: row.id, body: row.body, voiceSummary, spoken: voiceSummary ?? spokenFallback(row.body), createdAt: row.createdAt.toISOString() };
+    return { commentId: row.id, body: row.body, voiceSummary, spoken: voiceSummary ?? spokenFallback(row.body), createdAt: row.createdAt.toISOString(),
+      ...(row.metadata?.voiceReply?.version === 1 && row.metadata.voiceReply.runId === row.createdByRunId
+        ? { sourceCommentIds: row.metadata.voiceReply.sourceCommentIds, runId: row.metadata.voiceReply.runId } : {}) };
   }
 
   async function latestAgentReply(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], issueId: string, agentId: string | null) {
@@ -141,16 +143,31 @@ export function createLocalVoiceTaskPort(db: Db, service: VoiceSessionService, i
       }
     },
 
+    async resolveInput(operationId, commentId) {
+      return authorized(async (tx) => {
+        const [row] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.issueId, session.issueId), eq(issueComments.companyId, session.companyId),
+          eq(issueComments.authorUserId, session.callerId), eq(issueComments.authorType, "user"),
+          isNull(issueComments.authorAgentId), isNull(issueComments.deletedAt),
+          eq(issueComments.clientRequestId, operationId),
+          ...(commentId ? [eq(issueComments.id, commentId)] : []),
+          sql`${issueComments.metadata}->'voiceInput'->>'sessionId' = ${session.id}`,
+        )).limit(1);
+        return row?.id ?? null;
+      });
+    },
+
     async newReplies() {
       return authorized(async (tx) => {
-        const rows = await tx.select({ id: issueComments.id, body: issueComments.body, createdAt: issueComments.createdAt })
+        const rows = await tx.select({ id: issueComments.id, body: issueComments.body, createdAt: issueComments.createdAt, metadata: issueComments.metadata, createdByRunId: issueComments.createdByRunId })
           .from(issueComments)
           .where(and(eq(issueComments.issueId, session.issueId), eq(issueComments.companyId, session.companyId), eq(issueComments.authorAgentId, session.assignedAgentId),
             isNull(issueComments.deletedAt), gte(issueComments.createdAt, since),
             // A Chat also carries platform receipts and recovery notes in the agent's name; only its answers are read aloud.
             ...(input.binding.mode === "agent_chat" ? [notInArray(issueComments.origin, ["fast_response", "workspace_recovery", "session_bridge_input"])] : [])))
-          // Newest first, so a long thread never hides new replies behind old ones.
-          .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(20);
+          // Revisit this bounded call window: transaction timestamps can commit out of order.
+          .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(2049);
+        if (rows.length > 2048) throw new HttpError(429, "Voice reply window exceeded; start a new call");
         const fresh = rows.reverse().filter((row) => !seen.has(row.id));
         for (const row of fresh) seen.add(row.id);
         return fresh.map(replyProjection);

@@ -46,6 +46,21 @@ describe("issuesApi.list", () => {
     });
   });
 
+  it("posts the explicit live voice-session marker with the comment idempotency key", async () => {
+    const sessionId = "c9226079-b259-4457-95a5-383147949b44";
+    const operationId = "be9ba48d-998f-465a-9b86-e3a6777ffcad";
+    await issuesApi.addComment("issue-1", "好", undefined, undefined, undefined, operationId, sessionId);
+    expect(mockApi.post).toHaveBeenLastCalledWith("/issues/issue-1/comments", {
+      body: "好", clientRequestId: operationId,
+      metadata: { version: 1, voiceInput: { sessionId }, sections: [{ title: "Voice input",
+        rows: [{ type: "key_value", label: "Source", value: "Speech recognition; not an approval" }] }] },
+    });
+    await issuesApi.addComment("issue-1", "語音輸入，不能當作核准", undefined, undefined, undefined, operationId);
+    expect(mockApi.post).toHaveBeenLastCalledWith("/issues/issue-1/comments", {
+      body: "語音輸入，不能當作核准", clientRequestId: operationId,
+    });
+  });
+
   it.each([
     { queueId: null, targetRunId: null, revision: "empty" },
     { queueId: "queue-1", targetRunId: "new-run", revision: "changed" },

@@ -1224,6 +1224,8 @@ export interface IssueCommentMetadata {
   sourceChannel?: ChatProvider;
   /** HOM-326: dictated in a live agent_chat voice call; such a message cannot accept a confirmation card. */
   voiceInput?: { sessionId: string };
+  /** Server-authored proof of inputs consumed before this answer; never caller-supplied. */
+  voiceReply?: { version: 1; runId: string; sourceCommentIds: string[] };
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;

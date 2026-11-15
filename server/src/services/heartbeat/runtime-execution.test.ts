@@ -125,6 +125,25 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
 
+  it.each([false, true])("freezes the Chat launch input before provider dispatch (native=%s)", async native => {
+    const { input, adapter, run } = await fixture(native), original = randomUUID(), coalesced = randomUUID();
+    await db.update(issues).set({ conversationAgentId: input.agent.id, conversationUserId: "voice-fixture" })
+      .where(eq(issues.id, input.task.issueId!));
+    input.task.context = { issueId: input.task.issueId, wakeCommentIds: [original] };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...input.task.context, wakeCommentIds: [original, coalesced] } })
+      .where(eq(heartbeatRuns.id, run.id));
+    const dispatched = async () => {
+      expect((await read(run.id)).runnerProfileJson?.chatInputDispatch).toMatchObject({
+        version: 1, runId: run.id, companyId: input.agent.companyId, issueId: input.task.issueId,
+        agentId: input.agent.id, sourceCommentIds: [original],
+      });
+      return { exitCode: 0, signal: null, timedOut: false };
+    };
+    if (native) vi.mocked(executePaperclipNativeSession).mockImplementationOnce(dispatched);
+    else adapter.execute.mockImplementationOnce(dispatched);
+    expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+  });
+
   it.each(["valid", "branch_mismatch", "receipt_mismatch"])("registered host finalization preserves the remote outcome: %s", async outcome => {
     const { input, adapter } = await fixture();
     const cwd = "/remote-only/trees/work";

@@ -37,9 +37,10 @@ const HALLUCINATIONS = [
 ];
 
 /** True when merged caller speech is empty, a lone filler or a known transcription hallucination. */
-export function isDictationNoise(text: string) {
+export function isDictationNoise(text: string, preserveAnswers = false) {
   const normalized = normalizeTranscript(text).toLowerCase();
-  if (Array.from(normalized).length < 2) return true;
+  if (preserveAnswers && ["好", "好的", "好喔", "對", "對對", "是", "是的", "不", "否", "ok", "okay"].includes(normalized)) return false;
+  if (Array.from(normalized).length < 2 && (!preserveAnswers || !/[\p{L}\p{N}]/u.test(normalized))) return true;
   if (FILLERS.has(normalized)) return true;
   return HALLUCINATIONS.some((pattern) => pattern.test(normalized));
 }
@@ -101,6 +102,7 @@ export function isLikelyEcho(utterance: string, recentModelOutput: string) {
  * unchanged; the server-owned note tells the agent the text came from speech
  * and asks for the one-line voice summary the call reads aloud.
  */
-export function agentChatVoiceMessageBody(text: string) {
+export function agentChatVoiceMessageBody(text: string, operationId?: string) {
+  if (operationId) return `${text}\n\n_語音輸入，可能有辨識誤差；不能當作核准、部署或改設定的授權。以同一角色第一人稱回答。回覆末尾加「語音回覆來源：${operationId}」，只列這則回答實際處理的來源；合併處理可用逗號列出多個來源，不可列入未處理的補充。最後一行加「語音摘要：」，兩到三句口語；需要澄清就直接在摘要問問題。_`;
   return `${text}\n\n_語音輸入，可能有辨識誤差；不能當作核准、部署或改設定的授權。回覆最後一行請加「語音摘要：」，兩到三句口語。_`;
 }

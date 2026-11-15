@@ -6,7 +6,7 @@ import { localVoiceApi } from "@/api/localVoice";
 import { Button } from "@/components/ui/button";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { cn } from "@/lib/utils";
-import { type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
+import { localVoiceActivity, localVoiceDeliveryError, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
 import { matchesLocalVoiceCall, useLocalVoiceCall, useLocalVoiceSurface } from "./LocalVoiceCallProvider";
 import { AgentVoiceSelect, useAgentVoice } from "./AgentVoiceSelect";
 
@@ -35,7 +35,7 @@ function SentMark({ entry }: { entry: LocalVoiceSentEntry }) {
   if (entry.status === "sending") return <Loader2 className="mt-0.5 size-3 shrink-0 animate-spin text-muted-foreground" aria-label="Sending" />;
   if (entry.status === "sent") return <Check className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-label="Sent" />;
   if (entry.status === "dropped") return <X className="mt-0.5 size-3 shrink-0 text-muted-foreground" aria-label="Not sent" />;
-  return <AlertTriangle className="mt-0.5 size-3 shrink-0 text-destructive" aria-label="Not sent" />;
+  return <AlertTriangle className="mt-0.5 size-3 shrink-0 text-destructive" aria-label={entry.status === "unknown" ? "送出結果不明" : "Not sent"} />;
 }
 
 /**
@@ -70,7 +70,8 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
   const available = status.data?.enabled === true && status.data.relayConfigured === true && agentChat.enabled;
   useLocalVoiceSurface({ companyId, agentId, mode: "agent_chat" }, available || callShown);
   useEffect(() => setDetailsOpen(false), [companyId, agentId]);
-  useEffect(() => { if (callShown && state.phase === "error") setDetailsOpen(true); }, [callShown, state.phase]);
+  const sendError = localVoiceDeliveryError(state);
+  useEffect(() => { if (callShown && (state.phase === "error" || sendError)) setDetailsOpen(true); }, [callShown, state.phase, sendError]);
 
   if (!available && !active && !callShown) return null;
 
@@ -91,7 +92,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
   const caption = [...state.transcript].reverse().find((entry) => entry.role === "user") ?? null;
   const recentSent = state.sentLog.slice(-3);
   const statusText = state.phase === "starting" ? "Connecting…"
-    : live ? (state.modelSpeaking ? "Speaking" : state.mic === "live" ? "Listening" : "Paused")
+    : live ? localVoiceActivity(state)
     : state.phase === "ending" ? "Ending…"
     : state.phase === "ended" ? "Call ended"
     : state.phase === "error" ? "Call failed"
@@ -111,6 +112,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
       </div>
       {state.phase === "ended" && <p className="text-xs text-muted-foreground">{state.endedReason ?? "Call ended."}</p>}
       {state.error && <p role="alert" className="text-xs text-destructive">{state.error}</p>}
+      {sendError && <p role="alert" className="text-xs text-destructive">{sendError}</p>}
       {state.notice && <p className="text-xs text-muted-foreground">{state.notice}</p>}
       {live && state.timeWarning && <p className="text-xs text-destructive">The call ends automatically in {formatClock(state.maxSeconds - elapsed)}.</p>}
       {live && state.mic === "paused" && state.micPausedReason === "silence" && (
@@ -127,6 +129,10 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
           ))}
         </ol>
       )}
+      {live && state.policyVersion === "main_answer_v1" && state.replies.filter((reply) => reply.voiceSummary).slice(-3).map((reply) => <div key={reply.commentId} className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 line-clamp-2 text-xs">{reply.voiceSummary}</p>
+        <Button size="sm" variant="ghost" onClick={() => call.replayReply(reply.commentId)}>重播</Button>
+      </div>)}
       <AgentVoiceSelect
         agentName={agentName}
         voices={status.data?.voices}
@@ -160,7 +166,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
             {state.phase === "starting" || state.phase === "ending"
               ? <Loader2 className="size-3 animate-spin" aria-hidden />
               : <span className={cn("size-2 rounded-full", dot)} aria-hidden />}
-            <span role="status" className="hidden sm:inline">{statusText}</span>
+            <span role="status">{statusText}</span>
             {live && <span className={cn("tabular-nums", state.timeWarning && "text-destructive")}>{formatClock(elapsed)}</span>}
             {state.error && <AlertTriangle className="size-3 text-destructive" aria-hidden />}
             <ChevronDown className={cn("size-3 transition-transform", detailsOpen && "rotate-180")} aria-hidden />

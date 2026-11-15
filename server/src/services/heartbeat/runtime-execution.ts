@@ -1,4 +1,5 @@
 import { claimAdapterSessionAuthority } from "../adapter-session-authority.js";
+import { recordChatInputDispatch } from "./chat-input-provenance.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { verifyMainBlockerRun } from "../recovery/main-blocker.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
@@ -638,7 +639,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
         await dispatchWithTiming(
-          (markDispatchStarted) => {
+          async (markDispatchStarted) => {
+            if (issueId) await recordChatInputDispatch(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId }, context);
             return executePaperclipNativeSession({
               casesEnabled: context.paperclipCasesEnabled === true,
               db,
@@ -869,7 +871,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       const decisionDelegation = issueRef ? await readDecisionDelegation(db, agent.companyId) : null;
       const guardedDispatch =
         await dispatchWithTiming(
-          (markDispatchStarted) => {
+          async (markDispatchStarted) => {
+            if (issueId) await recordChatInputDispatch(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId }, adapterContext);
             input.effects.onLegacyAdapterEntered();
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,
