@@ -368,7 +368,15 @@ GA protocol for `gpt-realtime-*` and the Gemini Live protocol for
 
 Both experimental flags (`enableChatConnectors`, `enableLocalVoice`) must also
 be on. `GET /api/companies/{companyId}/local-voice/status` reports
-`{enabled, relayConfigured}`.
+`{enabled, relayConfigured, voices, defaultVoice}`: `voices` lists the OpenAI
+voices a caller may pick (empty for the Gemini engine) and `defaultVoice` is the
+configured voice.
+
+Per-agent voice (HOM-265): the call card and the Voice page remember a voice per
+agent in the browser (localStorage). The browser offers it on the relay upgrade as
+an extra subprotocol `pcvv.<voice>`; the server applies it only for the OpenAI
+engine and only for a voice in `voices` (case-insensitive), otherwise the
+configured voice is used. A change during a call applies to the next call.
 
 ### Endpoint provisioning
 

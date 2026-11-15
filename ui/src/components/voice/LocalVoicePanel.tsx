@@ -30,6 +30,8 @@ export interface LocalVoicePanelProps {
   issueId?: string;
   /** Default `agent_chat` (the caller's Chat with the agent); `voice_task` when `issueId` is given. */
   mode?: LocalVoiceMode;
+  /** This agent's remembered voice (HOM-265); null or omitted uses the server default. Read at each call start. */
+  voiceName?: string | null;
   /** Test seam. */
   call?: LocalVoiceCall;
 }
@@ -48,7 +50,7 @@ function SentStatus({ entry }: { entry: LocalVoiceSentEntry }) {
  * `voice_task`: drafts are confirmed by the spoken phrase or the button here.
  * Approvals, deployment and settings changes are never available by voice.
  */
-export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: requestedMode, call: injected }: LocalVoicePanelProps) {
+export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: requestedMode, voiceName = null, call: injected }: LocalVoicePanelProps) {
   const mode: LocalVoiceMode = requestedMode ?? (issueId ? "voice_task" : "agent_chat");
   const chatMode = mode === "agent_chat";
   const call = useMemo(() => injected ?? createLocalVoiceCall(), [injected]);
@@ -59,10 +61,14 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
   const elapsed = useElapsed(state.startedAt, live);
   const remaining = state.maxSeconds - elapsed;
   const busy = state.phase === "starting" || state.phase === "ending";
+  /** The voice the open call started with; a different choice applies to the next call. */
+  const [callVoice, setCallVoice] = useState<string | null>(null);
 
   const start = (newConversation = false) => {
-    if (chatMode) return void call.start({ companyId, agentId, mode });
-    void call.start({ companyId, agentId, mode, ...(issueId && !newConversation ? { issueId } : {}), ...(newConversation ? { newConversation: true } : {}) });
+    setCallVoice(voiceName);
+    const voice = voiceName ? { voiceName } : {};
+    if (chatMode) return void call.start({ companyId, agentId, mode, ...voice });
+    void call.start({ companyId, agentId, mode, ...(issueId && !newConversation ? { issueId } : {}), ...(newConversation ? { newConversation: true } : {}), ...voice });
   };
   const replyAgent = state.agentName ?? agentName;
   const submitText = (event: FormEvent) => {
@@ -92,6 +98,7 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
           {state.phase === "ending" && "Ending…"}
           {state.phase === "ended" && (state.endedReason ?? "Call ended.")}
         </span>
+        {(live || busy) && voiceName !== callVoice && <span className="text-xs text-muted-foreground">Voice change applies to the next call.</span>}
         {live && (
           <span className={cn("ml-auto text-sm tabular-nums", state.timeWarning ? "text-destructive" : "text-muted-foreground")}>
             {formatClock(elapsed)} / {formatClock(state.maxSeconds)}

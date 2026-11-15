@@ -11,7 +11,7 @@ import {
   activityLog, agents, chatDeliveries, chatEndpoints, chatVoiceConfirmations, chatVoiceSessions, companies, companyMemberships, createDb,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issueComments, issues,
 } from "@paperclipai/db";
-import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX } from "@paperclipai/shared";
+import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX, LOCAL_VOICE_RELAY_VOICE_PREFIX } from "@paperclipai/shared";
 import { setupLocalVoiceRelayWebSocketServer } from "../realtime/local-voice-relay-ws.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureLocalVoiceEndpoint } from "../services/voice/local-voice-endpoints.js";
@@ -248,6 +248,30 @@ const GATEWAY_KEY = "test-gateway-key-not-a-secret";
     } finally {
       Object.assign(relayConfig, { engine: "gemini", model: "gemini-3.8-live", voiceName: "Kore" });
     }
+  });
+
+  it("uses the caller's voice for an OpenAI call and the configured voice for an unknown one or for Gemini (HOM-265)", async () => {
+    const withVoice = (f: { token: string }, voice: string) => [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}${f.token}`, `${LOCAL_VOICE_RELAY_VOICE_PREFIX}${voice}`];
+    const firstMessage = async (voice: string) => {
+      const f = await fixture();
+      const before = gatewayConnections.length;
+      const browser = connect(f, { protocols: withVoice(f, voice) });
+      await browser.opened;
+      await vi.waitFor(() => expect(gatewayConnections[before]?.received.length ?? 0).toBeGreaterThan(0));
+      const message = gatewayConnections[before]!.received[0];
+      browser.socket.close();
+      return message;
+    };
+    Object.assign(relayConfig, { engine: "openai", model: "gpt-realtime-1.5", voiceName: "marin" });
+    try {
+      expect(await firstMessage("Cedar")).toMatchObject({ type: "session.update", session: { audio: { output: { voice: "cedar" } } } });
+      expect(await firstMessage("Kore")).toMatchObject({ type: "session.update", session: { audio: { output: { voice: "marin" } } } });
+    } finally {
+      Object.assign(relayConfig, { engine: "gemini", model: "gemini-3.8-live", voiceName: "Kore" });
+    }
+    const geminiSetup = JSON.stringify(await firstMessage("cedar"));
+    expect(geminiSetup).toContain("Kore");
+    expect(geminiSetup).not.toContain("cedar");
   });
 
   it("ends the persisted session when the browser disconnects", async () => {

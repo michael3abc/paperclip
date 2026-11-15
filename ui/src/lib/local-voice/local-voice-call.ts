@@ -3,6 +3,7 @@ import {
   LOCAL_VOICE_CALL_WARNING_SECONDS,
   LOCAL_VOICE_RELAY_PROTOCOL,
   LOCAL_VOICE_RELAY_TOKEN_PREFIX,
+  LOCAL_VOICE_RELAY_VOICE_PREFIX,
   LOCAL_VOICE_SILENCE_PAUSE_SECONDS,
   type LocalVoiceRelayClientMessage,
   type LocalVoiceRelayServerEvent,
@@ -11,6 +12,7 @@ import { agentChatsApi } from "@/api/agentChats";
 import { issuesApi } from "@/api/issues";
 import { localVoiceApi } from "@/api/localVoice";
 import { buildSameOriginWebSocketUrl } from "@/lib/websocket-url";
+import { normalizeVoiceName } from "./voice-agent-choice";
 import { loadVoiceWorklets } from "./worklets";
 
 /** Speech above this RMS level counts as caller activity for the 60-second silence pause. */
@@ -170,7 +172,8 @@ export class LocalVoiceCall {
   }
 
   /** Must be called from a user gesture: it creates the AudioContext synchronously. */
-  async start(input: { companyId: string; agentId: string; issueId?: string; newConversation?: boolean; mode?: LocalVoiceMode }) {
+  /** `voiceName`: the agent's remembered voice (HOM-265); omitted or unknown keeps the server default. */
+  async start(input: { companyId: string; agentId: string; issueId?: string; newConversation?: boolean; mode?: LocalVoiceMode; voiceName?: string | null }) {
     if (this.snapshot.phase === "starting" || this.snapshot.phase === "live" || this.snapshot.phase === "ending") return;
     this.ending = false;
     const attempt = ++this.attempt;
@@ -247,8 +250,10 @@ export class LocalVoiceCall {
         },
       });
       if (stale()) return void await abandon();
+      const voiceName = normalizeVoiceName(input.voiceName);
       const socket = this.deps.createSocket(buildSameOriginWebSocketUrl(this.deps.api.relayPath(input.companyId, started.session.id)),
-        [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}${started.media.transportToken}`]);
+        [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}${started.media.transportToken}`,
+          ...(voiceName ? [`${LOCAL_VOICE_RELAY_VOICE_PREFIX}${voiceName}`] : [])]);
       socket.binaryType = "arraybuffer";
       socket.onmessage = (event) => {
         if (typeof event.data === "string") {

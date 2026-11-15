@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { cn } from "@/lib/utils";
 import { createLocalVoiceCall, type LocalVoiceCall, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
+import { AgentVoiceSelect, useAgentVoice } from "./AgentVoiceSelect";
 
 export interface ChatVoiceCallButtonProps {
   companyId: string;
@@ -45,6 +46,8 @@ function SentMark({ entry }: { entry: LocalVoiceSentEntry }) {
  * voice summary is read aloud. While a call is open, its status, timer and
  * listening toggle sit inline in the top bar so nothing covers the page; the
  * captions and errors open in a details panel on demand (or by themselves on an error).
+ * The details panel also holds this agent's voice, remembered per agent in this
+ * browser and used from the next call on (HOM-265).
  * Hidden when local voice or Agent Chat is off.
  */
 export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injected }: ChatVoiceCallButtonProps) {
@@ -60,6 +63,9 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
   const state = useSyncExternalStore(call.subscribe, call.getSnapshot);
   const [callShown, setCallShown] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [voice, setVoice] = useAgentVoice(agentId);
+  /** The voice the open call started with; a different choice applies to the next call. */
+  const [callVoice, setCallVoice] = useState<string | null>(null);
   const live = state.phase === "live";
   const active = state.phase === "starting" || live || state.phase === "ending";
   const elapsed = useElapsed(state.startedAt, live);
@@ -71,8 +77,9 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
   const start = () => {
     setCallShown(true);
     setDetailsOpen(false);
+    setCallVoice(voice);
     // Must stay inside the click: the call creates its AudioContext synchronously.
-    void call.start({ companyId, agentId, mode: "agent_chat" });
+    void call.start({ companyId, agentId, mode: "agent_chat", ...(voice ? { voiceName: voice } : {}) });
   };
   const onButton = () => {
     if (active) {
@@ -122,6 +129,15 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
           ))}
         </ol>
       )}
+      <AgentVoiceSelect
+        agentName={agentName}
+        voices={status.data?.voices}
+        defaultVoice={status.data?.defaultVoice}
+        value={voice}
+        onChange={setVoice}
+        pendingNextCall={active && voice !== callVoice}
+        compact
+      />
       <p className="text-xs leading-snug text-muted-foreground">
         What you say is posted to this Chat when you stop talking. Approvals and deployments still need the on-screen controls.
       </p>

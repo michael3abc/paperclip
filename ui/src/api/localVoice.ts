@@ -3,7 +3,15 @@ import { api } from "./client";
 
 const companyBase = (companyId: string) => `/companies/${encodeURIComponent(companyId)}`;
 
-export interface LocalVoiceStatus { companyId: string; enabled: boolean; relayConfigured: boolean }
+export interface LocalVoiceStatus {
+  companyId: string;
+  enabled: boolean;
+  relayConfigured: boolean;
+  /** Voices a caller may pick for a call (HOM-265); empty or missing when the engine takes no choice. */
+  voices?: string[];
+  /** The server's configured voice, used when no voice is picked. */
+  defaultVoice?: string | null;
+}
 export interface LocalVoiceEndpoint { endpointId: string; agentId: string; agentName: string; created: boolean }
 
 /**

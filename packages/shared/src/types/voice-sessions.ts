@@ -133,7 +133,8 @@ export interface VoiceOperationReceipt {
 /**
  * Same-origin media relay for local voice (HOM-311). The browser opens
  * `/api/companies/{companyId}/voice-sessions/{sessionId}/ws` with the
- * subprotocols [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}<transportToken>`].
+ * subprotocols [LOCAL_VOICE_RELAY_PROTOCOL, `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}<transportToken>`]
+ * and optionally `${LOCAL_VOICE_RELAY_VOICE_PREFIX}<voice>` to pick the voice for this call.
  * Binary frames: browser→server PCM16 mono microphone audio at the
  * `inputSampleRate` announced in `ready` (24 kHz for the OpenAI Realtime
  * engine, 16 kHz for the Gemini Live fallback); server→browser PCM16 mono
@@ -142,6 +143,15 @@ export interface VoiceOperationReceipt {
  */
 export const LOCAL_VOICE_RELAY_PROTOCOL = "paperclip.voice-relay.v1" as const;
 export const LOCAL_VOICE_RELAY_TOKEN_PREFIX = "pcvt." as const;
+/**
+ * Optional per-call voice (HOM-265): the browser offers `pcvv.<voice>` as an extra
+ * subprotocol. The server applies it only for the OpenAI Realtime engine and only
+ * when it is one of LOCAL_VOICE_OPENAI_VOICES; anything else keeps the configured voice.
+ */
+export const LOCAL_VOICE_RELAY_VOICE_PREFIX = "pcvv." as const;
+/** OpenAI Realtime output voices the local voice relay accepts (single source for server and UI). */
+export const LOCAL_VOICE_OPENAI_VOICES = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"] as const;
+export type LocalVoiceOpenAIVoice = typeof LOCAL_VOICE_OPENAI_VOICES[number];
 /** Default microphone rate (OpenAI Realtime, HOM-318). */
 export const LOCAL_VOICE_INPUT_SAMPLE_RATE = 24_000;
 /** Microphone rate for the Gemini Live fallback engine (HOM-311). */

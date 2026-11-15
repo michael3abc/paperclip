@@ -37,7 +37,7 @@ describe("ChatVoiceCallButton", () => {
     container = document.createElement("div"); document.body.append(container);
     root = createRoot(container); client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
-  afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });
+  afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); window.localStorage.clear(); });
   async function render(call: LocalVoiceCall) {
     await act(async () => root.render(<QueryClientProvider client={client}><ChatVoiceCallButton companyId="company" agentId="agent-1" agentName="michael" call={call} /></QueryClientProvider>));
   }
@@ -71,6 +71,49 @@ describe("ChatVoiceCallButton", () => {
     expect(container.querySelector('[role="group"]')?.textContent).toContain("Call ended");
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close voice call"]')!.click());
     expect(container.querySelector('[role="group"]')).toBeNull();
+  });
+
+  it("remembers a voice per agent on the call card and uses it from the next call on (HOM-265)", async () => {
+    mocks.status.mockResolvedValue({ companyId: "company", enabled: true, relayConfigured: true, voices: ["alloy", "cedar", "marin"], defaultVoice: "marin" });
+    window.localStorage.setItem("paperclip.voice.agentVoice:agent-2", "alloy");
+    const { call, spies } = fakeCall();
+    await render(call);
+    await vi.waitFor(() => expect(callButton()).not.toBeNull());
+    await act(async () => callButton()!.click());
+    // No voice remembered yet: the server default is used.
+    expect(spies.start).toHaveBeenLastCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat" });
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    const select = () => document.body.querySelector<HTMLSelectElement>('select[aria-label="Voice for michael"]')!;
+    await vi.waitFor(() => expect(select()).not.toBeNull());
+    expect(select().value).toBe("");
+    expect([...select().options].map((option) => option.textContent)).toEqual(["Default (Marin)", "Alloy", "Cedar", "Marin"]);
+    expect(document.body.textContent).not.toContain("Applies to the next call.");
+
+    await act(async () => {
+      select().value = "cedar";
+      select().dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(window.localStorage.getItem("paperclip.voice.agentVoice:agent-1")).toBe("cedar");
+    expect(window.localStorage.getItem("paperclip.voice.agentVoice:agent-2")).toBe("alloy");
+    expect(document.body.textContent).toContain("Applies to the next call.");
+    expect(spies.start).toHaveBeenCalledOnce();
+
+    await act(async () => callButton()!.click());
+    expect(spies.end).toHaveBeenCalledOnce();
+    expect(document.body.textContent).not.toContain("Applies to the next call.");
+    await act(async () => callButton()!.click());
+    expect(spies.start).toHaveBeenLastCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat", voiceName: "cedar" });
+  });
+
+  it("hides the voice choice when the server offers no voices", async () => {
+    mocks.status.mockResolvedValue({ companyId: "company", enabled: true, relayConfigured: true, voices: [], defaultVoice: "Kore" });
+    const { call } = fakeCall();
+    await render(call);
+    await vi.waitFor(() => expect(callButton()).not.toBeNull());
+    await act(async () => callButton()!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    expect(document.body.querySelector('section[aria-label="Voice call details with michael"]')).not.toBeNull();
+    expect(document.body.querySelector('select[aria-label^="Voice for"]')).toBeNull();
   });
 
   it("opens the details by itself when the call fails", async () => {

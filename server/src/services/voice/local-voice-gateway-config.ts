@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { LOCAL_VOICE_OPENAI_VOICES } from "@paperclipai/shared";
 
 /**
  * Server-side configuration for the local voice media relay (HOM-311, HOM-318).
@@ -22,7 +23,7 @@ export interface LocalVoiceGatewayConfig {
 }
 
 /** OpenAI Realtime voices; a Gemini voice name (for example Kore) left from an older configuration is ignored. */
-const OPENAI_VOICES = new Set(["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"]);
+const OPENAI_VOICES: ReadonlySet<string> = new Set(LOCAL_VOICE_OPENAI_VOICES);
 
 const DEFAULTS: Record<LocalVoiceEngine, { model: string; voiceName: string }> = {
   openai: { model: "gpt-realtime-1.5", voiceName: "marin" },
@@ -50,6 +51,17 @@ export function loadLocalVoiceGatewayConfig(env: NodeJS.ProcessEnv = process.env
   if (engine === "openai" && !OPENAI_VOICES.has(voiceName.toLowerCase())) voiceName = DEFAULTS.openai.voiceName;
   if (engine === "openai") voiceName = voiceName.toLowerCase();
   return { url: url.replace(/\/+$/, ""), keyFile, engine, model, voiceName };
+}
+
+/**
+ * Voice for one call (HOM-265): the caller's per-agent choice when the engine is
+ * OpenAI and the name is an allowed OpenAI voice (case-insensitive), else the
+ * configured voice. Gemini calls always keep the configured voice.
+ */
+export function resolveLocalVoiceName(config: Pick<LocalVoiceGatewayConfig, "engine" | "voiceName">, requested: string | null | undefined) {
+  if (config.engine !== "openai" || typeof requested !== "string") return config.voiceName;
+  const voice = requested.trim().toLowerCase();
+  return OPENAI_VOICES.has(voice) ? voice : config.voiceName;
 }
 
 export function localVoiceRealtimeUrl(config: LocalVoiceGatewayConfig) {

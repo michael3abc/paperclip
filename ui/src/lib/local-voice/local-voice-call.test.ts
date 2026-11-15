@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX } from "@paperclipai/shared";
+import { LOCAL_VOICE_RELAY_PROTOCOL, LOCAL_VOICE_RELAY_TOKEN_PREFIX, LOCAL_VOICE_RELAY_VOICE_PREFIX } from "@paperclipai/shared";
 import { AGENT_CHAT_END_WAIT_MS, LocalVoiceCall, type LocalVoiceCallDependencies, type VoiceAudioEngine } from "./local-voice-call";
 
 class FakeSocket {
@@ -91,6 +91,20 @@ describe("LocalVoiceCall", () => {
     expect(socket.sent.filter((item) => item instanceof ArrayBuffer)).toHaveLength(1);
     h.frame(0.1, 16_000); // captured before a rate switch: dropped
     expect(socket.sent.filter((item) => item instanceof ArrayBuffer)).toHaveLength(1);
+  });
+
+  it("offers the agent's chosen voice as an extra relay subprotocol, and nothing for no or an unknown voice (HOM-265)", async () => {
+    const token = `${LOCAL_VOICE_RELAY_TOKEN_PREFIX}${"T".repeat(43)}`;
+    const chosen = setup();
+    await chosen.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat", voiceName: "Cedar" });
+    expect(chosen.sockets[0]!.protocols).toEqual([LOCAL_VOICE_RELAY_PROTOCOL, token, `${LOCAL_VOICE_RELAY_VOICE_PREFIX}cedar`]);
+    // The session start request itself is unchanged: the voice travels only with the relay upgrade.
+    expect(chosen.api.start).toHaveBeenCalledWith("c1", expect.not.objectContaining({ voiceName: expect.anything() }));
+    for (const voiceName of [undefined, null, "Kore", "marin; drop"]) {
+      const h = setup();
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat", voiceName });
+      expect(h.sockets[0]!.protocols).toEqual([LOCAL_VOICE_RELAY_PROTOCOL, token]);
+    }
   });
 
   it("plays model audio, flushes it on barge-in and merges captions per turn", async () => {

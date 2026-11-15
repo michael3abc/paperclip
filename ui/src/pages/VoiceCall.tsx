@@ -4,6 +4,7 @@ import { Mic } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { localVoiceApi } from "@/api/localVoice";
 import { EmptyState } from "@/components/EmptyState";
+import { AgentVoiceSelect, useAgentVoice } from "@/components/voice/AgentVoiceSelect";
 import { LocalVoicePanel } from "@/components/voice/LocalVoicePanel";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -47,6 +48,8 @@ export function VoiceCall() {
   useEffect(() => { if (defaultReady && pinned === null && fallback) setPinned(fallback); }, [defaultReady, pinned, fallback]);
   const agentId = chosen ?? pinned;
   const agent = available.find((item) => item.id === agentId);
+  // Remembered per agent (HOM-265); hooks run before the early returns below.
+  const [voice, setVoice] = useAgentVoice(agent?.id ?? "");
   const issueId = searchParams.get("issueId") ?? undefined;
   const agentChat = useAgentChatEnabled();
   // Without Agent Chat the page keeps the voice-task flow instead of failing to bind a Chat.
@@ -75,21 +78,24 @@ export function VoiceCall() {
               : "Talk with an agent. Requests are read back and sent only after you confirm."}
           </p>
         </div>
-        <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-          Agent
-          <select
-            className="rounded-md border border-input bg-background p-2 text-sm"
-            value={agent.id}
-            onChange={(event) => {
-              setChosen(event.target.value);
-              saveLastVoiceAgentId(selectedCompanyId, event.target.value);
-            }}
-          >
-            {available.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
-        </label>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+            Agent
+            <select
+              className="rounded-md border border-input bg-background p-2 text-sm"
+              value={agent.id}
+              onChange={(event) => {
+                setChosen(event.target.value);
+                saveLastVoiceAgentId(selectedCompanyId, event.target.value);
+              }}
+            >
+              {available.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          <AgentVoiceSelect agentName={agent.name} voices={status.data.voices} defaultVoice={status.data.defaultVoice} value={voice} onChange={setVoice} />
+        </div>
       </div>
-      <LocalVoicePanel key={`${agent.id}:${issueId ?? ""}:${mode}`} companyId={selectedCompanyId} agentId={agent.id} agentName={agent.name} issueId={issueId} mode={mode} />
+      <LocalVoicePanel key={`${agent.id}:${issueId ?? ""}:${mode}`} companyId={selectedCompanyId} agentId={agent.id} agentName={agent.name} issueId={issueId} mode={mode} voiceName={voice} />
     </div>
   );
 }

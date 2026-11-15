@@ -7,6 +7,7 @@ import { companyMemberships, instanceUserRoles, type Db } from "@paperclipai/db"
 import {
   LOCAL_VOICE_RELAY_PROTOCOL,
   LOCAL_VOICE_RELAY_TOKEN_PREFIX,
+  LOCAL_VOICE_RELAY_VOICE_PREFIX,
   isUuidLike,
   type DeploymentMode,
   type LocalVoiceRelayClientMessage,
@@ -18,7 +19,7 @@ import { logger } from "../middleware/logger.js";
 import { GeminiLiveRelay } from "../services/voice/gemini-live-relay.js";
 import { OpenAIRealtimeRelay } from "../services/voice/openai-realtime-relay.js";
 import type { VoiceRelayCore, VoiceRelayOptions, VoiceUpstream, VoiceUpstreamHandlers } from "../services/voice/voice-relay-core.js";
-import { localVoiceRealtimeUrl, readLocalVoiceGatewayKey, type LocalVoiceGatewayConfig } from "../services/voice/local-voice-gateway-config.js";
+import { localVoiceRealtimeUrl, readLocalVoiceGatewayKey, resolveLocalVoiceName, type LocalVoiceGatewayConfig } from "../services/voice/local-voice-gateway-config.js";
 import { authorizeLocalVoiceRelay, createLocalVoiceTaskPort } from "../services/voice/local-voice-relay-port.js";
 import type { VoiceSessionService } from "../services/voice/voice-session-service.js";
 import type { VoiceCaller } from "../services/voice/voice-session-store.js";
@@ -69,6 +70,7 @@ const { WebSocket, WebSocketServer } = require("ws") as {
 
 const PATH = /^\/api\/companies\/([^/]+)\/voice-sessions\/([^/]+)\/ws$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const VOICE = /^[A-Za-z]{1,40}$/;
 const MAX_AUDIO_FRAME_BYTES = 64 * 1024;
 const MAX_RELAYS_PER_CALLER = 2;
 const MAX_RELAYS = 16;
@@ -107,7 +109,10 @@ export function parseVoiceRelayProtocols(header: string | string[] | undefined) 
   if (!protocols.includes(LOCAL_VOICE_RELAY_PROTOCOL)) return null;
   const tokens = protocols.filter((value) => value.startsWith(LOCAL_VOICE_RELAY_TOKEN_PREFIX)).map((value) => value.slice(LOCAL_VOICE_RELAY_TOKEN_PREFIX.length));
   if (tokens.length !== 1 || !TOKEN.test(tokens[0]!)) return null;
-  return { token: tokens[0]! };
+  // Optional voice preference (HOM-265). Malformed or repeated offers are ignored, never fatal.
+  const voices = protocols.filter((value) => value.startsWith(LOCAL_VOICE_RELAY_VOICE_PREFIX)).map((value) => value.slice(LOCAL_VOICE_RELAY_VOICE_PREFIX.length));
+  const voiceName = voices.length === 1 && VOICE.test(voices[0]!) ? voices[0]! : null;
+  return { token: tokens[0]!, voiceName };
 }
 
 function headersFrom(req: IncomingMessage) {
@@ -183,7 +188,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
     };
   }
 
-  function attach(ws: RelaySocket, input: { companyId: string; caller: VoiceCaller; token: string; binding: Awaited<ReturnType<typeof authorizeLocalVoiceRelay>>; service: VoiceSessionService; config: LocalVoiceGatewayConfig }) {
+  function attach(ws: RelaySocket, input: { companyId: string; caller: VoiceCaller; token: string; voiceName: string | null; binding: Awaited<ReturnType<typeof authorizeLocalVoiceRelay>>; service: VoiceSessionService; config: LocalVoiceGatewayConfig }) {
     const sessionId = input.binding.session.id;
     const send = (data: string | Buffer, binary: boolean) => {
       if (ws.readyState !== WebSocket.OPEN) return;
@@ -198,7 +203,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       port: createLocalVoiceTaskPort(db, input.service, { binding: input.binding, caller: input.caller, token: input.token, allowLocalBoard }),
       connectUpstream: connectUpstream(input.config),
       binding: { issueId: input.binding.issue.id, issueIdentifier: input.binding.issue.identifier, issueTitle: input.binding.issue.title, agentName: input.binding.agentName, mode: input.binding.mode },
-      voiceName: input.config.voiceName,
+      voiceName: resolveLocalVoiceName(input.config, input.voiceName),
       model: input.config.model,
       log: (event, fields) => logger.info({ ...fields, sessionId, companyId: input.companyId }, event),
     };
@@ -275,7 +280,7 @@ export function setupLocalVoiceRelayWebSocketServer(server: HttpServer, db: Db, 
       }
       if (socket.destroyed) return;
       attached = true;
-      wss.handleUpgrade(req, socket, head, (ws) => attach(ws, { companyId, caller, token: protocols.token, binding, service, config }));
+      wss.handleUpgrade(req, socket, head, (ws) => attach(ws, { companyId, caller, token: protocols.token, voiceName: protocols.voiceName, binding, service, config }));
     })().catch((error) => {
       logger.error({ err: error }, "local voice relay upgrade failed");
       rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");

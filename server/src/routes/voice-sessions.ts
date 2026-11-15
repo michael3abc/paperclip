@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { isUuidLike, localVoiceConfirmationSchema, startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema } from "@paperclipai/shared";
+import { LOCAL_VOICE_OPENAI_VOICES, isUuidLike, localVoiceConfirmationSchema, startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, tooManyRequests, unsupportedMediaType } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -111,9 +111,13 @@ export function voiceSessionRoutes(db: Db, service: VoiceSessionService) {
     const companyId = company(req);
     caller(req);
     const experimental = await settings.getExperimental();
-    const relayConfigured = loadLocalVoiceGatewayConfig() !== null;
+    const config = loadLocalVoiceGatewayConfig();
     res.setHeader("Cache-Control", "no-store");
-    res.json({ companyId, enabled: Boolean(experimental.enableChatConnectors && experimental.enableLocalVoice), relayConfigured });
+    // Selectable per-call voices (HOM-265): only the OpenAI Realtime engine takes a caller's choice.
+    res.json({
+      companyId, enabled: Boolean(experimental.enableChatConnectors && experimental.enableLocalVoice), relayConfigured: config !== null,
+      voices: config?.engine === "openai" ? [...LOCAL_VOICE_OPENAI_VOICES] : [], defaultVoice: config?.voiceName ?? null,
+    });
   });
   /** Server-owned local voice endpoint for one agent; idempotent per company and agent. */
   router.post("/companies/:companyId/local-voice/endpoints", validate(localVoiceEndpointSchema), async (req, res) => {
