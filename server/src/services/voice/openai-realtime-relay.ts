@@ -1,3 +1,4 @@
+import { forwardMainTool } from "./voice-chat-policy.js";
 import { LOCAL_VOICE_CONFIRMATION_PHRASE, LOCAL_VOICE_INPUT_SAMPLE_RATE } from "@paperclipai/shared";
 import {
   NOTICE_PREFIX,
@@ -158,7 +159,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
       instructions: this.instructions(),
       output_modalities: ["audio"],
       // agent_chat: the model chats and forwards requests; the relay sends the caller's own words.
-      tools: this.mainAnswerChat ? [] : this.chatMode ? openAiAgentChatTools(this.options.binding.agentName) : openAiToolDeclarations(this.options.binding.agentName),
+      tools: this.naturalChat ? [{ type: "function", ...forwardMainTool }] : this.mainAnswerChat ? [] : this.chatMode ? openAiAgentChatTools(this.options.binding.agentName) : openAiToolDeclarations(this.options.binding.agentName),
       tool_choice: "auto",
       // Token log-probabilities let the relay drop sentences the recognizer invents for noise (HOM-265).
       include: ["item.input_audio_transcription.logprobs"],
@@ -248,7 +249,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
         return;
       case "response.output_audio_transcript.delta":
       case "response.audio_transcript.delta": {
-        if (this.isCancelled(message) || typeof message.delta !== "string" || !message.delta) return;
+        if (this.routeForwarded || this.isCancelled(message) || typeof message.delta !== "string" || !message.delta) return;
         const text = toTaiwanTraditional(message.delta);
         this.turnOutput += text;
         this.browser.sendEvent({ type: "transcript", role: "model", text });
@@ -305,7 +306,7 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   }
 
   private forwardAudio(message: Record<string, any>) {
-    if (typeof message.delta !== "string" || !message.delta) return;
+    if (this.routeForwarded || typeof message.delta !== "string" || !message.delta) return;
     const pcm = Buffer.from(message.delta, "base64");
     if (pcm.length === 0) return;
     const itemId = typeof message.item_id === "string" ? message.item_id : "";
@@ -498,7 +499,8 @@ export class OpenAIRealtimeRelay extends VoiceRelayCore {
   protected sendToolResult(call: { id: unknown; name: string }, response: Record<string, unknown>) {
     this.pendingCalls.delete(String(call.id));
     this.sendUpstream({ type: "conversation.item.create", item: { type: "function_call_output", call_id: String(call.id), output: JSON.stringify(response) } });
-    if (this.pendingCalls.size === 0) {
+    if (this.mainAnswerChat) this.flushNotices();
+    if (this.pendingCalls.size === 0 && !this.mainAnswerChat) {
       this.responseWanted = true;
       this.maybeCreateResponse();
     }

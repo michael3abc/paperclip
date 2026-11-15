@@ -358,6 +358,17 @@ describe("LocalVoiceCall", () => {
       expect(h.api.end).not.toHaveBeenCalled();
     });
 
+    it("preserves source-bound reply replay for natural chat sessions", async () => {
+      const h = setup();
+      await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });
+      const socket = h.sockets[0];
+      socket.emit({ ...READY, policyVersion: "natural_chat_v2" });
+      socket.emit({ type: "agent_reply", commentId: "answer", body: "答案", voiceSummary: "答案", createdAt: "now", playbackState: "interrupted" });
+      expect(h.call.getSnapshot().policyVersion).toBe("natural_chat_v2");
+      expect(h.call.replayReply("answer")).toBe(true);
+      expect(socket.json()).toEqual([{ type: "replay_reply", commentId: "answer" }]);
+    });
+
     it("keeps legacy sessions off the replay policy and treats duplicate ready as a no-op", async () => {
       const h = setup();
       await h.call.start({ companyId: "c1", agentId: "agent-1", mode: "agent_chat" });

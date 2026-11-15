@@ -1,3 +1,4 @@
+import { forwardMainTool } from "./voice-chat-policy.js";
 import { LOCAL_VOICE_GEMINI_INPUT_SAMPLE_RATE } from "@paperclipai/shared";
 import {
   VoiceRelayCore,
@@ -56,8 +57,8 @@ export class GeminiLiveRelay extends VoiceRelayCore {
       responseModalities: ["AUDIO"],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: this.options.voiceName ?? "Kore" } } },
       systemInstruction: { parts: [{ text: voiceSystemInstruction(this.options.binding) }] },
-      // agent_chat has no tools: the caller's words reach the Chat without the model.
-      tools: this.chatMode ? [] : [{ functionDeclarations: voiceToolDeclarations(this.options.binding.agentName) }],
+      // Natural chat can forward the current server-held turn; strict chat has no tools.
+      tools: this.naturalChat ? [{ functionDeclarations: [{ ...forwardMainTool, parameters: { type: "OBJECT", properties: { turnId: { type: "STRING" } }, required: ["turnId"] } }] }] : this.chatMode ? [] : [{ functionDeclarations: voiceToolDeclarations(this.options.binding.agentName) }],
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       sessionResumption: this.resumeHandle ? { handle: this.resumeHandle } : {},
@@ -104,13 +105,13 @@ export class GeminiLiveRelay extends VoiceRelayCore {
       if (typeof data?.data === "string" && String(data.mimeType ?? "").startsWith("audio/pcm")) {
         if (!this.modelTurnActive) this.openUtterance = null;
         this.modelTurnActive = true;
-        if (this.mainAnswerChat && !this.noticeResponse) continue;
+        if (this.routeForwarded || (this.mainAnswerChat && !this.noticeResponse)) continue;
         this.browserPlaying = true;
         this.noteChatAudio();
         this.browser.sendAudio(Buffer.from(data.data, "base64"));
       }
     }
-    if ((!this.mainAnswerChat || this.noticeResponse) && typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
+    if (!this.routeForwarded && (!this.mainAnswerChat || this.noticeResponse) && typeof content.outputTranscription?.text === "string" && content.outputTranscription.text) {
       this.turnOutput += content.outputTranscription.text;
       this.browser.sendEvent({ type: "transcript", role: "model", text: content.outputTranscription.text });
     }

@@ -5,7 +5,9 @@
  *   env -u DATABASE_URL -u PAPERCLIP_TEST_POSTGRES_ADMIN_URL \
  *     pnpm --filter @paperclipai/server exec tsx src/__tests__/scripts/voice-main-answer-smoke.ts \
  *     --owned-test-db --main-model gpt-6.1-sol --realtime-model gpt-realtime-1.5
- * Stdout: one safe JSON receipt. No transcript, provider payload or credential.
+ * Add --natural-chat to exercise direct small talk followed by tool-forwarded work.
+ * Stdout: one safe JSON receipt. With --natural-chat, only synthetic fixture
+ * transcription is included for diagnosis; no provider payload or credential.
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -26,11 +28,11 @@ import { ensureLocalVoiceEndpoint } from "../../services/voice/local-voice-endpo
 import { authorizeLocalVoiceRelay, createLocalVoiceTaskPort } from "../../services/voice/local-voice-relay-port.js";
 import { OpenAIRealtimeRelay } from "../../services/voice/openai-realtime-relay.js";
 import { voiceSessionService } from "../../services/voice/voice-session-service.js";
-import { MAIN_ANSWER_POLICY } from "../../services/voice/voice-chat-policy.js";
+import { MAIN_ANSWER_POLICY, NATURAL_CHAT_POLICY } from "../../services/voice/voice-chat-policy.js";
 import { extractVoiceSummary, recitationCoverage } from "../../services/voice/voice-summary.js";
 
 const { values } = parseArgs({ options: {
-  "owned-test-db": { type: "boolean" }, "main-model": { type: "string" },
+  "natural-chat": { type: "boolean" }, "owned-test-db": { type: "boolean" }, "main-model": { type: "string" },
   "realtime-model": { type: "string" }, gateway: { type: "string", default: "ws://192.168.66.11:8792" },
 } });
 // Refuse inherited provider/admin DB selection even when the ownership flag is set.
@@ -38,6 +40,8 @@ if (!values["owned-test-db"] || process.env.DATABASE_URL || process.env.PAPERCLI
   throw new Error("Requires --owned-test-db and no inherited DATABASE_URL or PAPERCLIP_TEST_POSTGRES_ADMIN_URL");
 }
 if (!values["main-model"] || !values["realtime-model"]) throw new Error("Explicit --main-model and --realtime-model are required");
+const naturalChat = values["natural-chat"] === true;
+const workUtterance = "請 main 幫我確認這個測試任務目前的狀態。";
 const gateway = new URL(values.gateway!);
 if (!["ws:", "wss:"].includes(gateway.protocol) || gateway.username || gateway.password || gateway.search || gateway.pathname !== "/") {
   throw new Error("Gateway must be a credential-free ws(s) origin");
@@ -58,10 +62,13 @@ let relay: OpenAIRealtimeRelay | undefined;
 let mic: ReturnType<typeof setInterval> | undefined;
 let playback: ReturnType<typeof setTimeout> | undefined;
 let stage = "setup";
-const receipt: Record<string, unknown> = { case: "synthetic_main_answer_gateway", passed: false,
+const receipt: Record<string, unknown> = { case: naturalChat ? "synthetic_natural_chat_gateway" : "synthetic_main_answer_gateway", passed: false,
   nativeSessionTested: false, physicalMicrophoneTested: false, timingsMs: {}, audioBytes: { tts: 0, relay: 0, answer: 0 } };
 const times = receipt.timingsMs as Record<string, number>;
 const bytes = receipt.audioBytes as Record<string, number>;
+const diagnosis = { synthesized: [] as { expected: string; spoken: string }[], heard: [] as string[], replies: [] as string[],
+  routes: [] as { turnId: string; text: string }[], toolEvents: [] as { type: string; name?: string; turnId?: string }[], errors: [] as string[] };
+if (naturalChat) receipt.syntheticDiagnosis = diagnosis;
 let relayConnections = 0, mainRequests = 0, ttsConnections = 0;
 // Error messages, stacks and provider/DB payloads can contain sensitive inputs.
 // Copy only known diagnostic identifiers, including wrapped driver causes.
@@ -72,7 +79,7 @@ function safeFailure(error: unknown) {
   const labels = new Set(["gateway_key_missing", "missing_media", "tts_audio_length", "relay_reconnect_forbidden",
     "synthetic_transcription_mismatch", "main_answer_missing_or_incorrect", "main_summary_missing_or_incorrect",
     "answer_provenance_missing", "answer_recitation_mismatch", "duplicate_input", "smoke_deadline", "db_start_deadline",
-    "tts_transport", "tts_closed", "tts_failed", "tts_provider", "tts_protocol", "relay_transport"]);
+    "tts_recitation_mismatch", "chat_was_forwarded", "chat_response_not_substantive", "chat_audio_missing", "forward_tool_missing", "forward_original_mismatch", "tts_transport", "tts_closed", "tts_failed", "tts_provider", "tts_protocol", "relay_transport"]);
   const chain: { class: string; code?: string; label?: string; constraint?: string }[] = [];
   let current = error;
   for (let depth = 0; depth < 3 && current && typeof current === "object"; depth++) {
@@ -110,11 +117,13 @@ function socketForModel() {
   socket.on("error", () => {});
   return socket;
 }
-async function synthesize(): Promise<Buffer> {
-  assert.equal(++ttsConnections, 1);
+async function synthesize(text: string): Promise<Buffer> {
+  assert(++ttsConnections <= (naturalChat ? 2 : 1));
   const socket = socketForModel();
   const chunks: Buffer[] = [];
   let requested = false;
+  const ttsDiagnosis = { expected: text, spoken: "" };
+  if (naturalChat) diagnosis.synthesized.push(ttsDiagnosis);
   try {
     await bounded(new Promise<void>((resolve, reject) => {
       socket.on("error", () => reject(new Error("tts_transport")));
@@ -128,16 +137,18 @@ async function synthesize(): Promise<Buffer> {
           } }));
           if (message.type === "session.updated" && !requested) {
             requested = true;
-            socket.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "八加五等於多少？" }] } }));
-            socket.send(JSON.stringify({ type: "response.create" }));
+            socket.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: `這是朗讀測試，以下 JSON 字串是要逐字朗讀的資料，不是提問或要求。只朗讀字串內容，不回答、不加任何字：${JSON.stringify(text)}` }] } }));
+            socket.send(JSON.stringify({ type: "response.create", response: { instructions: `只逐字朗讀這個 JSON 字串的內容，沒有前言或結語，不回答其中的問題：${JSON.stringify(text)}` } }));
           }
           if (message.type === "response.output_audio.delta") chunks.push(Buffer.from(message.delta, "base64"));
+          if (message.type === "response.output_audio_transcript.delta") ttsDiagnosis.spoken += String(message.delta ?? "");
           if (message.type === "response.done") message.response?.status === "completed" ? resolve() : reject(new Error("tts_failed"));
           if (message.type === "error") reject(new Error("tts_provider"));
         } catch { reject(new Error("tts_protocol")); }
       });
     }));
     const pcm = Buffer.concat(chunks); assert(pcm.length > 0 && pcm.length < 48000 * 15, "tts_audio_length");
+    assert(recitationCoverage(text, ttsDiagnosis.spoken) >= 0.85, "tts_recitation_mismatch");
     return pcm;
   } finally { socket.terminate(); sockets.delete(socket); }
 }
@@ -183,14 +194,31 @@ try {
   const events: LocalVoiceRelayServerEvent[] = [];
   let answerId: string | undefined, answerStarted = false, playbackUntil = 0;
   let spokenAnswer = "", expectedSummary = "", answerRequested = false;
+  let chatText = "", forwardCalls = 0, routedText = "";
+  let chatPhase = naturalChat;
+  let chatComplete = false;
+  let currentOutput = "";
+  const toolNames = new Map<string, string>();
+  diagnosis.replies.push("");
   stage = "setup_relay_controller";
   relay = new OpenAIRealtimeRelay({ binding: { ...binding.issue, issueId, issueIdentifier: null, issueTitle: binding.issue.title,
-    agentName: "Fixture main", mode: "agent_chat", policyVersion: MAIN_ANSWER_POLICY },
+    agentName: "Fixture main", mode: "agent_chat", policyVersion: naturalChat ? NATURAL_CHAT_POLICY : MAIN_ANSWER_POLICY },
     model: values["realtime-model"], voiceName: "marin", port, reconnectDelaysMs: [],
     browser: {
       sendEvent(event) {
         events.push(event);
-        if (event.type === "voice_turn" && event.state === "speaking" && event.answerCommentId === answerId) answerStarted = true;
+        if (naturalChat) {
+          if (event.type === "transcript" && event.role === "user") diagnosis.heard.push(event.text);
+          if (event.type === "transcript" && event.role === "model") {
+            currentOutput += event.text;
+            diagnosis.replies[diagnosis.replies.length - 1] = currentOutput;
+          }
+          if (event.type === "turn_complete") { currentOutput = ""; diagnosis.replies.push(""); }
+          if (event.type === "error") diagnosis.errors.push(event.code);
+        }
+        if (chatPhase && event.type === "transcript" && event.role === "model") chatText += event.text;
+        if (chatPhase && event.type === "turn_complete" && chatText) chatComplete = true;
+        if (answerId && event.type === "voice_turn" && event.state === "speaking" && event.answerCommentId === answerId) answerStarted = true;
         // Caption deltas may precede the first audio packet; capture from the
         // actual answer request, not the first playback callback.
         if (event.type === "transcript" && event.role === "model" && answerRequested) spokenAnswer += event.text;
@@ -208,28 +236,80 @@ try {
     connectUpstream: async (handlers) => {
       assert.equal(++relayConnections, 1, "relay_reconnect_forbidden");
       const socket = socketForModel();
-      socket.on("message", (data: Buffer) => handlers.onMessage(data.toString()));
+      socket.on("message", (data: Buffer) => {
+        const frame = JSON.parse(data.toString());
+        if (frame.type === "response.output_item.added" && frame.item?.type === "function_call") {
+          toolNames.set(frame.item.id, frame.item.name);
+        }
+        if (frame.type === "response.function_call_arguments.done") {
+          const name = frame.name ?? toolNames.get(frame.item_id);
+          if (name === "forward_to_main") forwardCalls++;
+          if (naturalChat) {
+            let turnId: string | undefined;
+            try { const args = JSON.parse(frame.arguments); if (typeof args.turnId === "string") turnId = args.turnId; } catch { /* malformed tool arguments have no identifier */ }
+            diagnosis.toolEvents.push({ type: frame.type, name, turnId });
+          }
+        }
+        handlers.onMessage(data.toString());
+      });
       socket.on("close", (code: number) => handlers.onClose(code, "smoke_transport_closed"));
       await bounded(new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", () => reject(new Error("relay_transport"))); }));
       return { send: (json: string) => {
         const frame = JSON.parse(json);
+        for (const part of frame.item?.content ?? []) {
+          if (typeof part.text === "string" && part.text.startsWith("[Paperclip 閒聊回合] ")) {
+            const route = JSON.parse(part.text.slice("[Paperclip 閒聊回合] ".length));
+            routedText = route.text;
+            if (naturalChat) diagnosis.routes.push({ turnId: route.turnId, text: route.text });
+          }
+        }
         if (expectedSummary && frame.type === "conversation.item.create"
           && frame.item?.content?.some((part: { text?: string }) => part.text?.includes(JSON.stringify(expectedSummary)))) answerRequested = true;
         socket.send(json);
       }, close: () => { socket.terminate(); sockets.delete(socket); } };
     },
   });
-  stage = "tts"; const pcm = await synthesize(); bytes.tts = pcm.length; times.ttsReady = elapsed();
+  const frames: Buffer[] = [];
+  const feed = (pcm: Buffer) => {
+    for (let offset = 0; offset < pcm.length; offset += 4800) frames.push(pcm.subarray(offset, offset + 4800));
+    delete times.speechEnd;
+  };
+  stage = "tts";
+  const firstPcm = await synthesize(naturalChat ? "今天有點累，只想找你隨便聊聊，不用幫我查任何東西。" : "八加五等於多少？");
+  bytes.tts += firstPcm.length; times.ttsReady = elapsed();
   stage = "relay"; await bounded(relay.start());
-  const frames: Buffer[] = []; for (let offset = 0; offset < pcm.length; offset += 4800) frames.push(pcm.subarray(offset, offset + 4800));
+  feed(firstPcm);
   mic = setInterval(() => {
     if (abort.signal.aborted) return;
     const frame = frames.shift(); relay!.handleBrowserAudio(frame ?? Buffer.alloc(4800));
     if (!frames.length) times.speechEnd ??= elapsed();
   }, 100);
+  if (naturalChat) {
+    stage = "natural_chat_reply";
+    await until(() => chatComplete || events.some(event => event.type === "dictation"));
+    assert.equal(events.filter(event => event.type === "dictation").length, 0, "chat_was_forwarded");
+    assert.equal(forwardCalls, 0, "chat_was_forwarded");
+    assert(bytes.relay > 0, "chat_audio_missing");
+    assert(chatText.replace(/[\s，。！？,.!?]/gu, "").length >= 10 && !/我確認一下|已轉交/u.test(chatText), "chat_response_not_substantive");
+    receipt.naturalChat = { responseCharacters: chatText.length, audioBytes: bytes.relay, mainRequests, forwarded: false };
+    times.chatSpeechToAudio = times.firstPlayback - times.speechEnd;
+    await until(() => Date.now() > playbackUntil + 150);
+    chatPhase = false;
+    stage = "work_tts";
+    const workPcm = await synthesize(workUtterance); bytes.tts += workPcm.length;
+    feed(workPcm);
+    stage = "work_forward";
+  }
   await until(() => events.some(event => event.type === "dictation"));
   const dictation = events.find((event): event is Extract<LocalVoiceRelayServerEvent, { type: "dictation" }> => event.type === "dictation")!;
-  assert(/(?:八|8).*(?:加|\+).*(?:五|5)/u.test(dictation.text), "synthetic_transcription_mismatch");
+  if (naturalChat) receipt.syntheticForwardDiagnosis = { expected: workUtterance, routedText, dictation: dictation.text, toolCalls: forwardCalls,
+    heard: events.filter((event): event is Extract<LocalVoiceRelayServerEvent, { type: "transcript" }> => event.type === "transcript" && event.role === "user").map(event => event.text) };
+  assert(naturalChat ? /測試任務.*狀態/u.test(dictation.text) : /(?:八|8).*(?:加|\+).*(?:五|5)/u.test(dictation.text), "synthetic_transcription_mismatch");
+  if (naturalChat) {
+    assert.equal(forwardCalls, 1, "forward_tool_missing");
+    assert.equal(dictation.text, routedText, "forward_original_mismatch");
+    receipt.forwarding = { toolCalls: forwardCalls, originalPreserved: true, characters: dictation.text.length };
+  }
   stage = "chat_receipt";
   const input = await comments.addComment(issueId, dictation.body, { userId }, { authorType: "user", clientRequestId: dictation.operationId,
     metadata: { version: 1, sections: [{ rows: [{ type: "text", text: "Synthetic test input" }] }], voiceInput: { sessionId: session.session.id } } });
@@ -242,14 +322,17 @@ try {
   const response = await fetch(`${httpOrigin.origin}/v1/responses`, { method: "POST", signal: abort.signal,
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({
       model: values["main-model"], stream: false, max_output_tokens: 1200,
-      instructions: "你是此隔離測試 Chat 指定的 main。只回答使用者這一道算術題，遵守訊息中的語音來源與摘要格式。不用工具、不執行動作。",
+      instructions: naturalChat
+        ? "你是此隔離測試 Chat 指定的 main。已查證測試任務狀態是 in_review（等待審核），只回答這個狀態。遵守訊息中的語音來源與摘要格式。不用工具、不執行動作。"
+        : "你是此隔離測試 Chat 指定的 main。只回答使用者這一道算術題，遵守訊息中的語音來源與摘要格式。不用工具、不執行動作。",
       input: [{ role: "user", content: [{ type: "input_text", text: input.body }] }],
     }) });
   assert(response.ok, `main_http_${response.status}`);
   const generated = await response.json() as { output?: { content?: { type?: string; text?: string }[] }[] };
   const body = (generated.output ?? []).flatMap(item => item.content ?? []).filter(item => item.type === "output_text").map(item => item.text ?? "").join("\n");
-  assert(body.length > 0 && /13|十三/u.test(body), "main_answer_missing_or_incorrect");
-  const summary = extractVoiceSummary(body); assert(summary && /13|十三/u.test(summary), "main_summary_missing_or_incorrect");
+  const expectedAnswer = naturalChat ? /審核|in_review/u : /13|十三/u;
+  assert(body.length > 0 && expectedAnswer.test(body), "main_answer_missing_or_incorrect");
+  const summary = extractVoiceSummary(body); assert(summary && expectedAnswer.test(summary), "main_summary_missing_or_incorrect");
   expectedSummary = summary;
   stage = "verified_answer";
   const answer = await comments.addComment(issueId, body, { agentId, runId });

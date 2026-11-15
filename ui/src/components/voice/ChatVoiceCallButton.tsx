@@ -129,7 +129,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
           ))}
         </ol>
       )}
-      {live && state.policyVersion === "main_answer_v1" && state.replies.filter((reply) => reply.voiceSummary).slice(-3).map((reply) => <div key={reply.commentId} className="flex items-center gap-2">
+      {live && Boolean(state.policyVersion) && state.replies.filter((reply) => reply.voiceSummary).slice(-3).map((reply) => <div key={reply.commentId} className="flex items-center gap-2">
         <p className="min-w-0 flex-1 line-clamp-2 text-xs">{reply.voiceSummary}</p>
         <Button size="sm" variant="ghost" onClick={() => call.replayReply(reply.commentId)}>重播</Button>
       </div>)}

@@ -1,4 +1,4 @@
-import { MAIN_ANSWER_POLICY, localGreeting, mainAnswerInstruction } from "./voice-chat-policy.js";
+import { MAIN_ANSWER_POLICY, NATURAL_CHAT_POLICY, FORWARD_MAIN_TOOL, localGreeting, mainAnswerInstruction, naturalChatInstruction, type VoiceChatPolicy } from "./voice-chat-policy.js";
 import { VoiceTurnLedger } from "./voice-turn-ledger.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -80,7 +80,7 @@ export interface VoiceRelayOptions {
   port: VoiceTaskPort;
   connectUpstream: VoiceUpstreamFactory;
   /** `mode` defaults to voice_task; agent_chat (HOM-326) dictates every finished utterance to the bound Chat. */
-  binding: { issueId: string; issueIdentifier: string | null; issueTitle: string; agentName: string; mode?: VoiceBindingMode; policyVersion?: typeof MAIN_ANSWER_POLICY };
+  binding: { issueId: string; issueIdentifier: string | null; issueTitle: string; agentName: string; mode?: VoiceBindingMode; policyVersion?: VoiceChatPolicy };
   voiceName?: string;
   /** Upstream model id, used for logs and the OpenAI session. */
   model?: string;
@@ -196,6 +196,7 @@ function agentChatSystemInstruction(binding: VoiceRelayOptions["binding"]) {
 }
 
 export function voiceSystemInstruction(binding: VoiceRelayOptions["binding"], options: { routed?: boolean } = {}) {
+  if (binding.mode === "agent_chat" && binding.policyVersion === NATURAL_CHAT_POLICY) return naturalChatInstruction(binding.agentName);
   if (binding.mode === "agent_chat" && binding.policyVersion === MAIN_ANSWER_POLICY) return mainAnswerInstruction(binding.agentName);
   if (binding.mode === "agent_chat") return options.routed ? routedAgentChatSystemInstruction(binding) : agentChatSystemInstruction(binding);
   const task = binding.issueIdentifier ? `${binding.issueIdentifier}「${binding.issueTitle}」` : `「${binding.issueTitle}」`;
@@ -237,7 +238,8 @@ export abstract class VoiceRelayCore {
   protected turnOutput = "";
   private replyCheckDueAt: number | null = null;
   protected draft: DraftState | null = null;
-  private readonly pendingNotices: { text: string; key?: string }[] = [];
+  private readonly pendingNotices: { text: string; key?: string; route?: { id: string; text: string; segments: string[] } }[] = [];
+  private activeChatRoute: { id: string; text: string; segments: string[]; generation: number; forwarded: boolean } | null = null;
   private readonly turns: VoiceTurnLedger;
   private activeSpeechKey: string | null = null;
   private readonly answerViews = new Map<string, VoiceAgentReply>();
@@ -314,8 +316,10 @@ export abstract class VoiceRelayCore {
     this.warningSeconds = options.warningSeconds ?? LOCAL_VOICE_CALL_WARNING_SECONDS;
   }
 
-  /** agent_chat binding (HOM-326): no tools, no drafts; every finished utterance is dictated to the Chat. */
-  protected get mainAnswerChat() { return this.chatMode && this.options.binding.policyVersion === MAIN_ANSWER_POLICY; }
+  /** Versioned agent chat preserves the main reply ledger; natural chat can answer locally. */
+  protected get mainAnswerChat() { return this.chatMode && (this.options.binding.policyVersion === MAIN_ANSWER_POLICY || this.naturalChat); }
+  protected get naturalChat() { return this.chatMode && this.options.binding.policyVersion === NATURAL_CHAT_POLICY; }
+  protected get routeForwarded() { return this.activeChatRoute?.forwarded === true; }
   protected get chatMode() { return this.options.binding.mode === "agent_chat"; }
   /** Whether the engine speaks a short acknowledgement by itself (Gemini answers every utterance). */
   protected readonly acknowledgesSpeech: boolean = false;
@@ -518,7 +522,7 @@ export abstract class VoiceRelayCore {
     this.readyAnnounced = true;
     const { issueId, issueIdentifier, agentName } = this.options.binding;
     this.browser.sendEvent({ type: "ready", issueId, issueIdentifier, agentName, maxSeconds: this.maxSeconds, warningSeconds: this.warningSeconds, inputSampleRate: this.inputSampleRate,
-      bindingMode: this.options.binding.mode ?? "voice_task", ...(this.mainAnswerChat ? { policyVersion: MAIN_ANSWER_POLICY } : {}) });
+      bindingMode: this.options.binding.mode ?? "voice_task", ...(this.mainAnswerChat ? { policyVersion: this.options.binding.policyVersion } : {}) });
   }
 
   private handleUpstreamClosed(code: number, reason: string) {
@@ -596,6 +600,10 @@ export abstract class VoiceRelayCore {
       this.recentModelOutput.push(this.turnOutput);
       if (this.recentModelOutput.length > 2) this.recentModelOutput.shift();
     }
+    if (this.activeChatRoute && !this.activeChatRoute.forwarded && (!outcome.completed || !this.turnOutput.trim())) {
+      this.browser.sendEvent({ type: "error", code: "voice_chat_unanswered", message: "這段語音尚未完成回覆，也未送到主 agent；請再說一次或改用文字。" });
+    }
+    this.activeChatRoute = null;
     this.turnOutput = "";
     if (this.mainAnswerChat && this.activeSpeechKey && !this.browserPlaying) {
       const key = this.activeSpeechKey;
@@ -755,7 +763,7 @@ export abstract class VoiceRelayCore {
     }
     this.dictationParts.push({ text: clean, duringPlayback: meta.duringPlayback, segment: meta.segment });
     if (this.routedChat) { this.routeDictation(); return; }
-    this.armDictationTimer(this.options.dictationMergeMs ?? DICTATION_MERGE_MS);
+    this.armDictationTimer(this.options.dictationMergeMs ?? (this.naturalChat ? 350 : DICTATION_MERGE_MS));
   }
 
   private armDictationTimer(ms: number) {
@@ -803,7 +811,7 @@ export abstract class VoiceRelayCore {
     if (!text) return;
     if (this.mainAnswerChat) {
       for (const part of parts) if (part.segment) this.receivedSegments.add(part.segment);
-      const greeting = localGreeting(text);
+      const greeting = this.naturalChat ? null : localGreeting(text);
       if (greeting) { this.queueNotice(this.exactSpeech(greeting)); return; }
     }
     if (isDictationNoise(text, this.mainAnswerChat)) {
@@ -811,7 +819,14 @@ export abstract class VoiceRelayCore {
       if (text.trim()) this.browser.sendEvent({ type: "dictation_dropped", text, reason: "noise" });
       return;
     }
-    this.emitDictation(text, [...new Set(parts.map((part) => part.segment).filter(Boolean))]);
+    const segments = [...new Set(parts.map((part) => part.segment).filter(Boolean))];
+    if (this.naturalChat) {
+      const route = { id: randomUUID(), text, segments };
+      this.pendingNotices.push({ route, text: `[Paperclip 閒聊回合] ${JSON.stringify({ turnId: route.id, text })}` });
+      this.flushNotices();
+      return;
+    }
+    this.emitDictation(text, segments);
   }
 
   private emitDictation(raw: string, segmentIds: string[] = []) {
@@ -891,6 +906,19 @@ export abstract class VoiceRelayCore {
   protected onToolResultDropped(_call: { id: unknown; name: string }) { /* engine-specific */ }
 
   private async runTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.mainAnswerChat) {
+      const route = this.activeChatRoute;
+      if (!this.naturalChat || name !== FORWARD_MAIN_TOOL || !route || route.generation !== this.connectionGeneration
+        || args.turnId !== route.id || Object.keys(args).some(key => key !== "turnId")) {
+        this.browser.sendEvent({ type: "error", code: "voice_route_rejected", message: "這次語音轉送不符合目前回合，沒有送出新要求。" });
+        return { status: "error", message: "Not a current caller routing turn. Do not retry or speak." };
+      }
+      if (!route.forwarded) {
+        route.forwarded = true;
+        this.emitDictation(route.text, route.segments);
+      }
+      return { status: "forwarded", message: "Stay silent. The system handles acknowledgment and the main answer." };
+    }
     switch (name) {
       case "query_task_status": {
         const identifier = typeof args.identifier === "string" && args.identifier.trim() ? args.identifier.trim() : undefined;
@@ -1093,7 +1121,8 @@ export abstract class VoiceRelayCore {
     let notice = this.pendingNotices.shift();
     while (notice?.key && !this.turns.isNoticeCurrent(notice.key)) notice = this.pendingNotices.shift();
     if (!notice) return;
-    if (!this.sendUserTurn(notice.text)) { this.pendingNotices.unshift(notice); return; }
+    this.activeChatRoute = notice.route ? { ...notice.route, generation: this.connectionGeneration, forwarded: false } : null;
+    if (!this.sendUserTurn(notice.text)) { this.activeChatRoute = null; this.pendingNotices.unshift(notice); return; }
     this.modelTurnActive = true;
   }
 
@@ -1104,6 +1133,11 @@ export abstract class VoiceRelayCore {
   /** Only audio is interrupted; the original Chat run continues. */
   protected interruptChatPlayback() {
     if (!this.mainAnswerChat) return;
+    if (this.activeChatRoute && !this.activeChatRoute.forwarded
+      || this.pendingNotices.some(notice => notice.route)) {
+      this.browser.sendEvent({ type: "error", code: "voice_chat_interrupted", message: "剛才的語音回應已中斷，尚未送出的工作請求請再說一次或改用文字。" });
+    }
+    this.activeChatRoute = null;
     this.turns.interrupt();
     this.activeSpeechKey = null;
     this.pendingNotices.length = 0;
@@ -1130,6 +1164,7 @@ export abstract class VoiceRelayCore {
       await this.drainDictation(reason === "upstream_unavailable" ? 0 : this.options.dictationDrainMs ?? DICTATION_DRAIN_MS).catch(() => undefined);
     }
     if (this.closed) return;
+    if (this.naturalChat) this.interruptChatPlayback();
     this.closed = true;
     this.turns.dispose();
     for (const timer of this.receiptTimers.values()) this.clearTimer(timer);

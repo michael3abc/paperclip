@@ -561,13 +561,13 @@ const support = await getEmbeddedPostgresTestSupport();
       return { ...f, chatId, startChat };
     }
 
-    it("pins the main-answer policy only for newly created agent chat sessions", async () => {
+    it.each(["local:", "local:main_answer_v1:"])("pins the natural-chat policy only for newly created agent chat sessions after %s", async (prefix) => {
       const f = await chatFixture();
       const idempotencyKey = randomUUID();
       const original = await f.startChat({ idempotencyKey });
       // Represent a call that was created before this policy shipped; retain its
       // real binding, request fingerprint and one-time token from the fixture.
-      const legacyProviderSessionId = `local:${randomUUID()}`;
+      const legacyProviderSessionId = `${prefix}${randomUUID()}`;
       await db.update(chatVoiceSessions).set({ providerSessionId: legacyProviderSessionId })
         .where(eq(chatVoiceSessions.id, original.session.id));
 
@@ -577,7 +577,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const legacyBinding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId,
         sessionId: original.session.id, caller: f.caller, token: original.media!.transportToken, allowLocalBoard: false });
       expect(legacyBinding.session.providerSessionId).toBe(legacyProviderSessionId);
-      expect(localVoiceChatPolicy(legacyBinding.session.providerSessionId)).toBeUndefined();
+      expect(localVoiceChatPolicy(legacyBinding.session.providerSessionId)).toBe(prefix === "local:" ? undefined : "main_answer_v1");
       const [retained] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, original.session.id));
       expect(retained.providerSessionId).toBe(legacyProviderSessionId);
 
@@ -586,8 +586,8 @@ const support = await getEmbeddedPostgresTestSupport();
       const freshBinding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId,
         sessionId: fresh.session.id, caller: f.caller, token: fresh.media!.transportToken, allowLocalBoard: false });
       expect(fresh.session.id).not.toBe(original.session.id);
-      expect(freshBinding.session.providerSessionId).toMatch(/^local:main_answer_v1:[0-9a-f-]{36}$/);
-      expect(localVoiceChatPolicy(freshBinding.session.providerSessionId)).toBe("main_answer_v1");
+      expect(freshBinding.session.providerSessionId).toMatch(/^local:natural_chat_v2:[0-9a-f-]{36}$/);
+      expect(localVoiceChatPolicy(freshBinding.session.providerSessionId)).toBe("natural_chat_v2");
 
       const taskBinding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId,
         sessionId: f.sessionId, caller: f.caller, token: f.token, allowLocalBoard: false });

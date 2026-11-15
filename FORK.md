@@ -9,6 +9,12 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Natural voice conversation (HOM-265): new calls let Realtime answer small talk
+  immediately and forward work using current-turn tokens and original text.
+  Verified main-answer playback and voice authorization restrictions remain.
+  No migration; existing calls retain their policy.
+
+
 - Main-agent voice answers (HOM-335): new agent_chat calls pin `main_answer_v1`;
   OpenAI and Gemini carry speech while the original main Chat supplies substantive
   answers. Explicit source-operation declarations are verified against scoped

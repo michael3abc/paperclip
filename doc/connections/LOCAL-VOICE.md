@@ -563,10 +563,10 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   Chat never looks like an externally bound issue (workspace isolation,
   external retry policy, assignee lock and blocker text stay unchanged).
   New `agent_chat` sessions store
-  `providerSessionId = local:main_answer_v1:<uuid>`. `voice-chat-policy.ts`
+  `providerSessionId = local:natural_chat_v2:<uuid>`. `voice-chat-policy.ts`
   derives the fixed call policy from that prefix; `ready.policyVersion` exposes
-  it to the browser. Existing sessions with the older `local:` prefix keep the
-  previous engine path, even when their upstream transport reconnects. No
+  it to the browser. Existing `local:main_answer_v1:` sessions retain the strict
+  main-answer policy; sessions with the older `local:` prefix keep the previous engine path, even when their upstream transport reconnects. No
   historical comments or session IDs are rewritten. `voice_task` keeps its
   existing prefix, tools, drafts and confirmation flow.
   `voice_task` starts refuse a Chat with the same code. A second live call on
@@ -579,6 +579,29 @@ no read-back and no 「確認送出」. `voice_task` stays for compatibility.
   tools, deliveries, publications, replies) refuses `agent_chat` sessions with
   `404`; local tools, confirmations and operation receipts stay `voice_task`
   only, and `runCommand` refuses `agent_chat` sessions.
+- **Natural conversation (`natural_chat_v2`).** New agent-chat calls use
+  `local:natural_chat_v2:<uuid>`. Filtered caller transcripts reach a scheduled
+  realtime turn after a 350 ms merge window. Both engines can answer ordinary
+  small talk directly, without posting a Chat comment, waking main or saying a
+  fixed acknowledgment. Project facts, work, settings, research, advice and
+  meaningful follow-ups to main go through `forward_to_main`. Its only argument
+  is a server-created turn token; the relay posts its saved original words and
+  segment IDs once, never model-written text. Tokens are usable only during that
+  routing turn and upstream generation, not during main-answer playback. Task
+  tools remain unavailable; spoken approval never grants authority.
+  OpenAI keeps automatic VAD responses disabled; Gemini's unsolicited audio
+  remains suppressed until the filtered turn is explicitly scheduled. After a
+  forward, neither engine may produce a free-form continuation: acknowledgment
+  and source-verified main answers use the existing ledger. A cancelled or empty
+  routing response reports unsent input visibly, without retry or silent forward.
+  Small talk stays in the live call's provider context, not the durable Chat.
+  Routing is a model decision and requires live-provider acceptance, not merely
+  mocked tool tests. Run `server/src/__tests__/scripts/voice-main-answer-smoke.ts`
+  with `--owned-test-db --natural-chat --main-model <model> --realtime-model <model>`
+  after removing inherited `DATABASE_URL` and `PAPERCLIP_TEST_POSTGRES_ADMIN_URL`.
+  This checks synthetic small-talk audio without a main request, then original-word
+  forwarding and a source-bound main answer; it does not prove a physical microphone
+  or native-session round trip. Existing v1 sessions and voice_task retain their policy.
 - **One role, two transports (`main_answer_v1`, HOM-335).** Realtime handles
   listening and speaking as the same first-person agent. Substantive discussion,
   project facts, suggestions, decisions and content clarification go to main in

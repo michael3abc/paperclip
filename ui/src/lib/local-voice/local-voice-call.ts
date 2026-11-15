@@ -55,7 +55,7 @@ export interface LocalVoiceCallSnapshot {
   /** agent_chat: dictated messages posted (or being posted) to the Chat, oldest first. */
   sentLog: LocalVoiceSentEntry[];
   turns: LocalVoiceTurnView[];
-  policyVersion?: "main_answer_v1";
+  policyVersion?: "main_answer_v1" | "natural_chat_v2";
   notice: string | null;
   error: string | null;
   endedReason: string | null;
@@ -448,7 +448,7 @@ export class LocalVoiceCall {
 
   replayReply(commentId: string) {
     const reply = this.snapshot.replies.find((item) => item.commentId === commentId);
-    if (this.snapshot.phase !== "live" || this.snapshot.policyVersion !== "main_answer_v1" || !reply || !reply.voiceSummary || this.requestedReplays.has(commentId)) return false;
+    if (this.snapshot.phase !== "live" || !this.snapshot.policyVersion || !reply || !reply.voiceSummary || this.requestedReplays.has(commentId)) return false;
     if (!this.send({ type: "replay_reply", commentId })) return false;
     this.requestedReplays.add(commentId);
     // Replaying an older answer does not reclaim a turn now owned by a newer answer.

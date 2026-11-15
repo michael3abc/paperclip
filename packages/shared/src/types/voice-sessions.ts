@@ -187,7 +187,7 @@ export type LocalVoiceRelayClientMessage =
 export type LocalVoiceRelayEndReason = "caller_ended" | "max_duration" | "session_unavailable" | "upstream_unavailable" | "server_shutdown" | "relay_error";
 
 export type LocalVoiceRelayServerEvent =
-  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number; bindingMode?: VoiceBindingMode; policyVersion?: "main_answer_v1" }
+  | { type: "ready"; issueId: string; issueIdentifier: string | null; agentName: string; maxSeconds: number; warningSeconds: number; inputSampleRate: number; bindingMode?: VoiceBindingMode; policyVersion?: "main_answer_v1" | "natural_chat_v2" }
   /**
    * agent_chat: one merged caller utterance, verbatim (Taiwan Traditional) in
    * `text`. The browser posts the server-built `body` (the words plus a short

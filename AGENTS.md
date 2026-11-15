@@ -335,3 +335,12 @@ Shared CLI workers set `subscriptionOnly:true`; all CLI invocations disable
 paid extra credits with `useG1Credits:false`. Plan never skips permissions;
 auto is unsupported. Preserve existing Bridge agents, policies, sessions and
 credentials. See `doc/DEVELOPING.md` and `docs/adapters/agy-local.md`.
+
+## Local voice conversation
+
+New agent-chat calls use `natural_chat_v2`: filtered small talk is answered by
+Realtime; work and project questions forward only the server-held original input
+through a current-turn token. Keep main-answer provenance, replay/deduplication,
+barge-in and voice approval restrictions. Do not restore legacy latest-reply
+routing. Changes require both engine regressions and a real routing smoke; see
+`doc/connections/LOCAL-VOICE.md`. Existing call policies are not rewritten.

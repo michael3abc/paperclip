@@ -193,7 +193,7 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
               {reply.voiceSummary && <p className="text-sm font-medium">{reply.voiceSummary}</p>}
               <MarkdownBody>{reply.body}</MarkdownBody>
               {chatMode && reply.playbackState === "interrupted" && <p className="text-xs text-muted-foreground">播音已中斷，回答保留於 Chat。</p>}
-              {chatMode && live && state.policyVersion === "main_answer_v1" && reply.voiceSummary && <Button size="sm" variant="ghost" onClick={() => call.replayReply(reply.commentId)}>重播</Button>}
+              {chatMode && live && Boolean(state.policyVersion) && reply.voiceSummary && <Button size="sm" variant="ghost" onClick={() => call.replayReply(reply.commentId)}>重播</Button>}
             </article>
           ))}
         </div>

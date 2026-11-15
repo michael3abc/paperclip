@@ -7,7 +7,7 @@ import type { VoiceAgentReply, VoiceRelayOptions, VoiceTaskPort, VoiceUpstreamHa
 type Engine = "openai" | "gemini";
 const activeRelays: (OpenAIRealtimeRelay | GeminiLiveRelay)[] = [];
 
-function harness(engine: Engine) {
+function harness(engine: Engine, policyVersion: "main_answer_v1" | "natural_chat_v2" = "main_answer_v1") {
   const events: LocalVoiceRelayServerEvent[] = [];
   const sockets: { handlers: VoiceUpstreamHandlers; sent: any[] }[] = [];
   const replies: VoiceAgentReply[] = [];
@@ -29,7 +29,7 @@ function harness(engine: Engine) {
       sockets.push(socket);
       return { send: (json) => { socket.sent.push(JSON.parse(json)); }, close: () => {} };
     },
-    binding: { mode: "agent_chat", policyVersion: "main_answer_v1", issueId: "chat-1", issueIdentifier: "HOM-1", agentName: "momo", issueTitle: "Chat" },
+    binding: { mode: "agent_chat", policyVersion, issueId: "chat-1", issueIdentifier: "HOM-1", agentName: "momo", issueTitle: "Chat" },
     dictationMergeMs: 30, dictationHoldMs: 2000, dictationDrainMs: 0,
     replyDebounceMs: 10, reconnectDelaysMs: [0],
   };
@@ -376,4 +376,158 @@ describe("main-answer transport boundaries", () => {
     h.audio();
     expect(h.browser.sendAudio).toHaveBeenCalledTimes(1);
   });
+});
+
+
+describe.each<Engine>(["openai", "gemini"])("%s natural chat", (engine) => {
+  function routeId(h: ReturnType<typeof harness>) {
+    return JSON.parse(h.spoken().findLast(text => text.startsWith("[Paperclip 閒聊回合]"))!.replace("[Paperclip 閒聊回合] ", "")).turnId;
+  }
+  function routeTool(h: ReturnType<typeof harness>, args: object, name = "forward_to_main", callId = "forward-1") {
+    if (engine === "openai") h.fromModel({ type: "response.function_call_arguments.done", response_id: "local", call_id: callId, name, arguments: JSON.stringify(args) });
+    else h.fromModel({ toolCall: { functionCalls: [{ id: callId, name, args }] } });
+  }
+  async function startRoute(h: ReturnType<typeof harness>, text: string) {
+    h.say("speech-1", text);
+    await vi.advanceTimersByTimeAsync(31);
+    if (engine === "openai") h.fromModel({ type: "response.created", response: { id: "local" } });
+  }
+  it.each(["喂嗨", "我覺得這個不錯", "今天好累，想聊聊天"])("answers %s locally without a main wake or waiting notice", async text => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, text);
+    expect(h.spoken()[0]).toContain(text);
+    expect(h.dictations()).toHaveLength(0);
+    if (engine === "openai") {
+      h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "local", delta: "我在，想聊什麼？" });
+      h.fromModel({ type: "response.output_audio.delta", response_id: "local", item_id: "a", delta: Buffer.alloc(480).toString("base64") });
+    } else h.fromModel({ serverContent: { outputTranscription: { text: "我在，想聊什麼？" }, modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: Buffer.alloc(480).toString("base64") } }] } } });
+    await h.finish("local");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.browser.sendAudio).toHaveBeenCalled();
+    expect(h.dictations()).toHaveLength(0);
+    expect(h.spoken().join(" ")).not.toContain("我確認一下");
+    expect(h.port.status).not.toHaveBeenCalled();
+    expect(h.port.submit).not.toHaveBeenCalled();
+  });
+  it("forwards only server-held words once and plays only a source-bound main answer", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查 Career 設定");
+    const token = routeId(h);
+    routeTool(h, { turnId: token });
+    routeTool(h, { turnId: token }, "forward_to_main", "duplicate");
+    await Promise.resolve();
+    expect(h.dictations().map(d => d.text)).toEqual(["幫我查 Career 設定"]);
+    await h.finish("local");
+    if (engine === "openai") expect(h.current().sent.filter(f => f.type === "response.create")).toHaveLength(1);
+    const source = await h.store();
+    await h.reply("main-answer", [source], "Career 已經設定為 CC Pocket Bridge。");
+    expect(h.spoken().at(-1)).toContain("Career 已經設定為 CC Pocket Bridge");
+    h.audio("main");
+    await h.finish("main");
+    expect(h.turns().at(-1)).toMatchObject({ state: "completed", answerCommentId: "main-answer" });
+    expect(h.port.submit).not.toHaveBeenCalled();
+  });
+  it("rejects fabricated tokens, rewritten input and task tools", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "查一下進度");
+    routeTool(h, { turnId: "other" });
+    routeTool(h, { turnId: routeId(h), text: "改寫的要求" });
+    routeTool(h, {}, "submit_request");
+    routeTool(h, {}, "query_task_status");
+    await Promise.resolve();
+    expect(h.dictations()).toHaveLength(0);
+    expect(h.port.submit).not.toHaveBeenCalled();
+    expect(h.port.status).not.toHaveBeenCalled();
+    expect(h.events.some(e => e.type === "error" && e.code === "voice_route_rejected")).toBe(true);
+  });
+  it("cannot reuse a route token during main-answer playback", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    const token = routeId(h);
+    routeTool(h, { turnId: token });
+    await Promise.resolve();
+    await h.finish("local");
+    await h.reply("main", [await h.store()], "查好了。");
+    if (engine === "openai") h.fromModel({ type: "response.created", response: { id: "local" } });
+    routeTool(h, { turnId: token });
+    await Promise.resolve();
+    expect(h.dictations()).toHaveLength(1);
+    expect(h.events.some(e => e.type === "error" && e.code === "voice_route_rejected")).toBe(true);
+  });
+  it("rejects a route interrupted by new speech and reports unsent work", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    const token = routeId(h);
+    h.say("speech-2", "先等一下");
+    routeTool(h, { turnId: token });
+    await Promise.resolve();
+    expect(h.dictations()).toHaveLength(0);
+    expect(h.events.some(e => e.type === "error" && e.code === "voice_chat_interrupted")).toBe(true);
+  });
+  it("reports an unfinished route on hangup without sending it to main", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    await h.relay.handleBrowserMessage({ type: "end" });
+    expect(h.dictations()).toHaveLength(0);
+    expect(h.events.some(e => e.type === "error" && e.code === "voice_chat_interrupted")).toBe(true);
+  });
+  it("rejects an old connection token after reconnect without resending input", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    const token = routeId(h);
+    h.current().handlers.onClose(1006, "test-disconnect");
+    await Promise.resolve();
+    h.ready();
+    await Promise.resolve();
+    routeTool(h, { turnId: token });
+    await Promise.resolve();
+    expect(h.dictations()).toHaveLength(0);
+  });
+  it("flushes an early main answer after the tool result settles", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    routeTool(h, { turnId: routeId(h) });
+    // response.done can arrive in the same batch, before runToolCall's continuation.
+    const completed = h.finish("local");
+    await h.reply("early", [await h.store()], "目前還在處理。");
+    await completed;
+    expect(h.spoken().at(-1)).toContain("目前還在處理");
+    h.audio("early-audio");
+    expect(h.browser.sendAudio).toHaveBeenCalled();
+  });
+  it("suppresses output in the same frame as a forward tool call", async () => {
+    if (engine !== "gemini") return;
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    h.fromModel({
+      toolCall: { functionCalls: [{ id: "forward", name: "forward_to_main", args: { turnId: routeId(h) } }] },
+      serverContent: { outputTranscription: { text: "我已經完成工作" }, modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: Buffer.alloc(480).toString("base64") } }] } },
+    });
+    expect(h.browser.sendAudio).not.toHaveBeenCalled();
+    expect(h.events.some(e => e.type === "transcript" && e.role === "model")).toBe(false);
+    expect(h.dictations()).toHaveLength(1);
+  });
+  it("does not speak an invented answer after forwarding to main", async () => {
+    const h = harness(engine, "natural_chat_v2");
+    await h.start();
+    await startRoute(h, "幫我查進度");
+    routeTool(h, { turnId: routeId(h) });
+    await Promise.resolve();
+    if (engine === "openai") {
+      h.fromModel({ type: "response.output_audio_transcript.delta", response_id: "local", delta: "我已經完成工作" });
+      h.fromModel({ type: "response.output_audio.delta", response_id: "local", delta: Buffer.alloc(480).toString("base64") });
+    } else h.fromModel({ serverContent: { outputTranscription: { text: "我已經完成工作" }, modelTurn: { parts: [{ inlineData: { mimeType: "audio/pcm;rate=24000", data: Buffer.alloc(480).toString("base64") } }] } } });
+    expect(h.browser.sendAudio).not.toHaveBeenCalled();
+    expect(h.dictations()).toHaveLength(1);
+  });
+
 });
