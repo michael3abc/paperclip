@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   updateDocumentResourceMembershipSchema,
+  updateAgentResourceMembershipSchema,
   updateResourceMembershipSchema,
 } from "./validators/resource-memberships.js";
 
@@ -20,6 +21,22 @@ describe("resource membership contract", () => {
     expect(() => updateResourceMembershipSchema.parse({ state: "left", starred: true })).toThrow(
       "starred resources must be joined",
     );
+  });
+
+  it("accepts agent chat visibility independently of stars and join state", () => {
+    expect(updateAgentResourceMembershipSchema.parse({ chatPinned: true })).toEqual({ chatPinned: true });
+    expect(updateAgentResourceMembershipSchema.parse({ chatPinned: false })).toEqual({ chatPinned: false });
+    expect(updateAgentResourceMembershipSchema.parse({ state: "left", chatPinned: false })).toEqual({ state: "left", chatPinned: false });
+    expect(updateAgentResourceMembershipSchema.parse({ starred: true, chatPinned: false })).toEqual({ starred: true, chatPinned: false });
+    expect(() => updateResourceMembershipSchema.parse({ chatPinned: true })).toThrow();
+    expect(() => updateDocumentResourceMembershipSchema.parse({ starred: true, chatPinned: true })).toThrow();
+  });
+
+  it("rejects contradictory agent pin/leave requests, invalid values and caller identity fields", () => {
+    for (const value of [{}, { state: "left", chatPinned: true }, { state: "left", starred: true },
+      { chatPinned: null }, { chatPinned: "false" }, { chatPinned: false, userId: "someone-else" }]) {
+      expect(() => updateAgentResourceMembershipSchema.parse(value)).toThrow();
+    }
   });
 
   it("accepts document star updates without join state", () => {

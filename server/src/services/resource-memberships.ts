@@ -45,6 +45,7 @@ export type ResourceMembershipPolicyHook = (input: {
   resourceId: string;
   state: ResourceMembershipState;
   starred?: boolean;
+  chatPinned?: boolean;
 }) => Promise<PolicyDecision> | PolicyDecision;
 
 type ResourceMembershipServiceOptions = {
@@ -52,7 +53,7 @@ type ResourceMembershipServiceOptions = {
   policyHook?: ResourceMembershipPolicyHook | null;
 };
 
-type MembershipChangeKind = ResourceMembershipState | "starred" | "unstarred";
+type MembershipChangeKind = ResourceMembershipState | "starred" | "unstarred" | "chat_pinned" | "chat_unpinned";
 
 type MembershipUpdateResult = ResourceMembershipUpdateResult & {
   changed: boolean;
@@ -154,6 +155,7 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
     resourceId: string;
     state: ResourceMembershipState;
     starred?: boolean;
+    chatPinned?: boolean;
   }): Promise<PolicyDecision> {
     assertBoardSelfMembershipAccess(input.actor, input.companyId, input.userId);
     const decision = await evaluatePolicy(policyHook, input);
@@ -200,6 +202,7 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
             agentId: agentMemberships.agentId,
             state: agentMemberships.state,
             starredAt: agentMemberships.starredAt,
+            chatPinned: agentMemberships.chatPinned,
             updatedAt: agentMemberships.updatedAt,
             agentStatus: agents.status,
           })
@@ -236,6 +239,9 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
       return {
         projectMemberships: defaultJoinedMap(projectRows, "projectId"),
         agentMemberships: defaultJoinedMap(agentRows, "agentId"),
+        agentChatPins: Object.fromEntries(agentRows.flatMap(row =>
+          row.chatPinned === null || row.agentStatus === "terminated" ? [] : [[row.agentId, row.chatPinned]],
+        )),
         starredProjectIds: starredIds(starEligibleProjectRows, "projectId"),
         starredAgentIds: starredIds(starEligibleAgentRows, "agentId"),
         starredDocumentIds: starredDocumentRows.map((row) => row.documentId),
@@ -351,6 +357,7 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
       agentId: string;
       state?: ResourceMembershipState;
       starred?: boolean;
+      chatPinned?: boolean;
       actor: BoardActor;
     }): Promise<MembershipUpdateResult> {
       if (!options.inTransaction) {
@@ -375,7 +382,11 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
       });
       const previousState: ResourceMembershipState = existing?.state === "left" ? "left" : "joined";
       const previousStarredAt = existing?.starredAt ?? null;
-      const nextState: ResourceMembershipState = input.starred === true ? "joined" : input.state ?? previousState;
+      const previousChatPinned = existing?.chatPinned ?? null;
+      const nextChatPinned = input.chatPinned ?? previousChatPinned;
+      const chatPinnedChanged = previousChatPinned !== nextChatPinned;
+      const nextState: ResourceMembershipState = input.starred === true || input.chatPinned === true
+        ? "joined" : input.state ?? previousState;
       const nextStarredAt = nextState === "left"
         ? null
         : input.starred === true
@@ -393,14 +404,16 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
         resourceId: input.agentId,
         state: nextState,
         starred: input.starred,
+        chatPinned: input.chatPinned,
       });
 
-      if (!stateChanged && !starredChanged) {
+      if (!stateChanged && !starredChanged && !chatPinnedChanged) {
         return {
           resourceType: "agent",
           resourceId: input.agentId,
           state: nextState,
           starredAt: previousStarredAt,
+          chatPinned: previousChatPinned,
           updatedAt: existing?.updatedAt ?? new Date(),
           changed: false,
           changeKind: null,
@@ -417,6 +430,7 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           userId: input.userId,
           state: nextState,
           starredAt: nextStarredAt,
+          chatPinned: nextChatPinned,
           updatedAt: now,
         })
         .onConflictDoUpdate({
@@ -424,21 +438,25 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           set: {
             state: nextState,
             starredAt: nextStarredAt,
+            chatPinned: nextChatPinned,
             updatedAt: now,
           },
         })
         .returning();
 
-      if (nextState === "left") await clearPrimaryAgent(db, input.companyId, input.agentId, input.userId);
+      if (stateChanged && nextState === "left") await clearPrimaryAgent(db, input.companyId, input.agentId, input.userId);
 
       return {
         resourceType: "agent",
         resourceId: input.agentId,
         state: row?.state === "left" ? "left" : "joined",
         starredAt: row?.starredAt ?? null,
+        chatPinned: row?.chatPinned ?? null,
         updatedAt: row?.updatedAt ?? now,
         changed: true,
-        changeKind: input.starred !== undefined && starredChanged
+        changeKind: chatPinnedChanged
+          ? nextChatPinned ? "chat_pinned" : "chat_unpinned"
+          : input.starred !== undefined && starredChanged
           ? input.starred ? "starred" : "unstarred"
           : stateChanged ? nextState : nextStarredAt ? "starred" : "unstarred",
         policySource: decision.source ?? "oss_default",

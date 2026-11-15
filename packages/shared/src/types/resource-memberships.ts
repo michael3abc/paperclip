@@ -6,6 +6,8 @@ export type ResourceMembershipResourceType = "project" | "agent" | "document";
 export interface ResourceMemberships {
   projectMemberships: Record<string, ResourceMembershipState>;
   agentMemberships: Record<string, ResourceMembershipState>;
+  /** Explicit personal chat visibility; missing entries keep automatic selection. */
+  agentChatPins?: Record<string, boolean>;
   starredProjectIds?: string[];
   starredAgentIds?: string[];
   starredDocumentIds: string[];
@@ -25,5 +27,7 @@ export interface ResourceMembershipUpdateResult {
   resourceId: string;
   state: ResourceMembershipState;
   starredAt: Date | null;
+  /** Agent responses only. null preserves automatic sidebar selection. */
+  chatPinned?: boolean | null;
   updatedAt: Date;
 }

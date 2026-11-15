@@ -1100,6 +1100,23 @@ These rows are company-scoped and user-scoped. A missing row means the user is j
 
 Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
 
+Migration `0443_square_doorman.sql` adds nullable `agent_memberships.chat_pinned`
+without backfilling existing rows. `null` means automatic chat-sidebar selection;
+`true` explicitly pins the chat and `false` explicitly hides it, including a
+primary, CEO or PM agent. This personal visibility override is independent of
+`starred_at` and `user_company_preferences.primary_agent_id`. Unpin does not leave
+an agent or clear its primary identity. Pin rejoins a left agent without adding
+a star or selecting a primary. Ordinary leave still clears the primary selection.
+
+`GET /companies/:companyId/resource-memberships/me` returns explicit booleans in
+`agentChatPins`; absent keys retain automatic selection. Only the agent-specific
+`PUT /companies/:companyId/resource-memberships/me/agents/:agentId` accepts
+`chatPinned: boolean`, with the existing board-self/company/policy checks. Agent
+responses include nullable `chatPinned`; idempotent repeats preserve it. Changes
+use `resource_membership.chat_pinned` / `resource_membership.chat_unpinned` audit
+actions and the existing membership live-update invalidation. Project and document
+membership writes do not gain chat-visibility semantics.
+
 Private-project authorization uses the separate `project_access_members` table. Its user/agent rows are security grants, not sidebar preferences, and are evaluated by the same issue-read predicate as issue-level grants. Do not merge or overload these two concepts.
 
 ## Decision training snapshot retention

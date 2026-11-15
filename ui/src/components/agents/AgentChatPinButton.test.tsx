@@ -2,7 +2,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, ResourceMemberships, ResourceMembershipUpdateResult, UpdateResourceMembership } from "@paperclipai/shared";
+import type { Agent, ResourceMemberships, ResourceMembershipUpdateResult, UpdateAgentResourceMembership } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentChatPinButton } from "./AgentChatPinButton";
 import { CoordinatorSidebar } from "../CoordinatorSidebar";
@@ -11,6 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 
 const fixture = vi.hoisted(() => ({
   enabled: true,
+  primaryAgentId: null as string | null,
   listMine: vi.fn(),
   updateAgent: vi.fn(),
   pushToast: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("@/api/resourceMemberships", () => ({ resourceMembershipsApi: {
 } }));
 vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: fixture.pushToast }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: fixture.enabled, loaded: true }) }));
+vi.mock("../primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => ({ primaryAgentId: fixture.primaryAgentId, loading: false }) }));
 // Keep the actual sidebar selection and membership hooks; isolate unrelated feeds.
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: "viewer", agents: { data: fixture.agents }, chats: { data: [] }, session: { isSuccess: true },
@@ -51,8 +53,8 @@ const emptyMemberships = (): ResourceMemberships => ({
   projectMemberships: {}, agentMemberships: {}, starredProjectIds: [], starredAgentIds: [], starredDocumentIds: [],
   projectStarredAt: {}, agentStarredAt: {}, documentStarredAt: {}, updatedAt: null,
 });
-const result = (starred: boolean): ResourceMembershipUpdateResult => ({
-  resourceId: agent.id, resourceType: "agent", state: "joined", starredAt: starred ? new Date() : null, updatedAt: new Date(),
+const result = (chatPinned: boolean): ResourceMembershipUpdateResult => ({
+  resourceId: agent.id, resourceType: "agent", state: "joined", starredAt: null, chatPinned, updatedAt: new Date(),
 });
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -84,9 +86,9 @@ async function clickPin() {
   await flush();
   return event;
 }
-function storeStar(starred: boolean) {
+function storePin(chatPinned: boolean) {
   server = { ...server, agentMemberships: { ...server.agentMemberships, [agent.id]: "joined" },
-    starredAgentIds: starred ? [agent.id] : [], agentStarredAt: starred ? { [agent.id]: new Date() } : {} };
+    agentChatPins: { ...server.agentChatPins, [agent.id]: chatPinned } };
 }
 
 beforeEach(() => {
@@ -95,12 +97,13 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   localStorage.clear();
   fixture.enabled = true;
+  fixture.primaryAgentId = null;
   fixture.agents = [agent];
   server = emptyMemberships();
   fixture.listMine.mockImplementation(async () => server);
-  fixture.updateAgent.mockImplementation(async (_company: string, _agent: string, change: UpdateResourceMembership) => {
-    storeStar(change.starred === true);
-    return result(change.starred === true);
+  fixture.updateAgent.mockImplementation(async (_company: string, _agent: string, change: UpdateAgentResourceMembership) => {
+    storePin(change.chatPinned === true);
+    return result(change.chatPinned === true);
   });
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   client.setQueryData(membershipKey, server);
@@ -123,17 +126,37 @@ describe("AgentChatPinButton", () => {
     const event = await clickPin();
     expect(event.defaultPrevented).toBe(true);
     expect(fixture.navigate).not.toHaveBeenCalled();
-    expect(fixture.updateAgent).toHaveBeenLastCalledWith("company", agent.id, { starred: true, state: undefined });
+    expect(fixture.updateAgent).toHaveBeenLastCalledWith("company", agent.id, { chatPinned: true, starred: undefined, state: undefined });
     expect(pinButton().getAttribute("aria-label")).toBe("Unpin Career research chat");
     expect(sidebarLink()).not.toBeNull();
-    expect(client.getQueryData<ResourceMemberships>(membershipKey)?.starredAgentIds).toEqual([agent.id]);
+    expect(client.getQueryData<ResourceMemberships>(membershipKey)?.agentChatPins?.[agent.id]).toBe(true);
+    expect(client.getQueryData<ResourceMemberships>(membershipKey)?.starredAgentIds).toEqual([]);
 
     await clickPin();
-    expect(fixture.updateAgent).toHaveBeenLastCalledWith("company", agent.id, { starred: false, state: undefined });
+    expect(fixture.updateAgent).toHaveBeenLastCalledWith("company", agent.id, { chatPinned: false, starred: undefined, state: undefined });
     expect(pinButton().getAttribute("aria-pressed")).toBe("false");
     expect(sidebarLink()).toBeNull();
     expect(client.getQueryData<ResourceMemberships>(membershipKey)?.agentMemberships[agent.id]).toBe("joined");
     expect(fixture.navigate).not.toHaveBeenCalled();
+  });
+
+  it("unpins the automatic primary entry without changing primary identity, stars or membership", async () => {
+    fixture.primaryAgentId = agent.id;
+    await render(agent, true);
+    expect(pinButton().getAttribute("aria-pressed")).toBe("true");
+    expect(sidebarLink()).not.toBeNull();
+    await clickPin();
+    expect(sidebarLink()).toBeNull();
+    expect(fixture.primaryAgentId).toBe(agent.id);
+    expect(fixture.updateAgent).toHaveBeenLastCalledWith("company", agent.id, { chatPinned: false, starred: undefined, state: undefined });
+    expect(client.getQueryData<ResourceMemberships>(membershipKey)?.agentMemberships[agent.id]).toBe("joined");
+    // A fresh server read keeps the explicit false, despite the primary fallback.
+    await act(async () => { await client.invalidateQueries({ queryKey: membershipKey }); });
+    await flush();
+    expect(sidebarLink()).toBeNull();
+    await clickPin();
+    expect(sidebarLink()).not.toBeNull();
+    expect(fixture.primaryAgentId).toBe(agent.id);
   });
 
   it("optimistically rejoins a left agent and blocks repeated clicks while the request is pending", async () => {
@@ -150,7 +173,7 @@ describe("AgentChatPinButton", () => {
     expect(client.getQueryData<ResourceMemberships>(membershipKey)?.agentMemberships[agent.id]).toBe("joined");
     await act(async () => pinButton().click());
     expect(fixture.updateAgent).toHaveBeenCalledTimes(1);
-    storeStar(true);
+    storePin(true);
     await act(async () => pending.resolve(result(true)));
     await flush();
     expect(pinButton().disabled).toBe(false);
@@ -169,8 +192,23 @@ describe("AgentChatPinButton", () => {
     expect(sidebarLink()).toBeNull();
     expect(client.getQueryData<ResourceMemberships>(membershipKey)?.starredAgentIds).toEqual([]);
     expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Couldn't star Career research.", body: "Cannot save preference", tone: "error",
+      title: "Couldn't pin Career research.", body: "Cannot save preference", tone: "error",
     }));
+  });
+
+  it("restores the primary chat entry when unpin saving fails", async () => {
+    fixture.primaryAgentId = agent.id;
+    const pending = deferred<ResourceMembershipUpdateResult>();
+    fixture.updateAgent.mockReturnValueOnce(pending.promise);
+    await render(agent, true);
+    await clickPin();
+    expect(sidebarLink()).toBeNull();
+    await act(async () => pending.reject(new Error("Cannot save visibility")));
+    await flush();
+    expect(sidebarLink()).not.toBeNull();
+    expect(pinButton().getAttribute("aria-pressed")).toBe("true");
+    expect(fixture.primaryAgentId).toBe(agent.id);
+    expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Couldn't unpin Career research." }));
   });
 
   it("disables pinning until memberships load and shows the load error", async () => {

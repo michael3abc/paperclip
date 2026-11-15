@@ -2,6 +2,7 @@ import type {
   ResourceMemberships,
   ResourceMembershipUpdateResult,
   UpdateResourceMembership,
+  UpdateAgentResourceMembership,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -13,7 +14,7 @@ export const resourceMembershipsApi = {
       `/companies/${companyId}/resource-memberships/me/projects/${projectId}`,
       data,
     ),
-  updateAgent: (companyId: string, agentId: string, data: UpdateResourceMembership) =>
+  updateAgent: (companyId: string, agentId: string, data: UpdateAgentResourceMembership) =>
     api.put<ResourceMembershipUpdateResult>(
       `/companies/${companyId}/resource-memberships/me/agents/${agentId}`,
       data,

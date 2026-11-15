@@ -1748,8 +1748,10 @@ export {
   resourceMembershipStateSchema,
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  updateAgentResourceMembershipSchema,
   type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
+  type UpdateAgentResourceMembership,
 } from "./validators/resource-memberships.js";
 export {
   inboxAgentPolicyModeSchema,

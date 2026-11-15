@@ -246,6 +246,16 @@ describe("Coordinator agents section", () => {
     expect(section()?.querySelector('[aria-expanded]')).toBeNull();
   });
 
+  it("explicit chat unpin hides primary, role-default and starred agents without changing identity", async () => {
+    fixture.primaryAgentId = "a-ceo";
+    fixture.listMemberships.mockResolvedValue({ agentMemberships: {}, projectMemberships: {},
+      starredAgentIds: ["a-ceo"], agentChatPins: { "a-ceo": false, "a-amy": false } });
+    await renderSidebar();
+    expect(rows().map(row => row.textContent)).not.toContain("momo");
+    expect(rows().map(row => row.textContent)).not.toContain("amy");
+    expect(fixture.primaryAgentId).toBe("a-ceo");
+  });
+
   it.each(["terminated", "process", "left"])("does not bypass the %s visibility restriction for a primary agent", async restriction => {
     fixture.agents = [{ id: "a-primary", name: "Primary", role: "general", status: restriction === "terminated" ? "terminated" : "idle", adapterType: restriction === "process" ? "process" : "paperclip_runner" }];
     fixture.primaryAgentId = "a-primary";

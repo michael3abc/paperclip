@@ -12,6 +12,7 @@ import {
   documentMemberships,
   documents,
   projectMemberships,
+  userCompanyPreferences,
   projects,
 } from "@paperclipai/db";
 import {
@@ -170,6 +171,7 @@ describeEmbeddedPostgres("resource membership routes", () => {
     expect(res.body).toEqual({
       projectMemberships: {},
       agentMemberships: {},
+      agentChatPins: {},
       starredProjectIds: [],
       starredAgentIds: [],
       starredDocumentIds: [],
@@ -304,6 +306,97 @@ describeEmbeddedPostgres("resource membership routes", () => {
     ]);
   });
 
+  it("hides and pins a primary chat independently of its star and membership, with idempotent audit", async () => {
+    const { companyId, agentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+    const url = `/api/companies/${companyId}/resource-memberships/me/agents/${agentId}`;
+    const starredAt = new Date("2026-01-01T00:00:00Z");
+    await db.insert(agentMemberships).values({ companyId, agentId, userId: "user-1", state: "joined", starredAt });
+    await db.insert(userCompanyPreferences).values({ companyId, userId: "user-1", primaryAgentId: agentId, primaryAgentInitialized: true });
+
+    const hidden = await request(app).put(url).send({ chatPinned: false }).expect(200);
+    expect(hidden.body).toMatchObject({ resourceId: agentId, state: "joined", starredAt: starredAt.toISOString(), chatPinned: false });
+    const repeated = await request(app).put(url).send({ chatPinned: false }).expect(200);
+    expect(repeated.body.chatPinned).toBe(false);
+    const list = await request(app).get(`/api/companies/${companyId}/resource-memberships/me`).expect(200);
+    expect(list.body.agentChatPins).toEqual({ [agentId]: false });
+    expect(list.body.starredAgentIds).toEqual([agentId]);
+    expect((await db.select().from(userCompanyPreferences).where(eq(userCompanyPreferences.companyId, companyId)))[0].primaryAgentId).toBe(agentId);
+    expect((await db.select().from(agentMemberships))[0]).toMatchObject({ state: "joined", starredAt, chatPinned: false });
+
+    const activity = await db.select().from(activityLog);
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({ action: "resource_membership.chat_unpinned", entityType: "agent", entityId: agentId });
+    expect(activity[0].details).toMatchObject({ chatPinned: false, starred: true, state: "joined" });
+
+    await request(app).put(url).send({ chatPinned: true }).expect(200);
+    expect((await db.select().from(userCompanyPreferences).where(eq(userCompanyPreferences.companyId, companyId)))[0].primaryAgentId).toBe(agentId);
+    expect((await db.select().from(agentMemberships))[0]).toMatchObject({ state: "joined", starredAt, chatPinned: true });
+    // Joining/starring through older clients must not overwrite an explicit chat override.
+    await request(app).put(url).send({ starred: false }).expect(200);
+    expect((await db.select().from(agentMemberships))[0]).toMatchObject({ chatPinned: true, starredAt: null });
+  });
+
+  it("persists an unpin for an unstarred primary while ordinary leave still clears primary", async () => {
+    const { companyId, agentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+    const url = `/api/companies/${companyId}/resource-memberships/me/agents/${agentId}`;
+    await db.insert(userCompanyPreferences).values({ companyId, userId: "user-1", primaryAgentId: agentId, primaryAgentInitialized: true });
+    await request(app).put(url).send({ chatPinned: false }).expect(200);
+    expect((await db.select().from(agentMemberships))[0]).toMatchObject({ chatPinned: false, state: "joined", starredAt: null });
+    expect((await db.select().from(userCompanyPreferences).where(eq(userCompanyPreferences.companyId, companyId)))[0].primaryAgentId).toBe(agentId);
+    await request(app).put(url).send({ state: "left" }).expect(200);
+    expect((await db.select().from(userCompanyPreferences).where(eq(userCompanyPreferences.companyId, companyId)))[0].primaryAgentId).toBeNull();
+    expect((await db.select().from(agentMemberships))[0]).toMatchObject({ chatPinned: false, state: "left", starredAt: null });
+  });
+
+  it("pinning rejoins a left agent without starring it or selecting it as primary", async () => {
+    const { companyId, agentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+    const url = `/api/companies/${companyId}/resource-memberships/me/agents/${agentId}`;
+    await request(app).put(url).send({ state: "left" }).expect(200);
+    const response = await request(app).put(url).send({ chatPinned: true }).expect(200);
+    expect(response.body).toMatchObject({ state: "joined", starredAt: null, chatPinned: true });
+    expect((await db.select().from(agentMemberships))[0]).toMatchObject({ state: "joined", starredAt: null, chatPinned: true });
+    expect(await db.select().from(userCompanyPreferences).where(eq(userCompanyPreferences.companyId, companyId))).toEqual([]);
+    const list = await request(app).get(`/api/companies/${companyId}/resource-memberships/me`).expect(200);
+    expect(list.body.agentChatPins).toEqual({ [agentId]: true });
+    expect(list.body.starredAgentIds).toEqual([]);
+  });
+
+  it("keeps chat visibility personal and defaults legacy rows to automatic selection", async () => {
+    const { companyId, agentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+    const second = createApp(db, { ...boardActor(companyId), userId: "user-2" });
+    const url = `/api/companies/${companyId}/resource-memberships/me/agents/${agentId}`;
+    await request(app).put(url).send({ starred: true }).expect(200);
+    const auto = await request(app).get(`/api/companies/${companyId}/resource-memberships/me`).expect(200);
+    expect(auto.body.agentChatPins).toEqual({});
+    expect((await db.select().from(agentMemberships))[0].chatPinned).toBeNull();
+    await request(app).put(url).send({ chatPinned: false }).expect(200);
+    await request(second).put(url).send({ chatPinned: true }).expect(200);
+    const firstList = await request(app).get(`/api/companies/${companyId}/resource-memberships/me`).expect(200);
+    const secondList = await request(second).get(`/api/companies/${companyId}/resource-memberships/me`).expect(200);
+    expect(firstList.body.agentChatPins).toEqual({ [agentId]: false });
+    expect(secondList.body.agentChatPins).toEqual({ [agentId]: true });
+  });
+
+  it("keeps chat-pin writes within board-self company scope and rejects contradictory leave", async () => {
+    const { companyId, agentId, otherAgentId, terminatedAgentId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+    const path = (id: string) => `/api/companies/${companyId}/resource-memberships/me/agents/${id}`;
+    await request(app).put(path(agentId)).send({ state: "left", chatPinned: true }).expect(400);
+    await request(app).put(path(agentId)).send({ chatPinned: false, userId: "other-user" }).expect(400);
+    await request(app).put(path(otherAgentId)).send({ chatPinned: true }).expect(404);
+    await request(app).put(path(terminatedAgentId)).send({ chatPinned: true }).expect(404);
+    const agentApp = createApp(db, { type: "agent", agentId, companyId, source: "agent_key" });
+    await request(agentApp).put(path(agentId)).send({ chatPinned: false }).expect(403);
+    const outsider = createApp(db, { ...boardActor(companyId), memberships: [], companyIds: [] });
+    await request(outsider).put(path(agentId)).send({ chatPinned: true }).expect(403);
+    await expect(resourceMembershipService(db).updateAgent({ companyId, agentId, userId: "other-user", chatPinned: true, actor: boardActor(companyId) })).rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(agentMemberships)).toEqual([]);
+  });
+
   it("unstars agents idempotently without requiring a state change", async () => {
     const { companyId, agentId } = await seed();
     const app = createApp(db, boardActor(companyId));
@@ -347,6 +440,7 @@ describeEmbeddedPostgres("resource membership routes", () => {
     await db.insert(agentMemberships).values({
       companyId,
       agentId: terminatedAgentId,
+      chatPinned: true,
       userId: "user-1",
       state: "joined",
       starredAt,
@@ -360,6 +454,7 @@ describeEmbeddedPostgres("resource membership routes", () => {
     expect(res.body.agentMemberships[terminatedAgentId]).toBe("joined");
     expect(res.body.starredProjectIds).toEqual([]);
     expect(res.body.starredAgentIds).toEqual([]);
+    expect(res.body.agentChatPins).toEqual({});
     expect(res.body.projectStarredAt).toEqual({});
     expect(res.body.agentStarredAt).toEqual({});
   });

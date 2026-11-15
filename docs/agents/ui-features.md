@@ -26,14 +26,21 @@ preserve lifecycle, service-account
 and membership visibility restrictions regardless of primary selection or stars.
 Pin the primary agent first and sort the remaining agents alphabetically.
 Do not add a worker expansion control or change dispatch to implement this filter.
-Agents list rows and the agent detail header expose AgentChatPinButton. Pins reuse
-company/person resource-membership stars; pinning rejoins a left agent. Unpinning
-removes the star only: primary/CEO/PM agents remain automatically listed unless left.
-No chat is created by pinning. Keep the control visible on mobile, stop row-link
-navigation on click, disable until memberships load and during saving, and preserve
-mutation rollback/error toasts. Process accounts and terminated/pending agents have
-no pin control. Hide chat pins when Agent Chat is disabled. Both Agents page
-variants use the same control.
+Agents list rows and the agent detail header expose AgentChatPinButton. Chat visibility
+is a separate company/person/agent preference: agent_memberships.chat_pinned is
+nullable (null = existing primary/CEO/PM/star inclusion, true = explicitly show,
+false = explicitly hide). GET resource-memberships returns agentChatPins with only
+explicit boolean entries; agent PUT accepts chatPinned. Unpin never leaves the
+agent, clears its star, or changes primary-agent identity. Pin rejoins a left agent
+without selecting it as primary. The UI uses the same effective visibility helper
+for the button and sidebar, so an automatically listed primary starts with Unpin.
+No chat is created by pinning. Existing preferences are not backfilled or changed.
+Keep the control visible on mobile, stop row-link navigation, disable until data
+loads/during saving, and preserve rollback/error toasts. Process accounts and
+terminated/pending agents have no pin control. Hide chat pins when Agent Chat is
+disabled. Both Agents page variants use the same control. The primary crown remains
+visible in the roster/detail even when that agent's chat entry is hidden.
+
 
 Project PM sidebar rows show a presentation-only status. CoordinatorSidebar and
 both SidebarAgents variants use useProjectPmSidebarStatus; change all three in lockstep. Blue frame, `working` label and pulsing dot:

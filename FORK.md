@@ -9,7 +9,7 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
-- Agent chat pin buttons (HOM-265): roster and detail header reuse personal membership stars to show ordinary-role agents in Coordinator navigation. UI-only overlay; no role or dispatch changes.
+- Agent chat pin buttons (HOM-265): roster and detail header share explicit nullable `chatPinned` membership preferences. Unpin hides even the primary agent while preserving its identity and stars. Additive database column, agent membership API and UI; existing automatic defaults remain until changed.
 
 - Shared image gallery zoom (HOM-265): fitted 1–5x images with zoom controls,
   wheel/keyboard/double-click, bounded drag and touch pinch; reset on navigation

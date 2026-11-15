@@ -138,8 +138,10 @@ export {
   resourceMembershipStateSchema,
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  updateAgentResourceMembershipSchema,
   type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
+  type UpdateAgentResourceMembership,
 } from "./resource-memberships.js";
 export {
   generateSummarySlotSchema,

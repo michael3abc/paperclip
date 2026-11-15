@@ -1,3 +1,4 @@
+import { isAgentChatVisible } from "@/lib/agent-chat-visibility";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Inbox, Bell, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, Mic, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug } from "lucide-react";
@@ -8,7 +9,7 @@ import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
-import { isStarred, resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
+import { useResourceMemberships } from "@/hooks/useResourceMemberships";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { useDialogActions } from "@/context/DialogContext";
@@ -106,12 +107,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     enabled: sharedLiveRuns.enabled, refetchInterval: sharedLiveRuns.refetchInterval });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns.data, liveRuns.dataUpdatedAt);
   const listedAgents = useMemo(() => (agents.data ?? [])
-    // `process` agents only run a command (service accounts such as CCPocket Delivery) and cannot hold a conversation.
-    // Agents the person starred are listed too, so a project's main agent with an ordinary role can be pinned here.
-    .filter(agent => agent.status !== "terminated" && agent.adapterType !== "process"
-      && (agent.id === primaryAgentId || agent.role === "ceo" || agent.role === "pm"
-        || (agentMemberships.isSuccess && isStarred(agentMemberships.data, "agent", agent.id)))
-      && (!agentMemberships.isSuccess || resourceMembershipState(agentMemberships.data, "agent", agent.id) !== "left"))
+    // Explicit chat pins override primary/role/star defaults, without changing identity.
+    .filter(agent => isAgentChatVisible(agent, agentMemberships.data, primaryAgentId))
     .sort((left, right) => Number(right.id === primaryAgentId) - Number(left.id === primaryAgentId)
       || left.name.localeCompare(right.name, undefined, { sensitivity: "base" })),
   [agents.data, agentMemberships.data, agentMemberships.isSuccess, primaryAgentId]);

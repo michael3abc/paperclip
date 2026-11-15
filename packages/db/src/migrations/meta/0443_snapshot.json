@@ -1,6 +1,6 @@
 {
-  "id": "9375a894-a109-4982-a2d5-8062c25fb8dc",
-  "prevId": "7d3e6c55-7b1c-489d-99fa-12274969c598",
+  "id": "819c5866-5dbd-44b5-9f06-c17062262337",
+  "prevId": "aff41516-af56-4b68-b47e-a355888b3424",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2943,6 +2943,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "chat_pinned": {
+          "name": "chat_pinned",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -4659,7 +4665,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -5132,7 +5138,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
         }
       },
       "isRLSEnabled": false
@@ -15716,7 +15722,7 @@
           "name": "conversation_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "issue_id": {
           "name": "issue_id",
@@ -16078,7 +16084,11 @@
         },
         "chat_voice_sessions_binding_mode_check": {
           "name": "chat_voice_sessions_binding_mode_check",
-          "value": "\"chat_voice_sessions\".\"binding_mode\" is null or \"chat_voice_sessions\".\"binding_mode\" = 'voice_task'"
+          "value": "\"chat_voice_sessions\".\"binding_mode\" is null or \"chat_voice_sessions\".\"binding_mode\" in ('voice_task', 'agent_chat')"
+        },
+        "chat_voice_sessions_conversation_check": {
+          "name": "chat_voice_sessions_conversation_check",
+          "value": "\"chat_voice_sessions\".\"conversation_id\" is not null or \"chat_voice_sessions\".\"binding_mode\" = 'agent_chat'"
         }
       },
       "isRLSEnabled": false
@@ -21846,6 +21856,13 @@
         },
         "project_order": {
           "name": "project_order",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "excluded_pm_status_agent_ids": {
+          "name": "excluded_pm_status_agent_ids",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -42151,6 +42168,81 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.issue_watchdog_events": {
+      "name": "issue_watchdog_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "issue_watchdog_events_company_pending_idx": {
+          "name": "issue_watchdog_events_company_pending_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "issue_watchdog_events_company_id_companies_id_fk": {
+          "name": "issue_watchdog_events_company_id_companies_id_fk",
+          "tableFrom": "issue_watchdog_events",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },

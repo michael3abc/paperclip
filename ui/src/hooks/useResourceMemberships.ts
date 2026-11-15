@@ -16,6 +16,8 @@ type MutationVariables = {
   state?: ResourceMembershipState;
   /** Star / unstar transition. Omit to only change join/leave state. */
   starred?: boolean;
+  /** Explicit chat visibility; independent of stars and primary-agent identity. */
+  chatPinned?: boolean;
 };
 
 type JoinableResourceType = Exclude<ResourceMembershipResourceType, "document">;
@@ -51,7 +53,7 @@ function applyMembershipChange(
   current: ResourceMemberships | undefined,
   resourceType: JoinableResourceType,
   resourceId: string,
-  change: { state?: ResourceMembershipState; starred?: boolean },
+  change: { state?: ResourceMembershipState; starred?: boolean; chatPinned?: boolean | null },
 ): ResourceMemberships {
   const base = current ?? emptyMemberships();
   const keys = starKeys(resourceType);
@@ -61,7 +63,7 @@ function applyMembershipChange(
   const previousState: ResourceMembershipState =
     currentStateMap[resourceId] === "left" ? "left" : "joined";
   const nextState: ResourceMembershipState =
-    change.starred === true ? "joined" : change.state ?? previousState;
+    (change.starred === true || (resourceType === "agent" && change.chatPinned === true)) ? "joined" : change.state ?? previousState;
 
   // Resolve next starred set.
   const currentStarredIds = base[keys.ids as "starredProjectIds"] ?? [];
@@ -88,6 +90,10 @@ function applyMembershipChange(
 
   return {
     ...base,
+    ...(resourceType === "agent" && change.chatPinned !== undefined ? {
+      agentChatPins: Object.fromEntries(Object.entries({ ...base.agentChatPins, [resourceId]: change.chatPinned })
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean")),
+    } : {}),
     [keys.state]: {
       ...currentStateMap,
       [resourceId]: nextState,
@@ -152,7 +158,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
   return useMutation({
     mutationFn: (variables: MutationVariables) => {
       if (!companyId) throw new Error("Select an organization first.");
-      const body = { state: variables.state, starred: variables.starred };
+      const body = { state: variables.state, starred: variables.starred, ...(variables.chatPinned === undefined ? {} : { chatPinned: variables.chatPinned }) };
       return variables.resourceType === "project"
         ? resourceMembershipsApi.updateProject(companyId, variables.resourceId, body)
         : resourceMembershipsApi.updateAgent(companyId, variables.resourceId, body);
@@ -165,6 +171,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
         applyMembershipChange(previous, variables.resourceType, variables.resourceId, {
           state: variables.state,
           starred: variables.starred,
+          chatPinned: variables.chatPinned,
         }),
       );
       return { previous };
@@ -173,7 +180,9 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
       if (context?.previous) {
         queryClient.setQueryData(queryKey, context.previous);
       }
-      const verb = variables.starred !== undefined
+      const verb = variables.chatPinned !== undefined
+        ? variables.chatPinned ? "pin" : "unpin"
+        : variables.starred !== undefined
         ? variables.starred ? "star" : "unstar"
         : variables.state === "left" ? "leave" : "join";
       pushToast({
@@ -189,6 +198,7 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
         (current) => applyMembershipChange(current, variables.resourceType, result.resourceId, {
           state: result.state,
           starred: result.starredAt != null,
+          chatPinned: result.chatPinned,
         }),
       );
     },

@@ -1,0 +1,1 @@
+ALTER TABLE "agent_memberships" ADD COLUMN "chat_pinned" boolean;

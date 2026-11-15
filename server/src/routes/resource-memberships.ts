@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  updateAgentResourceMembershipSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo } from "./authz.js";
@@ -26,7 +27,8 @@ async function logMembershipChange(
     resourceId: string;
     state: "joined" | "left";
     starredAt: Date | null;
-    changeKind: "joined" | "left" | "starred" | "unstarred";
+    chatPinned?: boolean | null;
+    changeKind: "joined" | "left" | "starred" | "unstarred" | "chat_pinned" | "chat_unpinned";
     policySource: string;
   },
 ) {
@@ -48,6 +50,7 @@ async function logMembershipChange(
       state: input.state,
       starredAt: input.starredAt,
       starred: input.starredAt !== null,
+      ...(input.chatPinned === undefined ? {} : { chatPinned: input.chatPinned }),
       policySource: input.policySource,
     },
   });
@@ -99,7 +102,7 @@ export function resourceMembershipRoutes(db: Db) {
 
   router.put(
     "/companies/:companyId/resource-memberships/me/agents/:agentId",
-    validate(updateResourceMembershipSchema),
+    validate(updateAgentResourceMembershipSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const agentId = req.params.agentId as string;
@@ -111,6 +114,7 @@ export function resourceMembershipRoutes(db: Db) {
         userId,
         state: req.body.state,
         starred: req.body.starred,
+        chatPinned: req.body.chatPinned,
         actor: req.actor,
       });
       if (result.changed && result.changeKind) {
@@ -121,6 +125,7 @@ export function resourceMembershipRoutes(db: Db) {
           resourceId: agentId,
           state: result.state,
           starredAt: result.starredAt,
+          chatPinned: result.chatPinned,
           changeKind: result.changeKind,
           policySource: result.policySource,
         });

@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, uniqueIndex, index, boolean } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 
@@ -11,6 +11,8 @@ export const agentMemberships = pgTable(
     userId: text("user_id").notNull(),
     state: text("state").notNull().default("joined"),
     starredAt: timestamp("starred_at", { withTimezone: true }),
+    // null keeps automatic sidebar selection; false hides chat without leaving or changing primary.
+    chatPinned: boolean("chat_pinned"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

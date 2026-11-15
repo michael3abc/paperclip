@@ -3088,6 +3088,13 @@
       "when": 1794676217340,
       "tag": "0442_loose_masque",
       "breakpoints": true
+    },
+    {
+      "idx": 443,
+      "version": "7",
+      "when": 1794743254990,
+      "tag": "0443_square_doorman",
+      "breakpoints": true
     }
   ]
 }
