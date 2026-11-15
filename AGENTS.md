@@ -25,6 +25,8 @@ Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host I
 
 Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`.
 
+Local voice media belongs to the company/user-scoped provider above routes; navigating chats must neither dispose it nor retarget the active agent. See `docs/agents/ui-features.md`.
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.

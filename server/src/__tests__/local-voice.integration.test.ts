@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -57,6 +58,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (!started.media) throw new Error("expected local media");
     const sessionId = started.session.id, token = started.media.transportToken;
     const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, sessionId));
+    if (!session.conversationId) throw new Error("voice_task fixture requires a conversation");
     const conversationId = session.conversationId;
     const send = (message: unknown, opts: { token?: string; sessionId?: string; companyId?: string; caller?: typeof caller } = {}) =>
       service.local.tool(opts.companyId ?? companyId, opts.sessionId ?? sessionId, opts.caller ?? caller,
@@ -131,6 +133,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, f.sessionId));
       expect(session).toMatchObject({ mode: "browser", state: "connecting", bindingMode: "voice_task", bindingProjectId: f.projectId, issueId: f.issueId, assignedAgentId: f.agentId });
       expect(session.providerSessionId).toMatch(/^local:[0-9a-f-]{36}$/);
+      if (!session.conversationId) throw new Error("voice_task session requires a conversation");
       const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, session.conversationId));
       expect(conversation.externalThreadId).toBe(`local_voice:${session.conversationId}`);
       expect(f.credentials).not.toHaveBeenCalled();
@@ -563,7 +566,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
       const binding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId, sessionId: session.id, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false });
       expect(binding).toMatchObject({ mode: "agent_chat", issue: { id: f.chatId } });
-      const port = createLocalVoiceTaskPort(db, f.service, { binding, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false, subscribe: () => () => undefined });
+      const port = createLocalVoiceTaskPort(db, f.service, { binding, caller: f.caller, token: started.media!.transportToken, allowLocalBoard: false, subscribe: (_companyId, listener) => { const events = new EventEmitter(); events.on("live", listener); return () => events.off("live", listener); } });
       const later = new Date(Date.now() + 1000);
       await db.insert(issueComments).values([
         { companyId: f.companyId, issueId: f.chatId, authorAgentId: f.agentId, body: "Working on it", origin: "fast_response", createdAt: later },

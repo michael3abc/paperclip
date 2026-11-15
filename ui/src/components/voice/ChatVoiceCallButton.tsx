@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Check, ChevronDown, Loader2, Mic, MicOff, Phone, PhoneOff, X } from "lucide-react";
@@ -6,15 +6,14 @@ import { localVoiceApi } from "@/api/localVoice";
 import { Button } from "@/components/ui/button";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { cn } from "@/lib/utils";
-import { createLocalVoiceCall, type LocalVoiceCall, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
+import { type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
+import { matchesLocalVoiceCall, useLocalVoiceCall, useLocalVoiceSurface } from "./LocalVoiceCallProvider";
 import { AgentVoiceSelect, useAgentVoice } from "./AgentVoiceSelect";
 
 export interface ChatVoiceCallButtonProps {
   companyId: string;
   agentId: string;
   agentName: string;
-  /** Test seam. */
-  call?: LocalVoiceCall;
 }
 
 function formatClock(seconds: number) {
@@ -50,7 +49,7 @@ function SentMark({ entry }: { entry: LocalVoiceSentEntry }) {
  * browser and used from the next call on (HOM-265).
  * Hidden when local voice or Agent Chat is off.
  */
-export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injected }: ChatVoiceCallButtonProps) {
+export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoiceCallButtonProps) {
   const status = useQuery({
     queryKey: ["local-voice", "status", companyId],
     queryFn: () => localVoiceApi.status(companyId),
@@ -58,28 +57,27 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
     retry: false,
   });
   const agentChat = useAgentChatEnabled();
-  const call = useMemo(() => injected ?? createLocalVoiceCall(), [injected]);
-  useEffect(() => () => call.dispose(), [call]);
-  const state = useSyncExternalStore(call.subscribe, call.getSnapshot);
-  const [callShown, setCallShown] = useState(false);
+  const host = useLocalVoiceCall();
+  const { call, state } = host;
+  const callShown = matchesLocalVoiceCall(host.binding, { companyId, agentId, mode: "agent_chat" }, state);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [voice, setVoice] = useAgentVoice(agentId);
   /** The voice the open call started with; a different choice applies to the next call. */
-  const [callVoice, setCallVoice] = useState<string | null>(null);
-  const live = state.phase === "live";
-  const active = state.phase === "starting" || live || state.phase === "ending";
+  const callVoice = host.binding?.voiceName ?? null;
+  const live = callShown && state.phase === "live";
+  const active = callShown && host.active;
   const elapsed = useElapsed(state.startedAt, live);
   const available = status.data?.enabled === true && status.data.relayConfigured === true && agentChat.enabled;
-  useEffect(() => { if (state.phase === "error") setDetailsOpen(true); }, [state.phase]);
+  useLocalVoiceSurface({ companyId, agentId, mode: "agent_chat" }, available || callShown);
+  useEffect(() => setDetailsOpen(false), [companyId, agentId]);
+  useEffect(() => { if (callShown && state.phase === "error") setDetailsOpen(true); }, [callShown, state.phase]);
 
   if (!available && !active && !callShown) return null;
 
   const start = () => {
-    setCallShown(true);
     setDetailsOpen(false);
-    setCallVoice(voice);
     // Must stay inside the click: the call creates its AudioContext synchronously.
-    void call.start({ companyId, agentId, mode: "agent_chat", ...(voice ? { voiceName: voice } : {}) });
+    host.start({ companyId, agentId, agentName, mode: "agent_chat", ...(voice ? { voiceName: voice } : {}) });
   };
   const onButton = () => {
     if (active) {
@@ -88,8 +86,8 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
     }
     start();
   };
-  const dismiss = () => { setCallShown(false); setDetailsOpen(false); };
-  const replyAgent = state.agentName ?? agentName;
+  const dismiss = () => { host.dismiss(); setDetailsOpen(false); };
+  const replyAgent = callShown ? state.agentName ?? host.binding?.agentName ?? agentName : agentName;
   const caption = [...state.transcript].reverse().find((entry) => entry.role === "user") ?? null;
   const recentSent = state.sentLog.slice(-3);
   const statusText = state.phase === "starting" ? "Connecting…"
@@ -144,7 +142,9 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
     </section>
   ) : null;
 
-  const label = active ? `End voice call with ${agentName}` : `Voice call with ${agentName}`;
+  const blocked = host.active && !callShown;
+  const startUnavailableReason = host.startUnavailableReason(companyId);
+  const label = active ? `End voice call with ${replyAgent}` : `Voice call with ${agentName}`;
   return (
     <div className="flex shrink-0 items-center gap-1">
       {callShown && (
@@ -180,9 +180,9 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
         size="icon-sm"
         className={cn("size-9 shrink-0 rounded-full", active ? "bg-destructive/10 text-destructive hover:bg-destructive/20" : "text-muted-foreground")}
         aria-label={label}
-        title={label}
+        title={startUnavailableReason ?? (blocked ? `Already in a voice call with ${host.binding?.agentName}. End that call before starting another.` : label)}
         aria-pressed={active}
-        disabled={state.phase === "ending"}
+        disabled={blocked || state.phase === "ending" || (!active && Boolean(startUnavailableReason))}
         onClick={onButton}
       >
         {active ? <PhoneOff className="h-4 w-4" /> : <Phone className="h-4 w-4" />}

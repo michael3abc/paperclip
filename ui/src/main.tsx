@@ -1,4 +1,5 @@
 import { PdfPreviewProvider } from "./components/PdfPreviewProvider";
+import { LocalVoiceCallProvider } from "./components/voice/LocalVoiceCallProvider";
 import { VoiceCallProvider } from "./components/voice/VoiceCallProvider";
 import { useAccountIdentity } from "./api/companies-query";
 import * as React from "react";
@@ -98,7 +99,7 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
 function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const { userId } = useAccountIdentity();
-  return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
+  return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}><LocalVoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</LocalVoiceCallProvider></VoiceCallProvider>;
 }
 
 const rootElement = document.getElementById("root");

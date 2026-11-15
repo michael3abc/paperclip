@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AlertTriangle, Check, Loader2, Mic, MicOff, Phone, PhoneOff, Send, X } from "lucide-react";
 import { LOCAL_VOICE_CONFIRMATION_PHRASE } from "@paperclipai/shared";
+import { matchesLocalVoiceCall, useLocalVoiceCall, useLocalVoiceSurface } from "./LocalVoiceCallProvider";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
-import { createLocalVoiceCall, type LocalVoiceCall, type LocalVoiceMode, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
+import { type LocalVoiceMode, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
 
 function formatClock(seconds: number) {
   const safe = Math.max(0, Math.floor(seconds));
@@ -32,8 +33,6 @@ export interface LocalVoicePanelProps {
   mode?: LocalVoiceMode;
   /** This agent's remembered voice (HOM-265); null or omitted uses the server default. Read at each call start. */
   voiceName?: string | null;
-  /** Test seam. */
-  call?: LocalVoiceCall;
 }
 
 function SentStatus({ entry }: { entry: LocalVoiceSentEntry }) {
@@ -50,31 +49,41 @@ function SentStatus({ entry }: { entry: LocalVoiceSentEntry }) {
  * `voice_task`: drafts are confirmed by the spoken phrase or the button here.
  * Approvals, deployment and settings changes are never available by voice.
  */
-export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: requestedMode, voiceName = null, call: injected }: LocalVoicePanelProps) {
+export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: requestedMode, voiceName = null }: LocalVoicePanelProps) {
   const mode: LocalVoiceMode = requestedMode ?? (issueId ? "voice_task" : "agent_chat");
   const chatMode = mode === "agent_chat";
-  const call = useMemo(() => injected ?? createLocalVoiceCall(), [injected]);
-  useEffect(() => () => call.dispose(), [call]);
-  const state = useSyncExternalStore(call.subscribe, call.getSnapshot);
+  const host = useLocalVoiceCall();
+  const { call, state } = host;
+  const startUnavailableReason = host.startUnavailableReason(companyId);
+  const ownsCall = matchesLocalVoiceCall(host.binding, { companyId, agentId, mode, issueId }, state);
+  useLocalVoiceSurface({ companyId, agentId, mode, issueId });
   const [text, setText] = useState("");
-  const live = state.phase === "live";
+  const live = ownsCall && state.phase === "live";
   const elapsed = useElapsed(state.startedAt, live);
   const remaining = state.maxSeconds - elapsed;
   const busy = state.phase === "starting" || state.phase === "ending";
   /** The voice the open call started with; a different choice applies to the next call. */
-  const [callVoice, setCallVoice] = useState<string | null>(null);
+  const callVoice = host.binding?.voiceName ?? null;
 
   const start = (newConversation = false) => {
-    setCallVoice(voiceName);
     const voice = voiceName ? { voiceName } : {};
-    if (chatMode) return void call.start({ companyId, agentId, mode, ...voice });
-    void call.start({ companyId, agentId, mode, ...(issueId && !newConversation ? { issueId } : {}), ...(newConversation ? { newConversation: true } : {}), ...voice });
+    if (chatMode) return void host.start({ companyId, agentId, agentName, mode, ...voice });
+    void host.start({ companyId, agentId, agentName, mode, ...(issueId && !newConversation ? { issueId } : {}), ...(newConversation ? { newConversation: true } : {}), ...voice });
   };
   const replyAgent = state.agentName ?? agentName;
   const submitText = (event: FormEvent) => {
     event.preventDefault();
     if (call.sendText(text)) setText("");
   };
+
+  if (!ownsCall) return <section aria-label={`Voice call with ${agentName}`} className="flex flex-col gap-3">
+    {startUnavailableReason && <p role="status" className="text-sm text-muted-foreground">{startUnavailableReason}</p>}
+    {host.active && <p role="status" className="text-sm text-muted-foreground">Voice call with {host.binding?.agentName} is still active. End that call before starting another.</p>}
+    <div className="flex flex-wrap gap-2">
+      <Button size="sm" disabled={host.active || Boolean(startUnavailableReason)} onClick={() => start(false)}><Phone aria-hidden /> Start voice call</Button>
+      {!chatMode && <Button variant="ghost" size="sm" disabled={host.active || Boolean(startUnavailableReason)} onClick={() => start(true)}>New voice task</Button>}
+    </div>
+  </section>;
 
   return (
     <section className="flex min-w-0 flex-col gap-4" aria-label={`Voice call with ${agentName}`}>
@@ -85,8 +94,8 @@ export function LocalVoicePanel({ companyId, agentId, agentName, issueId, mode: 
           </Button>
         ) : (
           <>
-            <Button size="sm" onClick={() => start(false)}><Phone aria-hidden /> Start voice call</Button>
-            {!chatMode && <Button variant="ghost" size="sm" onClick={() => start(true)}>New voice task</Button>}
+            <Button size="sm" disabled={Boolean(startUnavailableReason)} onClick={() => start(false)}><Phone aria-hidden /> Start voice call</Button>
+            {!chatMode && <Button variant="ghost" size="sm" disabled={Boolean(startUnavailableReason)} onClick={() => start(true)}>New voice task</Button>}
           </>
         )}
         {live && (state.mic === "live"

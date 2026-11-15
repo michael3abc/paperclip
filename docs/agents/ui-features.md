@@ -160,3 +160,20 @@ keep their existing behavior. Video playback has no image zoom controls.
 
 Verify ImageGalleryModal interaction tests and actual browser layout/gestures at
 desktop and narrow viewport sizes; no backend, schema or API changes are needed.
+
+## Local voice continuity across navigation
+
+LocalVoiceCallProvider owns one local voice call per company/user application scope,
+above route content. ChatVoiceCallButton and LocalVoicePanel are consumers; route
+unmount does not dispose media. A call retains its original company, agent, mode,
+issue and voice while the user browses other chats/pages. Starting another call is
+blocked until the current call ends; never silently retarget dictated messages.
+The current call remains identifiable and controllable (pause/resume listening,
+hang up) through a global call bar when its original page controls are absent.
+User/company changes, logout and application unmount dispose media. Start must
+invoke the audio constructor synchronously inside the user's click, preserving
+browser audio permission. Keep voice_task confirmation and agent_chat submission
+semantics unchanged. This local controller is separate from the existing Speko
+VoiceCallProvider. Test route unmount/remount, return to the original chat, scope
+cleanup and no duplicate start; browser fixtures are not live microphone/gateway
+acceptance.

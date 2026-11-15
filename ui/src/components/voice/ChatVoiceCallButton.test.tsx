@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalVoiceCall, LocalVoiceCallSnapshot } from "@/lib/local-voice/local-voice-call";
+import { LocalVoiceCallProvider } from "./LocalVoiceCallProvider";
 import { ChatVoiceCallButton } from "./ChatVoiceCallButton";
 
 const mocks = vi.hoisted(() => ({ status: vi.fn(), chatEnabled: true }));
@@ -39,7 +40,7 @@ describe("ChatVoiceCallButton", () => {
   });
   afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); window.localStorage.clear(); });
   async function render(call: LocalVoiceCall) {
-    await act(async () => root.render(<QueryClientProvider client={client}><ChatVoiceCallButton companyId="company" agentId="agent-1" agentName="michael" call={call} /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><LocalVoiceCallProvider companyId="company" userId="viewer" createCall={() => call}><ChatVoiceCallButton companyId="company" agentId="agent-1" agentName="michael" /></LocalVoiceCallProvider></QueryClientProvider>));
   }
   const callButton = () => container.querySelector<HTMLButtonElement>('button[aria-label$="voice call with michael"], button[aria-label="Voice call with michael"]');
 

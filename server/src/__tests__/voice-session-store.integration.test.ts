@@ -1674,6 +1674,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, f.call.sessionId!));
     const authority = await db.transaction(tx => f.store.authorizePrincipal(tx, f.companyId, f.endpointId, `voice:${session.id}`));
     expect(authority).toMatchObject({allowed: true, userId: null});
+    if (!session.conversationId) throw new Error("voice intake requires a conversation");
     const [publication] = await db.insert(chatPublications).values({companyId: f.companyId, endpointId: f.endpointId, conversationId: session.conversationId, issueId: task.id, idempotencyKey: randomUUID(), state: "published", payload: {text: "Here is a draft for your public inquiry."}}).returning();
     await f.store.enqueuePublication(f.companyId, publication.id);
     expect(await f.tool("get_updates", {cursor: 0})).toMatchObject({updates: [{text: "Here is a draft for your public inquiry."}]});

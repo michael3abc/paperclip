@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalVoiceCall, LocalVoiceCallSnapshot } from "@/lib/local-voice/local-voice-call";
+import { LocalVoiceCallProvider } from "./LocalVoiceCallProvider";
 import { LocalVoicePanel } from "./LocalVoicePanel";
 
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
@@ -32,7 +33,7 @@ describe("LocalVoicePanel voice choice", () => {
   beforeEach(() => { container = document.createElement("div"); document.body.append(container); root = createRoot(container); });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
   const render = (call: LocalVoiceCall, voiceName: string | null) => act(async () => root.render(
-    <LocalVoicePanel companyId="company" agentId="agent-1" agentName="momo" mode="voice_task" voiceName={voiceName} call={call} />,
+    <LocalVoiceCallProvider companyId="company" userId="viewer" createCall={() => call}><LocalVoicePanel companyId="company" agentId="agent-1" agentName="momo" mode="voice_task" voiceName={voiceName} /></LocalVoiceCallProvider>,
   ));
   const button = (text: string) => [...container.querySelectorAll("button")].find((item) => item.textContent?.includes(text))!;
 
