@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, RotateCcw, Sparkles } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Loader2, RotateCcw, Zap } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
@@ -13,8 +13,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import {
   BRIDGE_ADAPTER_TYPE, MAIN_AGENT_EFFORT_SAVE_DELAY, bridgeCatalogForScope, bridgeModelDisplayName, bridgeModelEfforts,
-  canEditAgentConfiguration, compactBridgeModelName, effortForModel, groupBridgeCatalog, mainAgentEffortLabel,
-  readMainAgentModelScope, sameSelection, saveMainAgentModel,
+  bridgeModelHasFastTier, canEditAgentConfiguration, compactBridgeModelName, effortForModel, groupBridgeCatalog,
+  mainAgentEffortLabel, readMainAgentModelScope, sameSelection, saveMainAgentModel, serviceTierForModel,
   type BridgeCatalogModel, type MainAgentModelSelection,
 } from "./main-agent-model";
 import "./main-agent-model-picker.css";
@@ -30,11 +30,14 @@ type View = "main" | "models";
 const HELPER_TEXT = "Applies from the next turn in this session.";
 const PILL_CLASS = "inline-flex h-8 min-w-0 max-w-full items-center gap-1 rounded-full px-2.5 text-xs font-medium text-muted-foreground";
 const ICON_BUTTON_CLASS = "grid shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40";
+/** The fast toggle stays focusable and hoverable while unavailable so its tooltip explains why. */
+const FAST_TOGGLE_CLASS = "aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground";
+const NO_FAST_TIER = "This model has no fast tier";
 
 /**
- * Main-agent chat composer control for the agent's saved Bridge model and effort.
- * Changes save as soon as the slider settles or a model is picked, and apply from the
- * agent's next turn in the same native session.
+ * Main-agent chat composer control for the agent's saved Bridge model, effort and Codex fast
+ * mode. Changes save as soon as the slider settles, a model is picked or fast mode is toggled,
+ * and apply from the agent's next turn in the same native session.
  */
 export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props) {
   const queryClient = useQueryClient();
@@ -53,7 +56,7 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
   const saved = readMainAgentModelScope(agent.adapterConfig);
 
   const savedRef = useRef(saved);
-  const serverRef = useRef<MainAgentModelSelection>({ model: saved.model, effort: saved.effort });
+  const serverRef = useRef<MainAgentModelSelection>({ model: saved.model, effort: saved.effort, serviceTier: saved.serviceTier });
   const draftRef = useRef<MainAgentModelSelection | null>(null);
   const queuedRef = useRef<MainAgentModelSelection | null>(null);
   const busyRef = useRef(false);
@@ -87,9 +90,9 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
   // Fresh agent data replaces the optimistic value, except while our own saves are running.
   useEffect(() => {
     if (busyRef.current) return;
-    serverRef.current = { model: saved.model, effort: saved.effort };
+    serverRef.current = { model: saved.model, effort: saved.effort, serviceTier: saved.serviceTier };
     setOptimistic(null);
-  }, [saved.model, saved.effort]);
+  }, [saved.model, saved.effort, saved.serviceTier]);
 
   const setDraft = (next: MainAgentModelSelection | null) => {
     draftRef.current = next;
@@ -103,7 +106,7 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
 
   const applySaved = (next: MainAgentModelSelection) => {
     queryClient.setQueryData<Agent[]>(queryKeys.agents.list(companyId), (list) => list?.map((item) => item.id === agent.id
-      ? { ...item, adapterConfig: { ...item.adapterConfig, model: next.model, effort: next.effort } }
+      ? { ...item, adapterConfig: { ...item.adapterConfig, model: next.model, effort: next.effort, serviceTier: next.serviceTier } }
       : item));
     void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
     if (agent.urlKey) void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
@@ -179,7 +182,8 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
   const effortIndex = Math.max(0, stops.indexOf(effortForModel(shown.effort, efforts)));
   const displayName = bridgeModelDisplayName(shown.model, catalog, saved) || "Default model";
   const pillEffort = shown.effort ? mainAgentEffortLabel(shown.effort) : null;
-  const summary = pillEffort ? `${pillEffort}, ${displayName}` : displayName;
+  const fastOn = shown.serviceTier === "fast";
+  const summary = `${pillEffort ? `${pillEffort}, ` : ""}${displayName}${fastOn ? ", Fast" : ""}`;
 
   // Move focus with the view: into the list when it opens, back to the model button when it closes.
   useEffect(() => {
@@ -215,6 +219,12 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
         </>
       ) : null}
       <span data-testid="main-agent-model-pill-model" className="min-w-0 truncate">{compactBridgeModelName(displayName)}</span>
+      {fastOn ? (
+        <>
+          <span aria-hidden className="shrink-0 opacity-60">·</span>
+          <span data-testid="main-agent-model-pill-fast" className="main-agent-model-accent shrink-0">Fast</span>
+        </>
+      ) : null}
     </>
   );
 
@@ -233,24 +243,39 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
     setViewState(next);
   };
   const onOpenChange = (next: boolean) => {
-    if (next) setBaseline({ model: (optimistic ?? saved).model, effort: (optimistic ?? saved).effort });
-    else flush();
+    if (next) {
+      const current = optimistic ?? saved;
+      setBaseline({ model: current.model, effort: current.effort, serviceTier: current.serviceTier });
+    } else flush();
     sliderFocusPendingRef.current = false;
     setViewState("main");
     setViewChanged(false);
     setOpen(next);
   };
   const changeEffort = (index: number) => {
-    setDraft({ model: shown.model, effort: stops[index] ?? "" });
+    setDraft({ model: shown.model, effort: stops[index] ?? "", serviceTier: shown.serviceTier });
     clearTimer();
     timerRef.current = window.setTimeout(flush, MAIN_AGENT_EFFORT_SAVE_DELAY);
   };
   const chooseModel = (model: BridgeCatalogModel) => {
     if (model.id !== shown.model) {
-      commit({ model: model.id, effort: effortForModel(shown.effort, bridgeModelEfforts(model)) });
+      commit({
+        model: model.id, effort: effortForModel(shown.effort, bridgeModelEfforts(model)),
+        serviceTier: serviceTierForModel(shown.serviceTier, model),
+      });
     }
     setView("main");
   };
+  // Fast needs a model that offers it; a fast setting the model lacks can still be turned off.
+  const fastAvailable = bridgeModelHasFastTier(selectedModel);
+  const fastEnabled = fastAvailable || fastOn;
+  const toggleFast = () => {
+    if (!fastEnabled) return;
+    commit({ model: shown.model, effort: shown.effort, serviceTier: fastOn ? "standard" : "fast" });
+  };
+  // Until the model's catalog entry is known, an off toggle only names itself.
+  const fastTitle = selectedModel && !fastAvailable ? NO_FAST_TIER
+    : fastOn ? "Fast mode is on" : selectedModel ? "Fast mode is off" : "Fast mode";
   const resetEnabled = Boolean(baseline && !sameSelection(shown, baseline));
   const reset = () => {
     if (!baseline) return;
@@ -304,11 +329,13 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
   const mainView = (
     <div className={cn("flex flex-col gap-4", mobile ? "px-4 pb-5 pt-2" : "p-4")} data-testid="main-agent-model-main-view">
       <div className="flex items-center gap-2">
-        <span className={cn("grid shrink-0 place-items-center text-muted-foreground", iconBox)} aria-hidden>
+        <button type="button" aria-label="Fast mode" aria-pressed={fastOn} aria-disabled={!fastEnabled} title={fastTitle}
+          onClick={toggleFast} data-testid="main-agent-model-fast" data-slot={mobile ? undefined : "icon-button"}
+          className={cn(ICON_BUTTON_CLASS, FAST_TOGGLE_CLASS, iconBox, fastOn && "main-agent-model-accent")}>
           {saving
-            ? <Loader2 className="size-4 animate-spin" data-testid="main-agent-model-saving" />
-            : <Sparkles className="size-4" />}
-        </span>
+            ? <Loader2 className="size-4 animate-spin" aria-hidden data-testid="main-agent-model-saving" />
+            : <Zap className="size-4" aria-hidden fill={fastOn ? "currentColor" : "none"} />}
+        </button>
         <div className="flex min-w-0 flex-1 flex-col items-center gap-0.5 text-center">
           <span data-testid="main-agent-model-effort"
             className={cn("text-sm font-semibold", headerMuted ? "text-muted-foreground" : "main-agent-model-accent")}>
@@ -322,7 +349,7 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
           </button>
         </div>
         <button type="button" aria-label="Revert changes" disabled={!resetEnabled} onClick={reset}
-          title={baseline ? `Revert to ${baseline.effort ? `${mainAgentEffortLabel(baseline.effort)} · ` : ""}${bridgeModelDisplayName(baseline.model, catalog, saved) || "Default model"}` : undefined}
+          title={baseline ? `Revert to ${baseline.effort ? `${mainAgentEffortLabel(baseline.effort)} · ` : ""}${bridgeModelDisplayName(baseline.model, catalog, saved) || "Default model"}${baseline.serviceTier === "fast" ? " · Fast" : ""}` : undefined}
           className={cn(ICON_BUTTON_CLASS, iconBox)} data-slot={mobile ? undefined : "icon-button"}>
           <RotateCcw className="size-4" aria-hidden />
         </button>

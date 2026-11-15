@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "@/api/agents";
 import type { CurrentBoardAccess } from "@/api/access";
 import {
-  bridgeCatalogForScope, bridgeModelDisplayName, bridgeModelEfforts, canEditAgentConfiguration, compactBridgeModelName,
-  effortForModel, groupBridgeCatalog, humanizeBridgeModelId, isBridgeMainAgent, mainAgentEffortLabel,
-  MainAgentModelConflictError, readMainAgentModelScope, saveMainAgentModel, unqualifiedBridgeModelId,
+  bridgeCatalogForScope, bridgeModelDisplayName, bridgeModelEfforts, bridgeModelHasFastTier, canEditAgentConfiguration,
+  compactBridgeModelName, effortForModel, groupBridgeCatalog, humanizeBridgeModelId, isBridgeMainAgent, mainAgentEffortLabel,
+  MainAgentModelConflictError, readMainAgentModelScope, saveMainAgentModel, serviceTierForModel, unqualifiedBridgeModelId,
 } from "./main-agent-model";
 
 const scope = { hostId: "michael-server", provider: "codex" };
@@ -27,7 +27,29 @@ describe("main agent model helpers", () => {
 
   it("reads the saved scope with the Bridge's default executor", () => {
     expect(readMainAgentModelScope({ hostId: "michael-server", model: "michael-server/codex/gpt-6-sol" }))
-      .toEqual({ hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-sol", effort: "" });
+      .toEqual({ hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-sol", effort: "", serviceTier: "standard" });
+  });
+
+  it("reads the saved service tier: only fast is fast", () => {
+    expect(readMainAgentModelScope({ serviceTier: "fast" }).serviceTier).toBe("fast");
+    expect(readMainAgentModelScope({ serviceTier: " fast " }).serviceTier).toBe("fast");
+    for (const serviceTier of ["standard", "priority", "", 1, null, undefined]) {
+      expect(readMainAgentModelScope({ serviceTier }).serviceTier).toBe("standard");
+    }
+  });
+
+  it("offers fast only for catalog models that report the fast tier", () => {
+    const fast = { id: "m", label: "m", serviceTiers: ["standard", "fast"] };
+    const standard = { id: "s", label: "s", serviceTiers: ["standard"] };
+    expect(bridgeModelHasFastTier(fast)).toBe(true);
+    expect(bridgeModelHasFastTier({ id: "f", label: "f", serviceTiers: ["fast"] })).toBe(true);
+    expect(bridgeModelHasFastTier(standard)).toBe(false);
+    expect(bridgeModelHasFastTier({ id: "x", label: "x", serviceTiers: "fast" })).toBe(false);
+    expect(bridgeModelHasFastTier({ id: "x", label: "x" })).toBe(false);
+    expect(bridgeModelHasFastTier(undefined)).toBe(false);
+    expect(serviceTierForModel("fast", fast)).toBe("fast");
+    expect(serviceTierForModel("fast", standard)).toBe("standard");
+    expect(serviceTierForModel("standard", fast)).toBe("standard");
   });
 
   it("keeps Bridge order and qualified IDs while fixing the host and executor", () => {
@@ -136,13 +158,15 @@ describe("main agent model helpers", () => {
   });
 
   it("patches only model and effort, bound to the current configuration revision", async () => {
-    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high" };
+    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "standard" as const };
+    // A config without serviceTier reads as standard; an unchanged tier is not written.
     vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
-      adapterConfig: { ...saved, role: "main", env: { TOKEN: "***REDACTED***" } }, configurationRevision: "rev-9",
+      adapterConfig: { ...scope, model: saved.model, effort: saved.effort, role: "main", env: { TOKEN: "***REDACTED***" } },
+      configurationRevision: "rev-9",
     } as never);
     const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
     await saveMainAgentModel({ agentId: "agent-1", companyId: "company-1", saved,
-      next: { model: "michael-server/codex/gpt-6-astra", effort: "low" } });
+      next: { model: "michael-server/codex/gpt-6-astra", effort: "low", serviceTier: "standard" } });
     expect(update).toHaveBeenCalledWith("agent-1", {
       adapterConfig: { model: "michael-server/codex/gpt-6-astra", effort: "low" },
       expectedConfigurationRevision: "rev-9",
@@ -150,18 +174,37 @@ describe("main agent model helpers", () => {
   });
 
   it.each([
+    { from: "standard", to: "fast", stored: {} },
+    { from: "fast", to: "standard", stored: { serviceTier: "fast" } },
+  ] as const)("writes serviceTier $to when fast mode changes from $from", async ({ from, to, stored }) => {
+    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: from };
+    vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
+      adapterConfig: { hostId: saved.hostId, provider: saved.provider, model: saved.model, effort: saved.effort, ...stored },
+      configurationRevision: "rev-9",
+    } as never);
+    const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
+    await saveMainAgentModel({ agentId: "agent-1", companyId: "company-1", saved,
+      next: { model: saved.model, effort: "high", serviceTier: to } });
+    expect(update).toHaveBeenCalledWith("agent-1", {
+      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: to },
+      expectedConfigurationRevision: "rev-9",
+    }, "company-1");
+  });
+
+  it.each([
     { label: "model", change: { model: "michael-server/codex/other" } },
     { label: "effort", change: { effort: "low" } },
+    { label: "service tier", change: { serviceTier: "fast" } },
     { label: "host", change: { hostId: "shopee-d" } },
     { label: "executor", change: { provider: "claude" } },
   ])("refuses to save when the $label changed elsewhere", async ({ change }) => {
-    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high" };
+    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "standard" as const };
     vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
       adapterConfig: { ...saved, ...change }, configurationRevision: "rev-9",
     } as never);
     const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
     await expect(saveMainAgentModel({ agentId: "agent-1", companyId: "company-1", saved,
-      next: { model: "michael-server/codex/gpt-6-astra", effort: "" } })).rejects.toBeInstanceOf(MainAgentModelConflictError);
+      next: { model: "michael-server/codex/gpt-6-astra", effort: "", serviceTier: "standard" } })).rejects.toBeInstanceOf(MainAgentModelConflictError);
     expect(update).not.toHaveBeenCalled();
   });
 });

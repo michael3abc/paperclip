@@ -23,9 +23,9 @@ const agent = {
 } as unknown as Agent;
 
 const catalog = [
-  { id: "michael-server/codex/gpt-6-sol", label: "GPT-6.1 Sol", source: "Subscription", efforts: ["low", "medium", "high", "xhigh"] },
-  { id: "michael-server/codex/compass-6.1-sol", label: "compass-6.1-sol", source: "Compass", efforts: [] },
-  { id: "michael-server/codex/gpt-6-astra", label: "gpt-6-astra", source: "Subscription", efforts: ["low", "medium"] },
+  { id: "michael-server/codex/gpt-6-sol", label: "GPT-6.1 Sol", source: "Subscription", efforts: ["low", "medium", "high", "xhigh"], serviceTiers: ["standard", "fast"] },
+  { id: "michael-server/codex/compass-6.1-sol", label: "compass-6.1-sol", source: "Compass", efforts: [], serviceTiers: ["standard"] },
+  { id: "michael-server/codex/gpt-6-astra", label: "gpt-6-astra", source: "Subscription", efforts: ["low", "medium"], serviceTiers: ["standard", "fast"] },
 ];
 
 function boardAccess(role: "owner" | "operator" | "viewer"): CurrentBoardAccess {
@@ -98,6 +98,8 @@ const pillEffort = () => container!.querySelector('[data-testid="main-agent-mode
 const pillModel = () => container!.querySelector('[data-testid="main-agent-model-pill-model"]')?.textContent ?? null;
 const slider = () => document.querySelector<HTMLInputElement>('input[aria-label="Effort"]');
 const resetButton = () => document.querySelector<HTMLButtonElement>('button[aria-label="Revert changes"]');
+const fastToggle = () => document.querySelector<HTMLButtonElement>('button[aria-label="Fast mode"]');
+const pillFast = () => container!.querySelector('[data-testid="main-agent-model-pill-fast"]')?.textContent ?? null;
 const options = () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')];
 const option = (name: string) => options().find((item) => item.textContent === name);
 
@@ -297,6 +299,8 @@ describe("MainAgentModelPicker", () => {
     await release(slider()!);
     expect(update).toHaveBeenCalledTimes(1);
 
+    // The lightning toggle shows the spinner in place of its icon while saving.
+    expect(fastToggle()!.contains(byTestId("main-agent-model-saving"))).toBe(true);
     await act(async () => { resolvers.shift()!(); });
     await settle();
     expect(update).toHaveBeenCalledTimes(2);
@@ -323,6 +327,97 @@ describe("MainAgentModelPicker", () => {
     expect(pillModel()).toBe("6.1 Sol");
   });
 
+  it.each([false, true])("toggles fast mode with the lightning button and marks the pill (mobile: %s)", async (mobile) => {
+    const update = mockSavedUpdate();
+    await render({ mobile });
+    expect(pillFast()).toBeNull();
+    await click(pill());
+    const toggle = fastToggle()!;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.getAttribute("aria-disabled")).toBe("false");
+    expect(toggle.title).toBe("Fast mode is off");
+    expect(toggle.querySelector("svg")).not.toBeNull();
+    expect(toggle.classList.contains("main-agent-model-accent")).toBe(false);
+
+    await click(toggle);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith("agent-main", {
+      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "fast" },
+      expectedConfigurationRevision: "rev-1",
+    }, "company-1");
+    expect(fastToggle()!.getAttribute("aria-pressed")).toBe("true");
+    expect(fastToggle()!.title).toBe("Fast mode is on");
+    expect(fastToggle()!.classList.contains("main-agent-model-accent")).toBe(true);
+    expect(pillFast()).toBe("Fast");
+    expect(pill()!.getAttribute("aria-label")).toBe("Effort and model: High, GPT-6.1 Sol, Fast");
+    expect(resetButton()!.disabled).toBe(false);
+
+    await click(fastToggle());
+    expect(update).toHaveBeenLastCalledWith("agent-main", {
+      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "standard" },
+      expectedConfigurationRevision: "rev-1",
+    }, "company-1");
+    expect(fastToggle()!.getAttribute("aria-pressed")).toBe("false");
+    expect(pillFast()).toBeNull();
+  });
+
+  it("mutes fast mode for a model without the fast tier", async () => {
+    const update = mockSavedUpdate();
+    await render();
+    await click(pill());
+    await click(byTestId("main-agent-model-current"));
+    await click(option("6.1 Sol"));
+    expect(update).toHaveBeenCalledTimes(1);
+    const toggle = fastToggle()!;
+    expect(toggle.getAttribute("aria-disabled")).toBe("true");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(toggle.title).toBe("This model has no fast tier");
+    await click(toggle);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(pillFast()).toBeNull();
+  });
+
+  it("saves standard when switching from fast mode to a model without the fast tier", async () => {
+    serverAgent = { ...agent, adapterConfig: { ...agent.adapterConfig, serviceTier: "fast" } } as Agent;
+    const update = mockSavedUpdate();
+    await render();
+    // The pill shows fast mode before the catalog loads.
+    expect(pillFast()).toBe("Fast");
+    expect(pill()!.getAttribute("aria-label")).toBe("Effort and model: High, GPT-6 Sol, Fast");
+    await click(pill());
+    expect(fastToggle()!.getAttribute("aria-pressed")).toBe("true");
+    await click(byTestId("main-agent-model-current"));
+    // A model that also offers fast keeps it; the tier is not rewritten.
+    await click(option("GPT-6 Astra"));
+    expect(update).toHaveBeenLastCalledWith("agent-main", {
+      adapterConfig: { model: "michael-server/codex/gpt-6-astra", effort: "" },
+      expectedConfigurationRevision: "rev-1",
+    }, "company-1");
+    expect(pillFast()).toBe("Fast");
+    await click(byTestId("main-agent-model-current"));
+    await click(option("6.1 Sol"));
+    expect(update).toHaveBeenLastCalledWith("agent-main", {
+      adapterConfig: { model: "michael-server/codex/compass-6.1-sol", effort: "", serviceTier: "standard" },
+      expectedConfigurationRevision: "rev-1",
+    }, "company-1");
+    expect(fastToggle()!.getAttribute("aria-pressed")).toBe("false");
+    expect(pillFast()).toBeNull();
+    expect(serverAgent.adapterConfig).toMatchObject({ serviceTier: "standard" });
+  });
+
+  it("does not save over fast mode changed elsewhere", async () => {
+    const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
+    vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
+      ...agent, adapterConfig: { ...agent.adapterConfig, serviceTier: "fast" }, configurationRevision: "rev-2",
+    } as never);
+    await render();
+    await click(pill());
+    await click(fastToggle());
+    expect(update).not.toHaveBeenCalled();
+    expect(container!.querySelector('[data-testid="toasts"] li')!.textContent).toContain("changed elsewhere");
+    expect(fastToggle()!.getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("shows the same pill, read-only, to viewers without agent configuration access", async () => {
     await render({ role: "viewer" });
     expect(pill()).toBeNull();
@@ -331,6 +426,12 @@ describe("MainAgentModelPicker", () => {
     expect(readOnly.tagName).toBe("SPAN");
     expect(readOnly.querySelector("button, svg")).toBeNull();
     expect(agentsApi.adapterModels).not.toHaveBeenCalled();
+  });
+
+  it("shows fast mode on the read-only pill", async () => {
+    serverAgent = { ...agent, adapterConfig: { ...agent.adapterConfig, serviceTier: "fast" } } as Agent;
+    await render({ role: "viewer" });
+    expect(container!.querySelector('[data-testid="main-agent-model-readonly"]')!.textContent).toBe("High·GPT-6 Sol·Fast");
   });
 
   it("reverts the optimistic selection and reports a failed save", async () => {
