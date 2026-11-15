@@ -83,7 +83,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
   const card = cardOpen ? (
     <section
       aria-label={`Voice call with ${agentName}`}
-      className="fixed right-4 top-16 z-50 flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
+      className="fixed left-4 right-4 top-16 z-50 flex sm:left-auto sm:w-88 flex-col gap-3 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
@@ -136,7 +136,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName, call: injec
           <Button size="sm" onClick={start}><Phone aria-hidden /> Call again</Button>
         ) : null}
       </div>
-      <p className="text-[11px] leading-snug text-muted-foreground">
+      <p className="text-xs leading-snug text-muted-foreground">
         What you say is posted to this Chat when you stop talking. Approvals and deployments still need the on-screen controls.
       </p>
     </section>
