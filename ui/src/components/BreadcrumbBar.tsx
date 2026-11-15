@@ -82,6 +82,11 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
     [selectedCompanyId, selectedCompany?.issuePrefix],
   );
 
+  const currentActions = breadcrumbs[breadcrumbs.length - 1]?.actions;
+  const pageActions = currentActions ? (
+    <div className="ml-2 flex shrink-0 items-center gap-1">{currentActions}</div>
+  ) : null;
+
   const globalToolbarSlots = (
     <GlobalToolbar
       context={globalToolbarSlotContext}
@@ -225,6 +230,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
         {coordinatorEnabled && !breadcrumbs[0].control && breadcrumbs[0].trailing ? (
           <span className="ml-2 flex shrink-0 items-center">{breadcrumbs[0].trailing}</span>
         ) : null}
+        {pageActions}
         {globalToolbarSlots}
         {mobileTaskPanelControl}
       </div>
@@ -241,6 +247,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
     >
       {menuButton}
       {breadcrumbTrail}
+      {pageActions}
       {globalToolbarSlots}
       {taskDetailLayout ? (
         <Button

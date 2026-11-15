@@ -5,6 +5,7 @@ import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
 import { AgentChatReadProvider } from "@/hooks/useAgentChatRead";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
+import { ChatVoiceCallButton } from "@/components/voice/ChatVoiceCallButton";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
 import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
@@ -5961,6 +5962,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         leadingKey: `agent:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}`,
         trailing: coordinatorWorkspaceEnabled ? undefined : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
         trailingKey: `${coordinatorWorkspaceEnabled ? "switch" : "configure"}:${conversationAgent.id}`,
+        actions: <ChatVoiceCallButton companyId={conversationAgent.companyId} agentId={conversationAgent.id} agentName={conversationAgent.name} />,
+        actionsKey: `voice:${conversationAgent.companyId}:${conversationAgent.id}:${conversationAgent.name}`,
       }]);
       return;
     }

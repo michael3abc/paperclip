@@ -26,6 +26,13 @@ export interface Breadcrumb {
   control?: ReactNode;
   /** Stable identity for the control, following leadingKey semantics. */
   controlKey?: string;
+  /**
+   * Page actions shown at the right end of the top bar (desktop and mobile) when
+   * this is the current crumb, e.g. the Chat voice-call button.
+   */
+  actions?: ReactNode;
+  /** Stable identity for `actions`, following leadingKey semantics. */
+  actionsKey?: string;
 }
 
 interface BreadcrumbContextValue {
@@ -63,6 +70,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
       || left[index]?.leadingKey !== right[index]?.leadingKey
       || left[index]?.trailingKey !== right[index]?.trailingKey
       || left[index]?.controlKey !== right[index]?.controlKey
+      || left[index]?.actionsKey !== right[index]?.actionsKey
     ) {
       return false;
     }

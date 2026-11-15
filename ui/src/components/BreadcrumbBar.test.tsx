@@ -203,6 +203,28 @@ describe("BreadcrumbBar", () => {
     expect(container.querySelector('button[aria-label="Hide properties"]')).not.toBeNull();
   });
 
+  it.each([false, true])("shows the current crumb's page actions at the right end with a control label (mobile=%s)", async (mobile) => {
+    viewport.isMobile = mobile;
+    function ChatBreadcrumb() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{
+          label: "CodexCoder",
+          control: <span>CodexCoder switcher</span>,
+          controlKey: "switch",
+          actions: <button aria-label="Voice call with CodexCoder">Call</button>,
+          actionsKey: "voice:first",
+        }]);
+      }, [setBreadcrumbs]);
+      return <BreadcrumbBar taskDetailLayout />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><ChatBreadcrumb /></BreadcrumbProvider>));
+    const call = container.querySelector<HTMLButtonElement>('button[aria-label="Voice call with CodexCoder"]');
+    expect(call).not.toBeNull();
+    expect(call?.closest('[data-slot="breadcrumb-item"]')).toBeNull();
+    expect(container.textContent).toContain("CodexCoder switcher");
+  });
+
   it("shows only the title followed by its identifier for a company-scoped mobile task header", async () => {
     viewport.isMobile = true;
     await act(async () => {
