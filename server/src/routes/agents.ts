@@ -43,7 +43,7 @@ import {
   type AiConnectionBinding,
   type AiRuntimeConnectionBinding,
 } from "@paperclipai/shared";
-import { toolConnections } from "@paperclipai/db";
+import { projectWorkspaces, toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
@@ -2743,7 +2743,20 @@ export function agentRoutes(
     );
   }
 
-  function assertNoAgentLocalAdapterHostCommandMutation(
+  /** Owner 2026-11-15 (「給 dot 有權限」): an agent may point a local adapter at a
+   * directory the Owner already registered as a project workspace in its company. */
+  async function isRegisteredWorkspaceCwd(req: Request, cwd: unknown): Promise<boolean> {
+    if (typeof cwd !== "string" || !cwd.trim() || req.actor.type !== "agent" || !req.actor.companyId) return false;
+    try {
+      const [row] = await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.companyId, req.actor.companyId), eq(projectWorkspaces.cwd, cwd.trim()))).limit(1);
+      return Boolean(row);
+    } catch {
+      return false; // Unverifiable registration keeps the default restriction.
+    }
+  }
+
+  async function assertNoAgentLocalAdapterHostCommandMutation(
     req: Request,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
@@ -2752,8 +2765,9 @@ export function agentRoutes(
   ) {
     if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && adapterType !== "paperclip_runner")) return;
     const harness = agentHarnessType(adapterType, harnessConfig);
+    const cwdAllowed = await isRegisteredWorkspaceCwd(req, adapterConfig.cwd);
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
-      adapterConfig[key] !== undefined &&
+      adapterConfig[key] !== undefined && !(key === "cwd" && cwdAllowed) &&
       (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(harness, adapterConfig.env, allowPlainCredentials)),
     );
     if (changedKeys.length === 0) return;
@@ -4424,7 +4438,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rollbackAdapterConfig);
     if (req.actor.type === "agent" && rollbackAdapterConfig.homeMode !== asRecord(existing.adapterConfig)?.homeMode)
       throw forbidden("Only an operator can configure Runner homeMode.");
-    assertNoAgentLocalAdapterHostCommandMutation(req, rollbackAdapterType, rollbackAdapterConfig);
+    await assertNoAgentLocalAdapterHostCommandMutation(req, rollbackAdapterType, rollbackAdapterConfig);
     assertNoAgentProcessAdapterMutation(
       req,
       rollbackAdapterType,
@@ -4600,7 +4614,7 @@ export function agentRoutes(
     const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     assertNoAgentAdapterConfigMutation(req, requestedHireConfig);
-    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType ?? "process", requestedHireConfig, await callerUsesAiConnectionPool(req, companyId));
+    await assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType ?? "process", requestedHireConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, hireInput.adapterType ?? "process", Object.keys(requestedHireConfig).length > 0);
     assertExternalInstructionsAdmin(req, { id: hiredAgentId, companyId, name: hireInput.name, adapterConfig: requestedHireConfig });
 
@@ -4643,7 +4657,7 @@ export function agentRoutes(
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
+    await assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
@@ -4961,7 +4975,7 @@ export function agentRoutes(
     const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
-    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
+    await assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, createInput.adapterType ?? "process", Object.keys(requestedCreateConfig).length > 0);
     assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
     let configurationWarnings: AgentConfigurationWarning[] = [];
@@ -4980,7 +4994,7 @@ export function agentRoutes(
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
-    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
+    await assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, createInput.adapterType, Object.keys(rawCreateAdapterConfig).length > 0);
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -5791,7 +5805,7 @@ export function agentRoutes(
       if (req.actor.type === "agent" && rawEffectiveAdapterConfig.homeMode !== existingAdapterConfig.homeMode)
         throw forbidden("Only an operator can configure Runner homeMode.");
       if (changingAdapterType || requestedAdapterConfig) {
-        assertNoAgentLocalAdapterHostCommandMutation(
+        await assertNoAgentLocalAdapterHostCommandMutation(
           req,
           requestedAdapterType,
           changingAdapterType ? rawEffectiveAdapterConfig : (requestedAdapterConfig ?? {}),
