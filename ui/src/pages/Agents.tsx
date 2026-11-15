@@ -1,3 +1,4 @@
+import { AgentChatPinButton } from "@/components/agents/AgentChatPinButton";
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -392,6 +393,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         )}
         trailing={
           <div className="flex items-center gap-3">
+            <AgentChatPinButton agent={agent} />
             {agentChat.enabled && <Button variant="ghost" size="sm" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(`/chats/${agentRouteRef(agent)}`); }}>Chat</Button>}
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (

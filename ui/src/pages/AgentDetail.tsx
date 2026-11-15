@@ -1,3 +1,4 @@
+import { AgentChatPinButton } from "@/components/agents/AgentChatPinButton";
 import { RunCancelButton, RunStopSettlementStatus } from "@/components/RunCancelButton";
 import { PmWorkerSettings } from "../components/PmWorkerSettings";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
@@ -893,6 +894,7 @@ export function AgentDetail() {
               onSave={(name) => saveHeaderField({ name })}
             />
             <PrimaryAgentCrownButton agent={agent} />
+            <AgentChatPinButton agent={agent} />
           </div>
           <div className="mt-1 flex items-center gap-1.5 text-xs leading-4 text-muted-foreground">
             {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"

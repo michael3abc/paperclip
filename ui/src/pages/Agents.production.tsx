@@ -1,3 +1,4 @@
+import { AgentChatPinButton } from "@/components/agents/AgentChatPinButton";
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -385,6 +386,7 @@ export function Agents() {
         )}
         trailing={
           <div className="flex items-center gap-3">
+            <AgentChatPinButton agent={agent} />
             <div className="hidden sm:flex items-center gap-3">
               {liveRunByAgent.has(agent.id) && (
                 <LiveRunIndicator

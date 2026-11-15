@@ -23,6 +23,8 @@ Dashboard subscription quota sources are company-scoped operator configuration; 
 Codex Business/Enterprise monthly credit quotas come from RPC individualLimit; preserve its remaining percentage and reset. Metadata-only credits are not reported quota, and RPC credit amounts are not dollars.
 Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host ID to independent concurrent-run limit). Task models retain full host/provider IDs; validate and pin their route before workspace preparation. Catalogs probe only the dispatch owner's host. Preserve historical worker/session identities and never fail over to another host. See docs/agents/pm-agents.md.
 
+Agent chat pins are personal resource-membership stars, not agent configuration; see `docs/agents/ui-features.md`.
+
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.
