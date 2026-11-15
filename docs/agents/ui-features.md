@@ -130,6 +130,14 @@ once, a released slider saves at once and keyboard changes save after a short de
 at a time and a failure reverts with a toast. Display names use a human catalog label, else a
 humanized ID (`claude-fable-5-1[1m]` -> "Claude Fable 5.1 · 1M", `compass-opus5.5` -> "Opus 5.5");
 the stored ID never changes.
+The main view's top-left lightning button (`Zap`, `aria-pressed`, label "Fast mode") toggles Codex
+fast mode, saved as `adapterConfig.serviceTier` `"fast"`/`"standard"` with the same revision-checked
+save (the PATCH adds `serviceTier` only when it changes, and a tier changed elsewhere is a conflict).
+It is enabled only when the selected model's catalog `serviceTiers` include `"fast"` (route families
+report their subscription model's tiers); otherwise it is muted with the tooltip "This model has no
+fast tier", though a saved fast setting can still be turned off. Picking a model without fast saves
+`"standard"`. When on, the icon uses the accent color and the pill adds "· Fast"; while saving, a
+spinner replaces the icon. The adapter drops fast on a family's Compass route instead of failing.
 
 
 ## Image gallery zoom

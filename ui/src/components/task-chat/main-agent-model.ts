@@ -4,7 +4,7 @@ import type { CurrentBoardAccess } from "@/api/access";
 
 /**
  * Project main agents are CC Pocket Bridge agents with `adapterConfig.role === "main"`.
- * Their chat composer edits the agent's saved model/effort; the Bridge applies it on the
+ * Their chat composer edits the agent's saved model/effort and Codex fast mode; the Bridge applies it on the
  * next turn of the same native session.
  */
 export const BRIDGE_ADAPTER_TYPE = "ccpocket_bridge";
@@ -12,11 +12,15 @@ export const BRIDGE_ADAPTER_TYPE = "ccpocket_bridge";
 /** Slider changes are saved once the effort has rested this long (milliseconds). */
 export const MAIN_AGENT_EFFORT_SAVE_DELAY = 400;
 
+/** Codex service tier saved as `adapterConfig.serviceTier`; anything but "fast" runs at standard. */
+export type MainAgentServiceTier = "standard" | "fast";
+
 export interface MainAgentModelSelection {
   /** Qualified Bridge model ID (`<host>/<provider>/<model>`), stored verbatim. */
   model: string;
   /** Empty string means the model's own default effort. */
   effort: string;
+  serviceTier: MainAgentServiceTier;
 }
 
 export interface MainAgentModelScope extends MainAgentModelSelection {
@@ -25,7 +29,7 @@ export interface MainAgentModelScope extends MainAgentModelSelection {
 }
 
 /** The Bridge catalog response carries capability metadata beyond the shared AdapterModel fields. */
-export type BridgeCatalogModel = AdapterModel & { efforts?: unknown };
+export type BridgeCatalogModel = AdapterModel & { efforts?: unknown; serviceTiers?: unknown };
 
 type CatalogScope = Pick<MainAgentModelScope, "hostId" | "provider">;
 
@@ -45,11 +49,12 @@ export function readMainAgentModelScope(config: Record<string, unknown> | null |
     provider: configString(config, "provider") || "codex",
     model: configString(config, "model"),
     effort: configString(config, "effort"),
+    serviceTier: configString(config, "serviceTier") === "fast" ? "fast" : "standard",
   };
 }
 
 export function sameSelection(a: MainAgentModelSelection, b: MainAgentModelSelection): boolean {
-  return a.model === b.model && a.effort === b.effort;
+  return a.model === b.model && a.effort === b.effort && a.serviceTier === b.serviceTier;
 }
 
 /**
@@ -66,6 +71,11 @@ export function bridgeCatalogForScope(models: readonly BridgeCatalogModel[], sco
 export function bridgeModelEfforts(model: BridgeCatalogModel | undefined): string[] {
   if (!model || !Array.isArray(model.efforts)) return [];
   return [...new Set(model.efforts.filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
+}
+
+/** Whether the catalog entry offers the fast service tier (Codex models and route families that report it). */
+export function bridgeModelHasFastTier(model: BridgeCatalogModel | undefined): boolean {
+  return Boolean(model && Array.isArray(model.serviceTiers) && model.serviceTiers.includes("fast"));
 }
 
 /** The model part of a qualified `<host>/<provider>/<model>` ID. */
@@ -228,6 +238,11 @@ export function effortForModel(effort: string, efforts: readonly string[]): stri
   return effort && efforts.includes(effort) ? effort : "";
 }
 
+/** Fast stays on only for a model that offers it; any other model runs at standard. */
+export function serviceTierForModel(serviceTier: MainAgentServiceTier, model: BridgeCatalogModel | undefined): MainAgentServiceTier {
+  return serviceTier === "fast" && bridgeModelHasFastTier(model) ? "fast" : "standard";
+}
+
 /**
  * Presentation hint only: mirrors the default `agents:configure` grants of the viewer's
  * company role (and local/instance-admin access). The server's `agent_config:update`
@@ -249,8 +264,9 @@ export class MainAgentModelConflictError extends Error {
 
 /**
  * Save through the Agent settings update path: read the current configuration revision,
- * confirm the viewer saw the saved model/effort, then PATCH only `model` and `effort`
- * (server-side merge) bound to that revision. Redacted values are never sent back.
+ * confirm the viewer saw the saved model/effort/service tier, then PATCH only `model` and
+ * `effort` (server-side merge) bound to that revision, plus `serviceTier` when it changes.
+ * Redacted values are never sent back.
  */
 export async function saveMainAgentModel(input: {
   agentId: string;
@@ -265,7 +281,10 @@ export async function saveMainAgentModel(input: {
     throw new MainAgentModelConflictError();
   }
   return agentsApi.update(input.agentId, {
-    adapterConfig: { model: input.next.model, effort: input.next.effort },
+    adapterConfig: {
+      model: input.next.model, effort: input.next.effort,
+      ...(input.next.serviceTier !== currentScope.serviceTier ? { serviceTier: input.next.serviceTier } : {}),
+    },
     expectedConfigurationRevision: current.configurationRevision,
   }, input.companyId);
 }
