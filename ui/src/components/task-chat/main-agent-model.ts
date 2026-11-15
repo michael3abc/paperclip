@@ -57,6 +57,27 @@ export function sameSelection(a: MainAgentModelSelection, b: MainAgentModelSelec
   return a.model === b.model && a.effort === b.effort && a.serviceTier === b.serviceTier;
 }
 
+/** Why Native plan is unavailable for a Codex main agent (shown as the disabled option's tooltip). */
+export const NATIVE_PLAN_CODEX_HINT =
+  "Native plan needs a Claude main agent. On the CC Pocket Bridge, approving a Codex plan starts a new turn outside this chat's run, so its result would not reach this chat. Use Plan mode for Codex.";
+
+export interface MainAgentNativePlan {
+  available: boolean;
+  /** English tooltip for the disabled option; null when available. */
+  reason: string | null;
+}
+
+/**
+ * Native plan runs the harness's own plan mode: Claude's ExitPlanMode is shown here for approval and the same turn
+ * implements the approved plan. The provider is the saved `provider`, else the qualified model's provider segment.
+ */
+export function mainAgentNativePlan(agent: Agent): MainAgentNativePlan {
+  const config = agent.adapterConfig as Record<string, unknown> | null | undefined;
+  const segments = configString(config, "model").split("/");
+  const provider = configString(config, "provider") || (segments.length >= 3 ? segments[1]! : "");
+  return provider === "claude" ? { available: true, reason: null } : { available: false, reason: NATIVE_PLAN_CODEX_HINT };
+}
+
 /**
  * Keep the Bridge order and IDs. The scoped catalog already returns only the selected
  * host and executor; the prefix check keeps the provider fixed even if an older Bridge

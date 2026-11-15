@@ -91,7 +91,7 @@ describe("run liveness classifier", () => {
     expect(classification.livenessState).toBe("advanced");
   });
 
-  it.each([undefined, null, "standard", "ask", "skill_test", "planning"])(
+  it.each([undefined, null, "standard", "ask", "skill_test", "planning", "native_plan"])(
     "title and description cannot change liveness in explicit mode %s",
     (workMode) => {
       const input = {
@@ -100,7 +100,7 @@ describe("run liveness classifier", () => {
         resultJson: { summary: "I will inspect the repo next." },
       };
       const expected = classifyRunLiveness(input);
-      expect(expected.livenessState).toBe(workMode === "planning" ? "advanced" : "plan_only");
+      expect(expected.livenessState).toBe(workMode === "planning" || workMode === "native_plan" ? "advanced" : "plan_only");
       for (const text of ["plan", "planning", "analysis", "investigation", "research", "report", "proposal", "design doc", "write-up", "making a plan", "No plan requested", "Preparar un plan"]) {
         for (const prose of [{ title: `Implement ${text} export` }, { description: `Create a ${text} exporter.` }]) {
           expect(classifyRunLiveness({ ...input, issue: { ...input.issue, ...prose } })).toEqual(expected);
