@@ -451,13 +451,10 @@ export class LocalVoiceCall {
     if (this.snapshot.phase !== "live" || this.snapshot.policyVersion !== "main_answer_v1" || !reply || !reply.voiceSummary || this.requestedReplays.has(commentId)) return false;
     if (!this.send({ type: "replay_reply", commentId })) return false;
     this.requestedReplays.add(commentId);
-    this.update({ turns: this.snapshot.turns.map((turn) => {
-      if (turn.answerCommentId !== commentId && !reply.turnIds?.includes(turn.turnId) && !this.turnAnswerHistory.get(turn.turnId)?.has(commentId)) return turn;
-      const history = this.turnAnswerHistory.get(turn.turnId) ?? new Set<string>();
-      history.add(commentId);
-      this.turnAnswerHistory.set(turn.turnId, history);
-      return { ...turn, answerCommentId: commentId, state: "answer_ready" as const };
-    }) });
+    // Replaying an older answer does not reclaim a turn now owned by a newer answer.
+    // Its playback receipts update replies; actual audio drives modelSpeaking.
+    this.update({ turns: this.snapshot.turns.map((turn) => turn.answerCommentId === commentId
+      ? { ...turn, state: "answer_ready" as const } : turn) });
     return true;
   }
 

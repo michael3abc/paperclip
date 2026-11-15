@@ -127,7 +127,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
 
   it.each([false, true])("freezes the Chat launch input before provider dispatch (native=%s)", async native => {
     const { input, adapter, run } = await fixture(native), original = randomUUID(), coalesced = randomUUID();
-    await db.update(issues).set({ conversationAgentId: input.agent.id, conversationUserId: "voice-fixture" })
+    await db.update(issues).set({ conversationAgentId: input.agent.id, conversationUserId: "voice-fixture", conversationState: "active" })
       .where(eq(issues.id, input.task.issueId!));
     input.task.context = { issueId: input.task.issueId, wakeCommentIds: [original] };
     await db.update(heartbeatRuns).set({ contextSnapshot: { ...input.task.context, wakeCommentIds: [original, coalesced] } })

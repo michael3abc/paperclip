@@ -26,7 +26,7 @@ describe("voice response source declarations", () => {
     await db.insert(companies).values({ id: scope.companyId, name: "Voice input boundary", issuePrefix: `V${scope.companyId.slice(0, 8).toUpperCase()}` });
     await db.insert(agents).values({ id: scope.agentId, companyId: scope.companyId, name: "Main", role: "engineer", adapterType: "process", status: "idle" });
     await db.insert(issues).values({ id: scope.issueId, companyId: scope.companyId, title: "Voice fixture", status: "in_progress",
-      conversationAgentId: scope.agentId, conversationUserId: userId, conversationSessionGeneration: 1, assigneeAgentId: scope.agentId });
+      conversationAgentId: scope.agentId, conversationUserId: userId, conversationState: "active", conversationSessionGeneration: 1, assigneeAgentId: scope.agentId });
     const context = { issueId: scope.issueId, conversationSessionGeneration: 1 };
     await db.insert(heartbeatRuns).values({ id: scope.runId, companyId: scope.companyId, agentId: scope.agentId, status: "running",
       startedAt: new Date(), contextSnapshot: context, runnerProfileJson: { preserved: "runtime profile" } });

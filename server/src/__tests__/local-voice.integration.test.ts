@@ -15,6 +15,7 @@ import { voiceSessionService } from "../services/voice/voice-session-service.js"
 import { voiceSessionStore } from "../services/voice/voice-session-store.js";
 import { LocalVoiceProtocolError } from "../services/voice/local-voice-protocol.js";
 import { authorizeLocalVoiceRelay, createLocalVoiceTaskPort } from "../services/voice/local-voice-relay-port.js";
+import { localVoiceChatPolicy } from "../services/voice/voice-chat-policy.js";
 import type { InternalSetupState } from "../services/chat-channels/runtime-types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -559,6 +560,41 @@ const support = await getEmbeddedPostgresTestSupport();
         companyId: f.companyId, endpointId: f.endpointId, issueId: chatId, caller: f.caller, idempotencyKey: randomUUID(), maxDurationSeconds: 600, bindingMode: "agent_chat", ...overrides });
       return { ...f, chatId, startChat };
     }
+
+    it("pins the main-answer policy only for newly created agent chat sessions", async () => {
+      const f = await chatFixture();
+      const idempotencyKey = randomUUID();
+      const original = await f.startChat({ idempotencyKey });
+      // Represent a call that was created before this policy shipped; retain its
+      // real binding, request fingerprint and one-time token from the fixture.
+      const legacyProviderSessionId = `local:${randomUUID()}`;
+      await db.update(chatVoiceSessions).set({ providerSessionId: legacyProviderSessionId })
+        .where(eq(chatVoiceSessions.id, original.session.id));
+
+      const reused = await f.startChat({ idempotencyKey });
+      expect(reused.session.id).toBe(original.session.id);
+      expect(reused.media).toBeUndefined();
+      const legacyBinding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId,
+        sessionId: original.session.id, caller: f.caller, token: original.media!.transportToken, allowLocalBoard: false });
+      expect(legacyBinding.session.providerSessionId).toBe(legacyProviderSessionId);
+      expect(localVoiceChatPolicy(legacyBinding.session.providerSessionId)).toBeUndefined();
+      const [retained] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, original.session.id));
+      expect(retained.providerSessionId).toBe(legacyProviderSessionId);
+
+      await f.service.end(f.companyId, original.session.id, f.caller);
+      const fresh = await f.startChat();
+      const freshBinding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId,
+        sessionId: fresh.session.id, caller: f.caller, token: fresh.media!.transportToken, allowLocalBoard: false });
+      expect(fresh.session.id).not.toBe(original.session.id);
+      expect(freshBinding.session.providerSessionId).toMatch(/^local:main_answer_v1:[0-9a-f-]{36}$/);
+      expect(localVoiceChatPolicy(freshBinding.session.providerSessionId)).toBe("main_answer_v1");
+
+      const taskBinding = await authorizeLocalVoiceRelay(db, f.service, { companyId: f.companyId,
+        sessionId: f.sessionId, caller: f.caller, token: f.token, allowLocalBoard: false });
+      expect(taskBinding.mode).toBe("voice_task");
+      expect(taskBinding.session.providerSessionId).toMatch(/^local:[0-9a-f-]{36}$/);
+      expect(localVoiceChatPolicy(taskBinding.session.providerSessionId)).toBeUndefined();
+    });
 
     it("resolves only the caller's original operation in this company, Chat and voice session", async () => {
       const f = await chatFixture();

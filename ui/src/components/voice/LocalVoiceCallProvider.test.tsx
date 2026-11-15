@@ -119,7 +119,7 @@ describe("LocalVoiceCallProvider route and identity lifetime", () => {
     });
     expect(h.start).toHaveBeenCalledOnce();
     expect(h.ensureChat).toHaveBeenCalledWith("company", "agent-a");
-    expect(h.postChatMessage).toHaveBeenCalledWith("original-chat", "Keep working", "dictation-one");
+    expect(h.postChatMessage).toHaveBeenCalledWith("original-chat", "Keep working", "dictation-one", "session");
     await render("none");
     expect(button("End voice call with Alice")).not.toBeNull();
     await act(async () => button("Pause listening").click());

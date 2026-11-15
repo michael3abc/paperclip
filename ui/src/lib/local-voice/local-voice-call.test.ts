@@ -320,10 +320,20 @@ describe("LocalVoiceCall", () => {
       h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "completed" });
       h.socket.emit({ type: "agent_reply", commentId: "answer-a", body: "舊答案", voiceSummary: "舊答案", createdAt: "now", turnIds: ["one"], playbackState: "completed" });
       expect(h.call.replayReply("answer-a")).toBe(true);
-      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-a", state: "speaking" });
-      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-b", state: "completed" });
-      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-a", state: "speaking" });
-      expect(h.socket.json()).toEqual([{ type: "replay_reply", commentId: "answer-a" }]);
+      // The real ledger retains B's turn: old-answer replay emits only answer receipts.
+      h.socket.emit({ type: "agent_reply", commentId: "answer-a", body: "舊答案", voiceSummary: "舊答案", createdAt: "now", turnIds: ["one"], playbackState: "queued" });
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-b", state: "completed" });
+      h.playing(true);
+      expect(localVoiceActivity(h.call.getSnapshot())).toBe("正在回答");
+      h.socket.emit({ type: "agent_reply", commentId: "answer-a", body: "舊答案", voiceSummary: "舊答案", createdAt: "now", turnIds: ["one"], playbackState: "completed" });
+      h.playing(false);
+      expect(h.call.getSnapshot().replies[0].playbackState).toBe("completed");
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-b", state: "completed" });
+      expect(localVoiceActivity(h.call.getSnapshot())).toBe("聆聽中");
+      expect(h.socket.json().filter((message) => message.type === "replay_reply")).toEqual([{ type: "replay_reply", commentId: "answer-a" }]);
+      // Superseded A's late turn receipt still cannot reclaim B after replay.
+      h.socket.emit({ type: "voice_turn", turnId: "one", answerCommentId: "answer-a", state: "completed" });
+      expect(h.call.getSnapshot().turns[0]).toMatchObject({ answerCommentId: "answer-b", state: "completed" });
     });
 
     it("keeps same-text answers distinct and replays only a selected interrupted answer", async () => {
