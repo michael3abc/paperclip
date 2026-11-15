@@ -127,7 +127,7 @@ export function PeriodPicker({ value, onChange }: { value: ModelCostPeriod; onCh
         <Button
           key={period.key}
           variant={value === period.key ? "secondary" : "ghost"}
-          size="sm"
+          size="xs"
           onClick={() => onChange(period.key)}
           aria-pressed={value === period.key}
         >
