@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Dashboard project usage (`michael/project-cost-usage`): same-period project
+  token breakdown and recorded spend below the model charts, retaining
+  Unattributed and separating subscription estimates/fees. UI-only overlay.
+
 - Custom MCP browser sign-in (`michael/connector-ui-login`): human-only, vault-backed
   companion requests and an Apps login panel for the 104 browser and SeaTalk QR.
   Preserves grants, tools and company scope; no login material in tool receipts.

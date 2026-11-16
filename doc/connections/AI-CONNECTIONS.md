@@ -790,6 +790,15 @@ fee or a claim that each run was charged. Cache writes are not fully itemized;
 models without a known card remain explicitly unpriced and outside the estimate.
 Compass continues to use its recorded estimated spend.
 
+The Dashboard's Project usage table uses the same selected year/month/week/day
+and company as the model charts. It reads the existing project cost rollup and
+shows ordinary input, cached input, output, their sum, and recorded ledger spend.
+Rows without a project remain Unattributed; projects are ordered by total tokens.
+Subscription API-equivalent estimates and monthly fees are not allocated into
+that spend column, and missing prices are not estimated. Project and model reads
+fail independently; project refresh failures retain and label the last loaded
+snapshot. This display never changes project attribution or historical receipts.
+
 All cost-report token fields expose ordinary input separately from cache reads.
 Native OpenAI receipts already exclude cache reads from `inputTokens`. Codex
 Bridge's `codex` / `openai_subscription` producer retains inclusive input even on
