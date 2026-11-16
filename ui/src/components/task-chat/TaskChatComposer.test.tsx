@@ -8,7 +8,7 @@ import {
   buildAgentMentionHref,
   buildSkillMentionHref,
 } from "@paperclipai/shared";
-import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
+import { parseNativePlanCommand, parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { NATIVE_PLAN_CODEX_HINT } from "./main-agent-model";
 import { QuestionForm } from "./QuestionForm";
@@ -2293,6 +2293,85 @@ describe("TaskChatComposer", () => {
       openComposerAddMenu();
       expect(item()).toBeNull();
       expect(onWorkModeChange).not.toHaveBeenCalled();
+    } finally {
+      render(<></>); client.clear(); boardAccess.mockRestore();
+    }
+  });
+
+  it("matches /plan only as an exact first token, including the editor's autolink shapes", () => {
+    expect(parseNativePlanCommand("/plan")).toEqual({ matched: true, text: "" });
+    expect(parseNativePlanCommand(" /plan ")).toEqual({ matched: true, text: "" });
+    expect(parseNativePlanCommand(" /plan  Draft the rollout \n")).toEqual({ matched: true, text: "Draft the rollout" });
+    expect(parseNativePlanCommand("/plan Draft the rollout")).toEqual({ matched: true, text: "Draft the rollout" });
+    expect(parseNativePlanCommand("/plan Step one\n\nStep two")).toEqual({ matched: true, text: "Step one\n\nStep two" });
+    expect(parseNativePlanCommand("[/pl ](</plan Draft the rollout>)")).toEqual({ matched: true, text: "Draft the rollout" });
+    expect(parseNativePlanCommand("[/](/plan%20Draft%20it)")).toEqual({ matched: true, text: "Draft it" });
+    expect(parseNativePlanCommand("/planning the rollout")).toEqual({ matched: false });
+    expect(parseNativePlanCommand("Please /plan this")).toEqual({ matched: false });
+    expect(parseNativePlanCommand("\\/plan literal")).toEqual({ matched: false });
+    expect(parseNativePlanCommand("[plan](/plan Draft)")).toEqual({ matched: false });
+    // The /goal parser keeps its own autolink handling.
+    expect(parseRunnerGoalCommand("[/go ](</goal Ship it>)")).toEqual({ matched: true, command: { action: "create", objective: "Ship it" } });
+  });
+
+  it("uses /plan to switch a main-agent chat to Native plan, and /plan <text> to send a Native plan turn", async () => {
+    const boardAccess = vi.spyOn(accessApi, "getCurrentBoardAccess").mockResolvedValue({
+      user: null, userId: "user-1", isInstanceAdmin: false, companyIds: ["chat-company"], source: "local_implicit", keyId: null,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const main = { id: "main-agent", name: "Comfyui", adapterType: "ccpocket_bridge",
+      adapterConfig: { role: "main", hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-astra", effort: "high" } } as unknown as Agent;
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    const paint = (agent: Agent | null) => { render(<></>); render(<QueryClientProvider client={client}><ToastProvider>
+      <TaskChatComposer onAdd={onAdd} conversationMode companyId="chat-company" workMode="standard" onWorkModeChange={onWorkModeChange}
+        currentAssigneeValue="agent:main-agent" modelAgents={agent ? new Map([[agent.id, agent]]) : undefined} />
+    </ToastProvider></QueryClientProvider>); };
+    const chip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
+    try {
+      // `/plan` alone switches the chip and sends nothing.
+      paint(main);
+      await flushAsync();
+      typeText("/plan");
+      await act(async () => sendButton().click());
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(onWorkModeChange).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("");
+
+      // The slash menu offers it and inserts the command.
+      paint(main);
+      await flushAsync();
+      typeText("/pl");
+      await placeCaretAtEnd();
+      const option = autocompleteOption("/plan");
+      expect(option.textContent).toContain("approve the plan here");
+      flushSync(() => option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true })));
+      await flushAsync();
+      expect(editable().textContent?.trim()).toBe("/plan");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+      expect(onAdd).not.toHaveBeenCalled();
+
+      // `/plan <text>` sends only the text, as a Native plan turn.
+      paint(main);
+      await flushAsync();
+      typeText("/plan Draft the rollout");
+      await act(async () => sendButton().click());
+      expect(onWorkModeChange).toHaveBeenCalledWith("native_plan");
+      expect(onAdd).toHaveBeenCalledWith("Draft the rollout", undefined, undefined, undefined, expect.any(String));
+      expect(onWorkModeChange.mock.invocationCallOrder[0]!).toBeLessThan(onAdd.mock.invocationCallOrder[0]!);
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+
+      // Chats without Native plan send `/plan` text unchanged.
+      onAdd.mockClear(); onWorkModeChange.mockClear();
+      paint(null);
+      await flushAsync();
+      typeText("/plan Draft the rollout");
+      await act(async () => sendButton().click());
+      expect(onWorkModeChange).not.toHaveBeenCalled();
+      expect(onAdd).toHaveBeenCalledWith("/plan Draft the rollout", undefined, undefined, undefined, expect.any(String));
     } finally {
       render(<></>); client.clear(); boardAccess.mockRestore();
     }
