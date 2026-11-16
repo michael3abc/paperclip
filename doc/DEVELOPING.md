@@ -5278,14 +5278,14 @@ relation rather than trusting contextSnapshot. Tests must use owned databases an
 join all scheduler work before teardown; advance fake deadlines separately from real
 PostgreSQL completion. Cover empty/terminal quiet, lost events, restart, drain, repeated
 faults, duplicate operations, current PM scope and formal review finalization.
-Project-main continuation additionally binds the original accepted Owner Chat
-message, manual wake, current native authority and conversation generation to a
-run-authored, Owner-attributed target-task handoff. Require the handoff comment,
-idempotency key and explicit observed task/run versions. A normal main completion
-can preserve an existing receipt, never create fresh authority. Exercise the actual
-HTTP route through the heartbeat queue, not only the authorization helper; reject
-superseding instructions, cancelled/superseded authority, cross-project targets,
-changed handoffs and uncertain input without creating a worker run.
+Project-main continuation (Owner 2026-11-16, option B) accepts any current run of the
+project's lead main with its own nonempty handoff comment on the task and an
+idempotency key; observed task/run versions are advisory. Done and worker/system-
+cancelled tasks reopen; Owner cancellations, paused/archived projects, Agent Chat
+issues and handoffs superseded by a newer human task comment are refused. The queue
+recheck applies only durable Owner controls (Owner Stop of the originating run, lead,
+main pause/hold, project pause/archive, assignee, task closed again). Exercise the
+actual HTTP route through the heartbeat queue, not only the authorization helper.
 When pumping fake timers to settle PostgreSQL I/O, compare the saved absolute
 deadline after reconstruction instead of adding a fixed elapsed interval. Exercise
 delayed startup, retain exact-deadline assertions across restart, and observe both

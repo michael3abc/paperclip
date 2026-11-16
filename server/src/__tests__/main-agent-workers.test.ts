@@ -18,6 +18,7 @@ import { resolveManagedInstructionsRoot } from "../services/agent-instructions.j
 import { agentFileStore } from "../services/agent-file-store.js";
 import { mainAgentDispatchScope, mainAgentProjectId, workerPolicyLayout } from "../services/main-agent-workers.js";
 import { applyMainAgentDispatch, pmCoordinationMiddleware } from "../middleware/pm-coordination.js";
+import { resolveMainContinuationWorkerSelection } from "../services/issue-continuations.js";
 
 vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof import("../adapters/registry.js")>(),
   listAdapterModels: async () => [{ id: "gpt-6-astra", label: "Astra" }, { id: "compass-sonnet5.5", label: "Sonnet" }],
@@ -123,6 +124,16 @@ describe("main agent worker policy and dispatch", () => {
     const byDefault: Record<string, unknown> = { title: "Default", workspaceSelection, assigneeAgentId: claudeId };
     expect(await post(byDefault)).toBe(true);
     expect(byDefault).toMatchObject({ assigneeAgentId: claudeId, assigneeAdapterOverrides: { workerSelectionId: claudeChoice } });
+  });
+
+  it("validates a continuation's optional new worker option against the current policy and keeps the task's worker", async () => {
+    const main = await readMain(), task = { projectId, assigneeAgentId: codexId };
+    await expect(resolveMainContinuationWorkerSelection(db, main, task, codexChoice))
+      .resolves.toMatchObject({ workerSelectionId: codexChoice, adapterConfig: { model: "gpt-6-astra" } });
+    // Another worker's option would reassign the task; continue keeps the same worker.
+    await expect(resolveMainContinuationWorkerSelection(db, main, task, claudeChoice)).rejects.toMatchObject({ status: 403 });
+    await expect(resolveMainContinuationWorkerSelection(db, main, { ...task, projectId: otherProjectId }, codexChoice)).rejects.toMatchObject({ status: 403 });
+    await expect(resolveMainContinuationWorkerSelection(db, { ...main, runtimeConfig: {} }, task, codexChoice)).rejects.toMatchObject({ status: 422 });
   });
 
   it("creates worker tasks through HTTP with external resources, registered roots, and project defaults", async () => {

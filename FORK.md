@@ -9,6 +9,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Main task continuation with protections (`michael/main-continue-relaxed`, Owner 2026-11-16 「我覺得 B 不錯」):
+  any current run of the project's lead main may continue its worker's task with its own nonempty handoff
+  comment and an idempotency key. Done and worker/system-cancelled tasks reopen; Owner-cancelled tasks,
+  paused/archived projects, Owner main pauses/holds, Agent Chat issues and newer human task comments still
+  refuse. Pinned worker models are kept (optional same-worker workerSelectionId); observations are advisory;
+  continuationCount on receipts and the issue detail. Server/shared source, no migration; released with a T4 change.
+
 - Custom MCP browser sign-in (`michael/connector-ui-login`): human-only, vault-backed
   companion requests and an Apps login panel for the 104 browser and SeaTalk QR.
   Preserves grants, tools and company scope; no login material in tool receipts.

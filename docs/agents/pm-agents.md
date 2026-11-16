@@ -136,16 +136,18 @@ it in PM home and preserve the original worker workspace. Continue requires curr
 project/worker authority, an idempotency key and observed task/run versions. An
 unknown continuation outcome follows the liveness-first resend rule; a wake alone is
 not completion.
-Project mains may continue their own project's existing worker tasks from the
-original accepted Owner Chat input, using a current run credential, an unchanged
-Owner-attributed handoff comment, idempotency key and explicit task/run observations.
-An empty continue request grants nothing. Recheck current main/worker policy,
-conversation generation, latest Owner input and task instructions at admission.
-Recheck the original-main operation again before its first worker dispatch after
-capacity waiting or restart. Normal main completion retains only an already
-committed operation; it cannot authorize another continuation. Unknown input or
-provider outcomes are resent under the liveness-first rule, never held. Preserve
-human holds and original task/run history.
+Project mains may continue their own project's existing worker tasks from any of
+their current runs (Owner 2026-11-16, option B): Chat, task, worker-completion or own
+initiative. Send the main's own nonempty handoff comment on the task (no
+onBehalfOfUserId) and an idempotency key; observed task/run versions are advisory.
+Done tasks and tasks the worker or system cancelled reopen; Owner-cancelled tasks,
+paused/archived projects and Agent Chat issues do not. A newer human task comment
+supersedes the handoff. The task keeps its pinned worker model; an optional
+workerSelectionId must be another option of the same worker in the current policy.
+Queue admission rechecks only durable Owner controls before the first worker dispatch.
+On a worker completion notice, continue only for a real defect, never for a repeated
+notice. continuationCount is shown on the receipt and the issue detail (no cap).
+Preserve human holds and original task/run history.
 Formal review retains current stage, participant and policy bindings. Keep human gates,
 manual holds and completed/cancelled work intact. Saved Recovery directory realization
 and ownership govern reuse, even for a configured non-Git source.

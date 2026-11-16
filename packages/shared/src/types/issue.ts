@@ -961,6 +961,8 @@ export interface Issue {
   interruption?: TaskInterruptionPresentation | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
+  /** Continuation receipts recorded on this task (issue detail; visibility only). */
+  continuationCount?: number;
   liveDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];

@@ -122,6 +122,10 @@ export interface IssueContinueResult {
   receiptId: string;
   wakeupRequestId?: string | null;
   reason?: string;
+  /** Continuation receipts recorded on this task, including this one (visibility only; no cap). */
+  continuationCount?: number;
+  /** A main's advisory observedStatusVersion/observedRunId differed from the task when it was accepted. */
+  observationStale?: boolean;
 }
 
 export type AgentRuntimeConfig = Record<string, unknown> & {
