@@ -120,8 +120,9 @@ describe("PM worker choices", () => {
     expect(workerModelChoices("ccpocket_bridge", models, "codex").map(model => model.id)).toEqual(["shopee-e/codex/gpt-6-astra"]);
     expect(workerModelChoices("ccpocket_bridge", models, "claude").map(model => model.id)).toEqual(["shopee-e/claude/opus"]);
     // Fast: offered for a Codex model (or family) whose Bridge entry advertises it, and rendered as the adapter serviceTier.
-    const tiered = [{ id: "h/codex/family:gpt-6.1-sol", label: "Sol", efforts: ["high"], serviceTiers: ["standard", "fast"] },
-      { id: "h/codex/Qwen", label: "Q", efforts: ["high"], serviceTiers: [] }, { id: "h/claude/family:sonnet-5.5", label: "S", serviceTiers: ["standard", "fast"] }] as { id: string; label: string }[];
+    const tiered: Array<{ id: string; label: string; efforts?: string[]; serviceTiers?: string[] }> = [
+      { id: "h/codex/family:gpt-6.1-sol", label: "Sol", efforts: ["high"], serviceTiers: ["standard", "fast"] },
+      { id: "h/codex/Qwen", label: "Q", efforts: ["high"], serviceTiers: [] }, { id: "h/claude/family:sonnet-5.5", label: "S", serviceTiers: ["standard", "fast"] }];
     expect(workerModelChoices("ccpocket_bridge", tiered, "codex").map(model => model.speeds)).toEqual([["standard", "fast"], ["standard"]]);
     expect(workerModelChoices("ccpocket_bridge", tiered, "claude").map(model => model.speeds)).toEqual([["standard"]]);
     const sol = { id: "00000000-0000-4000-8000-000000000009", model: "h/codex/family:gpt-6.1-sol", thinking: "xhigh", permission: "full-access" as const, speed: "fast" as const };
