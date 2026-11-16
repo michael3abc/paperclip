@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
+import { NATIVE_PLAN_CODEX_HINT } from "./main-agent-model";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, HeartbeatRun } from "@paperclipai/shared";
@@ -1180,6 +1181,19 @@ describe("TaskChatComposer", () => {
     expect(onWorkModeChange).not.toHaveBeenCalled();
   });
 
+  it("follows a server-side return to standard unless a different mode was picked for the next message", () => {
+    const chip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="native_plan" onWorkModeChange={vi.fn()} />);
+    expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+    // An approved native plan (or accepted Paperclip plan) returns the task to standard.
+    act(() => root!.render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()} />));
+    expect(chip()).toBeNull();
+    openComposerAddMenu();
+    flushSync(() => (document.querySelector('[data-testid="composer-add-ask"]') as HTMLElement).click());
+    act(() => root!.render(<TaskChatComposer onAdd={vi.fn()} workMode="planning" onWorkModeChange={vi.fn()} />));
+    expect(chip()?.getAttribute("data-pending-work-mode")).toBe("ask");
+  });
+
   it("selects exclusive modes from the add menu and removes the active chip", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()} />);
     openComposerAddMenu();
@@ -2220,6 +2234,65 @@ describe("TaskChatComposer", () => {
       paint(bridge("main"), false);
       await flushAsync();
       expect(pill()).toBeNull();
+    } finally {
+      render(<></>); client.clear(); boardAccess.mockRestore();
+    }
+  });
+
+  it("offers Native plan in main-agent chats, with an older-Bridge tooltip for Codex", async () => {
+    const boardAccess = vi.spyOn(accessApi, "getCurrentBoardAccess").mockResolvedValue({
+      user: null, userId: "user-1", isInstanceAdmin: false, companyIds: ["chat-company"], source: "local_implicit", keyId: null,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const main = (provider: string, model: string) => ({ id: "main-agent", name: "Comfyui", adapterType: "ccpocket_bridge",
+      adapterConfig: { role: "main", hostId: "michael-server", provider, model, effort: "high" } }) as unknown as Agent;
+    const onWorkModeChange = vi.fn();
+    // Each paint is a fresh composer (no open menu or pending mode carried over).
+    const paint = (agent: Agent | null) => { render(<></>); render(<QueryClientProvider client={client}><ToastProvider>
+      <TaskChatComposer onAdd={vi.fn()} conversationMode companyId="chat-company" workMode="standard" onWorkModeChange={onWorkModeChange}
+        currentAssigneeValue="agent:main-agent" modelAgents={agent ? new Map([[agent.id, agent]]) : undefined} />
+    </ToastProvider></QueryClientProvider>); };
+    const item = () => document.querySelector<HTMLElement>('[data-testid="composer-add-native-plan"]');
+    const hint = () => document.querySelector<HTMLElement>('[data-testid="composer-add-native-plan-hint"]');
+    const chip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
+    try {
+      paint(main("claude", "michael-server/claude/compass-opus5.5"));
+      await flushAsync();
+      openComposerAddMenu();
+      expect(item()?.textContent).toContain("Native plan");
+      expect(item()?.hasAttribute("data-disabled")).toBe(false);
+      expect(hint()).toBeNull();
+      flushSync(() => item()!.click());
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+      expect(chip()?.textContent).toContain("Native plan");
+      // Keyboard cycling includes it after Plan mode.
+      flushSync(() => chip()!.click());
+      const cycle = () => flushSync(() => editable().dispatchEvent(new KeyboardEvent("keydown", { key: ".", code: "Period", metaKey: true, bubbles: true, cancelable: true })));
+      cycle(); cycle();
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+
+      // The provider segment of a qualified model identifies a Claude main without an explicit provider.
+      paint(main("", "michael-server/claude/fable"));
+      await flushAsync();
+      openComposerAddMenu();
+      expect(hint()).toBeNull();
+
+      // Codex mains can choose it too; the tooltip says what an older Bridge does with it.
+      paint(main("codex", "michael-server/codex/gpt-6-astra"));
+      await flushAsync();
+      openComposerAddMenu();
+      expect(item()?.hasAttribute("data-disabled")).toBe(false);
+      expect(hint()?.textContent).toContain(NATIVE_PLAN_CODEX_HINT);
+      expect(NATIVE_PLAN_CODEX_HINT).toMatch(/codex_plan_client_drive_v1\). On an older Bridge this message runs as Plan mode instead\.$/);
+      flushSync(() => item()!.click());
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
+
+      // Other chats keep the original Add menu.
+      paint(null);
+      await flushAsync();
+      openComposerAddMenu();
+      expect(item()).toBeNull();
+      expect(onWorkModeChange).not.toHaveBeenCalled();
     } finally {
       render(<></>); client.clear(); boardAccess.mockRestore();
     }

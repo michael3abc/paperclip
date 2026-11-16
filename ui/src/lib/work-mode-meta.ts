@@ -1,5 +1,5 @@
 import type { IssueWorkMode } from "@paperclipai/shared";
-import { ClipboardList, Hammer, MessageCircleQuestion, type LucideIcon } from "lucide-react";
+import { ClipboardCheck, ClipboardList, Hammer, MessageCircleQuestion, type LucideIcon } from "lucide-react";
 
 export type WorkModeTone = "neutral" | "ask" | "planning";
 
@@ -38,42 +38,33 @@ const PLANNING_CLASSES = {
 };
 
 export function isIssueWorkMode(value: unknown): value is IssueWorkMode {
-  return value === "standard" || value === "ask" || value === "planning";
+  return value === "standard" || value === "ask" || value === "planning" || value === "native_plan";
 }
 
-export function workModeMetaList(): WorkModeMeta[] {
-  return [
-    {
-      value: "standard",
-      label: "Auto mode",
-      icon: Hammer,
-      tone: "neutral",
-      classes: STANDARD_CLASSES,
-    },
-    {
-      value: "planning",
-      label: "Plan mode",
-      icon: ClipboardList,
-      tone: "planning",
-      classes: PLANNING_CLASSES,
-    },
-    {
-      value: "ask",
-      label: "Ask mode",
-      icon: MessageCircleQuestion,
-      tone: "ask",
-      classes: ASK_CLASSES,
-    },
-  ];
+/** Which optional modes a composer offers. Native plan exists only in a CC Pocket Claude main agent's Agent Chat. */
+export interface WorkModeOptions {
+  nativePlan?: boolean;
+}
+
+const STANDARD_META: WorkModeMeta = { value: "standard", label: "Auto mode", icon: Hammer, tone: "neutral", classes: STANDARD_CLASSES };
+const PLANNING_META: WorkModeMeta = { value: "planning", label: "Plan mode", icon: ClipboardList, tone: "planning", classes: PLANNING_CLASSES };
+/** The harness's own plan mode; its plan proposal is approved in Agent Chat. */
+const NATIVE_PLAN_META: WorkModeMeta = { value: "native_plan", label: "Native plan", icon: ClipboardCheck, tone: "planning", classes: PLANNING_CLASSES };
+const ASK_META: WorkModeMeta = { value: "ask", label: "Ask mode", icon: MessageCircleQuestion, tone: "ask", classes: ASK_CLASSES };
+
+export function workModeMetaList(options: WorkModeOptions = {}): WorkModeMeta[] {
+  return options.nativePlan
+    ? [STANDARD_META, PLANNING_META, NATIVE_PLAN_META, ASK_META]
+    : [STANDARD_META, PLANNING_META, ASK_META];
 }
 
 export function workModeMetaFor(mode: IssueWorkMode): WorkModeMeta {
-  const modes = workModeMetaList();
+  const modes = workModeMetaList({ nativePlan: true });
   return modes.find((meta) => meta.value === mode) ?? modes[0]!;
 }
 
-export function nextWorkMode(mode: IssueWorkMode): IssueWorkMode {
-  const modes = workModeMetaList();
+export function nextWorkMode(mode: IssueWorkMode, options: WorkModeOptions = {}): IssueWorkMode {
+  const modes = workModeMetaList(options);
   const index = modes.findIndex((meta) => meta.value === mode);
   return modes[(index + 1) % modes.length]?.value ?? "standard";
 }
@@ -84,6 +75,9 @@ export function titleForPendingWorkMode(mode: IssueWorkMode): string {
   }
   if (mode === "planning") {
     return "Plan mode is on for this submission. Click to change.";
+  }
+  if (mode === "native_plan") {
+    return "Native plan is on for this submission. Click to change. The agent's harness plans first; approve its plan in this chat to let it implement.";
   }
   return "Auto mode for this submission. Click to change.";
 }

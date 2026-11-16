@@ -571,6 +571,11 @@ describe("issue validators", () => {
     expect(updateIssueSchema.parse({ workMode: "skill_test" }).workMode).toBe(
       "skill_test",
     );
+    // Native plan: a CC Pocket main agent's own harness plan mode, chosen from Agent Chat.
+    expect(updateIssueSchema.parse({ workMode: "native_plan" }).workMode).toBe(
+      "native_plan",
+    );
+    expect(() => updateIssueSchema.parse({ workMode: "native" })).toThrow();
     expect(
       suggestedTaskDraftSchema.parse({
         clientKey: "ask-child",

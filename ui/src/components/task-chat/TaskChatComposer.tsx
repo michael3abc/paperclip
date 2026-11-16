@@ -77,7 +77,7 @@ import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPaused
 import { ComposerImageAttachments, type ComposerImageAttachment } from "./ComposerImageAttachments";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
 import { MainAgentModelPicker } from "./MainAgentModelPicker";
-import { isBridgeMainAgent } from "./main-agent-model";
+import { isBridgeMainAgent, mainAgentNativePlan } from "./main-agent-model";
 import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import { ComposerAddMenu, ComposerModeChip, ComposerPrivacyChip } from "./ComposerAddMenu";
 import { supportsComposerModel, type ComposerRunSettings } from "./composer-run-settings";
@@ -321,12 +321,15 @@ function AssigneeIdentityAvatar({
 function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
   if (mobile) {
     if (mode === "planning") return `Plan with ${agentName}…`;
+    if (mode === "native_plan") return `Native plan with ${agentName}…`;
     if (mode === "ask") return `Ask ${agentName}…`;
     return `Message ${agentName}…`;
   }
   switch (mode) {
     case "planning":
       return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
+    case "native_plan":
+      return `Native plan with ${agentName} — its harness plans first; approve the plan here to let it build…`;
     case "ask":
       return `Ask ${agentName} a question — read-only, nothing runs…`;
     default:
@@ -453,6 +456,15 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const pendingMode = creation ? workMode : localPendingMode;
+  // Follow a server-side mode change (an accepted plan or approved native plan returns the task to standard)
+  // unless the person already picked a different mode for the next message.
+  const followedWorkMode = useRef(workMode);
+  useEffect(() => {
+    const previous = followedWorkMode.current;
+    if (previous === workMode) return;
+    followedWorkMode.current = workMode;
+    setPendingMode((current) => (current === previous ? workMode : current));
+  }, [workMode]);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -669,6 +681,8 @@ export function TaskChatComposer({
   // Main-agent chats edit the Bridge agent's saved model/effort instead of per-message run settings.
   const conversationAgent = conversationMode && !creation ? modelAgents?.get(assigneeValue.slice(6)) : undefined;
   const mainAgentModelAgent = isBridgeMainAgent(conversationAgent) ? conversationAgent : undefined;
+  // Main-agent chats also offer the harness's own plan mode (Codex: with a tooltip about older Bridges).
+  const nativePlan = mainAgentModelAgent ? mainAgentNativePlan(mainAgentModelAgent) : undefined;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
@@ -1337,7 +1351,7 @@ export function TaskChatComposer({
         if (isModeShortcut) {
           e.preventDefault();
           e.stopPropagation();
-          changeMode(nextWorkMode(pendingMode));
+          changeMode(nextWorkMode(pendingMode, { nativePlan: Boolean(nativePlan) }));
         }
       }}
         onPasteCapture={handlePasteCapture}
@@ -1523,6 +1537,7 @@ export function TaskChatComposer({
               privacy={creation?.privacy}
               mode={pendingMode}
               onModeChange={!queuedEdit && onWorkModeChange ? changeMode : undefined}
+              nativePlan={nativePlan}
               onAttachFile={canAcceptFiles ? () => fileInputRef.current?.click() : undefined}
               onGoal={!queuedEdit && !conversationMode && attachments.length === 0 &&
                 runnerGoalCapability?.availability === "available" && onRunnerGoalCommand

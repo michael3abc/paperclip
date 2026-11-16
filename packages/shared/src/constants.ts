@@ -219,7 +219,11 @@ export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_REVIEW_POLICIES = ["anyone", "not_creator", "human_only"] as const;
 export type IssueReviewPolicy = (typeof ISSUE_REVIEW_POLICIES)[number];
-export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
+/**
+ * `planning` is Paperclip's plan (the issue `plan` document and a confirmation card); `native_plan` asks a
+ * CC Pocket main agent's harness to run its own plan mode and show its plan proposal for approval in Agent Chat.
+ */
+export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "native_plan", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];

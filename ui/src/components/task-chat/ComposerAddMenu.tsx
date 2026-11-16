@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { IssueWorkMode } from "@paperclipai/shared";
-import { Check, ClipboardList, MessageCircleQuestion, Lock, Paperclip, Plus, Target, X, type LucideIcon } from "lucide-react";
+import { Check, ClipboardCheck, ClipboardList, MessageCircleQuestion, Lock, Paperclip, Plus, Target, X, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
@@ -23,6 +23,8 @@ interface ComposerAddMenuProps {
   attachDisabled?: boolean;
   onGoal?: () => void;
   privacy?: { private: boolean; inherited?: string; onChange: (value: boolean) => void };
+  /** Offers Native plan (a main agent's own harness plan mode); `hint` is shown as the option's tooltip. */
+  nativePlan?: { hint?: string | null };
   disabled?: boolean;
   mobile?: boolean;
   triggerTestId?: string;
@@ -30,7 +32,7 @@ interface ComposerAddMenuProps {
 }
 
 export function ComposerAddMenu({
-  mode, onModeChange, onAttachFile, attachDisabled, onGoal, privacy, disabled, mobile: mobileProp, triggerTestId, menuTestId,
+  mode, onModeChange, onAttachFile, attachDisabled, onGoal, privacy, nativePlan, disabled, mobile: mobileProp, triggerTestId, menuTestId,
 }: ComposerAddMenuProps) {
   const [open, setOpen] = useState(false);
   const mobileViewportStyle = useMobileEntityPickerViewportStyle();
@@ -45,12 +47,15 @@ export function ComposerAddMenu({
   }, []);
   const mobile = mobileProp ?? narrow;
   if (!onModeChange && !onAttachFile && !onGoal && !privacy) return null;
-  const actions: Array<{ id: string; label: string; detail?: string; Icon: LucideIcon; select: () => void; disabled?: boolean; selected?: boolean }> = [
+  const actions: Array<{ id: string; label: string; detail?: string; hint?: string; Icon: LucideIcon; select: () => void; disabled?: boolean; selected?: boolean }> = [
     ...(onAttachFile ? [{ id: "composer-add-file", label: "Files and images", Icon: Paperclip, select: onAttachFile, disabled: attachDisabled }] : []),
     ...(privacy ? [{ id: "composer-add-private", label: "Private task", detail: privacy.inherited, Icon: Lock, select: () => privacy.onChange(!privacy.private), selected: privacy.private, disabled: Boolean(privacy.inherited) }] : []),
     ...(onGoal ? [{ id: "composer-add-goal", label: "Goal", detail: "Keep pursuing", Icon: Target, select: onGoal }] : []),
     ...(onModeChange ? [
       { id: "composer-add-plan", label: "Plan mode", detail: "Plan before acting", Icon: ClipboardList, select: () => onModeChange(mode === "planning" ? "standard" : "planning"), selected: mode === "planning" },
+      ...(nativePlan ? [{ id: "composer-add-native-plan", label: "Native plan", detail: "Harness plan, approve to build",
+        hint: nativePlan.hint ?? undefined, Icon: ClipboardCheck,
+        select: () => onModeChange(mode === "native_plan" ? "standard" : "native_plan"), selected: mode === "native_plan" }] : []),
       { id: "composer-add-ask", label: "Ask mode", detail: "Answer without changes", Icon: MessageCircleQuestion, select: () => onModeChange(mode === "ask" ? "standard" : "ask"), selected: mode === "ask" },
     ] : []),
   ];
@@ -73,11 +78,13 @@ export function ComposerAddMenu({
         <DialogTitle className="min-w-0 flex-1 text-sm font-medium">Add</DialogTitle>
         <DialogClose asChild><button type="button" aria-label="Close Add menu" className="grid size-11 place-items-center rounded-md text-muted-foreground hover:bg-accent"><X className="size-4" /></button></DialogClose>
       </div>
-      <div className="min-h-0 overflow-y-auto overscroll-contain p-2 pt-0">{actions.map((action) => <button key={action.id} type="button" disabled={action.disabled} data-testid={action.id}
-        onClick={() => { goalFocusRef.current = action.id === "composer-add-goal"; action.select(); setOpen(false); }}
-        className="flex min-h-11 w-full items-center gap-3 rounded-md px-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
-        {content(action)}
-      </button>)}</div>
+      <div className="min-h-0 overflow-y-auto overscroll-contain p-2 pt-0">{actions.map((action) => <ActionHint key={action.id} hint={action.hint} testId={`${action.id}-hint`}>
+        <button type="button" disabled={action.disabled} data-testid={action.id}
+          onClick={() => { goalFocusRef.current = action.id === "composer-add-goal"; action.select(); setOpen(false); }}
+          className="flex min-h-11 w-full items-center gap-3 rounded-md px-2 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50">
+          {content(action)}
+        </button>
+      </ActionHint>)}</div>
     </DialogContent>
   </Dialog>;
   return <DropdownMenu>
@@ -85,11 +92,28 @@ export function ComposerAddMenu({
     <DropdownMenuContent side="top" align="start" sideOffset={8} data-testid={menuTestId}
       className="w-(--sz-300px) rounded-xl p-1.5 shadow-sm">
       <div className="px-2 py-1 text-xs text-muted-foreground">Add</div>
-      {actions.map((action) => <DropdownMenuItem key={action.id} onSelect={action.select} disabled={action.disabled} data-testid={action.id}>
-        {content(action)}
-      </DropdownMenuItem>)}
+      {actions.map((action) => <ActionHint key={action.id} hint={action.hint} testId={`${action.id}-hint`}>
+        <DropdownMenuItem onSelect={action.select} disabled={action.disabled} data-testid={action.id}>
+          {content(action)}
+        </DropdownMenuItem>
+      </ActionHint>)}
     </DropdownMenuContent>
   </DropdownMenu>;
+}
+
+/**
+ * An action's explanation sits on a wrapper (a disabled action ignores the pointer): hover on desktop, tap on mobile.
+ * Actions without a hint render unchanged.
+ */
+function ActionHint({ hint, testId, children }: { hint?: string; testId: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  if (!hint) return <>{children}</>;
+  return <TooltipProvider><Tooltip open={open} onOpenChange={setOpen}>
+    <TooltipTrigger asChild>
+      <div data-testid={testId} onClick={() => setOpen(true)}>{children}<span className="sr-only">{hint}</span></div>
+    </TooltipTrigger>
+    <TooltipContent className="max-w-xs">{hint}</TooltipContent>
+  </Tooltip></TooltipProvider>;
 }
 
 interface ComposerModeChipProps {

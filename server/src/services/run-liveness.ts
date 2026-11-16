@@ -307,7 +307,9 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   const concreteEvidence = hasConcreteActionEvidence(evidence);
   // This is a diagnostic only. Requested deliverables (including plans) do not
   // select a work mode; only the persisted field grants the planning exemption.
-  const planExempt = input.issue?.workMode === "planning" || evidence.planDocumentRevisionsCreated > 0;
+  // A native_plan turn (a CC Pocket main's own harness plan mode) is plan-first in the same way.
+  const planExempt = input.issue?.workMode === "planning" || input.issue?.workMode === "native_plan"
+    || evidence.planDocumentRevisionsCreated > 0;
   const lastUsefulActionAt = concreteEvidence ? evidence.latestEvidenceAt : null;
 
   const output = (state: RunLivenessState, reason: string, nextAction: string | null = null): RunLivenessClassification => ({
