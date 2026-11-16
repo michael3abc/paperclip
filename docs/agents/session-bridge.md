@@ -36,6 +36,12 @@ the nested duplicate card and generic Retry banner.
 
 Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
 through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the
+effective dispatch's role/provider/model before adapter I/O, without prompts or
+credentials; an adapter-type-only admission snapshot cannot select steering.
+Enter saves the comment and immediately sends it through the native steer path,
+awaiting its acknowledgement without a separate queue action. A browser whose
+live-run cache is behind uses the server's current target, while an observed
+successor to an already-known target is never substituted. Persist the
 queued-comment reservation before provider I/O, preserve original run/result
 correlation, and remove only acknowledged IDs from the latest queue. An unacknowledged
 steer never blocks queue promotion: the comment stays queued and is delivered again

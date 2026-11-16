@@ -4854,13 +4854,14 @@ describe("IssueDetail", () => {
   it.each([
     { name: "chat", conversation: true, interrupts: true },
     { name: "Codex chat", conversation: true, interrupts: false, steer: true },
+    { name: "Codex chat before the live-run cache updates", conversation: true, interrupts: false, steer: true, staleRun: true },
     { name: "unavailable Codex chat", conversation: true, interrupts: false, steer: true, unavailable: true },
     { name: "unconfirmed Codex chat", conversation: true, interrupts: false, steer: true, uncertain: true },
     { name: "task", conversation: false, interrupts: false },
-  ])("interrupts the running turn after a $name message is saved behind it: $interrupts", async ({ conversation, interrupts, steer, unavailable, uncertain }) => {
+  ])("interrupts the running turn after a $name message is saved behind it: $interrupts", async ({ conversation, interrupts, steer, unavailable, uncertain, staleRun }) => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       status: "in_progress",
-      executionRunId: "run-active-1",
+      executionRunId: staleRun ? null : "run-active-1",
       ...(conversation ? { conversationAgentId: "agent-1", conversationUserId: "user-1" } : {}),
     }));
     mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Stop and do this instead" }));
@@ -4870,7 +4871,7 @@ describe("IssueDetail", () => {
       ...(uncertain ? { steeringDelivery: { commentId: "queued-comment-1", status: "uncertain" } } : {}),
     }));
     if (steer) mockIssuesApi.steerQueuedComment.mockResolvedValue(createQueuedCommentQueue({ entries: [], state: null, queueId: null, chatDeliveryMode: "steer" }));
-    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([{
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue(staleRun ? [] : [{
       id: "run-active-1", status: "running", invocationSource: "issue", triggerDetail: null,
       contextCommentId: null, contextWakeCommentId: null, startedAt: "2026-04-21T00:00:01.000Z",
       finishedAt: null, createdAt: "2026-04-21T00:00:01.000Z", agentId: "agent-1",
@@ -4908,6 +4909,30 @@ describe("IssueDetail", () => {
       expect(mockIssuesApi.steerQueuedComment).not.toHaveBeenCalled();
       expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
     }
+  });
+
+  it("waits for the native steer acknowledgement when submitting a working Codex Chat", async () => {
+    const delivered = createDeferred<IssueQueuedCommentQueue>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", executionRunId: "run-active-1",
+      conversationAgentId: "agent-1", conversationUserId: "user-1" }));
+    mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Use this extra detail" }));
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      protocol: "legacy", chatDeliveryMode: "steer", steeringDisposition: "available",
+    }));
+    mockIssuesApi.steerQueuedComment.mockReturnValue(delivered.promise);
+    await act(async () => { renderIssueView(); });
+    await flushReact(); await flushReact();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onAdd: (body: string) => Promise<void> };
+    let settled = false;
+    const submission = props.onAdd("Use this extra detail").then(() => { settled = true; });
+    await flushReact(); await flushReact();
+    expect(mockIssuesApi.steerQueuedComment).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+    delivered.resolve(createQueuedCommentQueue({ entries: [], state: null, queueId: null, chatDeliveryMode: "steer" }));
+    await act(async () => { await submission; });
+    expect(settled).toBe(true);
+    expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
   });
 
   it("interrupts the agent's task turn only when the server reports the chat as preemptible", async () => {
