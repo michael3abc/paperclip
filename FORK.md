@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Compass rate card `compass-official-2026-11-16` (Owner 2026-11-16 「跟 compass 計費」):
+  official list prices for compass-6.1-terra, compass-6-luna, compass-fable5.2,
+  compass-fable5 and compass-opus5; existing rates unchanged. Server-only.
+
 - `/plan` command (Owner 2026-11-16): in main-agent Agent Chat, `/plan` alone
   switches the composer to Native plan; `/plan <text>` sends the text as a Native
   plan turn. Elsewhere `/plan` stays ordinary text. UI-only overlay.

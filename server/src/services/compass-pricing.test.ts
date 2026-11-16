@@ -15,7 +15,7 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
     // 12*2 + 208218*0.1 + 22450*4 + 2450*10 per million tokens
     expect(priced.costUsdExact).toBe("0.135145800");
     expect(priced.costStatus).toBe("estimated");
-    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card", version: "compass-official-2026-11-04",
+    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card", version: "compass-official-2026-11-16",
       serviceTier: "standard", contextTier: "short" });
     expect(priced.pricingProvenance?.evidence).toContain("one-hour rate");
     expect(priced.usage).toBe(claude.usage);
@@ -38,6 +38,22 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
     expect(priceCompassReceipt(codex).costUsdExact).toBe("2.590000000");
     // astra: 900k*10 + 400k*1 + 100k*12.5 + 50k*50 per million tokens
     expect(priceCompassReceipt({ ...codex, model: "compass-6-astra" }).costUsdExact).toBe("13.150000000");
+  });
+  it("prices the Compass selectors added from the 2026-11-16 official list prices", () => {
+    // terra: 900k*1 + 400k*0.05 + 100k*1.25 + 50k*5; long: 2*(0.9+0.02+0.125) + 1.5*0.25
+    expect(priceCompassReceipt({ ...codex, model: "compass-6.1-terra" }).costUsdExact).toBe("1.295000000");
+    expect(priceCompassReceipt({ ...codex, model: "compass-6.1-terra", pricingContext: { contextTier: "long" } }).costUsdExact)
+      .toBe("2.465000000");
+    // luna: 900k*0.1 + 400k*0.01 + 100k*0.125 + 50k*0.5
+    expect(priceCompassReceipt({ ...codex, model: "compass-6-luna" }).costUsdExact).toBe("0.131500000");
+    // fable 5.2: 12*8 + 208218*0.2 + 22450*16 + 2450*40, the [1m] selector at the same card
+    expect(priceCompassReceipt({ ...claude, model: "compass-fable5.2" }).costUsdExact).toBe("0.498939600");
+    expect(priceCompassReceipt({ ...claude, model: "compass-fable5.2[1m]" }).costUsdExact).toBe("0.498939600");
+    // fable 5: 12*10 + 208218*1 + 22450*20 + 2450*50; opus 5: 12*5 + 208218*0.5 + 22450*10 + 2450*25
+    expect(priceCompassReceipt({ ...claude, model: "compass-fable5" }).costUsdExact).toBe("0.779838000");
+    expect(priceCompassReceipt({ ...claude, model: "compass-opus5" }).costUsdExact).toBe("0.389919000");
+    // Models without an official card entry stay visibly unpriced.
+    expect(priceCompassReceipt({ ...codex, model: "compass-5.6-sol" }).costStatus).toBe("unpriced");
   });
   it("treats unreported OpenAI cache writes as plain input and says so", () => {
     const priced = priceCompassReceipt({ ...codex, usage: { inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 50_000 } });
@@ -62,8 +78,8 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
   });
   it.each([
     { complete: false }, { billingType: "unknown" }, { billingType: "credits" }, { billingType: "subscription_included" },
-    { biller: "anthropic" }, { biller: "unknown" }, { model: "compass-fable5" }, { model: "compass-test" },
-    { model: "compass-fable5[1m]" }, { model: "[1m]" }, { model: "compass-opus5.5[1m]x" },
+    { biller: "anthropic" }, { biller: "unknown" }, { model: "compass-fable5.1" }, { model: "compass-test" },
+    { model: "compass-haiku5.5[1m]" }, { model: "[1m]" }, { model: "compass-opus5.5[1m]x" },
     { model: "claude-sonnet-5" }, { model: "constructor" }, { model: undefined },
     { usageBasis: "session_cumulative" }, { costUsd: 0.12 }, { costUsd: 0 }, { costUsdExact: "0.12" }, { cacheAdjustedCostUsd: 0.12 },
     { pricingContext: { serviceTier: "priority" } }, { pricingContext: { contextTier: "long" } },

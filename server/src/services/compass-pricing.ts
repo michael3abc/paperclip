@@ -5,21 +5,28 @@ import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 // the upstream vendor's list price, so each Compass model carries the rates of
 // the vendor model it fronts. A rate change is a new VERSION and a new table;
 // receipts already priced keep the rates they were issued with.
-// OpenAI:    https://developers.openai.com/api/docs/pricing (retrieved 2026-11-04)
-// Anthropic: https://platform.claude.com/docs/en/about-claude/pricing (retrieved 2026-11-04)
-const VERSION = "compass-official-2026-11-04";
+// OpenAI:    https://developers.openai.com/api/docs/pricing (retrieved 2026-11-16)
+// Anthropic: https://platform.claude.com/docs/en/about-claude/pricing (retrieved 2026-11-16)
+const VERSION = "compass-official-2026-11-16";
 
 type Vendor = "openai" | "anthropic";
 /** USD per million tokens: [input, cache read, cache write, output]. */
 type Rates = readonly [string, string, string, string];
 
 const MODELS: Record<string, { vendor: Vendor; upstream: string; rates: Rates }> = {
-  // Anthropic 5.5 has no long-context tier. Cache write is the one-hour rate:
-  // Claude Code through Compass was observed writing only one-hour entries.
+  // These Anthropic models bill the full 1M window at standard pricing (no
+  // long-context tier). Cache write is the one-hour rate: Claude Code through
+  // Compass was observed writing only one-hour entries.
   "compass-opus5.5": { vendor: "anthropic", upstream: "Claude Opus 5.5", rates: ["4", "0.2", "8", "20"] },
   "compass-sonnet5.5": { vendor: "anthropic", upstream: "Claude Sonnet 5.5", rates: ["2", "0.1", "4", "10"] },
+  "compass-fable5.2": { vendor: "anthropic", upstream: "Claude Fable 5.2", rates: ["8", "0.2", "16", "40"] },
+  "compass-fable5": { vendor: "anthropic", upstream: "Claude Fable 5", rates: ["10", "1", "20", "50"] },
+  "compass-opus5": { vendor: "anthropic", upstream: "Claude Opus 5", rates: ["5", "0.5", "10", "25"] },
+  // OpenAI cache write is the 30-minute write rate (short context).
   "compass-6.1-sol": { vendor: "openai", upstream: "gpt-6.1-sol", rates: ["2", "0.1", "2.5", "10"] },
   "compass-6-astra": { vendor: "openai", upstream: "gpt-6-astra", rates: ["10", "1", "12.5", "50"] },
+  "compass-6.1-terra": { vendor: "openai", upstream: "gpt-6.1-terra", rates: ["1", "0.05", "1.25", "5"] },
+  "compass-6-luna": { vendor: "openai", upstream: "gpt-6-luna", rates: ["0.1", "0.01", "0.125", "0.5"] },
 };
 
 const SOURCES: Record<Vendor, string> = {
@@ -51,8 +58,8 @@ export function priceCompassReceipt(
     return receipt;
   const model = receipt.model ?? "";
   // Claude Code's `[1m]` selector suffix only enables the 1M context window and
-  // is stripped before the request reaches Compass. Anthropic 5.5 bills the
-  // whole window at one tier, so it uses the base model's card. OpenAI models
+  // is stripped before the request reaches Compass. These Anthropic models bill
+  // the whole window at one tier, so it uses the base model's card. OpenAI models
   // have no such suffix and stay exact-match only.
   const oneMillion = /\[1m\]$/i.test(model);
   const base = oneMillion ? model.slice(0, -4) : model;
@@ -91,7 +98,7 @@ export function priceCompassReceipt(
   const costCents = unitsToCents((units + divisor / 2n) / divisor);
   const assumptions = [
     `Compass billed at ${card.upstream} list price`,
-    ...(oneMillion ? ["1M context window at the single 5.5 tier"] : []),
+    ...(oneMillion ? ["1M context window at the single standard tier"] : []),
     "standard processing assumed",
     long ? "long per-request context" : "short per-request context assumed",
     card.vendor === "anthropic"
