@@ -153,9 +153,13 @@ describe("main agent worker policy and dispatch", () => {
       const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
       await db.update(executionWorkspaces).set({ metadata: { ...row!.metadata,
         mainManagedWorktree: { ...(row!.metadata!.mainManagedWorktree as object), phase: "converging" } } }).where(eq(executionWorkspaces.id, workspaceId));
-      expect(await create({})).toMatchObject({ status: 409 });
+      // Liveness-first rule 3: convergence is not an execution gate; the default worktree is joined (logged only).
+      expect(await create({})).toMatchObject({ status: 201, body: { executionWorkspaceId: workspaceId } });
       await db.update(executionWorkspaces).set({ metadata: row!.metadata }).where(eq(executionWorkspaces.id, workspaceId));
-      expect(await create({ workspaceSelection: { kind: "configured_source", projectWorkspaceId: sourceId } })).toMatchObject({ status: 409 });
+      // Liveness-first rule 3: a configured project source is a valid placement again, not configured-source-only refusal.
+      const configuredSource = { kind: "configured_source", projectWorkspaceId: sourceId } as const;
+      expect(await create({ workspaceSelection: configuredSource })).toMatchObject({ status: 201,
+        body: { projectId, assigneeAgentId: codexId, workspaceSelection: { selection: configuredSource } } });
       expect(await create({ workspaceSelection: { kind: "session_only" }, executionWorkspaceSettings: { environmentId: randomUUID() } }))
         .toMatchObject({ status: 403 });
       expect(await create({ projectId: otherProjectId, workspaceSelection })).toMatchObject({ status: 403 });
@@ -183,9 +187,14 @@ describe("main agent worker policy and dispatch", () => {
     } finally { await db.update(projects).set({ executionWorkspacePolicy: null }).where(eq(projects.id, projectId)); }
   });
 
-  it("rejects worker dispatch outside the project or without a workspace, and leaves other requests alone", async () => {
+  it("rejects worker dispatch outside the project, places it without a workspace in the project default directory, and leaves other requests alone", async () => {
     await expect(post({ projectId: otherProjectId, title: "Elsewhere", workspaceSelection, assigneeAdapterOverrides: { workerSelectionId: codexChoice } })).rejects.toThrow();
-    await expect(post({ title: "No workspace", assigneeAdapterOverrides: { workerSelectionId: codexChoice } })).rejects.toThrow();
+    // Liveness-first rule 3: without a selection or project default worktree the task runs in the project
+    // default directory instead of being refused; the worker selection is still expanded and checked.
+    const unplaced: Record<string, unknown> = { title: "No workspace", assigneeAdapterOverrides: { workerSelectionId: codexChoice } };
+    expect(await post(unplaced)).toBe(true);
+    expect(unplaced).toMatchObject({ projectId, assigneeAgentId: codexId, workspaceSelection: null,
+      assigneeAdapterOverrides: { workerSelectionId: codexChoice, adapterConfig: { model: "gpt-6-astra" } } });
     await expect(post({ title: "Unknown option", workspaceSelection, assigneeAdapterOverrides: { workerSelectionId: randomUUID() } })).rejects.toThrow();
     const own: Record<string, unknown> = { projectId: otherProjectId, title: "Self task", assigneeAgentId: mainId };
     expect(await post(own)).toBe(false);

@@ -57,10 +57,14 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Reports" });
     const updated = await issueService(db).update(f.issueId, { projectId });
     expect(updated?.executionWorkspaceId).toBe(f.workspaceId);
+    // Liveness-first rule 3: a project move re-resolves the task directory and keeps the projectless
+    // folder instead of refusing it; the binding is normalized to reuse it, which is one revision.
+    expect(updated).toMatchObject({ executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "shared_workspace", sessionOnly: false } });
     const view = await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor);
     expect(view.workspace?.projectId).toBeNull();
     expect(view.workspace?.cwd).toBe(`/tmp/task-${f.issueId}`);
-    expect(view.bindingRevision).toBe(1);
+    expect(view.bindingRevision).toBe(2);
     const overview = await svc.listOverview(f.companyId, { limit: 20, offset: 0 });
     expect(overview.items).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceId: f.workspaceId, projectId: null })]));
   });
@@ -723,7 +727,17 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(task.projectWorkspaceId).toBe(kind === "configured_source" ? source.id : null);
       await expect(svc.selectTaskWorkspace(request)).rejects.toThrow("binding changed");
       await tasks.update(f.issueId, { projectId: project.id, ...patch });
-      expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).bindingRevision).toBe(3);
+      const [moved] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      if (kind === "binding") {
+        // Liveness-first rule 3: the project move re-resolves the task directory and keeps the projectless
+        // folder instead of refusing it; normalizing the binding to reuse it is one revision.
+        expect(moved).toMatchObject({ projectId: project.id, executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" });
+        expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).bindingRevision).toBe(4);
+      } else {
+        // The re-applied explicit source must survive the project move (rule 3: the requested directory wins).
+        expect(moved).toMatchObject({ projectId: project.id, executionWorkspaceId: null, projectWorkspaceId: source.id });
+        expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).bindingRevision).toBe(3);
+      }
     } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
   });
 
