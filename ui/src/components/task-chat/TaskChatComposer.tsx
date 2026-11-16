@@ -202,28 +202,52 @@ export type ParsedRunnerGoalCommand =
   | { matched: true; command: RunnerGoalComposerCommand }
   | { matched: true; error: string };
 
-function normalizeRunnerGoalCommandText(value: string): string {
-  const trimmed = value.trim();
-  // MDXEditor's link extension can reinterpret a selected action command plus
-  // its subsequently typed argument as one relative autolink. Accept only the
-  // exact whole-document shape it generates so the action still cannot fall
-  // through as a comment. Ordinary Markdown links remain ordinary comments.
+/**
+ * MDXEditor's link extension can reinterpret a selected action command plus
+ * its subsequently typed argument as one relative autolink. Accept only the
+ * exact whole-document shape it generates so the action still cannot fall
+ * through as a comment. Ordinary Markdown links remain ordinary comments.
+ * `linkText` matches the partial command the link text may keep (after `/`).
+ */
+function actionCommandFromAutolink(trimmed: string, command: string, linkText: string): string | null {
   const relativeAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\(<(\/goal(?:[ \t\u00a0].*)?)>\)$/s,
+    new RegExp(`^\\[\\/(?:${linkText})?[ \\t\\u00a0]*\\]\\(<(\\/${command}(?:[ \\t\\u00a0].*)?)>\\)$`, "s"),
   );
   if (relativeAutolink) return relativeAutolink[1]!.replaceAll("\u00a0", " ");
 
   const encodedAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\((\/goal(?:%20|%C2%A0).*)\)$/s,
+    new RegExp(`^\\[\\/(?:${linkText})?[ \\t\\u00a0]*\\]\\((\\/${command}(?:%20|%C2%A0).*)\\)$`, "s"),
   );
   if (encodedAutolink) {
     try {
       return decodeURIComponent(encodedAutolink[1]!).replaceAll("\u00a0", " ");
     } catch {
-      return trimmed;
+      return null;
     }
   }
-  return trimmed.replaceAll("\u00a0", " ");
+  return null;
+}
+
+function normalizeRunnerGoalCommandText(value: string): string {
+  const trimmed = value.trim();
+  return actionCommandFromAutolink(trimmed, "goal", "go(?:al)?") ?? trimmed.replaceAll("\u00a0", " ");
+}
+
+export type ParsedNativePlanCommand =
+  | { matched: false }
+  | { matched: true; text: string };
+
+/**
+ * `/plan` in a main agent's Agent Chat selects Native plan (Owner 2026-11-16
+ * \u300c\u5e6b\u6211\u628a\u8981\u6253Native plan\u6539\u6210\u6253 "/plan"\u300d): alone it only switches the mode;
+ * with text, the text is sent as a Native plan turn without the command token.
+ */
+export function parseNativePlanCommand(value: string): ParsedNativePlanCommand {
+  const trimmed = value.trim();
+  const source = actionCommandFromAutolink(trimmed, "plan", "p(?:l(?:an?)?)?") ?? trimmed;
+  const match = source.match(/^\/plan(?:\s+([\s\S]*))?$/);
+  if (!match) return { matched: false };
+  return { matched: true, text: (match[1] ?? "").trim() };
 }
 
 export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
@@ -683,6 +707,8 @@ export function TaskChatComposer({
   const mainAgentModelAgent = isBridgeMainAgent(conversationAgent) ? conversationAgent : undefined;
   // Main-agent chats also offer the harness's own plan mode (Codex: with a tooltip about older Bridges).
   const nativePlan = mainAgentModelAgent ? mainAgentNativePlan(mainAgentModelAgent) : undefined;
+  // `/plan` selects Native plan wherever the composer offers it (main-agent chats only).
+  const nativePlanCommand = Boolean(nativePlan && onWorkModeChange && !queuedEdit);
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
@@ -939,8 +965,25 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
-    const trimmed = submittedBody.trim();
-    const goalCommand = queuedEdit
+    const planCommand = nativePlanCommand
+      ? parseNativePlanCommand(submittedBody)
+      : ({ matched: false } as const);
+    if (planCommand.matched && !planCommand.text && attachmentsRef.current.length === 0) {
+      // `/plan` alone only switches the mode chip; nothing is sent.
+      changeMode("native_plan");
+      setActionError(null);
+      bodyRef.current = "";
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+      if (draftKey) clearDraft(draftKey);
+      setBody("");
+      editorRef.current?.clear();
+      return;
+    }
+    // `/plan <text>` sends <text> as a Native plan turn.
+    const submissionMode: IssueWorkMode = planCommand.matched ? "native_plan" : pendingMode;
+    const trimmed = planCommand.matched ? planCommand.text : submittedBody.trim();
+    const goalCommand = queuedEdit || planCommand.matched
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
     if (goalCommand.matched && conversationMode) {
@@ -1058,8 +1101,9 @@ export function TaskChatComposer({
         onCancelQueuedEdit?.();
         return;
       }
-      if (pendingMode !== workMode && onWorkModeChange) {
-        await onWorkModeChange(pendingMode);
+      if (submissionMode !== pendingMode) setPendingMode(submissionMode);
+      if (submissionMode !== workMode && onWorkModeChange) {
+        await onWorkModeChange(submissionMode);
       }
       const retainedAfterMode = draftKey ? loadDraftSubmission(draftKey) : null;
       if (retainedAfterMode) {
@@ -1430,7 +1474,11 @@ export function TaskChatComposer({
                 id: "action:new", kind: "action", command: "new", name: "New session",
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
-              }] : [goalCommandOption]}
+              }, ...(nativePlanCommand ? [{
+                id: "action:plan", kind: "action" as const, command: "plan", name: "Native plan",
+                description: "Plan in the agent's own harness first; approve the plan here.", aliases: ["plan", "native plan"],
+                disabled,
+              }] : [])] : [goalCommandOption]}
               onSubmit={() => void submit()}
               fileDropTarget="parent"
               bordered={false}

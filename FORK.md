@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- `/plan` command (Owner 2026-11-16): in main-agent Agent Chat, `/plan` alone
+  switches the composer to Native plan; `/plan <text>` sends the text as a Native
+  plan turn. Elsewhere `/plan` stays ordinary text. UI-only overlay.
+
 - Shared voice preference (HOM-265): one browser-local timbre for all agents,
   configured only on the Voice page; Chat call cards consume it without a picker.
   Changes apply to subsequent calls, including across tabs. UI-only overlay.
