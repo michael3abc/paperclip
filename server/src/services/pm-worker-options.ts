@@ -80,10 +80,12 @@ export function workerModelChoices(harness: PmWorkerCatalogEntry["harness"], mod
     thinking: model.id.match(/-(low|medium|high|xhigh|max)$/i)?.slice(1) ?? ["low", "medium", "high", "xhigh", "max"],
   }));
   if (harness === "ccpocket_bridge") {
-    // CC Pocket model IDs are `<host>/<engine>/<model>`; efforts come from the host's own engine probe. No fast tier.
+    // CC Pocket model IDs are `<host>/<engine>/<model>`; efforts come from the host's own engine probe. A Codex model
+    // (including a route family) offers fast when the Bridge advertises that service tier; Claude/Antigravity are standard.
     return models.filter(model => model.id.split("/")[1] === engine).map(model => {
-      const efforts = (model as { efforts?: unknown }).efforts;
-      return { id: model.id, label: model.label, speeds: ["standard"],
+      const { efforts, serviceTiers } = model as { efforts?: unknown; serviceTiers?: unknown };
+      const fast = engine === "codex" && Array.isArray(serviceTiers) && serviceTiers.includes("fast");
+      return { id: model.id, label: model.label, speeds: fast ? ["standard", "fast"] : ["standard"],
         thinking: Array.isArray(efforts) ? efforts.filter((value): value is string => typeof value === "string" && value.length > 0) : [] };
     });
   }
@@ -97,9 +99,12 @@ export function workerSelectionOverrides(harness: PmWorkerCatalogEntry["harness"
   const full = choice.permission === "approve-all" || choice.permission === "full-access";
   if (harness === "agy_local") return { model: choice.model, effort: choice.thinking,
     mode: "accept-edits", sandbox: false, dangerouslySkipPermissions: full, subscriptionOnly: true };
-  // CC Pocket adapter keys: Full access is explicit; any other choice also clears an inherited bypass flag.
+  // CC Pocket adapter keys: Full access is explicit; any other choice also clears an inherited bypass flag. Fast is the
+  // adapter's `serviceTier` (a family runs it on the subscription route and drops it on Compass); standard adds no key,
+  // so existing standard renderings stay byte-identical.
   if (harness === "ccpocket_bridge") return { model: choice.model, effort: choice.thinking,
-    permissionMode: full ? "fullAccess" : "default", dangerouslyBypassApprovalsAndSandbox: full };
+    permissionMode: full ? "fullAccess" : "default", dangerouslyBypassApprovalsAndSandbox: full,
+    ...(choice.speed === "fast" ? { serviceTier: "fast" } : {}) };
   return {
     model: choice.model,
     modelReasoningEffort: choice.thinking, reasoningEffort: choice.thinking, thinkingEffort: choice.thinking, effort: choice.thinking,
