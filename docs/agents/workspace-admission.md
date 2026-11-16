@@ -33,6 +33,11 @@ worktree creation or retirement.
   a task's cwd at it. Explicit initialize creates only Git metadata (no add, commit
   or remote); never infer initialization authority from dispatch.
 - Convergence, reopen and retire are main's lifecycle choices, not execution gates.
+- Observed Git state is the truth and every worktree operation is idempotent
+  (Owner 2026-11-16, `docs/agents/worktree-observed-state.md`): create, merge,
+  retire and initialize answer "already done" from Git, receipts are audit only, a
+  pending operation never gates the next one (it is superseded), host refusals are
+  409 with the host code, and create makes a missing parent below a real directory.
 - An unknown host Git operation outcome is resolved by re-inspecting the current
   host state, then retrying if needed; it never holds unrelated runs.
 - Include ignored target files in merge overlap checks before any shared effect.
@@ -43,7 +48,9 @@ worktree creation or retirement.
 
 - Never delete a directory with dirty or ignored files (including `.lmas`); never
   force-remove a worktree. Back up dirty/ignored files and confirm commits are
-  reachable from a kept branch before non-force removal.
+  reachable from a kept branch before non-force removal. Retire refuses a dirty
+  tree, archives ignored files privately, and is blocked only by a readable
+  process working inside the tree (unreadable processes are skipped).
 - `execution_workspaces.metadata.mainManagedWorktree` is server-owned and only marks
   a tree as not deletable: legacy terminal/idle retention, compaction, rehome, branch
   repair and archive never modify or destroy a marked tree. Generic PATCH preserves it.

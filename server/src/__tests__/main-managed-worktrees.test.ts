@@ -128,7 +128,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const restarted = mainManagedWorktreeService(db, { host: f.host });
     expect(await restarted.recheck(f.scope, f.registration.operationId, 1)).toEqual(receipt);
     expect(f.host).toHaveBeenCalledTimes(1);
-    await expect(restarted.recheck(f.scope, f.registration.operationId, 0)).rejects.toThrow("worktree_generation_conflict");
+    // Generation is advisory: a stale value still returns the recorded result.
+    expect(await restarted.recheck(f.scope, f.registration.operationId, 0)).toEqual(receipt);
     await expect(f.service.operate(f.scope, { ...f.registration, branch: "other" })).rejects.toThrow("worktree_operation_conflict");
   });
 
@@ -314,15 +315,25 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(Object.keys(readMainManagedWorktree((await f.row()).metadata)!.participants)).toHaveLength(2);
     expect(await f.service.operate(f.scope, f.command("converge", 1))).toMatchObject({ phase: "converging", generation: 2 });
     await expect(f.service.operate(f.scope, f.command("join", 2))).rejects.toThrow("workspace_converging");
-    await expect(f.service.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_generation_conflict");
-    expect(await f.service.operate(f.scope, f.command("reopen", 2))).toMatchObject({ phase: "open", generation: 3 });
+    // A stale generation is recorded, never refused; reopen re-reads the tree on its host.
+    const reopen = f.command("reopen", 1);
+    expect(await f.service.operate(f.scope, reopen)).toMatchObject({ phase: "open", generation: 3 });
+    expect(f.host).toHaveBeenLastCalledWith(null, expect.objectContaining({ action: "inspect", operationId: reopen.operationId }));
+    const [saved] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, reopen.operationId));
+    expect(saved!.metadata).toMatchObject({ expectedGeneration: 1, generation: 3 });
+    // Reopening an open tree is idempotent.
+    expect(await f.service.operate(f.scope, f.command("reopen", 3))).toMatchObject({ phase: "open", generation: 4 });
+    expect(Object.keys(readMainManagedWorktree((await f.row()).metadata)!.participants)).toHaveLength(2);
   });
 
-  it("serializes concurrent converge calls and persists only the winner", async () => {
+  it("serializes concurrent converge calls; the second is an idempotent no-op", async () => {
     const f = await fixture(); await f.service.operate(f.scope, f.registration);
     const results = await Promise.allSettled([f.service.operate(f.scope, f.command("converge", 1)), f.service.operate(f.scope, f.command("converge", 1))]);
-    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
-    expect((await f.row()).metadata?.lifecycleGeneration).toBe(2);
+    expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(results.map(result => (result as PromiseFulfilledResult<{ phase: string }>).value.phase)).toEqual(["converging", "converging"]);
+    // The lifecycle lock serialized them: one counter step each, one phase change.
+    expect((await f.row()).metadata?.lifecycleGeneration).toBe(3);
+    expect(readMainManagedWorktree((await f.row()).metadata)?.phase).toBe("converging");
   });
 
   it("falls back to the project default directory without a worktree, preserves session-only resources, and joins a converging default", async () => {
@@ -352,39 +363,93 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(issues).where(eq(issues.companyId, f.companyId))).toHaveLength(4);
   });
 
-  it("keeps unknown host outcomes pending across restart and reconciles only the original operation", async () => {
+  it("keeps an unknown host outcome as the pending operation for a Git recheck, without gating anything", async () => {
     const f = await fixture();
     const creation = { ...f.registration, action: "create" as const, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
     f.host.mockRejectedValueOnce(new Error("lost reply"));
-    await expect(f.service.operate(f.scope, creation)).rejects.toThrow("lost reply");
+    await expect(f.service.operate(f.scope, creation)).rejects.toMatchObject({ status: 409, code: "worktree_host_operation_failed",
+      details: { code: "worktree_host_operation_failed", outcome: "unknown", detail: "lost reply" } });
     expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(f.registration.operationId);
-    await expect(f.service.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_operation_reconciliation_required");
+    // A refused command is not a gate either way; its rollback leaves the pending create for recheck.
+    await expect(f.service.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_registration_incomplete");
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(f.registration.operationId);
     const restarted = mainManagedWorktreeService(db, { host: f.host, receiptRoot: "/private/test-receipts" });
     expect(await restarted.recheck(f.scope, f.registration.operationId, 1)).toMatchObject({ phase: "open", generation: 1 });
     expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: f.registration.operationId, action: "create", recheckOnly: true });
+    expect(readMainManagedWorktree((await f.row()).metadata)).toMatchObject({ phase: "open", pendingOperationId: null });
+    const [saved] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, creation.operationId));
+    expect(saved).toMatchObject({ status: "succeeded", stderrExcerpt: null, metadata: { earlierFailures: ["worktree_host_operation_failed: lost reply"] } });
   });
 
-  it.each(["register", "create"] as const)("missing host receipt releases only the original read-only action (%s)", async action => {
+  it.each(["register", "create"] as const)("a host refusal is a 409 with its code; retrying the same operation re-reads Git (%s)", async action => {
     const f = await fixture();
     const request = { ...f.registration, action, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
-    f.host.mockRejectedValue(Object.assign(new Error("worktree_operation_receipt_missing"), { code: "worktree_operation_receipt_missing" }));
-    await expect(f.service.operate(f.scope, request)).rejects.toMatchObject({ code: "worktree_operation_receipt_missing" });
-    const pending = action === "create" ? request.operationId : null;
-    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(pending);
+    // Shopee-D 2026-11-16: ENOENT for a missing parent was an opaque 500 and a permanent gate.
+    f.host.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }));
+    await expect(f.service.operate(f.scope, request)).rejects.toMatchObject({ status: 409, code: "ENOENT",
+      details: { code: "ENOENT", retryable: true, detail: "ENOENT: no such file or directory" } });
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBeNull();
     const restarted = mainManagedWorktreeService(db, { host: f.host, receiptRoot: "/private/test-receipts" });
-    if (action === "create") {
-      await expect(restarted.recheck(f.scope, request.operationId, 1)).rejects.toMatchObject({ code: "worktree_operation_receipt_missing" });
-      expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: request.operationId, action: "create", recheckOnly: true });
-      await expect(restarted.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_operation_reconciliation_required");
-    } else {
-      expect(f.host.mock.calls[0]![1].action).toBe("inspect");
-      expect(await restarted.recheck(f.scope, request.operationId, 1)).toMatchObject({ status: "failed", pending: false });
-      expect(f.host).toHaveBeenCalledTimes(1);
-    }
-    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(pending);
+    // A definitely refused operation is history; recheck does not call the host.
+    expect(await restarted.recheck(f.scope, request.operationId, 1)).toMatchObject({ status: "failed", pending: false });
+    expect(f.host).toHaveBeenCalledTimes(1);
+    // The same operation again (same ID and input) runs against Git and reuses its row.
+    expect(await restarted.operate(f.scope, request)).toMatchObject({ phase: "open", generation: 2 });
+    expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: request.operationId, action: action === "create" ? "create" : "inspect" });
+    expect(f.host.mock.calls[1]![1].recheckOnly).toBeUndefined();
     const saved = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, request.operationId));
     expect(saved).toHaveLength(1);
-    expect(saved[0]).toMatchObject({ status: "failed", stderrExcerpt: "worktree_operation_receipt_missing" });
+    expect(saved[0]).toMatchObject({ status: "succeeded", metadata: { attempts: 2, earlierFailures: ["ENOENT: ENOENT: no such file or directory"] } });
+    // And once more: the stored result is returned without host I/O.
+    expect(await restarted.operate(f.scope, request)).toMatchObject({ phase: "open", generation: 2 });
+    expect(f.host).toHaveBeenCalledTimes(2);
+  });
+
+  it("supersedes an earlier unknown operation with the next one and keeps its row (Shopee-D cbdd1528)", async () => {
+    // The live stuck shape: a failed create whose pendingOperationId stayed set.
+    const f = await fixture(true);
+    const create = { ...f.registration, action: "create" as const, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
+    f.host.mockRejectedValueOnce(Object.assign(new Error("host_unavailable"), { code: "host_unavailable" }));
+    await expect(f.service.operate(f.scope, create)).rejects.toMatchObject({ status: 503, code: "host_unavailable" });
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(create.operationId);
+    // A server stop after host I/O can also leave the row running.
+    await db.update(workspaceOperations).set({ status: "running", finishedAt: null }).where(eq(workspaceOperations.id, create.operationId));
+    // A participant leave neither waits for nor supersedes it.
+    expect(await f.service.operate(f.scope, f.command("leave", 1))).toMatchObject({ generation: 1 });
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(create.operationId);
+    // The main retries with a new operation (stale generation is fine); Git shows the tree.
+    const retry = { ...create, operationId: randomUUID(), expectedGeneration: 0 };
+    f.host.mockImplementationOnce(async (_host, input) => ({ ...f.response(input), outcome: "already_done" as const }));
+    expect(await f.service.operate(f.scope, retry)).toMatchObject({ phase: "open", generation: 2, outcome: "already_done" });
+    expect(readMainManagedWorktree((await f.row()).metadata)).toMatchObject({ phase: "open", pendingOperationId: null,
+      lastReceipt: { operationId: retry.operationId } });
+    const [original] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, create.operationId));
+    expect(original).toMatchObject({ status: "failed", stderrExcerpt: "superseded_by_operation:" + retry.operationId });
+    const [next] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, retry.operationId));
+    expect(next!.metadata).toMatchObject({ supersededOperationId: create.operationId, expectedGeneration: 0 });
+    // The superseded original is history: recheck reports it without touching the host.
+    expect(await f.service.recheck(f.scope, create.operationId, 2)).toMatchObject({ status: "failed", pending: false });
+    expect(f.host).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles a pending failed create from Git when the main made the tree itself", async () => {
+    const f = await fixture(true);
+    const create = { ...f.registration, action: "create" as const, expectedHead: "a".repeat(40) };
+    f.host.mockRejectedValueOnce(Object.assign(new Error("worktree_host_timeout"), { code: "worktree_host_timeout" }));
+    await expect(f.service.operate(f.scope, create)).rejects.toMatchObject({ status: 409, code: "worktree_host_timeout" });
+    // Git now shows the tree (made by the host late, or by the main with git worktree add).
+    f.host.mockImplementationOnce(async (_host, input) => ({ ...f.response(input), outcome: "already_done" as const }));
+    expect(await f.service.recheck(f.scope, create.operationId, 99)).toMatchObject({ phase: "open", outcome: "already_done" });
+    expect(f.host).toHaveBeenLastCalledWith("fixture-remote", expect.objectContaining({ action: "create", recheckOnly: true }));
+    // Git does not show it: recheck reports the code, clears pending and keeps the first failure text.
+    const g = await fixture(true), other = { ...g.registration, action: "create" as const, expectedHead: "a".repeat(40) };
+    g.host.mockRejectedValueOnce(Object.assign(new Error("worktree_host_timeout"), { code: "worktree_host_timeout" }));
+    await expect(g.service.operate(g.scope, other)).rejects.toMatchObject({ code: "worktree_host_timeout" });
+    g.host.mockRejectedValueOnce(Object.assign(new Error("worktree_operation_not_observed"), { code: "worktree_operation_not_observed" }));
+    expect(await g.service.recheck(g.scope, other.operationId, 1)).toMatchObject({ status: "failed", pending: false, code: "worktree_operation_not_observed" });
+    expect(readMainManagedWorktree((await g.row()).metadata)?.pendingOperationId).toBeNull();
+    const [saved] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, other.operationId));
+    expect(saved).toMatchObject({ status: "failed", stderrExcerpt: "worktree_host_timeout" });
   });
 
   it("does not let a refused retire deadlock reopening the tree", async () => {
@@ -395,7 +460,96 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(f.service.operate(f.scope, f.command("retire", 3))).rejects.toThrow("retire_blocked_participants");
     expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBeNull();
     expect(await f.service.operate(f.scope, f.command("reopen", 4))).toMatchObject({ phase: "open", generation: 5 });
-    expect(f.host.mock.calls.map(call => call[1].action)).toEqual(["inspect", "merge"]);
+    expect(f.host.mock.calls.map(call => call[1].action)).toEqual(["inspect", "merge", "inspect"]);
+  });
+
+  it("merges and retires by refs without requiring a stored phase, and repeats both idempotently", async () => {
+    const f = await fixture(); await f.service.operate(f.scope, f.registration);
+    // The main may merge an open tree directly; the host decides from refs.
+    expect(await f.service.operate(f.scope, f.command("merge", 1))).toMatchObject({ phase: "merged", generation: 2 });
+    f.host.mockImplementationOnce(async (_host, input) => ({ ...f.response(input), outcome: "already_done" as const }));
+    expect(await f.service.operate(f.scope, f.command("merge", 2))).toMatchObject({ phase: "merged", outcome: "already_done" });
+    // A tree merged outside the API (plain git) can still be retired; no expected heads are needed.
+    await f.service.operate(f.scope, f.command("reopen", 3));
+    expect(await f.service.operate(f.scope, { action: "retire", expectedGeneration: 4, operationId: randomUUID() }))
+      .toMatchObject({ phase: "retired", generation: 5 });
+    expect(await f.row()).toMatchObject({ status: "archived" });
+    const closedAt = (await f.row()).closedAt;
+    f.host.mockImplementationOnce(async (_host, input) => ({ ...f.response(input), outcome: "already_done" as const }));
+    expect(await f.service.operate(f.scope, { action: "retire", expectedGeneration: 5, operationId: randomUUID() }))
+      .toMatchObject({ phase: "retired", outcome: "already_done" });
+    expect((await f.row()).closedAt).toEqual(closedAt);
+    await expect(f.service.operate(f.scope, f.command("reopen", 6))).rejects.toThrow("worktree_retired");
+    expect(f.host.mock.calls.map(call => call[1].action)).toEqual(["inspect", "merge", "merge", "inspect", "retire", "retire"]);
+  });
+
+  it("re-verifies the same registration with a new operation and keeps its phase and participants", async () => {
+    const f = await fixture();
+    const create = { ...f.registration, action: "create" as const, expectedHead: "a".repeat(40) };
+    expect(await f.service.operate(f.scope, create)).toMatchObject({ phase: "open", generation: 1 });
+    await f.service.operate(f.scope, f.command("join", 1));
+    await f.service.operate(f.scope, f.command("converge", 1));
+    f.host.mockImplementationOnce(async (_host, input) => ({ ...f.response(input), outcome: "already_done" as const }));
+    expect(await f.service.operate(f.scope, { ...create, operationId: randomUUID(), expectedGeneration: 2 }))
+      .toMatchObject({ phase: "converging", generation: 3, outcome: "already_done" });
+    expect(Object.keys(readMainManagedWorktree((await f.row()).metadata)!.participants)).toHaveLength(1);
+    // Different coordinates for a completed registration are still a conflict.
+    await expect(f.service.operate(f.scope, { ...create, operationId: randomUUID(), branch: "michael/other", expectedGeneration: 3 }))
+      .rejects.toThrow("worktree_already_registered");
+  });
+
+  it("answers a contended workspace lifecycle lock with a retryable 409", async () => {
+    const f = await fixture(); await f.service.operate(f.scope, f.registration);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    f.host.mockImplementationOnce(async (_host, input) => { await held; return f.response(input); });
+    const slow = f.service.operate(f.scope, f.command("merge", 1));
+    await vi.waitFor(() => expect(f.host).toHaveBeenCalledTimes(2));
+    const fast = mainManagedWorktreeService(db, { host: f.host, receiptRoot: "/private/test-receipts", lockTimeoutMs: 500 });
+    await expect(fast.operate(f.scope, f.command("converge", 2))).rejects.toMatchObject({ status: 409,
+      details: { code: "worktree_operation_in_progress", retryable: true } });
+    release();
+    expect(await slow).toMatchObject({ phase: "merged" });
+  });
+
+  it("creates under a missing parent, merges and retires a real local tree end to end, repeating each step safely", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "managed-real-"));
+    const repository = path.join(root, "repository"), parentDir = path.join(root, "not-yet", "trees"), receipts = path.join(root, "receipts");
+    const exec = promisify(execFile);
+    const git = async (directory: string, ...args: string[]) => (await exec("git", ["-c", "core.hooksPath=/dev/null",
+      "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-C", directory, ...args])).stdout.trim();
+    try {
+      await fs.mkdir(repository); await fs.mkdir(receipts, { mode: 0o700 });
+      await git(repository, "init", "-q", "--initial-branch=michael/main");
+      await git(repository, "commit", "-q", "--allow-empty", "-m", "base");
+      const base = await git(repository, "rev-parse", "HEAD");
+      const f = await fixture(false, { sourceCwd: repository, parentDir });
+      const real = vi.fn(async (_host: string | null, input: ManagedWorktreeHostInput) => managedWorktreeHostOperation(input));
+      const service = mainManagedWorktreeService(db, { host: real, receiptRoot: receipts });
+      const create = { ...f.registration, action: "create" as const, expectedHead: base };
+      expect(await service.operate(f.scope, create)).toMatchObject({ phase: "open", outcome: "applied" });
+      const cwd = path.join(parentDir, "batch");
+      expect(await git(cwd, "symbolic-ref", "HEAD")).toBe("refs/heads/michael/batch");
+      // Lost reply: the main repeats with a new operation and gets the same tree.
+      expect(await service.operate(f.scope, { ...create, operationId: randomUUID() })).toMatchObject({ phase: "open", outcome: "already_done" });
+      await fs.writeFile(path.join(cwd, "feature.txt"), "feature\n");
+      await git(cwd, "add", "feature.txt"); await git(cwd, "commit", "-q", "-m", "feature");
+      const head = await git(cwd, "rev-parse", "HEAD");
+      const merge = { action: "merge" as const, operationId: randomUUID(), expectedGeneration: 2, expectedHead: head, expectedTargetHead: base };
+      expect(await service.operate(f.scope, merge)).toMatchObject({ phase: "merged", outcome: "applied", host: { targetHead: head } });
+      expect(await git(repository, "rev-parse", "michael/main")).toBe(head);
+      expect(await service.operate(f.scope, { ...merge, operationId: randomUUID() })).toMatchObject({ phase: "merged", outcome: "already_done" });
+      const inspected = await service.inspect(f.scope);
+      expect(inspected.observed).toMatchObject({ ok: true, result: { head, merged: true, dirty: false } });
+      const retire = { action: "retire" as const, operationId: randomUUID(), expectedGeneration: 4 };
+      const retired = await service.operate(f.scope, retire);
+      expect(retired).toMatchObject({ phase: "retired", outcome: "applied", host: { retired: true } });
+      await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.stat((retired as { host: { rescuePath: string } }).host.rescuePath)).mode & 0o777).toBe(0o600);
+      expect(await git(repository, "rev-parse", "michael/batch")).toBe(head);
+      expect(await service.operate(f.scope, { ...retire, operationId: randomUUID() })).toMatchObject({ phase: "retired", outcome: "already_done" });
+      expect(real.mock.calls.map(call => call[1].action)).toEqual(["create", "create", "merge", "merge", "inspect", "retire", "retire"]);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it("retires once participant runs are terminal, without stop evidence or cleanup receipts, while live work still blocks", async () => {

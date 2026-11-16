@@ -328,6 +328,7 @@ repository-root retirement only unregisters metadata.
 - `/home/michael/services/docs/agents/liveness-first.md` — Binding liveness-first policy (Owner 2026-11-13); wins over any conflicting rule below
 - `docs/agents/execution-semantics.md` — Liveness-first run retry/cancel, unknown-outcome resend, failure classes, inactivity, session authority, input receipts
 - `docs/agents/workspace-admission.md` — Workspace = directory resolution, explicit worktree creation and safe retirement
+- `docs/agents/worktree-observed-state.md` — Main-managed worktree API: Git state is the truth, idempotent operations, receipts audit only
 - `docs/agents/pm-agents.md` — Zero-slot PM policy, bundle layout, dispatch, read scope, worker policy, watchdog, homes
 - `docs/agents/decisions-and-review.md` — PM decision authority, review decisions, decision delegation, secret delegation, review recovery
 - `docs/agents/ui-features.md` — Sidebar status, coordinator sidebar, PDF preview, live work cards, worker-card collapse UI
