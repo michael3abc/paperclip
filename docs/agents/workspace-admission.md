@@ -35,6 +35,9 @@ worktree creation or retirement.
 - Convergence, reopen and retire are main's lifecycle choices, not execution gates.
 - An unknown host Git operation outcome is resolved by re-inspecting the current
   host state, then retrying if needed; it never holds unrelated runs.
+- A pending operation never gates the main's next one: a new operation abandons it
+  (its row and history stay), and recheck abandons an original whose host receipt
+  is missing or unreconcilable. Host refusals answer 409 with the host's code.
 - Include ignored target files in merge overlap checks before any shared effect.
 - Read-only source tools share files; fixed-version reads never switch branch.
   Production sources, Owner holds, permissions and real provider capacity stay intact.

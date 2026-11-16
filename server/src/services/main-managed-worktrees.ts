@@ -10,7 +10,7 @@ import { agents, environmentLeases, executionWorkspaces, heartbeatRuns, issues, 
 import { MAIN_MANAGED_WORKTREE_KEY, MAIN_MANAGED_WORKTREE_SCHEMA, isMainManagedExecutionWorkspace,
   readMainManagedWorktree, type MainManagedWorktree } from "@paperclipai/shared";
 import { managedWorktreeHostOperation, type ManagedWorktreeHostInput, type ManagedWorktreeHostResult } from "@paperclipai/adapter-utils/managed-worktree-host";
-import { forbidden, conflict, notFound } from "../errors.js";
+import { forbidden, conflict, notFound, HttpError } from "../errors.js";
 import { resolvePaperclipConfigPath } from "../paths.js";
 import { assertAgentRunWriteAllowed, agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { accessService } from "./access.js";
@@ -30,6 +30,17 @@ type Scope = { companyId: string; projectId: string; workspaceId: string; actor:
 type Host = (hostId: string | null, input: ManagedWorktreeHostInput) => Promise<ManagedWorktreeHostResult>;
 const generation = (row: Workspace) => Number.isSafeInteger(row.metadata?.lifecycleGeneration) ? Number(row.metadata!.lifecycleGeneration) : 0;
 const fail = (code: string): never => { throw conflict(code, { code }); };
+/** A host or transport refusal is an expected outcome, not a server crash: answer
+ * 409 with the host's code so the main can act on it (retry, or create the tree
+ * itself with Git) instead of an opaque 500. */
+const hostFailure = (error: unknown) => {
+  if (error instanceof HttpError) return error;
+  const raw = error as { code?: unknown; worktreeEffectStarted?: unknown; message?: unknown } | null;
+  const code = typeof raw?.code === "string" ? raw.code : "worktree_host_operation_failed";
+  const effectStarted = typeof raw?.worktreeEffectStarted === "boolean" ? raw.worktreeEffectStarted : null;
+  return Object.assign(conflict(typeof raw?.message === "string" && raw.message ? raw.message : code, { code, effectStarted }),
+    { code, worktreeEffectStarted: raw?.worktreeEffectStarted });
+};
 const inside = (root: string, cwd: string) => {
   const relative = path.posix.relative(root, cwd);
   return relative === "" || (relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative));
@@ -176,12 +187,12 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
       return receipt;
     });
   }
-  async function recordFailure(scope: Scope, row: Workspace, operationId: string, error: unknown, noEffect: boolean) {
+  async function recordFailure(scope: Scope, row: Workspace, operationId: string, error: unknown, releasePending: boolean) {
     return db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
       await tx.update(workspaceOperations).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date(),
         stderrExcerpt: error instanceof Error ? error.message.slice(0, 200) : "worktree_operation_failed" }).where(eq(workspaceOperations.id, operationId));
-      if (noEffect) {
+      if (releasePending) {
         const current = await load(tx, scope), managed = readMainManagedWorktree(current?.metadata);
         if (!current || generation(current) !== generation(row) || managed?.pendingOperationId !== operationId) fail("worktree_generation_conflict");
         await tx.update(executionWorkspaces).set({ metadata: { ...current!.metadata,
@@ -271,12 +282,18 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
         if (!original || original.operationId !== operationId) fail("worktree_operation_receipt_missing");
         const action = saved.metadata?.action as Operation["action"];
         try {
-          const result = await host(managed!.hostId, { ...original!, recheckOnly: true });
+          const result = await host(managed!.hostId, { ...original!, recheckOnly: true }).catch(error => { throw hostFailure(error); });
           return await completeHostOperation(scope, row!, { action, operationId, expectedGeneration },
             String(saved.metadata?.digest), original!, result);
         } catch (error) {
+          // Liveness-first rule 1: an original the host has no receipt for, or
+          // cannot reconcile, is abandoned instead of kept as a gate. The main
+          // re-inspects the host and starts a new operation when it still needs one.
+          const code = (error as { code?: unknown })?.code;
+          const abandoned = code === "worktree_operation_receipt_missing" || code === "worktree_operation_reconciliation_required";
           const noEffect = (error as { worktreeEffectStarted?: unknown })?.worktreeEffectStarted === false || original!.action === "inspect";
-          await recordFailure(scope, row!, operationId, error, noEffect);
+          await recordFailure(scope, row!, operationId, error, noEffect || abandoned);
+          if (abandoned) return { operationId, status: "failed", pending: false, code };
           throw error;
         }
       }, { lockTimeoutMs: 30_000 }),
@@ -306,7 +323,18 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           let excludedRoots: string[] | undefined;
           let normalizeLegacyRemoteProvider = false;
           if (row && isMainManagedExecutionWorkspace(row) && !managed) fail("worktree_marker_unrecognized");
-          if (managed?.pendingOperationId) fail("worktree_operation_reconciliation_required");
+          if (managed?.pendingOperationId && !participant) {
+            // Liveness-first rule 1: an earlier operation whose host outcome stayed
+            // unknown never gates the main's next one; this operation abandons it.
+            // Its saved row and history stay. Host checks (existing path, expected
+            // heads) keep a late original from repeating an effect. Participant
+            // join/leave neither waits for nor abandons it.
+            await tx.update(workspaceOperations).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date(),
+              stderrExcerpt: "abandoned_by_operation:" + operation.operationId }).where(and(
+              eq(workspaceOperations.id, managed.pendingOperationId), eq(workspaceOperations.companyId, scope.companyId),
+              eq(workspaceOperations.status, "running")));
+            managed = { ...managed, pendingOperationId: null };
+          }
           if (["create", "register", "initialize"].includes(operation.action)) {
             if (managed?.lastReceipt || Object.keys(managed?.participants ?? {}).length || (!row && operation.expectedGeneration !== 0)) fail("worktree_already_registered");
             if (!operation.projectWorkspaceId || !operation.name || !operation.branch || !operation.targetBranch) fail("worktree_registration_required");
@@ -448,7 +476,7 @@ export function mainManagedWorktreeService(db: Db, options: { host?: Host; recei
           if (!targetLock?.acquired) fail("worktree_target_busy");
           if (operation.action === "retire") await assertRetirable(row, managed);
           enteredHost = true;
-          const result = await host(managed.hostId, hostInput);
+          const result = await host(managed.hostId, hostInput).catch(error => { throw hostFailure(error); });
           return await completeHostOperation(scope, row, operation, digest, hostInput, result);
         } catch (error) {
           const noEffect = !enteredHost || hostInput.action === "inspect" || (error as { worktreeEffectStarted?: unknown })?.worktreeEffectStarted === false;

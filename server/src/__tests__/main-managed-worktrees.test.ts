@@ -358,33 +358,59 @@ const support = await getEmbeddedPostgresTestSupport();
     f.host.mockRejectedValueOnce(new Error("lost reply"));
     await expect(f.service.operate(f.scope, creation)).rejects.toThrow("lost reply");
     expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(f.registration.operationId);
-    await expect(f.service.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_operation_reconciliation_required");
+    // The pending original is not a gate (liveness-first); a refused command leaves it for recheck.
+    await expect(f.service.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_registration_incomplete");
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(f.registration.operationId);
     const restarted = mainManagedWorktreeService(db, { host: f.host, receiptRoot: "/private/test-receipts" });
     expect(await restarted.recheck(f.scope, f.registration.operationId, 1)).toMatchObject({ phase: "open", generation: 1 });
     expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: f.registration.operationId, action: "create", recheckOnly: true });
   });
 
-  it.each(["register", "create"] as const)("missing host receipt releases only the original read-only action (%s)", async action => {
+  it.each(["register", "create"] as const)("missing host receipt abandons the original without gating the next operation (%s)", async action => {
     const f = await fixture();
     const request = { ...f.registration, action, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
     f.host.mockRejectedValue(Object.assign(new Error("worktree_operation_receipt_missing"), { code: "worktree_operation_receipt_missing" }));
-    await expect(f.service.operate(f.scope, request)).rejects.toMatchObject({ code: "worktree_operation_receipt_missing" });
+    await expect(f.service.operate(f.scope, request)).rejects.toMatchObject({ status: 409, code: "worktree_operation_receipt_missing" });
     const pending = action === "create" ? request.operationId : null;
     expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(pending);
     const restarted = mainManagedWorktreeService(db, { host: f.host, receiptRoot: "/private/test-receipts" });
-    if (action === "create") {
-      await expect(restarted.recheck(f.scope, request.operationId, 1)).rejects.toMatchObject({ code: "worktree_operation_receipt_missing" });
-      expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: request.operationId, action: "create", recheckOnly: true });
-      await expect(restarted.operate(f.scope, f.command("reopen", 1))).rejects.toThrow("worktree_operation_reconciliation_required");
-    } else {
-      expect(f.host.mock.calls[0]![1].action).toBe("inspect");
-      expect(await restarted.recheck(f.scope, request.operationId, 1)).toMatchObject({ status: "failed", pending: false });
-      expect(f.host).toHaveBeenCalledTimes(1);
-    }
-    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(pending);
+    expect(await restarted.recheck(f.scope, request.operationId, 1)).toMatchObject({ status: "failed", pending: false });
+    if (action === "create") expect(f.host.mock.calls[1]![1]).toMatchObject({ operationId: request.operationId, action: "create", recheckOnly: true });
+    else expect(f.host).toHaveBeenCalledTimes(1);
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBeNull();
     const saved = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, request.operationId));
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ status: "failed", stderrExcerpt: "worktree_operation_receipt_missing" });
+    // The main retries the same tree with a new operation.
+    f.host.mockImplementation(async (_host, input) => f.response(input));
+    expect(await restarted.operate(f.scope, { ...request, operationId: randomUUID(), expectedGeneration: 1 }))
+      .toMatchObject({ phase: "open", generation: 2 });
+  });
+
+  it("answers a remote host refusal with 409 and lets the main retry the same tree with a new operation", async () => {
+    // Shopee-D 2026-11-16: the host refused create before writing its receipt
+    // (missing parent directory, ENOENT). That was a 500 and a permanent gate.
+    const f = await fixture(true);
+    const create = { ...f.registration, action: "create" as const, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
+    f.host.mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
+    await expect(f.service.operate(f.scope, create)).rejects.toMatchObject({ status: 409, code: "ENOENT",
+      details: { code: "ENOENT", effectStarted: null } });
+    expect(f.host).toHaveBeenLastCalledWith("fixture-remote", expect.objectContaining({ action: "create", operationId: create.operationId }));
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(create.operationId);
+    // A server stop after host I/O leaves the original row running; the next operation abandons it.
+    await db.update(workspaceOperations).set({ status: "running", finishedAt: null }).where(eq(workspaceOperations.id, create.operationId));
+    // A participant leave neither waits for nor abandons the pending original.
+    expect(await f.service.operate(f.scope, f.command("leave", 1))).toMatchObject({ generation: 1 });
+    expect(readMainManagedWorktree((await f.row()).metadata)?.pendingOperationId).toBe(create.operationId);
+    const retry = { ...create, operationId: randomUUID(), expectedGeneration: 1 };
+    expect(await f.service.operate(f.scope, retry)).toMatchObject({ phase: "open", generation: 2 });
+    expect(readMainManagedWorktree((await f.row()).metadata)).toMatchObject({ phase: "open", pendingOperationId: null,
+      lastReceipt: { operationId: retry.operationId } });
+    const [original] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, create.operationId));
+    expect(original).toMatchObject({ status: "failed", stderrExcerpt: "abandoned_by_operation:" + retry.operationId });
+    // A completed abandoned original can no longer change the tree.
+    expect(await f.service.recheck(f.scope, create.operationId, 2)).toMatchObject({ status: "failed", pending: false });
+    expect(f.host).toHaveBeenCalledTimes(2);
   });
 
   it("does not let a refused retire deadlock reopening the tree", async () => {
