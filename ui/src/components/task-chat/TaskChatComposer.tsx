@@ -681,7 +681,7 @@ export function TaskChatComposer({
   // Main-agent chats edit the Bridge agent's saved model/effort instead of per-message run settings.
   const conversationAgent = conversationMode && !creation ? modelAgents?.get(assigneeValue.slice(6)) : undefined;
   const mainAgentModelAgent = isBridgeMainAgent(conversationAgent) ? conversationAgent : undefined;
-  // Main-agent chats also offer the harness's own plan mode (Claude only; disabled with a reason for Codex).
+  // Main-agent chats also offer the harness's own plan mode (Codex: with a tooltip about older Bridges).
   const nativePlan = mainAgentModelAgent ? mainAgentNativePlan(mainAgentModelAgent) : undefined;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
@@ -1351,7 +1351,7 @@ export function TaskChatComposer({
         if (isModeShortcut) {
           e.preventDefault();
           e.stopPropagation();
-          changeMode(nextWorkMode(pendingMode, { nativePlan: nativePlan?.available }));
+          changeMode(nextWorkMode(pendingMode, { nativePlan: Boolean(nativePlan) }));
         }
       }}
         onPasteCapture={handlePasteCapture}

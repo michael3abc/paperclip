@@ -57,25 +57,28 @@ export function sameSelection(a: MainAgentModelSelection, b: MainAgentModelSelec
   return a.model === b.model && a.effort === b.effort && a.serviceTier === b.serviceTier;
 }
 
-/** Why Native plan is unavailable for a Codex main agent (shown as the disabled option's tooltip). */
+/**
+ * Tooltip for Native plan on a Codex main agent. The browser cannot see the host Bridge's protocol capabilities, so the
+ * option stays enabled and says what an older Bridge does with it.
+ */
 export const NATIVE_PLAN_CODEX_HINT =
-  "Native plan needs a Claude main agent. On the CC Pocket Bridge, approving a Codex plan starts a new turn outside this chat's run, so its result would not reach this chat. Use Plan mode for Codex.";
+  "Codex native plan needs a CC Pocket Bridge with Codex plan support (codex_plan_client_drive_v1). On an older Bridge this message runs as Plan mode instead.";
 
 export interface MainAgentNativePlan {
-  available: boolean;
-  /** English tooltip for the disabled option; null when available. */
-  reason: string | null;
+  /** English tooltip shown with the option; null when nothing needs explaining. */
+  hint: string | null;
 }
 
 /**
- * Native plan runs the harness's own plan mode: Claude's ExitPlanMode is shown here for approval and the same turn
- * implements the approved plan. The provider is the saved `provider`, else the qualified model's provider segment.
+ * Native plan runs the harness's own plan mode and shows its plan here for approval: Claude implements in the same
+ * turn, Codex in a follow-up turn of the same run. The provider is the saved `provider`, else the qualified model's
+ * provider segment.
  */
 export function mainAgentNativePlan(agent: Agent): MainAgentNativePlan {
   const config = agent.adapterConfig as Record<string, unknown> | null | undefined;
   const segments = configString(config, "model").split("/");
   const provider = configString(config, "provider") || (segments.length >= 3 ? segments[1]! : "");
-  return provider === "claude" ? { available: true, reason: null } : { available: false, reason: NATIVE_PLAN_CODEX_HINT };
+  return { hint: provider === "claude" ? null : NATIVE_PLAN_CODEX_HINT };
 }
 
 /**

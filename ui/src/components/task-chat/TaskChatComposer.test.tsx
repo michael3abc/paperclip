@@ -2239,7 +2239,7 @@ describe("TaskChatComposer", () => {
     }
   });
 
-  it("offers Native plan in Claude main-agent chats and disables it with a reason for Codex", async () => {
+  it("offers Native plan in main-agent chats, with an older-Bridge tooltip for Codex", async () => {
     const boardAccess = vi.spyOn(accessApi, "getCurrentBoardAccess").mockResolvedValue({
       user: null, userId: "user-1", isInstanceAdmin: false, companyIds: ["chat-company"], source: "local_implicit", keyId: null,
     });
@@ -2253,6 +2253,7 @@ describe("TaskChatComposer", () => {
         currentAssigneeValue="agent:main-agent" modelAgents={agent ? new Map([[agent.id, agent]]) : undefined} />
     </ToastProvider></QueryClientProvider>); };
     const item = () => document.querySelector<HTMLElement>('[data-testid="composer-add-native-plan"]');
+    const hint = () => document.querySelector<HTMLElement>('[data-testid="composer-add-native-plan-hint"]');
     const chip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
     try {
       paint(main("claude", "michael-server/claude/compass-opus5.5"));
@@ -2260,7 +2261,7 @@ describe("TaskChatComposer", () => {
       openComposerAddMenu();
       expect(item()?.textContent).toContain("Native plan");
       expect(item()?.hasAttribute("data-disabled")).toBe(false);
-      expect(document.querySelector('[data-testid="composer-add-native-plan-hint"]')).toBeNull();
+      expect(hint()).toBeNull();
       flushSync(() => item()!.click());
       expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
       expect(chip()?.textContent).toContain("Native plan");
@@ -2274,16 +2275,17 @@ describe("TaskChatComposer", () => {
       paint(main("", "michael-server/claude/fable"));
       await flushAsync();
       openComposerAddMenu();
-      expect(item()?.hasAttribute("data-disabled")).toBe(false);
+      expect(hint()).toBeNull();
 
+      // Codex mains can choose it too; the tooltip says what an older Bridge does with it.
       paint(main("codex", "michael-server/codex/gpt-6-astra"));
       await flushAsync();
       openComposerAddMenu();
-      expect(item()?.hasAttribute("data-disabled")).toBe(true);
-      expect(item()?.textContent).toContain("Claude only");
-      const hint = document.querySelector<HTMLElement>('[data-testid="composer-add-native-plan-hint"]');
-      expect(hint?.textContent).toContain(NATIVE_PLAN_CODEX_HINT);
-      expect(NATIVE_PLAN_CODEX_HINT).toMatch(/^Native plan needs a Claude main agent\./);
+      expect(item()?.hasAttribute("data-disabled")).toBe(false);
+      expect(hint()?.textContent).toContain(NATIVE_PLAN_CODEX_HINT);
+      expect(NATIVE_PLAN_CODEX_HINT).toMatch(/codex_plan_client_drive_v1\). On an older Bridge this message runs as Plan mode instead\.$/);
+      flushSync(() => item()!.click());
+      expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
 
       // Other chats keep the original Add menu.
       paint(null);
