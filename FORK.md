@@ -9,6 +9,9 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Release cutover backup bound (2026-11-16): the operator API helper used by release cutovers
+  allows 15 minutes for the production database backup (it now exceeds 120 s); other calls keep
+  120 s. Ops script only.
 - Shared Bridge worker model change (Owner 2026-11-16 「阿為啥他沒有被切到 compass?」): a task
   pinned to a shared worker route keeps its host and provider, but its model may change on the
   same host/provider (for example to the auto-rotating `family:` route); retries re-pin the new
