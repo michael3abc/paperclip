@@ -5,6 +5,7 @@ import { Link } from "@/lib/router";
 import { costsApi } from "../api/costs";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens } from "../lib/utils";
+import { ProjectUsageTable } from "./ProjectUsageTable";
 import {
   isModelCostPeriod,
   MODEL_COST_PERIODS,
@@ -165,26 +166,12 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
     </div>
   );
 
-  if (error) {
-    return (
-      <div className="grid gap-3 md:grid-cols-2">
-        {header}
-        <p className="text-xs text-destructive">Could not load model costs</p>
-      </div>
-    );
-  }
-  if (!data) {
-    return (
-      <div className="grid gap-3 md:grid-cols-2">
-        {header}
-        <p className="text-xs text-muted-foreground">Loading…</p>
-      </div>
-    );
-  }
-
   return (
     <div className="grid gap-6 md:grid-cols-2">
       {header}
+      {error ? <p role="status" className="text-xs text-destructive md:col-span-2">Could not load model costs</p>
+        : !data ? <p className="text-xs text-muted-foreground md:col-span-2">Loading…</p>
+        : <>
       <section className="space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <h4 className="text-xs font-medium">Compass</h4>
@@ -216,6 +203,8 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
         />
         <UnpricedNote whole={split.subscription} kind="subscription" />
       </section>
+      </>}
+      <ProjectUsageTable companyId={companyId} from={from} />
       <Link to="/costs" className="text-(length:--text-nano) text-muted-foreground underline underline-offset-2 md:col-span-2">
         Costs details
       </Link>

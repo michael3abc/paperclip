@@ -8,8 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelCostPie, ModelCostPies, PeriodPicker } from "./ModelCostPies";
 import type { ModelCostWhole } from "../lib/model-cost-split";
 
-const query = vi.hoisted(() => ({ data: [] as CostByProviderModel[] }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: query.data }) }));
+const query = vi.hoisted(() => ({ data: [] as CostByProviderModel[], error: undefined as Error | undefined }));
+vi.mock("@tanstack/react-query", () => ({ useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) =>
+  queryKey.includes("by-project") ? { data: [] } : { data: query.data, error: query.error },
+}));
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
 }));
@@ -22,6 +24,7 @@ let root: Root;
 
 beforeEach(() => {
   query.data = [];
+  query.error = undefined;
   window.localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -40,6 +43,14 @@ function render(whole: ModelCostWhole) {
 }
 
 describe("ModelCostPie", () => {
+  it("keeps project usage available when model costs fail", () => {
+    query.error = new Error("unavailable");
+    flushSync(() => root.render(<ModelCostPies companyId="test-company" />));
+    expect(container.textContent).toContain("Could not load model costs");
+    expect(container.querySelector('[aria-label="Project usage"]')).not.toBeNull();
+    expect(container.textContent).toContain("No project usage in this period.");
+  });
+
   it("draws one slice per model with a legend of names, shares and amounts", () => {
     render({
       totalCents: 10000,

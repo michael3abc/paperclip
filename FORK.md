@@ -15,6 +15,9 @@ The local release line is `michael/main`; previous releases and consolidation me
   paused/archived projects, Owner main pauses/holds, Agent Chat issues and newer human task comments still
   refuse. Pinned worker models are kept (optional same-worker workerSelectionId); observations are advisory;
   continuationCount on receipts and the issue detail. Server/shared source, no migration; released with a T4 change.
+- Dashboard project usage (`michael/project-cost-usage`): same-period project
+  token breakdown and recorded spend below the model charts, retaining
+  Unattributed and separating subscription estimates/fees. UI-only overlay.
 
 - Custom MCP browser sign-in (`michael/connector-ui-login`): human-only, vault-backed
   companion requests and an Apps login panel for the 104 browser and SeaTalk QR.
