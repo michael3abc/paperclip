@@ -44,6 +44,12 @@ typecheck, build and token gates before sealing. See `execution-semantics.md`.
 
 ## Main-agent live work cards
 
+Question interactions with `continuationPolicy: none` persist the human's answer without
+enqueuing a generic answer continuation. The caller owns delivery (for example a Bridge
+adapter answers its original pending native question). A payload `runtimeRequestId` keeps
+Runner's existing durable native-response outbox/resolver even with `none`. Question
+submission must not race that caller by cancelling its source run or waking another run.
+
 The Agent Chat live work panel shows harness, model and billing source on the current-run card
 and on native subagent cards when their adapter reports identity. Runtime identity belongs to the
 run's model_identity provider activity; each delegation carries its own harness, model,

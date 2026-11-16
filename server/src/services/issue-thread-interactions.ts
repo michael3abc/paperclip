@@ -5419,7 +5419,11 @@ export function issueThreadInteractionService(
         await recordDelegatedInteractionDecision(tx as unknown as Db, answered, input.summaryMarkdown);
         // This answer updates conversation history only. It must not resume
         // the completed source run or enqueue new work for the closed task.
-        if (!historicalAnswer) {
+        // A form whose caller owns delivery must not also enqueue a continuation.
+        // Runner runtime requests still need the durable native-response resolver.
+        const needsDelivery = answered.continuationPolicy !== "none"
+          || Boolean(answered.payload.runtimeRequestId);
+        if (!historicalAnswer && needsDelivery) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.question);
           await tx
             .insert(issueQuestionResponseDeliveries)

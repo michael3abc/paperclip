@@ -122,6 +122,10 @@ pnpm dev
 
 ## 5. Core Engineering Rules
 
+Question answers with `continuationPolicy: none` are caller-delivered; save the answer
+without a generic continuation outbox entry. `runtimeRequestId` retains Runner's native
+response delivery. Preserve source runs and test both paths with owned PostgreSQL.
+
 Use owned disposable databases and dedicated test notifications; do not wake real
 agents. Non-Git workspace tests require a clean owned temporary root with no
 ancestor Git metadata. Chromium injection tests do not qualify APNs or physical iPhone delivery.

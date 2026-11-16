@@ -246,6 +246,32 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     };
   }
 
+  it.each([
+    { policy: "none" as const, runtimeRequestId: undefined, deliveryCount: 0 },
+    { policy: "none" as const, runtimeRequestId: "native-request-1", deliveryCount: 1 },
+    { policy: "wake_assignee" as const, runtimeRequestId: undefined, deliveryCount: 1 },
+  ])("question answer delivery respects $policy with runtime request $runtimeRequestId", async ({ policy, runtimeRequestId, deliveryCount }) => {
+    const { companyId, issueId, runId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const input = questionCreateInput(runId);
+    const created = await interactionsSvc.create(issue, {
+      ...input, continuationPolicy: policy,
+      payload: { ...input.payload, ...(runtimeRequestId ? { runtimeRequestId } : {}) },
+    }, { userId: "local-board" });
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.question, notified);
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, {
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+    }, { userId: "local-board" });
+    unsubscribe();
+    expect(answered.status).toBe("answered");
+    if (answered.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(answered.result?.answers).toEqual([{ questionId: "scope", optionIds: ["phase-1"] }]);
+    expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, created.id))).toHaveLength(deliveryCount);
+    expect(notified).toHaveBeenCalledTimes(deliveryCount);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("running");
+  });
+
   it("persists and answers a canonical-only mixed question form", async () => {
     const { companyId, issueId } = await seedSourceQuestionFixture({});
     const questionSet = {
