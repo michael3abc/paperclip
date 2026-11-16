@@ -51,8 +51,11 @@ export async function admin() {
       if (!endpoint.startsWith("/api/") || endpoint.includes("\\")) throw new Error("Use a relative Paperclip API path");
       const url = new URL(endpoint, deployment.apiUrl);
       if (url.origin !== deployment.apiUrl) throw new Error("API origin mismatch");
+      // A production database backup took 102 s at 01:29 and over 120 s at 03:27 on 2026-11-16 (about
+      // 170 MB gzipped), which aborted two release cutovers; the backup endpoint gets a longer bound.
+      const timeout = method === "POST" && url.pathname === "/api/instance/database-backups" ? 900000 : 120000;
       const response = await fetch(url, {
-        method, redirect: "error", signal: AbortSignal.timeout(120000),
+        method, redirect: "error", signal: AbortSignal.timeout(timeout),
         headers: { cookie, origin: deployment.apiUrl, "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
