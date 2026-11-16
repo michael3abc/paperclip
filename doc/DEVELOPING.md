@@ -2836,6 +2836,12 @@ keep their existing write contract.
 
 Codex main-agent Chats on `ccpocket_bridge` select `chatDeliveryMode=steer` from
 the active run's saved adapter dispatch, rather than mutable agent settings. The
+legacy runtime freezes only role/provider/model from the effective invocation
+configuration immediately before adapter dispatch; queue admission's adapter
+type alone is insufficient. No prompts, environment values or credentials are
+stored in that routing identity. Enter waits for the immediate steer request's
+acknowledgement, including when the browser has not observed the active run yet.
+An already-observed target is never replaced by a successor while sending. The
 UI saves each comment then calls the existing queued-comment steer endpoint in
 order. `bridge-chat-steering.ts` checks the Chat owner, queue revision and original
 run, commits a reservation, and binds native session/turn IDs before one adapter

@@ -9,6 +9,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Codex main Chat direct steering: freeze the effective Bridge dispatch's
+  routing identity before invocation; Enter immediately delivers to the original
+  native turn and waits for acknowledgement, including a stale browser run cache.
+  Keep other harnesses' delivery behavior, original receipts and failure evidence.
+
 - `/plan` command (Owner 2026-11-16): in main-agent Agent Chat, `/plan` alone
   switches the composer to Native plan; `/plan <text>` sends the text as a Native
   plan turn. Elsewhere `/plan` stays ordinary text. UI-only overlay.

@@ -286,6 +286,12 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Codex main Chat sends use native steer by default, including Enter during an
+active response. Persist the effective role/provider/model before Bridge dispatch;
+never derive the active run's routing from subsequently edited agent settings.
+Await native acknowledgement and retain original run/thread/turn correlation.
+See `docs/agents/session-bridge.md` for queue and unavailable-turn semantics.
+
 Chat presentation uses the shared IssueComment origin type so native inbox and
 mirrored messages retain their provenance through the UI adapter.
 

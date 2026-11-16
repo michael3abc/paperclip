@@ -6859,7 +6859,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [feedbackDataSharingPreference, feedbackVoteMutation],
   );
   const chatDeliveryChain = useRef<Promise<void>>(Promise.resolve());
-  const interruptChatAfterSend = useCallback(
+  const deliverChatAfterSend = useCallback(
     async (runId: string | null) => {
       try {
         // The message receipt is saved before the comment response returns,
@@ -6869,22 +6869,26 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         const attempts = runId ? 5 : 2;
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           const queue = await issuesApi.getQueuedComments(issueId!);
-          if (queue.targetRunId && queue.targetRunId !== runId) return;
+          if (runId && queue.targetRunId && queue.targetRunId !== runId) return;
           if (queue.chatDeliveryMode === "steer") {
             // A Codex message supplements the same run. An unavailable/unknown
             // turn stays queued; never turn that into an interrupt or a replay.
             if (queue.steeringDelivery || queue.state !== "deferred" ||
                 !queue.queueId || !queue.targetRunId || queue.steeringDisposition !== "available") return;
+            // The server may already have a native turn that the browser's
+            // live-run cache has not observed yet. Bind this send to that turn.
+            const targetRunId = queue.targetRunId;
             let pending = queue;
             for (let count = 0; count < queue.entries.length; count += 1) {
               const first = pending.entries[0];
-              if (!first || !pending.queueId || pending.targetRunId !== runId || pending.steeringDisposition !== "available") return;
+              if (!first || !pending.queueId || pending.targetRunId !== targetRunId || pending.steeringDisposition !== "available") return;
               pending = await issuesApi.steerQueuedComment(issueId!, first.comment.id, {
-                queueId: pending.queueId, revision: pending.revision, targetRunId: runId!,
+                queueId: pending.queueId, revision: pending.revision, targetRunId,
               });
               queryClient.setQueryData(queryKeys.issues.queuedComments(issueId!), pending);
             }
             void queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
             return;
           }
           if (runId && queue.queueId && queue.state === "deferred" && queue.entries.length > 0) {
@@ -6938,10 +6942,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         : null;
       await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
       if (issue?.conversationAgentId) {
-        chatDeliveryChain.current = chatDeliveryChain.current.then(() => interruptChatAfterSend(queuedBehindRunId));
+        chatDeliveryChain.current = chatDeliveryChain.current.then(() => deliverChatAfterSend(queuedBehindRunId));
+        await chatDeliveryChain.current;
       }
     },
-    [addComment, addCommentAndReassign, interruptChatAfterSend, issue, issueId, queryClient],
+    [addComment, addCommentAndReassign, deliverChatAfterSend, issue, issueId, queryClient],
   );
   const handleCommentImageUpload = useCallback(
     async (file: File) => {

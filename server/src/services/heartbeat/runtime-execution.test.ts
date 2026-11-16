@@ -33,6 +33,7 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
+import { isCodexBridgeChatDispatch } from "../bridge-chat-steering.js";
 import { logger } from "../../middleware/logger.js";
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
@@ -142,6 +143,30 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     if (native) vi.mocked(executePaperclipNativeSession).mockImplementationOnce(dispatched);
     else adapter.execute.mockImplementationOnce(dispatched);
     expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+  });
+
+  it("persists the effective Bridge routing identity before dispatch without secrets or mutable agent settings", async () => {
+    const { input, adapter, run } = await fixture();
+    input.agent.adapterType = "ccpocket_bridge";
+    input.agent.adapterConfig = { role: "main", provider: "claude", model: "host/claude/opus" };
+    input.runtime.adapter = { ...adapter, type: "ccpocket_bridge" };
+    input.config.runtimeConfig = { role: "main", provider: "codex", model: "host/codex/family:gpt-6.1-sol",
+      env: { PRIVATE_VALUE: "fixture-only" }, prompt: "private launch prompt" };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      adapterDispatch: { adapterType: "ccpocket_bridge" }, retainedEvidence: { version: 1 },
+    } }).where(eq(heartbeatRuns.id, run.id));
+    adapter.execute.mockImplementationOnce(async () => {
+      expect((await read(run.id)).runnerProfileJson).toEqual({
+        adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: {
+          role: "main", provider: "codex", model: "host/codex/family:gpt-6.1-sol",
+        } }, retainedEvidence: { version: 1 },
+      });
+      const control = await createHeartbeatRunState(db).getRunIssueControl(run.id);
+      expect(isCodexBridgeChatDispatch(control!)).toBe(true);
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+    expect(adapter.execute).toHaveBeenCalledOnce();
   });
 
   it.each(["valid", "branch_mismatch", "receipt_mismatch"])("registered host finalization preserves the remote outcome: %s", async outcome => {

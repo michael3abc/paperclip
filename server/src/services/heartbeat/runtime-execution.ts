@@ -872,6 +872,21 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       const guardedDispatch =
         await dispatchWithTiming(
           async (markDispatchStarted) => {
+            if (adapter.type === "ccpocket_bridge") {
+              // Chat steering follows this run's actual launch configuration,
+              // including issue overrides, rather than later agent edits. Keep
+              // only routing identity; credentials and prompts never belong here.
+              const adapterConfig = Object.fromEntries(
+                ["role", "provider", "model"].flatMap(key =>
+                  typeof runtimeConfig[key] === "string" ? [[key, runtimeConfig[key]]] : []),
+              );
+              await db.update(heartbeatRuns).set({
+                runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
+                  adapterDispatch: { adapterType: adapter.type, adapterConfig },
+                })}::jsonb`,
+              }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, agent.companyId),
+                eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "running")));
+            }
             if (issueId) await recordChatInputDispatch(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId }, adapterContext);
             input.effects.onLegacyAdapterEntered();
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({

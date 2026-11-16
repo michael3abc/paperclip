@@ -66,6 +66,19 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comment_steered"))).toHaveLength(1);
   });
 
+  it("advertises immediate Chat steering from the admitted run even after the agent changes to Claude", async () => {
+    const f = await fixture();
+    await db.update(agents).set({ adapterConfig: { role: "main", provider: "claude", model: "host/claude/opus" } })
+      .where(eq(agents.id, f.agentId));
+    const response = await request(f.app).get(`/api/issues/${f.input.issueId}/queued-comments`).expect(200);
+    expect(response.body).toMatchObject({ chatDeliveryMode: "steer", steeringDisposition: "available",
+      targetRunId: f.input.targetRunId });
+    await request(f.app).post(`/api/issues/${f.input.issueId}/queued-comments/${f.input.commentId}/steer`)
+      .send({ queueId: f.input.queueId, revision: response.body.revision, targetRunId: f.input.targetRunId }).expect(200);
+    expect((await f.run()).status).toBe("running");
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
+  });
+
   it("commits the fence before native I/O and reconciles a lost response from the original receipt", async () => {
     const f = await fixture(), { input } = f;
     steering.send.mockImplementationOnce(async () => {
