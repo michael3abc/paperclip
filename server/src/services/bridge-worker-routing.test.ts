@@ -23,6 +23,10 @@ describe("shared Bridge worker routes", () => {
     for (const config of [null, overrides("michael-server"), overrides("shopee-d", "claude"), { adapterConfig: { model: "model" } },
       { adapterConfig: { model: d.model, hostId: "shopee-e" } }]) expect(() => resolveBridgeWorkerRoute(worker, config)).toThrow();
     expect(() => resolveBridgeWorkerRoute(worker, overrides("shopee-e"), d)).toThrow("original");
+    expect(() => resolveBridgeWorkerRoute(worker, { adapterConfig: { model: "shopee-d/claude/model" } }, d)).toThrow();
+    // Same host and provider: a model change (e.g. to its family route) is accepted and re-pinned.
+    expect(resolveBridgeWorkerRoute(worker, { adapterConfig: { model: "shopee-d/codex/family:gpt-6-astra" } }, d))
+      .toEqual({ hostId: "shopee-d", provider: "codex", model: "shopee-d/codex/family:gpt-6-astra" });
     expect(() => resolveBridgeWorkerRoute(worker, overrides("shopee-d"), {})).toThrow("original");
   });
   it("keeps independent host capacity; a full D lane leaves all E slots available", () => {

@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Shared Bridge worker model change (Owner 2026-11-16 「阿為啥他沒有被切到 compass?」): a task
+  pinned to a shared worker route keeps its host and provider, but its model may change on the
+  same host/provider (for example to the auto-rotating `family:` route); retries re-pin the new
+  model instead of failing with BRIDGE_WORKER_ROUTE_CHANGED. Server-only.
 - Codex main Chat direct steering: freeze the effective Bridge dispatch's
   routing identity before invocation; Enter immediately delivers to the original
   native turn and waits for acknowledgement, including a stale browser run cache.

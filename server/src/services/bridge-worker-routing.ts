@@ -37,9 +37,12 @@ export function resolveBridgeWorkerRoute(worker: Worker, overrides: unknown, sav
   }
   const route = { hostId, provider, model };
   if (saved !== undefined && saved !== null) {
+    // The task's workspace and native session live on the pinned host and provider, so those stay fixed.
+    // The model may change on the same host/provider (Owner 2026-11-16: an explicit selector moved to its
+    // auto-rotating `family:` route must not strand the task's retries); the caller re-pins the new model.
     const pinned = routeSchema.safeParse(saved);
-    if (!pinned.success || Object.entries(route).some(([key, value]) => pinned.data[key as keyof BridgeWorkerRoute] !== value)) {
-      throw unprocessable("This task is pinned to its original Bridge host, provider and model", { code: "BRIDGE_WORKER_ROUTE_CHANGED" });
+    if (!pinned.success || pinned.data.hostId !== route.hostId || pinned.data.provider !== route.provider) {
+      throw unprocessable("This task is pinned to its original Bridge host and provider", { code: "BRIDGE_WORKER_ROUTE_CHANGED" });
     }
   }
   return route;
