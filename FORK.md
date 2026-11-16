@@ -12,6 +12,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 - Connector browser voice boundary (`michael/connector-local-voice`): internal
   `local_voice` endpoints stay in the shared API/cache but do not enter external
   connector sorting, setup or agent Channels. UI-only; preserves Voice bindings.
+- Caller-delivered question answers: `continuationPolicy: none` saves the response
+  without a competing continuation; Runner requests with `runtimeRequestId` retain
+  durable native delivery. Paired with Bridge Agent Chat native question cards.
+
 - Main dispatch without forced review; completion replies count (Owner 2026-11-16 「開始 1~3」): a main's
   dispatched worker task no longer gets an automatic main review stage (the main may still add one); a succeeded
   completion turn that answered in its conversation through a plain comment counts as the delivered completion
