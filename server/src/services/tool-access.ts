@@ -38,6 +38,7 @@ import { createVercelOAuthCallback } from "./tool-access/oauth/vercel-callback.j
 import { createOAuthAccessFinalization } from "./tool-access/oauth/access-finalization.js";
 import { createVercelCredentialService, vercelConnectHttpError } from "./tool-access/vercel-credentials.js";
 import { createConnectionCredentialAccess } from "./tool-access/credential-access.js";
+import { createBrowserLogin } from "./tool-access/browser-login.js";
 
 import { createOAuthCredentialStore, actorForSecret } from "./tool-access/oauth/credential-store.js";
 import { managedConnectorProfile } from "./tool-access/oauth/client-settings.js";
@@ -794,6 +795,7 @@ export function toolAccessService(
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
   const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentialAccess;
+  const browserLogin = createBrowserLogin({ getConnectionRow, resolveCredentialHeaders, resolvedRemoteEndpoint, requestRemoteHttpEndpoint });
   const setupPolicy = createConnectionSetupPolicy(db);
   const { assertConnectorConnectionSetupEnabled, assertExperimentalConnectorSetupEnabled } = setupPolicy;
   const fixedPersonalIdentityForReconnect = createPersonalConnectionIdentity(db);
@@ -3780,6 +3782,7 @@ export function toolAccessService(
   }
 
   return {
+    browserLogin,
     /** Identity-only verification: no bot installation/repository access required. */
     verifyPersonalGitHubIdentity: async (companyId: string, connectionId: string, userId: string) => {
       const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId), eq(toolConnections.enabled, true)));

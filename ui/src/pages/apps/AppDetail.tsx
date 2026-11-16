@@ -5,6 +5,7 @@ import { HonchoWorkspaceSettings } from "@/features/connections/HonchoWorkspaceS
 import { BrowserUseSettingsPanel } from "./app-detail/BrowserUseSettingsPanel";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 import { RemoteMcpManagement } from "@/features/connections/remote-mcp/RemoteMcpManagement";
+import { McpBrowserLogin } from "@/features/connections/McpBrowserLogin";
 import { remoteMcpProviders } from "@/features/connections/remote-mcp/providers";
 import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -656,6 +657,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 ? <ConnectedAggregatorApps key={connection.id} connection={connection} /> : null}
               {connection.config?.sourceTemplateKey === "honcho" && <HonchoWorkspaceSettings key={connection.id} connection={connection} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
               {renderConnectionSettings?.(connection)}
+              <McpBrowserLogin key={connection.id} connection={connection} canConfigure={grantsQuery.data?.capabilities.canConfigure === true} />
               {connection.config?.sourceTemplateKey === "browser-use-cloud" && <BrowserUseSettingsPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.sourceTemplateKey === "railway" && <RailwayAccessPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}

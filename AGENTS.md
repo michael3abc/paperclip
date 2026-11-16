@@ -124,6 +124,8 @@ pnpm dev
 
 ## 5. Core Engineering Rules
 
+Custom remote MCP browser sign-in uses the human-only `/api/tool-connections/:id/browser-login` companion proxy. Resolve the acting human's vault grant, preserve company/configuration access, and never persist/cache/audit login URLs or QR codes. Poll only a visible, bounded login attempt; transport health is not provider-account login. See `doc/connections/GENERIC-REMOTE-MCP.md`.
+
 Question answers with `continuationPolicy: none` are caller-delivered; save the answer
 without a generic continuation outbox entry. `runtimeRequestId` retains Runner's native
 response delivery. Preserve source runs and test both paths with owned PostgreSQL.

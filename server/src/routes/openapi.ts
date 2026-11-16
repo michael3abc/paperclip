@@ -1796,7 +1796,7 @@ function applyDocumentFixups(document: any): any {
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
 
-      if (isVoiceSessionOperation(path) || path === "/api/push" || path.startsWith("/api/push/")) {
+      if ((path.startsWith("/api/tool-connections/") && path.endsWith("/browser-login")) || isVoiceSessionOperation(path) || path === "/api/push" || path.startsWith("/api/push/")) {
         operation.security = [{[BOARD_SESSION_AUTH_SCHEME]: []}];
         operation["x-paperclip-authorization"] = {actor: "board", sessionBound: true};
       }
@@ -12194,6 +12194,17 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Archive a tool connection",
 });
+
+for (const method of ["get", "post"] as const) {
+  registerCurrentRoute({
+    "x-paperclip-transport": "rest",
+    "x-paperclip-connection-management": "connections:configure",
+    method,
+    path: "/api/tool-connections/{connectionId}/browser-login",
+    tags: ["tool-access"],
+    summary: method === "get" ? "Read browser account login status (human only)" : "Start browser account login (human only)",
+  });
+}
 
 registerCurrentRoute({
   "x-paperclip-transport": "rest",

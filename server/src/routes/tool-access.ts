@@ -2260,6 +2260,18 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ ...connection, removal });
   });
 
+  const browserLoginHandler = (method: "GET" | "POST") => async (req: Request, res: Response) => {
+    assertBoard(req);
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertToolConnectionConfigureAccess(req, connection);
+    const result = await svc.browserLogin(connection.id, method, connectionRequestActor(req));
+    // Login URLs and QR codes are credentials: no audit payload, cache or tool-call receipt.
+    res.set("Cache-Control", "no-store").set("Pragma", "no-cache").json(result);
+  };
+  router.get("/tool-connections/:connectionId/browser-login", managementGuard("connections:configure", "GET /tool-connections/:connectionId/browser-login", { personal: true }), browserLoginHandler("GET"));
+  router.post("/tool-connections/:connectionId/browser-login", managementGuard("connections:configure", "POST /tool-connections/:connectionId/browser-login", { personal: true }), browserLoginHandler("POST"));
+
   router.post("/tool-connections/:connectionId/health-check", managementGuard("connections:configure", "POST /tool-connections/:connectionId/health-check", { personal: true }), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;

@@ -317,3 +317,38 @@ Run the credential-free harness checks with:
 ```sh
 node --test scripts/smoke/notion-generic-live.test.mjs
 ```
+
+
+## Interactive browser-account login for custom MCP servers
+
+An MCP bearer authenticates Paperclip to a server; it does not log the server's
+browser into 104, SeaTalk, or another provider. Operators may explicitly enable
+`config.browserLogin = { enabled: true, allowedOrigins: ["https://login.example"] }`
+on a custom remote connection. The existing Apps → connection → Permissions
+page then shows **帳號登入**, provider-account status, and a login action.
+
+The server implements `GET` and `POST` on `./browser-login` beside its MCP path,
+protected by the same bearer. GET returns only `{status, mode}`; status is
+`logged_in`, `waiting`, or `unknown`, and mode is `browser` or `qr`. POST starts
+or resumes login and may return `url` (browser mode) or a PNG `qrImage` data URL.
+Browser URLs must use HTTP(S), contain no embedded credentials, and match an
+operator-configured allowed origin. QR data is displayed only for the active
+attempt. Unknown states and provider errors are never shown as logged in.
+
+Paperclip's human-only `GET/POST /api/tool-connections/:id/browser-login` endpoints
+apply existing company/configuration authorization and resolve the current
+human's credential grant. They call only the same-origin companion endpoint,
+refuse redirects, bound response size and time, and expose fixed provider errors.
+Login material is sent with `Cache-Control: no-store`; it never enters tool-call
+receipts, activity payloads, the connection config, or persistent query storage.
+No agent key can start or inspect this human login flow, and the flow never
+creates an agent run or changes app/tool permissions.
+
+The UI checks status on demand. Two-second status polling is limited to a visible
+login dialog, stops on completion/error/close/unmount, and expires after five
+minutes. QR renewal is explicit. The 104 adapter opens the existing interactive
+browser; its navigation events provide status without repeatedly navigating away
+from a login form. SeaTalk returns its current login QR from its already-running
+browser and never starts a competing Chrome profile or screenshots a logged-in
+chat. Neither adapter submits a 104 application or sends a SeaTalk message as
+part of login. No database migration is needed.

@@ -1,3 +1,4 @@
+import type { McpBrowserLoginResult } from "@paperclipai/shared";
 import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
 import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
@@ -351,6 +352,10 @@ export const toolsApi = {
   // --- Connections ---
   listConnections: (companyId: string) =>
     api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
+  browserLoginStatus: (connectionId: string) =>
+    api.get<McpBrowserLoginResult>(`/tool-connections/${connectionId}/browser-login`),
+  startBrowserLogin: (connectionId: string) =>
+    api.post<McpBrowserLoginResult>(`/tool-connections/${connectionId}/browser-login`, {}),
   getConnection: (connectionId: string) =>
     api.get<ToolConnection>(`/tool-connections/${connectionId}`),
   // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's
