@@ -674,7 +674,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: fixture.agentId, runId: fixture.runId },
-    )).rejects.toMatchObject({ status: 403, message: "Decision task differs from the source run" });
+    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
 
     await db.update(heartbeatRuns)
       .set({ contextSnapshot: { issueId: fixture.issueId, paperclipWake: { comments: [] } } })
