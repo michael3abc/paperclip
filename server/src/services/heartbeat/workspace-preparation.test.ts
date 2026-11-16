@@ -361,7 +361,10 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const bind = vi.spyOn(input.services.executionWorkspacesSvc, "bindTaskWorkspace");
     const result = await prepareHeartbeatWorkspace(db, input);
     expect(result.executionWorkspace.cwd).toBe(pmHome);
-    expect(result.persistedExecutionWorkspace?.cwd).toBe(pmHome);
+    // Liveness-first rule 3 (workspace = directory): the PM coordination turn runs in its home
+    // directory as a session-only run; it records no execution workspace of its own.
+    expect(result.persistedExecutionWorkspace).toBeNull();
+    expect(input.task.context.sessionOnly).toBe(true);
     expect(bind).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
     await expect(access(join(pmHome, ".paperclip-repositories"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -1718,18 +1721,36 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       let finalRunId = next?.id;
       if (scenario.startsWith("canonical_")) {
         expect(await readRun(next!.id)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
+        // Liveness-first rule 4: workspace_validation_failed is an unknown code, so the system retries it
+        // automatically as transient three times (counted over consecutive same-code failures) and then
+        // treats it as deterministic. A Retry naming a superseded run is stale; the Owner's Retry below
+        // targets the final failure, which has no automatic retry.
+        let failedRunId = next!.id;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const [scheduled] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.retryOfRunId, failedRunId), eq(heartbeatRuns.status, "scheduled_retry")));
+          expect(scheduled).toMatchObject({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt });
+          if (attempt === 1) expect(await requestTaskRetry({ db, companyId: input.agent.companyId, issueId: issue.id, actorId: userId,
+            actorSource: "local_implicit", observedRunId: failedRunId, idempotencyKey: randomUUID() })).toMatchObject({ requestId: null, stale: true, observedRunId: scheduled.id });
+          expect(await heartbeat.promoteDueScheduledRetries(scheduled.scheduledRetryAt!)).toMatchObject({ promoted: 1 });
+          await heartbeat.resumeQueuedRuns();
+          await heartbeat.drainActiveRunExecutions();
+          expect(await readRun(scheduled.id)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
+          failedRunId = scheduled.id;
+        }
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failedRunId))).toEqual([]);
         expect(executed).not.toHaveBeenCalled();
         if (scenario.includes("warning")) {
-          const warning = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, next!.id))).find(event => event.seq === 1)!;
+          // On a promoted automatic retry the promotion lifecycle event precedes the warning.
+          const warning = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId))).find(event => event.eventType === "agent_observability.unavailable")!;
           expect(warning).toMatchObject({ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_harness" } });
           if (scenario === "canonical_unknown_warning") await db.update(heartbeatRunEvents).set({ payload: { ...warning.payload, reason: "unknown" } }).where(eq(heartbeatRunEvents.id, warning.id));
           if (scenario === "canonical_provider_warning") await db.update(heartbeatRunEvents).set({ sourcePayloadSha256: "a".repeat(64), protocolSchemaVersion: 1 }).where(eq(heartbeatRunEvents.id, warning.id));
         }
-        if (scenario === "canonical_lease") await db.insert(environmentLeases).values({ companyId: input.agent.companyId, issueId: issue.id, heartbeatRunId: next!.id, provider: "local_fs", status: "expired", cleanupStatus: "success" });
-        if (scenario === "canonical_result") { const failed = await readRun(next!.id); await db.update(heartbeatRuns).set({ resultJson: { ...failed.resultJson, acceptedResult: { outcome: "unknown" } } }).where(eq(heartbeatRuns.id, next!.id)); }
-        if (scenario === "canonical_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, next!.id));
-        if (scenario === "canonical_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, next!.id));
-        if (scenario === "canonical_measurement") { const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, next!.id)); const measured = events.find(event => event.eventType === "lifecycle")!; await db.update(heartbeatRunEvents).set({ payload: { ...measured.payload, durationMs: -1 } }).where(eq(heartbeatRunEvents.id, measured.id)); }
+        if (scenario === "canonical_lease") await db.insert(environmentLeases).values({ companyId: input.agent.companyId, issueId: issue.id, heartbeatRunId: failedRunId, provider: "local_fs", status: "expired", cleanupStatus: "success" });
+        if (scenario === "canonical_result") { const failed = await readRun(failedRunId); await db.update(heartbeatRuns).set({ resultJson: { ...failed.resultJson, acceptedResult: { outcome: "unknown" } } }).where(eq(heartbeatRuns.id, failedRunId)); }
+        if (scenario === "canonical_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, failedRunId));
+        if (scenario === "canonical_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, failedRunId));
+        if (scenario === "canonical_measurement") { const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId)); const measured = events.find(event => event.eventType === "lifecycle" && event.message === "task.run.measured")!; await db.update(heartbeatRunEvents).set({ payload: { ...measured.payload, durationMs: -1 } }).where(eq(heartbeatRunEvents.id, measured.id)); }
         if (scenario === "canonical_repaired_git") {
           await execFile("git", ["init", "--initial-branch=main", workspace.cwd!]);
           await execFile("git", ["-C", workspace.cwd!, "config", "user.email", "test@example.com"]);
@@ -1738,7 +1759,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
           await execFile("git", ["-C", workspace.cwd!, "commit", "-m", "Retain saved review"]);
         } else await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
         const intent = await requestTaskRetry({ db, companyId: input.agent.companyId, issueId: issue.id,
-          actorId: userId, actorSource: "local_implicit", observedRunId: next!.id, idempotencyKey: randomUUID() });
+          actorId: userId, actorSource: "local_implicit", observedRunId: failedRunId, idempotencyKey: randomUUID() });
         expect(intent.requestId).toBeTruthy();
         if (scenario === "canonical_fresh") await db.update(agentWakeupRequests).set({ payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"fresh_isolated_workspace"'::jsonb)` }).where(eq(agentWakeupRequests.id, intent.requestId!));
         await heartbeat.resumeTaskRetry(input.agent.companyId, intent.requestId!);
