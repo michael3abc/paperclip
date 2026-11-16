@@ -783,6 +783,21 @@ monthly subscription fees do not. Tokens measure Paperclip work only, while a
 subscription fee covers the entire provider account, including other usage.
 Recorded subscription overages remain separate from the recurring fee.
 
+Dashboard subscription model pies show API-equivalent USD estimates, with shares
+based on those estimates. They use the model list-price cards for ordinary input,
+cache reads and output under standard processing, not the monthly subscription
+fee or a claim that each run was charged. Cache writes are not fully itemized;
+models without a known card remain explicitly unpriced and outside the estimate.
+Compass continues to use its recorded estimated spend.
+
+All cost-report token fields expose ordinary input separately from cache reads.
+Native OpenAI receipts already exclude cache reads from `inputTokens`. Codex
+Bridge's `codex` / `openai_subscription` producer retains inclusive input even on
+hashed subscription receipts, so reports subtract its cached input before
+aggregation, for both included usage and overages. The historical unhashed OpenAI
+normalization still applies. These read projections do not rewrite ledger rows,
+receipt hashes, recurring fees or recorded charges.
+
 Agent, user, project, and model cost rows use a right-aligned amount with any
 estimate badge underneath. Each badge reflects that row's own ledger events in
 the selected date range.

@@ -20,10 +20,15 @@ const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overa
 // Pre-receipt Codex events stored cache reads inside input; Pi/OpenCode used
 // provider-qualified model IDs and already excluded cache reads. Normalize each
 // historical row before aggregation so mixed old/new groups share the current
-// exclusive-input contract. Preserve the original ledger and monetary amounts.
+// exclusive-input contract. Bridge's codex/openai_subscription producer also
+// retains inclusive input on subscription routes, even on hashed receipts;
+// its Compass routes and native OpenAI adapters already exclude cache reads.
+// Preserve the original ledger and monetary amounts.
 export const ordinaryInputTokens = sql<number>`case
-  when ${costEvents.receiptHash} is null and ${costEvents.provider} = 'openai'
-    and ${costEvents.model} not like 'openai/_%'
+  when (${costEvents.receiptHash} is null and ${costEvents.provider} = 'openai'
+    and ${costEvents.model} not like 'openai/_%')
+    or (${costEvents.provider} = 'codex' and ${costEvents.biller} = 'openai_subscription'
+      and ${costEvents.billingType} in ('subscription_included', 'subscription_overage'))
     then greatest(0, ${costEvents.inputTokens} - ${costEvents.cachedInputTokens})
   else ${costEvents.inputTokens} end`;
 

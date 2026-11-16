@@ -35,17 +35,13 @@ function arcPath(start: number, end: number): string {
   return `M ${CENTER} ${CENTER} L ${x1} ${y1} A ${RADIUS} ${RADIUS} 0 ${large} 1 ${x2} ${y2} Z`;
 }
 
-function sliceAmount(slice: ModelCostSlice, measure: ModelCostWhole["measure"]): string {
-  return measure === "cost" ? formatCents(slice.cents) : `${formatTokens(slice.tokens)} tokens`;
-}
-
-function sliceTitle(slice: ModelCostSlice, measure: ModelCostWhole["measure"], valueLabel: string): string {
-  return `${slice.label}: ${sliceAmount(slice, measure)} (${percent(slice.share)}) ${valueLabel}\n${slice.models.join(", ")}`;
+function sliceTitle(slice: ModelCostSlice, valueLabel: string): string {
+  return `${slice.label}: ${formatCents(slice.cents)} (${percent(slice.share)}) ${valueLabel}\n${slice.models.join(", ")}`;
 }
 
 export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCostWhole; valueLabel: string; ariaLabel: string }) {
   if (whole.slices.length === 0) {
-    return <p className="text-xs text-muted-foreground">No usage in this period</p>;
+    return <p className="text-xs text-muted-foreground">No priced usage in this period</p>;
   }
   let cursor = 0;
   return (
@@ -58,7 +54,7 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
       >
         {whole.slices.length === 1 ? (
           <circle cx={CENTER} cy={CENTER} r={RADIUS} fill={whole.slices[0]!.color}>
-            <title>{sliceTitle(whole.slices[0]!, whole.measure, valueLabel)}</title>
+            <title>{sliceTitle(whole.slices[0]!, valueLabel)}</title>
           </circle>
         ) : (
           whole.slices.map((slice) => {
@@ -74,7 +70,7 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
                 strokeLinejoin="round"
                 className="transition-opacity hover:opacity-80"
               >
-                <title>{sliceTitle(slice, whole.measure, valueLabel)}</title>
+                <title>{sliceTitle(slice, valueLabel)}</title>
               </path>
             );
           })
@@ -90,7 +86,7 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
             <span className="min-w-0 flex-1 truncate">{slice.label}</span>
             <span className="tabular-nums text-muted-foreground">{percent(slice.share)}</span>
-            <span className="tabular-nums">{sliceAmount(slice, whole.measure)}</span>
+            <span className="tabular-nums">{formatCents(slice.cents)}</span>
           </li>
         ))}
       </ul>
@@ -98,12 +94,17 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
   );
 }
 
-function UnpricedNote({ whole }: { whole: ModelCostWhole }) {
+function UnpricedNote({ whole, kind }: { whole: ModelCostWhole; kind: "subscription" | "compass" }) {
   if (whole.unpriced.length === 0) return null;
-  const parts = whole.unpriced.map((item) => `${item.label} ${item.events} run${item.events === 1 ? "" : "s"}`);
+  const parts = whole.unpriced.map((item) =>
+    kind === "subscription"
+      ? `${item.label} ${formatTokens(item.tokens)} tokens`
+      : `${item.label} ${item.events} run${item.events === 1 ? "" : "s"}`,
+  );
   return (
     <p className="text-(length:--text-nano) text-muted-foreground">
-      Unpriced runs, not in total: {parts.join(" · ")}
+      {kind === "subscription" ? "Unpriced usage, excluded from estimate: " : "Unpriced runs, not in total: "}
+      {parts.join(" · ")}
     </p>
   );
 }
@@ -191,21 +192,29 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
         </div>
         <p className="text-(length:--text-nano) text-muted-foreground">Estimated spend at list price</p>
         <ModelCostPie whole={split.compass} valueLabel="Compass estimate" ariaLabel="Compass cost by model" />
-        <UnpricedNote whole={split.compass} />
+        <UnpricedNote whole={split.compass} kind="compass" />
       </section>
       <section className="space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <h4 className="text-xs font-medium">Subscription</h4>
-          <span className="text-sm font-semibold tabular-nums">{formatCents(split.subscription.totalCents)}</span>
+          <span className="text-sm font-semibold tabular-nums">
+            {split.subscription.slices.length === 0 && split.subscription.unpriced.length > 0
+              ? "Unpriced"
+              : formatCents(split.subscription.totalCents)}
+          </span>
         </div>
         <p className="text-(length:--text-nano) text-muted-foreground">
-          Uses fixed plan limits, so it costs $0 · slices by tokens ({formatTokens(split.subscription.totalTokens)})
+          API list-price estimate (USD), not subscription fees or charges
+        </p>
+        <p className="text-(length:--text-nano) text-muted-foreground">
+          Recorded input, cache-read and output tokens; assumes standard processing. Cache writes are not fully itemized.
         </p>
         <ModelCostPie
           whole={split.subscription}
-          valueLabel="of subscription tokens"
-          ariaLabel="Subscription token share by model"
+          valueLabel="API list-price estimate (USD)"
+          ariaLabel="Subscription API list-price estimate by model in USD"
         />
+        <UnpricedNote whole={split.subscription} kind="subscription" />
       </section>
       <Link to="/costs" className="text-(length:--text-nano) text-muted-foreground underline underline-offset-2 md:col-span-2">
         Costs details

@@ -483,6 +483,40 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       cachedInputTokens: 2_632_998, outputTokens: 32_644 });
   });
 
+  it("counts hashed Bridge subscription cache reads once across cost reports without rewriting receipts", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), projectId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Cache accounting", issuePrefix: `C${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Bridge", role: "engineer", adapterType: "ccpocket_bridge" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Cache accounting" });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Cache accounting" });
+    const shared = { agentId, projectId, issueId, model: "gpt-6-astra", cachedInputTokens: 80,
+      outputTokens: 10, costCents: 0, occurredAt: new Date() };
+    const bridgeInput = { ...shared, idempotencyKey: "bridge-subscription-cache", provider: "codex",
+      biller: "openai_subscription", billingType: "subscription_included" as const,
+      inputTokens: 100 };
+    const bridge = await costs.createEvent(companyId, bridgeInput);
+    // Native Codex and Bridge Compass receipts already exclude cache reads.
+    await costs.createEvent(companyId, { ...shared, provider: "openai", biller: "chatgpt",
+      billingType: "subscription_included", inputTokens: 20 });
+    await costs.createEvent(companyId, { ...shared, provider: "codex", biller: "compass",
+      billingType: "metered_api", inputTokens: 20 });
+    const total = { inputTokens: 60, cachedInputTokens: 240, outputTokens: 30 };
+    expect((await costs.byAgent(companyId))[0]).toMatchObject({ ...total, subscriptionInputTokens: 40 });
+    expect((await costs.byProject(companyId))[0]).toMatchObject(total);
+    expect(await costs.issueTreeSummary(companyId, issueId)).toMatchObject(total);
+    const sumTokens = (rows: { inputTokens: number; cachedInputTokens: number; outputTokens: number }[]) =>
+      rows.reduce((sum, row) => sum + row.inputTokens + row.cachedInputTokens + row.outputTokens, 0);
+    expect(sumTokens(await costs.byProvider(companyId))).toBe(330);
+    expect(sumTokens(await costs.byAgentModel(companyId))).toBe(330);
+    expect(sumTokens(await costs.byBiller(companyId))).toBe(330);
+    const [raw] = await db.select().from(costEvents).where(eq(costEvents.id, bridge.id));
+    expect(raw.inputTokens).toBe(100);
+    expect(raw.cachedInputTokens).toBe(80);
+    expect(raw.receiptHash).toBe(bridge.receiptHash);
+    expect((await costs.createEvent(companyId, bridgeInput)).id).toBe(bridge.id);
+    expect(await costs.summary(companyId)).toMatchObject({ eventCount: 3, spendCents: 0 });
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -31,7 +31,7 @@ describe("modelFamily", () => {
     expect(modelFamily("compass-6.1-sol").key).toBe("gpt-6.1-sol");
     expect(modelFamily("gpt-6-sol").key).toBe("gpt-6-sol");
     expect(modelFamily("michael-server/antigravity/gemini-4-argon-high").key).toBe("gemini-4-argon");
-    expect(modelFamily("vendor/some-model")).toEqual({ key: "some-model", label: "some-model" });
+    expect(modelFamily("vendor/some-model")).toEqual({ key: "some-model", label: "some-model", rates: null });
   });
 
   it("keeps one color per family regardless of rank", () => {
@@ -41,7 +41,7 @@ describe("modelFamily", () => {
 });
 
 describe("splitModelCosts", () => {
-  it("keeps Compass spend by cost and subscription usage by tokens at $0", () => {
+  it("keeps Compass spend and estimates subscription usage at API list prices in USD", () => {
     const split = splitModelCosts([
       row({ model: "compass-opus5.5[1m]", costCents: 3000, inputTokens: 10 }),
       row({ model: "compass-opus5.5", costCents: 1000 }),
@@ -51,22 +51,55 @@ describe("splitModelCosts", () => {
       row({ provider: "google", biller: "google", billingType: "subscription_included", model: "gemini-4-hydrogen-high", inputTokens: 1_000_000 }),
       row({ biller: "anthropic", billingType: "subscription_included", model: "opus", inputTokens: 0 }),
     ]);
-    expect(split.compass.measure).toBe("cost");
     expect(split.compass.totalCents).toBe(5000);
     expect(split.compass.slices.map((s) => [s.key, s.cents])).toEqual([["opus", 4000], ["gpt-6-astra", 1000]]);
     expect(split.compass.slices[0]!.share).toBeCloseTo(0.8);
-    expect(split.subscription.measure).toBe("tokens");
-    expect(split.subscription.totalCents).toBe(0);
-    expect(split.subscription.totalTokens).toBe(10_000_000);
-    expect(split.subscription.slices.map((s) => [s.key, s.tokens, s.cents])).toEqual([
-      ["opus", 7_000_000, 0],
-      ["gpt-6.1-sol", 2_000_000, 0],
-      ["gemini-4-hydrogen", 1_000_000, 0],
+    expect(split.subscription.totalCents).toBe(2900);
+    expect(split.subscription.slices.map((s) => [s.key, s.cents])).toEqual([
+      ["opus", 2500],
+      ["gpt-6.1-sol", 400],
     ]);
-    expect(split.subscription.slices[0]!.share).toBeCloseTo(0.7);
-    expect(split.subscription.unpriced).toEqual([]);
+    expect(split.subscription.slices[0]!.share).toBeCloseTo(2500 / 2900);
+    expect(split.subscription.unpriced).toEqual([
+      { key: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", tokens: 1_000_000, events: 0 },
+    ]);
     // A subscription row never leaks into Compass even if the model name is a Compass alias.
     expect(splitModelCosts([row({ billingType: "subscription_included", model: "compass-opus5.5[1m]", outputTokens: 1_000_000 })]).compass.slices).toEqual([]);
+  });
+
+  it("sizes subscription slices by dollars when token counts are equal", () => {
+    const { subscription } = splitModelCosts([
+      row({ biller: "anthropic_subscription", billingType: "subscription_included", model: "opus", outputTokens: 1_000_000 }),
+      row({ provider: "codex", biller: "openai_subscription", billingType: "subscription_included", model: "gpt-6-luna", outputTokens: 1_000_000 }),
+    ]);
+    expect(subscription.totalCents).toBe(2050);
+    expect(subscription.slices.map((slice) => slice.cents)).toEqual([2000, 50]);
+    expect(subscription.slices[0]!.share).toBeCloseTo(2000 / 2050);
+  });
+
+  it("prices exclusive input, cached input and output exactly once for each subscription provider", () => {
+    const { subscription } = splitModelCosts([
+      row({ biller: "anthropic_subscription", billingType: "subscription_included", model: "opus", inputTokens: 1_000_000, cachedInputTokens: 5_000_000, outputTokens: 1_000_000 }),
+      row({ provider: "codex", biller: "openai_subscription", billingType: "subscription_included", model: "gpt-6.1-sol", inputTokens: 1_000_000, cachedInputTokens: 5_000_000, outputTokens: 1_000_000 }),
+    ]);
+    // Opus: $4 + $1 + $20; Sol: $2 + $0.50 + $10.
+    expect(subscription.totalCents).toBe(3750);
+    expect(subscription.slices.map((slice) => [slice.key, slice.cents])).toEqual([
+      ["opus", 2500],
+      ["gpt-6.1-sol", 1250],
+    ]);
+  });
+
+  it("keeps unknown subscription models unpriced rather than reporting free usage", () => {
+    const { subscription } = splitModelCosts([
+      row({ provider: "google", biller: "google", billingType: "subscription_included", model: "gemini-4-argon-high", inputTokens: 40, cachedInputTokens: 20, outputTokens: 10 }),
+      row({ biller: "vendor_subscription", billingType: "subscription_included", model: "vendor/new-model", inputTokens: 100 }),
+    ]);
+    expect(subscription.slices).toEqual([]);
+    expect(subscription.unpriced).toEqual([
+      { key: "new-model", label: "new-model", tokens: 100, events: 0 },
+      { key: "gemini-4-argon", label: "Gemini 4 Argon", tokens: 70, events: 0 },
+    ]);
   });
 
   it("lists unpriced Compass runs instead of guessing", () => {

@@ -2,9 +2,17 @@
 
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ModelCostPie, PeriodPicker } from "./ModelCostPies";
+import type { ReactNode } from "react";
+import type { CostByProviderModel } from "@paperclipai/shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ModelCostPie, ModelCostPies, PeriodPicker } from "./ModelCostPies";
 import type { ModelCostWhole } from "../lib/model-cost-split";
+
+const query = vi.hoisted(() => ({ data: [] as CostByProviderModel[] }));
+vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: query.data }) }));
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: ReactNode }) => <a href={to} {...props}>{children}</a>,
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -13,6 +21,8 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  query.data = [];
+  window.localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -32,13 +42,11 @@ function render(whole: ModelCostWhole) {
 describe("ModelCostPie", () => {
   it("draws one slice per model with a legend of names, shares and amounts", () => {
     render({
-      measure: "cost",
       totalCents: 10000,
-      totalTokens: 0,
       unpriced: [],
       slices: [
-        { key: "opus", label: "Opus 5.5", cents: 7500, tokens: 0, share: 0.75, color: "var(--chart-series-1)", models: ["compass-opus5.5[1m]"] },
-        { key: "gpt-6-astra", label: "GPT-6 Astra", cents: 2500, tokens: 0, share: 0.25, color: "var(--chart-series-2)", models: ["compass-6-astra"] },
+        { key: "opus", label: "Opus 5.5", cents: 7500, share: 0.75, color: "var(--chart-series-1)", models: ["compass-opus5.5[1m]"] },
+        { key: "gpt-6-astra", label: "GPT-6 Astra", cents: 2500, share: 0.25, color: "var(--chart-series-2)", models: ["compass-6-astra"] },
       ],
     });
     expect(container.querySelector("svg[aria-label='Compass cost by model']")).not.toBeNull();
@@ -48,35 +56,67 @@ describe("ModelCostPie", () => {
     expect(container.querySelector("path title")?.textContent).toContain("Opus 5.5: $75.00 (75%) Compass estimate");
   });
 
-  it("shows token amounts for a token-sized whole", () => {
-    render({
-      measure: "tokens",
-      totalCents: 0,
-      totalTokens: 3_000_000,
-      unpriced: [],
-      slices: [
-        { key: "opus", label: "Opus 5.5", cents: 0, tokens: 2_000_000, share: 2 / 3, color: "var(--chart-series-1)", models: ["opus[1m]"] },
-        { key: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", cents: 0, tokens: 1_000_000, share: 1 / 3, color: "var(--chart-series-5)", models: ["gemini-4-hydrogen-high"] },
-      ],
+  it("shows the subscription USD estimate and excludes unpriced usage from the chart", () => {
+    const subscription = (model: string, outputTokens: number): CostByProviderModel => ({
+      provider: "claude",
+      biller: "anthropic_subscription",
+      billingType: "subscription_included",
+      model,
+      costCents: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens,
+      apiRunCount: 0,
+      subscriptionRunCount: 1,
+      subscriptionInputTokens: 0,
+      subscriptionCachedInputTokens: 0,
+      subscriptionOutputTokens: outputTokens,
     });
-    const items = [...container.querySelectorAll("li")].map((li) => li.textContent);
-    expect(items[0]).toMatch(/^Opus 5\.567%2(\.0)?M tokens$/);
-    expect(container.textContent).not.toContain("$");
+    query.data = [
+      subscription("opus[1m]", 1_000_000),
+      subscription("gpt-6-luna", 1_000_000),
+      subscription("gemini-4-hydrogen-high", 1_000_000),
+    ];
+    flushSync(() => root.render(<ModelCostPies companyId="test-company" />));
+    const section = [...container.querySelectorAll("section")].find((item) => item.querySelector("h4")?.textContent === "Subscription")!;
+    expect(section.textContent).toContain("$20.50");
+    expect(section.textContent).toContain("API list-price estimate (USD), not subscription fees or charges");
+    expect(section.textContent).toContain("assumes standard processing. Cache writes are not fully itemized.");
+    expect(section.querySelector("svg")?.getAttribute("aria-label")).toBe("Subscription API list-price estimate by model in USD");
+    expect([...section.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+      "Opus 5.598%$20.00",
+      "GPT-6 Luna2%$0.50",
+    ]);
+    expect(section.textContent).toContain("Unpriced usage, excluded from estimate: Gemini 4 Hydrogen");
+    expect(section.textContent).not.toContain("costs $0");
   });
 
   it("uses a full circle for a single model and an empty state for no usage", () => {
     render({
-      measure: "cost",
       totalCents: 100,
-      totalTokens: 0,
       unpriced: [],
-      slices: [{ key: "opus", label: "Opus 5.5", cents: 100, tokens: 0, share: 1, color: "var(--chart-series-1)", models: ["opus"] }],
+      slices: [{ key: "opus", label: "Opus 5.5", cents: 100, share: 1, color: "var(--chart-series-1)", models: ["opus"] }],
     });
     expect(container.querySelectorAll("circle")).toHaveLength(1);
     expect(container.querySelectorAll("path")).toHaveLength(0);
 
-    render({ measure: "cost", totalCents: 0, totalTokens: 0, unpriced: [], slices: [] });
-    expect(container.textContent).toContain("No usage in this period");
+    render({ totalCents: 0, unpriced: [], slices: [] });
+    expect(container.textContent).toContain("No priced usage in this period");
+  });
+
+  it("labels an unknown-only subscription total unpriced instead of $0", () => {
+    query.data = [{
+      provider: "google", biller: "google", billingType: "subscription_included", model: "gemini-4-hydrogen-high",
+      costCents: 0, inputTokens: 100, cachedInputTokens: 0, outputTokens: 0,
+      apiRunCount: 0, subscriptionRunCount: 1, subscriptionInputTokens: 100,
+      subscriptionCachedInputTokens: 0, subscriptionOutputTokens: 0,
+    }];
+    flushSync(() => root.render(<ModelCostPies companyId="test-company" />));
+    const section = [...container.querySelectorAll("section")].find((item) => item.querySelector("h4")?.textContent === "Subscription")!;
+    expect(section.querySelector("div span")?.textContent).toBe("Unpriced");
+    expect(section.textContent).not.toContain("$0.00");
+    expect(section.textContent).toContain("Gemini 4 Hydrogen 100 tokens");
+    expect(section.querySelector("svg")).toBeNull();
   });
 
   it("offers this year, this month, this week and today as periods", () => {

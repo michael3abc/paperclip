@@ -434,6 +434,26 @@ describe("durable subscription reporting", () => {
     expect(report.accounts[0].usage.eventCount).toBe(2);
     expect(report.monthlyTotals[0].amountCents).toBe("2000.0000000");
   });
+  it("normalizes Bridge subscription inclusive input without changing native counters or the monthly fee", async () => {
+    const c = await company(), id = await verifiedConnection(await connection(c));
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId: c, name: "Bridge", role: "engineer", adapterType: "ccpocket_bridge" });
+    await db.insert(costEvents).values([
+      { companyId: c, agentId, subscriptionId: id, provider: "codex", biller: "openai_subscription",
+        billingType: "subscription_included", model: "gpt-6-astra", inputTokens: 100,
+        cachedInputTokens: 80, outputTokens: 10, costCents: 0, receiptHash: "bridge-inclusive",
+        occurredAt: new Date("2026-10-08") },
+      { companyId: c, agentId, subscriptionId: id, provider: "openai", biller: "chatgpt",
+        billingType: "subscription_included", model: "gpt-6-astra", inputTokens: 20,
+        cachedInputTokens: 80, outputTokens: 10, costCents: 0, receiptHash: "native-exclusive",
+        occurredAt: new Date("2026-10-08") },
+    ]);
+    const report = await subscriptionCostReport(db, c, owner, { allTime: true });
+    expect(report.subscription).toMatchObject({ inputTokens: 40, cachedInputTokens: 160, outputTokens: 20, costCents: "0.0000000" });
+    expect(report.accounts[0].usage).toMatchObject({ inputTokens: 40, cachedInputTokens: 160, outputTokens: 20 });
+    expect(report.monthlyTotals[0].amountCents).toBe("2000.0000000");
+  });
+
   it("snapshots account attribution, rejects forged attribution, and preserves receipt replay", async () => {
     const c = await company(), input = await connection(c), service = subscriptionService(db);
     const original = await service.register(input);
