@@ -392,6 +392,11 @@ needs a board session, a trusted origin, both flags and voice caller authority
 (active non-viewer member, instance admin or local board). The generic chat
 endpoint create contract still rejects `local_voice`.
 
+These internal endpoints remain in the shared endpoint API/cache for Voice.
+The external chat connector visibility gate excludes `local_voice` from
+Connectors, external setup routes and agent Channels, even when both voice and
+chat connectors are enabled. They are not external connector accounts.
+
 A start without `issueId` reuses the caller's latest open voice task on that
 endpoint or creates a new task titled 「語音對話」. Its description tells the
 assigned agent to end every reply with one line `語音摘要：<two or three spoken

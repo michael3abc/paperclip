@@ -1073,6 +1073,24 @@ describe("Connectors landing page", () => {
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&method=copilot-token");
   });
 
+  it("renders connectors when internal local voice endpoints exist without exposing them as accounts", async () => {
+    const endpoints = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        id: `voice-${index}`, provider: "local_voice", status: "active",
+        assignedAgentId: `voice-agent-${index}`, assignedAgentName: `Voice agent ${index}`,
+      })),
+      { id: "slack-external", provider: "slack", status: "active",
+        assignedAgentId: "default-agent", assignedAgentName: "Default agent" },
+    ];
+    chatListMock.mockResolvedValue(endpoints);
+    const client = await renderBrowse();
+    expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="slack"]')?.textContent).toContain("Default agent");
+    expect(container.querySelector('[data-app-slug="local_voice"]')).toBeNull();
+    expect(container.textContent).not.toContain("Voice agent");
+    expect(client.getQueryData(queryKeys.chatEndpoints.list("company-1"))).toEqual(endpoints);
+  });
+
   it("names what the card will actually ask for", async () => {
     // PAP-659 C4. The verb is derived from the connector's resolved default
     // method, so it changes with what this instance can do rather than being a

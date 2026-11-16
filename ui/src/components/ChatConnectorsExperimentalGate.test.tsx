@@ -129,6 +129,27 @@ describe("Chat connectors visibility gate", () => {
     expect(container.querySelector('a[href="/apps/chat/github/settings"]')).not.toBeNull();
     expect(container.querySelector('a[href="/apps/chat/slack/settings"]')).toBeNull();
   });
+  it("keeps browser voice out of external connector setup even with all flags enabled", async () => {
+    api.provider = "local_voice";
+    api.settings.mockResolvedValue({ enableChatConnectors: true, enableGitHubReviewBots: true, enableLocalVoice: true });
+    await render();
+    expect(container.querySelector("[data-chat-setup]")).toBeNull();
+    expect(container.querySelector("[data-redirect]")?.getAttribute("data-redirect")).toBe("/apps");
+  });
+
+  it("keeps browser voice out of agent channels while retaining external channels", async () => {
+    api.settings.mockResolvedValue({ enableChatConnectors: true, enableLocalVoice: true });
+    api.list.mockResolvedValue([
+      { provider: "local_voice", id: "internal-voice", assignedAgentId: "agent-1", status: "active" },
+      { provider: "slack", id: "external-slack", assignedAgentId: "agent-1", status: "active" },
+    ]);
+    flushSync(() => root.render(<QueryClientProvider client={client}><AgentChannelsPanel companyId="company-1" agentId="agent-1" /></QueryClientProvider>));
+    await flushReact();
+    expect(container.querySelector('a[href="/apps/chat/external-slack/settings"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/apps/chat/internal-voice/settings"]')).toBeNull();
+    expect(client.getQueryData(queryKeys.chatEndpoints.list("company-1"))).toHaveLength(2);
+  });
+
   it("waits without exposing setup, then enables the route after explicit opt-in", async () => {
     let resolve!: (value: unknown) => void;
     api.settings.mockReturnValue(

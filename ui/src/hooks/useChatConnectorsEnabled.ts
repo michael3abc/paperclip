@@ -39,6 +39,8 @@ export function chatProviderVisible(
   chatEnabled: boolean,
   githubEnabled: boolean,
 ) {
+  // Browser voice has its own UI and enableLocalVoice gate, not connector setup.
+  if (provider === "local_voice") return false;
   return (
     provider === "agentmail" ||
     (provider === "github" || provider === "github-code-review-bot"
