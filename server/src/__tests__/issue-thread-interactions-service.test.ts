@@ -664,7 +664,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: fixture.agentId, runId: fixture.runId },
-    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
+    )).rejects.toMatchObject({ status: 403, message: "Decision task differs from the source run" });
 
     await db.transaction(async (tx) => {
       await tx.execute(sql`set local session_replication_role = replica`);
@@ -674,7 +674,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: fixture.agentId, runId: fixture.runId },
-    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
+    )).rejects.toMatchObject({ status: 403, message: "Decision task differs from the source run" });
 
     await db.update(heartbeatRuns)
       .set({ contextSnapshot: { issueId: fixture.issueId, paperclipWake: { comments: [] } } })
@@ -683,7 +683,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: otherAgentId, runId: fixture.runId },
-    )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the creating agent" });
+    )).rejects.toMatchObject({ status: 403, message: "Decision source run is outside the requester" });
   });
 
   it("expires a question when a comment transaction started earlier inserts after it commits", async () => {
