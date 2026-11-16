@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Custom MCP browser sign-in (`michael/connector-ui-login`): human-only, vault-backed
+  companion requests and an Apps login panel for the 104 browser and SeaTalk QR.
+  Preserves grants, tools and company scope; no login material in tool receipts.
+
 - Connector browser voice boundary (`michael/connector-local-voice`): internal
   `local_voice` endpoints stay in the shared API/cache but do not enter external
   connector sorting, setup or agent Channels. UI-only; preserves Voice bindings.

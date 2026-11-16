@@ -1495,3 +1495,13 @@ it("documents canonical saved-resource links in catalog team install responses",
   expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
   expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
 });
+
+
+it("documents custom MCP browser sign-in as human-session-only", () => {
+  const routes = buildOpenApiSpec().paths["/api/tool-connections/{connectionId}/browser-login"];
+  for (const method of ["get", "post"] as const) {
+    expect(routes[method].security).toEqual([{ BoardSessionAuth: [] }]);
+    expect(routes[method]["x-paperclip-authorization"]).toEqual({ actor: "board", sessionBound: true });
+    expect(routes[method]["x-paperclip-connection-management"]).toBe("connections:configure");
+  }
+});
