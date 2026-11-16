@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Shared voice preference (HOM-265): one browser-local timbre for all agents,
+  configured only on the Voice page; Chat call cards consume it without a picker.
+  Changes apply to subsequent calls, including across tabs. UI-only overlay.
+
 - Natural voice conversation (HOM-265): new calls let Realtime answer small talk
   immediately and forward work using current-turn tokens and original text.
   Verified main-answer playback and voice authorization restrictions remain.

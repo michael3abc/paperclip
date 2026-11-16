@@ -25,6 +25,8 @@ Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host I
 
 Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`.
 
+Local voice timbre is one browser-wide preference, changed only on the Voice page and used by every agent on the next call. Do not restore per-agent overrides or mutate live call bindings. See `doc/connections/LOCAL-VOICE.md`.
+
 Local voice media belongs to the company/user-scoped provider above routes; navigating chats must neither dispose it nor retarget the active agent. See `docs/agents/ui-features.md`.
 
 New agent_chat voice sessions pin main_answer_v1 in providerSessionId; substantive answers come from the original main Chat and require per-answer, server-verified input provenance before automatic playback. Saved input is not execution evidence; barge-in stops audio only, and an unknown browser write is reconciled without resending. Preserve voice_task and existing calls' policies. See `doc/connections/LOCAL-VOICE.md`.

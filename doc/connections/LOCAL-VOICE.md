@@ -374,8 +374,11 @@ be on. `GET /api/companies/{companyId}/local-voice/status` reports
 voices a caller may pick (empty for the Gemini engine) and `defaultVoice` is the
 configured voice.
 
-Per-agent voice (HOM-265): the call card and the Voice page remember a voice per
-agent in the browser (localStorage). The browser offers it on the relay upgrade as
+Shared voice (HOM-265): only the Voice page offers the voice picker. All agents
+and call entry points use one browser-local preference (`paperclip.voice.voiceName`),
+updated across mounted surfaces and same-origin tabs. Old per-agent preferences
+are not read or migrated; until a shared choice is made, calls use the server
+default. This is not an account-wide or cross-device setting. The browser offers it on the relay upgrade as
 an extra subprotocol `pcvv.<voice>`; the server applies it only for the OpenAI
 engine and only for a voice in `voices` (case-insensitive), otherwise the
 configured voice is used. A change during a call applies to the next call.

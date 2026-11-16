@@ -4,7 +4,8 @@ import { Mic } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { localVoiceApi } from "@/api/localVoice";
 import { EmptyState } from "@/components/EmptyState";
-import { AgentVoiceSelect, useAgentVoice } from "@/components/voice/AgentVoiceSelect";
+import { SharedVoiceSelect, useSharedVoice } from "@/components/voice/SharedVoiceSelect";
+import { useLocalVoiceCall } from "@/components/voice/LocalVoiceCallProvider";
 import { LocalVoicePanel } from "@/components/voice/LocalVoicePanel";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -48,8 +49,9 @@ export function VoiceCall() {
   useEffect(() => { if (defaultReady && pinned === null && fallback) setPinned(fallback); }, [defaultReady, pinned, fallback]);
   const agentId = chosen ?? pinned;
   const agent = available.find((item) => item.id === agentId);
-  // Remembered per agent (HOM-265); hooks run before the early returns below.
-  const [voice, setVoice] = useAgentVoice(agent?.id ?? "");
+  // Shared across every agent; changing the setting does not retarget a live call.
+  const [voice, setVoice, voiceError] = useSharedVoice();
+  const callHost = useLocalVoiceCall();
   const issueId = searchParams.get("issueId") ?? undefined;
   const agentChat = useAgentChatEnabled();
   // Without Agent Chat the page keeps the voice-task flow instead of failing to bind a Chat.
@@ -92,7 +94,7 @@ export function VoiceCall() {
               {available.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </label>
-          <AgentVoiceSelect agentName={agent.name} voices={status.data.voices} defaultVoice={status.data.defaultVoice} value={voice} onChange={setVoice} />
+          <SharedVoiceSelect voices={status.data.voices} defaultVoice={status.data.defaultVoice} value={voice} onChange={setVoice} error={voiceError} pendingNextCall={callHost.active && voice !== (callHost.binding?.voiceName ?? null)} />
         </div>
       </div>
       <LocalVoicePanel key={`${agent.id}:${issueId ?? ""}:${mode}`} companyId={selectedCompanyId} agentId={agent.id} agentName={agent.name} issueId={issueId} mode={mode} voiceName={voice} />

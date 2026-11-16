@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LocalVoiceCall, LocalVoiceCallSnapshot } from "@/lib/local-voice/local-voice-call";
 import { LocalVoiceCallProvider } from "./LocalVoiceCallProvider";
+import { saveSharedVoice } from "@/lib/local-voice/voice-agent-choice";
 import { ChatVoiceCallButton } from "./ChatVoiceCallButton";
 
 const mocks = vi.hoisted(() => ({ status: vi.fn(), chatEnabled: true }));
@@ -40,8 +41,8 @@ describe("ChatVoiceCallButton", () => {
     root = createRoot(container); client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
   afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); window.localStorage.clear(); });
-  async function render(call: LocalVoiceCall) {
-    await act(async () => root.render(<QueryClientProvider client={client}><LocalVoiceCallProvider companyId="company" userId="viewer" createCall={() => call}><ChatVoiceCallButton companyId="company" agentId="agent-1" agentName="michael" /></LocalVoiceCallProvider></QueryClientProvider>));
+  async function render(call: LocalVoiceCall, agentId = "agent-1") {
+    await act(async () => root.render(<QueryClientProvider client={client}><LocalVoiceCallProvider companyId="company" userId="viewer" createCall={() => call}><ChatVoiceCallButton companyId="company" agentId={agentId} agentName="michael" /></LocalVoiceCallProvider></QueryClientProvider>));
   }
   const callButton = () => container.querySelector<HTMLButtonElement>('button[aria-label$="voice call with michael"], button[aria-label="Voice call with michael"]');
 
@@ -95,36 +96,25 @@ describe("ChatVoiceCallButton", () => {
     expect(spies.replayReply).toHaveBeenCalledWith("answer-one");
   });
 
-  it("remembers a voice per agent on the call card and uses it from the next call on (HOM-265)", async () => {
+  it("uses the Voice page's shared choice for every agent without a Chat picker", async () => {
     mocks.status.mockResolvedValue({ companyId: "company", enabled: true, relayConfigured: true, voices: ["alloy", "cedar", "marin"], defaultVoice: "marin" });
-    window.localStorage.setItem("paperclip.voice.agentVoice:agent-2", "alloy");
+    saveSharedVoice("alloy");
     const { call, spies } = fakeCall();
     await render(call);
     await vi.waitFor(() => expect(callButton()).not.toBeNull());
     await act(async () => callButton()!.click());
-    // No voice remembered yet: the server default is used.
-    expect(spies.start).toHaveBeenLastCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat" });
+    expect(spies.start).toHaveBeenLastCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat", voiceName: "alloy" });
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
-    const select = () => document.body.querySelector<HTMLSelectElement>('select[aria-label="Voice for michael"]')!;
-    await vi.waitFor(() => expect(select()).not.toBeNull());
-    expect(select().value).toBe("");
-    expect([...select().options].map((option) => option.textContent)).toEqual(["Default (Marin)", "Alloy", "Cedar", "Marin"]);
-    expect(document.body.textContent).not.toContain("Applies to the next call.");
-
-    await act(async () => {
-      select().value = "cedar";
-      select().dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(window.localStorage.getItem("paperclip.voice.agentVoice:agent-1")).toBe("cedar");
-    expect(window.localStorage.getItem("paperclip.voice.agentVoice:agent-2")).toBe("alloy");
-    expect(document.body.textContent).toContain("Applies to the next call.");
+    expect(document.body.querySelector('section[aria-label^="Voice call details"] select')).toBeNull();
+    // A change on the Voice page reaches the mounted Chat, but never restarts a live call.
+    await act(async () => saveSharedVoice("cedar"));
     expect(spies.start).toHaveBeenCalledOnce();
-
+    expect(spies.end).not.toHaveBeenCalled();
     await act(async () => callButton()!.click());
-    expect(spies.end).toHaveBeenCalledOnce();
-    expect(document.body.textContent).not.toContain("Applies to the next call.");
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close voice call"]')!.click());
+    await render(call, "agent-2");
     await act(async () => callButton()!.click());
-    expect(spies.start).toHaveBeenLastCalledWith({ companyId: "company", agentId: "agent-1", mode: "agent_chat", voiceName: "cedar" });
+    expect(spies.start).toHaveBeenLastCalledWith({ companyId: "company", agentId: "agent-2", mode: "agent_chat", voiceName: "cedar" });
   });
 
   it("hides the voice choice when the server offers no voices", async () => {

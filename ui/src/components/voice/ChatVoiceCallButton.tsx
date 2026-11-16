@@ -8,7 +8,7 @@ import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { cn } from "@/lib/utils";
 import { localVoiceActivity, localVoiceDeliveryError, type LocalVoiceSentEntry } from "@/lib/local-voice/local-voice-call";
 import { matchesLocalVoiceCall, useLocalVoiceCall, useLocalVoiceSurface } from "./LocalVoiceCallProvider";
-import { AgentVoiceSelect, useAgentVoice } from "./AgentVoiceSelect";
+import { useSharedVoice } from "./SharedVoiceSelect";
 
 export interface ChatVoiceCallButtonProps {
   companyId: string;
@@ -45,8 +45,7 @@ function SentMark({ entry }: { entry: LocalVoiceSentEntry }) {
  * voice summary is read aloud. While a call is open, its status, timer and
  * listening toggle sit inline in the top bar so nothing covers the page; the
  * captions and errors open in a details panel on demand (or by themselves on an error).
- * The details panel also holds this agent's voice, remembered per agent in this
- * browser and used from the next call on (HOM-265).
+ * Uses the browser-wide voice selected on the Voice page (HOM-265).
  * Hidden when local voice or Agent Chat is off.
  */
 export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoiceCallButtonProps) {
@@ -61,9 +60,7 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
   const { call, state } = host;
   const callShown = matchesLocalVoiceCall(host.binding, { companyId, agentId, mode: "agent_chat" }, state);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [voice, setVoice] = useAgentVoice(agentId);
-  /** The voice the open call started with; a different choice applies to the next call. */
-  const callVoice = host.binding?.voiceName ?? null;
+  const [voice] = useSharedVoice();
   const live = callShown && state.phase === "live";
   const active = callShown && host.active;
   const elapsed = useElapsed(state.startedAt, live);
@@ -133,15 +130,6 @@ export function ChatVoiceCallButton({ companyId, agentId, agentName }: ChatVoice
         <p className="min-w-0 flex-1 line-clamp-2 text-xs">{reply.voiceSummary}</p>
         <Button size="sm" variant="ghost" onClick={() => call.replayReply(reply.commentId)}>重播</Button>
       </div>)}
-      <AgentVoiceSelect
-        agentName={agentName}
-        voices={status.data?.voices}
-        defaultVoice={status.data?.defaultVoice}
-        value={voice}
-        onChange={setVoice}
-        pendingNextCall={active && voice !== callVoice}
-        compact
-      />
       <p className="text-xs leading-snug text-muted-foreground">
         What you say is posted to this Chat when you stop talking. Approvals and deployments still need the on-screen controls.
       </p>
