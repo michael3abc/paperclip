@@ -9,6 +9,15 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Observed-state worktree API (Owner 2026-11-16 「好，做 2」; `469123df63`, `0af37f4d18`, `2d0ebc88a2`):
+  main-managed worktree create/merge/retire/initialize decide from the tree's observed Git state and are
+  idempotent; host receipts and `workspace_operations` rows are audit only. Create makes a missing parent
+  below a real directory; retire skips unreadable processes and still never force-removes or deletes dirty
+  files (ignored files are archived first); Git output is uncapped; git/tar 10 minutes each. A pending
+  operation is superseded by the next one, generation is advisory, host refusals are 409 with the host code.
+  No migration. Changes the `@paperclipai/adapter-utils` peer (T4); pair with ccpocket adapter
+  `michael/worktree-observed-state` (30-minute worktree SSH cap). Stale pre-liveness-first assertions in
+  three workspace suites were rewritten. See `docs/agents/worktree-observed-state.md`.
 - Main dispatch without forced review; completion replies count (Owner 2026-11-16 「開始 1~3」): a main's
   dispatched worker task no longer gets an automatic main review stage (the main may still add one); a succeeded
   completion turn that answered in its conversation through a plain comment counts as the delivered completion
