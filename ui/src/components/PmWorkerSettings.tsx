@@ -7,21 +7,40 @@ import { NativeSelect } from "./ui/select";
 import { Input } from "./ui/input";
 
 type Row = PmWorkerSelection & { agentId: string; harness: PmWorkerHarness };
+type MainProvider = "claude" | "codex" | "antigravity";
+
+/**
+ * What a main agent's native subagents use with this default (CC Pocket adapter subagent_settings_v1; Owner 2026-11-16
+ * 「C. 指定 subagent 用的模型，s.t. 會自動匯入我 worker 那邊設定的」). A default of the main's own harness becomes the subagent
+ * model (mapped to the main's subscription/Compass route when needed); any other default leaves the main model.
+ */
+export function subagentModelHint(mainProvider: MainProvider, row: Pick<Row, "harness" | "model" | "thinking"> | undefined, catalogProvider?: string): string | null {
+  if (!row?.model) return null;
+  const parts = row.model.split("/");
+  const engine = row.harness === "claude_local" ? "claude" : row.harness === "codex_local" ? "codex" : row.harness === "agy_local" ? "antigravity"
+    : parts.length >= 3 ? parts[1] : catalogProvider;
+  const model = row.harness === "ccpocket_bridge" && parts.length >= 3 ? parts.slice(2).join("/") : row.model;
+  const name = mainProvider === "claude" ? "Claude" : mainProvider === "codex" ? "Codex" : "Antigravity";
+  if (engine !== mainProvider || mainProvider === "antigravity")
+    return `Native subagents use the main agent's own model: ${pmWorkerHarnessLabel(row.harness, row.model)} ${model} cannot run as a ${name} subagent. Create a worker task to use it.`;
+  return `Native subagents use ${model}${row.thinking ? ` (${row.thinking})` : ""}${mainProvider === "codex"
+    ? " for fresh spawns; full-history forks keep the main model and sub-agents keep the main's speed" : ", including Explore and Plan"}. It follows the main's subscription or Compass route and applies from the next turn.`;
+}
 const modelKey = (id: string, binding?: PmWorkerSelection["aiConnection"]) => binding
   ? `${id}::${binding.mode}:${binding.connectionId}:${binding.grantId}` : id;
 
-export function PmWorkerSettings({ agentId }: { agentId: string }) {
+export function PmWorkerSettings({ agentId, mainProvider }: { agentId: string; mainProvider?: MainProvider }) {
   const client = useQueryClient();
   const query = useQuery({ queryKey: ["pm-worker-policy", agentId], queryFn: () => agentsApi.workerPolicy(agentId), retry: false, refetchOnWindowFocus: false });
   if (query.error && !query.data) return <p role="alert">{query.error.message} <Button variant="outline" onClick={() => void query.refetch()}>Reload</Button></p>;
   if (!query.data) return <p>Loading worker settings…</p>;
-  return <WorkerEditor key={agentId} agentId={agentId} initial={query.data} onSaved={async () => {
+  return <WorkerEditor key={agentId} agentId={agentId} mainProvider={mainProvider} initial={query.data} onSaved={async () => {
     await client.invalidateQueries({ queryKey: ["pm-worker-policy", agentId] });
     await client.invalidateQueries({ queryKey: ["agents"] });
   }} />;
 }
 
-function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial: PmWorkerPolicyView; onSaved: () => Promise<void> }) {
+function WorkerEditor({ agentId, mainProvider, initial, onSaved }: { agentId: string; mainProvider?: MainProvider; initial: PmWorkerPolicyView; onSaved: () => Promise<void> }) {
   const [base, setBase] = useState(initial);
   const [rows, setRows] = useState<Row[]>(() => initial.policy?.workers.flatMap(worker => worker.selections.map(choice => ({ ...choice, agentId: worker.agentId, harness: worker.harness }))) ?? []);
   const [defaultId, setDefaultId] = useState(initial.policy?.defaultSelectionId ?? "");
@@ -87,6 +106,11 @@ function WorkerEditor({ agentId, initial, onSaved }: { agentId: string; initial:
           </div>
         </div>;
       })}
+      {mainProvider && (() => {
+        const row = rows.find(row => row.id === defaultId);
+        const hint = subagentModelHint(mainProvider, row, base.catalog.find(worker => worker.agentId === row?.agentId)?.provider);
+        return hint ? <p role="note" aria-label="Native subagent model" className="text-sm text-muted-foreground">{hint}</p> : null;
+      })()}
       <Button variant="outline" disabled={rows.length >= 100} onClick={() => { setRows(values => [...values, { id: crypto.randomUUID(), agentId: "", harness: "claude_local", model: "", thinking: null, permission: "" as Row["permission"], speed: "standard", purpose: "" }]); setSaved(false); }}>Add worker option</Button>
     </fieldset>
     <details><summary>Worker settings JSON</summary><pre aria-label="Worker settings JSON" className="whitespace-pre-wrap break-words text-sm">{formatPmWorkerPolicyJson(draft)}</pre></details>

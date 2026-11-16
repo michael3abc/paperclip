@@ -185,6 +185,14 @@ export {
   RunInvocationCard,
 } from "../components/run-log/RunDetails";
 
+/** The engine a CC Pocket main agent runs on (`provider`, or `<host>/<engine>/<model>`); undefined for other agents. */
+function mainAgentProvider(adapterType: string | null | undefined, config: unknown): "claude" | "codex" | "antigravity" | undefined {
+  const c = (config ?? {}) as { role?: unknown; provider?: unknown; model?: unknown };
+  if (adapterType !== "ccpocket_bridge" || c.role !== "main") return undefined;
+  const engine = typeof c.provider === "string" ? c.provider : typeof c.model === "string" && c.model.split("/").length >= 3 ? c.model.split("/")[1] : "codex";
+  return engine === "claude" || engine === "codex" || engine === "antigravity" ? engine : undefined;
+}
+
 const AgentAdvancedTab = lazy(() => import("./AgentAdvancedTab").then(module => ({ default: module.AgentAdvancedTab })));
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -1770,7 +1778,7 @@ export function ConfigurationTab({
       {content === "runtime" && (((agent.runtimeConfig?.workspaceBinding as { mode?: string; workerSlots?: number } | undefined)?.mode === "project_pm"
         && ((agent.runtimeConfig?.workspaceBinding as { workerSlots?: number }).workerSlots ?? 0) === 0)
         || (agent.adapterType === "ccpocket_bridge" && (agent.adapterConfig as { role?: unknown } | null)?.role === "main"))
-        ? <PmWorkerSettings key={agent.id} agentId={agent.id} /> : null}
+        ? <PmWorkerSettings key={agent.id} agentId={agent.id} mainProvider={mainAgentProvider(agent.adapterType, agent.adapterConfig)} /> : null}
 
       {content === "permissions" ? <TrustPresetSection
         layout="cards"
