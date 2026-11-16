@@ -31,7 +31,7 @@ describe("modelFamily", () => {
     expect(modelFamily("compass-6.1-sol").key).toBe("gpt-6.1-sol");
     expect(modelFamily("gpt-6-sol").key).toBe("gpt-6-sol");
     expect(modelFamily("michael-server/antigravity/gemini-4-argon-high").key).toBe("gemini-4-argon");
-    expect(modelFamily("vendor/some-model")).toEqual({ key: "some-model", label: "some-model", rates: null });
+    expect(modelFamily("vendor/some-model")).toEqual({ key: "some-model", label: "some-model" });
   });
 
   it("keeps one color per family regardless of rank", () => {
@@ -100,6 +100,50 @@ describe("splitModelCosts", () => {
       { key: "new-model", label: "new-model", tokens: 100, events: 0 },
       { key: "gemini-4-argon", label: "Gemini 4 Argon", tokens: 70, events: 0 },
     ]);
+  });
+
+  it("uses exact model rates inside a shared family instead of pricing older Sonnet as 5.5", () => {
+    const subscription = (model: string) => row({
+      biller: "anthropic_subscription", billingType: "subscription_included", model, cachedInputTokens: 1_000_000,
+    });
+    expect(splitModelCosts([subscription("claude-sonnet-5")]).subscription.totalCents).toBe(20);
+    expect(splitModelCosts([subscription("sonnet")]).subscription.totalCents).toBe(10);
+    const combined = splitModelCosts([subscription("claude-sonnet-5"), subscription("sonnet[1m]")]).subscription;
+    expect(combined.totalCents).toBeCloseTo(30);
+    expect(combined.slices).toHaveLength(1);
+    expect(combined.slices[0]!.models).toEqual(["claude-sonnet-5", "sonnet[1m]"]);
+    expect(combined.unpriced).toEqual([]);
+  });
+
+  it("keeps known older OpenAI model rates while rejecting unknown model variants", () => {
+    const subscription = (model: string) => row({
+      biller: "openai_subscription", billingType: "subscription_included", model, cachedInputTokens: 1_000_000,
+    });
+    expect(splitModelCosts([subscription("gpt-5.6-sol")]).subscription.totalCents).toBe(40);
+    for (const model of ["gpt-6-astra[1m]", "gpt-6.1-sol-preview", "vendor/gpt-6-astra"]) {
+      const whole = splitModelCosts([subscription(model)]).subscription;
+      expect(whole.slices, model).toEqual([]);
+      expect(whole.unpriced, model).toHaveLength(1);
+      expect(whole.unpriced[0]!.tokens, model).toBe(1_000_000);
+    }
+  });
+
+  it("retains unpriced usage alongside a priced member of the same family in either order", () => {
+    const known = row({
+      biller: "anthropic_subscription", billingType: "subscription_included", model: "opus", inputTokens: 1_000_000,
+    });
+    const unknown = row({
+      biller: "vendor_subscription", billingType: "subscription_included", model: "vendor/opus-preview", inputTokens: 40, cachedInputTokens: 20, outputTokens: 10,
+    });
+    for (const rows of [[known, unknown], [unknown, known]]) {
+      const whole = splitModelCosts(rows).subscription;
+      expect(whole.totalCents).toBe(400);
+      expect(whole.slices).toHaveLength(1);
+      expect(whole.slices[0]!.models).toEqual(["opus"]);
+      expect(whole.unpriced).toEqual([
+        { key: "opus", label: "Opus 5.5 (vendor/opus-preview)", tokens: 70, events: 0 },
+      ]);
+    }
   });
 
   it("lists unpriced Compass runs instead of guessing", () => {

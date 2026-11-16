@@ -119,6 +119,21 @@ describe("ModelCostPie", () => {
     expect(section.querySelector("svg")).toBeNull();
   });
 
+  it("shows unknown same-family usage without charging it at the known member's rate", () => {
+    const subscription = (model: string, inputTokens: number): CostByProviderModel => ({
+      provider: "claude", biller: "anthropic_subscription", billingType: "subscription_included", model,
+      costCents: 0, inputTokens, cachedInputTokens: 0, outputTokens: 0,
+      apiRunCount: 0, subscriptionRunCount: 1, subscriptionInputTokens: inputTokens,
+      subscriptionCachedInputTokens: 0, subscriptionOutputTokens: 0,
+    });
+    query.data = [subscription("opus", 1_000_000), subscription("vendor/opus-preview", 100)];
+    flushSync(() => root.render(<ModelCostPies companyId="test-company" />));
+    const section = [...container.querySelectorAll("section")].find((item) => item.querySelector("h4")?.textContent === "Subscription")!;
+    expect(section.querySelector("div span")?.textContent).toBe("$4.00");
+    expect(section.querySelector("li")?.getAttribute("title")).toBe("opus");
+    expect(section.textContent).toContain("Unpriced usage, excluded from estimate: Opus 5.5 (vendor/opus-preview) 100 tokens");
+  });
+
   it("offers this year, this month, this week and today as periods", () => {
     const picked: string[] = [];
     flushSync(() => {
