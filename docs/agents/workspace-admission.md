@@ -38,6 +38,13 @@ worktree creation or retirement.
 - A pending operation never gates the main's next one: a new operation abandons it
   (its row and history stay), and recheck abandons an original whose host receipt
   is missing or unreconcilable. Host refusals answer 409 with the host's code.
+- Create makes a missing parent directory on the tree's own host, only beneath an
+  existing canonical ancestor. Remote host receipts live under the host's own
+  `remoteStateRoot/worktree-operations` (the transport substitutes it); the
+  controller path recorded in `hostInput.receiptRoot` is not used remotely.
+- Retire's process scan skips same-uid processes whose cwd/fds are unreadable
+  (user systemd, ssh-agent, the delivering sshd-session); a readable process in
+  the tree still blocks, and removal stays non-force after the private backup.
 - Include ignored target files in merge overlap checks before any shared effect.
 - Read-only source tools share files; fixed-version reads never switch branch.
   Production sources, Owner holds, permissions and real provider capacity stay intact.

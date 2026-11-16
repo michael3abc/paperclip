@@ -70,12 +70,27 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
     if (!path.isAbsolute(value) || path.normalize(value) !== value || await fs.realpath(value) !== value) fail("worktree_path_not_canonical");
     return value;
   };
+  // Workspace = directory (liveness-first rule 3): a new tree's missing parent
+  // is created on its own host. Only below an existing canonical ancestor, so a
+  // symlinked component can never redirect the new directories elsewhere.
+  const ensureDirectory = async (value: string) => {
+    if (!path.isAbsolute(value) || path.normalize(value) !== value) fail("worktree_path_not_canonical");
+    let existing = value;
+    while (!await exists(existing)) existing = path.dirname(existing);
+    await canonical(existing);
+    if (existing !== value) await fs.mkdir(value, { recursive: true });
+    return canonical(value);
+  };
   const repositoryRoot = input.kind === "repository_root";
   if (input.kind !== undefined && !["repository_root", "linked_worktree"].includes(input.kind)) fail("worktree_kind_invalid");
   if (input.action === "initialize" && !repositoryRoot) fail("worktree_initialize_requires_repository_root");
   if (repositoryRoot && ["create", "merge", "retire"].includes(input.action)) fail("repository_root_metadata_lifecycle_only");
   const source = await canonical(input.sourceCwd);
-  const parent = inside(source, input.cwd) ? source : await canonical(input.parentDir);
+  // A new tree may name a parent that does not exist yet on this host. Its path
+  // checks below stay lexical; the create step makes the directories, after the
+  // receipt starts and only beneath an existing canonical ancestor.
+  const createParent = input.action === "create" && !inside(source, input.cwd) && !await exists(input.parentDir);
+  const parent = inside(source, input.cwd) ? source : createParent ? input.parentDir : await canonical(input.parentDir);
   // A configured source may already be this linked worktree. Read-only
   // registration/finalization still verifies its Git admin file, common dir and
   // branch below; equality alone neither makes it a primary checkout nor grants
@@ -211,7 +226,7 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
     if (await targetHead() !== input.expectedTargetHead) fail("worktree_target_moved");
     if (input.action === "create") {
       if (await exists(input.cwd)) fail("worktree_path_exists");
-      await canonical(path.dirname(input.cwd));
+      await ensureDirectory(path.dirname(input.cwd));
       await markEffect();
       await git(source, ["worktree", "add", "-b", input.branch, "--", input.cwd, input.expectedHead!]);
     } else {
@@ -269,8 +284,11 @@ async function executeWorktreeOperation(input: ManagedWorktreeHostInput, { fs, p
               if (path.isAbsolute(target) && inside(input.cwd, target)) fail("retire_blocked_open_file");
             }
           } catch (error) {
-            if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
-            if (["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) fail("retire_blocked_unknown_live");
+            // Same-uid but non-dumpable processes (user systemd, sd-pam, ssh-agent
+            // and the sshd-session delivering a remote request) hide cwd and fds.
+            // That observation is supplementary (liveness-first): skip it, while a
+            // readable process in the tree still blocks.
+            if (["ENOENT", "ESRCH", "EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
             throw error;
           }
         }

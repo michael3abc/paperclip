@@ -321,4 +321,40 @@ describe("managed linked Git worktree host operations", () => {
     expect(await ended, err + out).toBe(0);
     expect(JSON.parse(out)).toMatchObject({ ok: true, result: { cwd: f.input.cwd, head: f.created.head } });
   });
+
+  async function hostScript(request: ManagedWorktreeHostInput) {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", managedWorktreeHostScript()], { stdio: ["pipe", "pipe", "pipe"] });
+    let out = "", err = "";
+    child.stdout.on("data", chunk => { out += chunk; }); child.stderr.on("data", chunk => { err += chunk; });
+    const ended = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    child.stdin.end(JSON.stringify(request));
+    expect(await ended, err + out).toBe(0);
+    return JSON.parse(out);
+  }
+
+  it("creates a missing parent directory on its own host, then creates and retires the tree there", async () => {
+    // Shopee-D 2026-11-16: the configured parent did not exist yet; create failed
+    // with ENOENT before its host receipt. Workspace = directory: create it.
+    const f = await fixture(), parentDir = path.join(f.root, "new-host-parent", "trees"), cwd = path.join(parentDir, "nested", "remote");
+    const create = f.request("create", { parentDir, cwd, branch: "michael/remote" });
+    const created = await hostScript(create);
+    expect(created).toMatchObject({ ok: true, result: { action: "create", cwd, branch: "michael/remote", dirty: false, merged: true } });
+    expect(JSON.parse(await fs.readFile(path.join(create.receiptRoot, create.operationId, "receipt.json"), "utf8")))
+      .toMatchObject({ state: "complete" });
+    expect(await git(cwd, "symbolic-ref", "HEAD")).toBe("refs/heads/michael/remote");
+    const retire = f.request("retire", { parentDir, cwd, branch: "michael/remote" });
+    const retired = await hostScript(retire);
+    expect(retired).toMatchObject({ ok: true, result: { action: "retire", cwd, retired: true,
+      rescuePath: path.join(retire.receiptRoot, retire.operationId, "worktree.tar") } });
+    await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(f.source, "rev-parse", "--verify", "refs/heads/michael/remote")).toBe(f.created.head);
+  });
+
+  it("never creates a missing parent through a symlinked ancestor", async () => {
+    const f = await fixture(), alias = path.join(f.root, "alias-parent"); await fs.symlink(f.source, alias);
+    const parentDir = path.join(alias, "trees");
+    const response = await hostScript(f.request("create", { parentDir, cwd: path.join(parentDir, "batch"), branch: "michael/alias-parent" }));
+    expect(response).toMatchObject({ ok: false, code: "worktree_path_not_canonical" });
+    expect(await fs.readdir(f.source)).not.toContain("trees");
+  });
 });
