@@ -9326,22 +9326,22 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get", path: "/api/projects/{projectId}/worktrees/{id}", tags: ["execution-workspaces"],
-  summary: "Inspect a main-managed linked worktree and its original operation receipts",
+  summary: "Inspect a main-managed worktree: its registration, live Git observation on its host and operation history",
   request: { params: z.object({ projectId: z.string().uuid(), id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 registry.registerPath({
   method: "post", path: "/api/projects/{projectId}/worktrees/{id}/operations", tags: ["execution-workspaces"],
   summary: "Create, register, join, leave, converge, merge, reopen or retire a linked worktree",
-  description: "Management requires an authorized human or the current running project main. Participants are informational, never an exclusive writer claim. Supply an operation ID and expected generation; Git mutations also require pinned candidate and target HEADs.",
+  description: "Management requires an authorized human or the current running project main. Participants are informational, never an exclusive writer claim. Every operation is decided from the tree's observed Git state and is idempotent: repeating it (same or new operation ID) answers outcome already_done when Git already shows the result. The expected generation is recorded, never refused. Create needs the start commit (expectedHead); merge needs the candidate and target HEADs. Host refusals are 409 with details.code; 503 when the host is unreachable.",
   request: { params: z.object({ projectId: z.string().uuid(), id: z.string().uuid() }), body: jsonBody(managedWorktreeOperationSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 503: r.serverError },
 });
 registry.registerPath({
   method: "post", path: "/api/projects/{projectId}/worktrees/{id}/recheck", tags: ["execution-workspaces"],
-  summary: "Reconcile only the original worktree operation receipt without repeating Git mutations",
+  summary: "Re-read Git (read-only) for the latest unfinished worktree operation; other operations return their recorded state",
   request: { params: z.object({ projectId: z.string().uuid(), id: z.string().uuid() }), body: jsonBody(managedWorktreeRecheckSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 503: r.serverError },
 });
 
 registry.registerPath({
