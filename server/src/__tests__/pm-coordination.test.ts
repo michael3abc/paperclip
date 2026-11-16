@@ -224,10 +224,10 @@ describe.each([["claude_local", "split-v1"], ["codex_local", "split-v1"], ["code
     expect(created).toMatchObject({ task: { parentId: issueId, assigneeActorId: workerId } });
     const [task] = await db.select().from(issues).where(eq(issues.id, created.task.id));
     expect(task?.assigneeAdapterOverrides).toEqual(override);
-    expect(task?.executionPolicy?.stages).toEqual(expect.arrayContaining([
+    // Source gates are preserved; no dispatcher review stage is added automatically.
+    expect(task?.executionPolicy?.stages).toEqual([
       expect.objectContaining({ type: "approval", participants: [expect.objectContaining({ type: "user", userId })] }),
-      expect.objectContaining({ type: "review", participants: [expect.objectContaining({ type: "agent", agentId })] }),
-    ]));
+    ]);
     await execute("create_task", defaultArgs);
     expect(wakes.every(wake => wake.agentId === workerId)).toBe(true);
     expect(new Set(wakes.map(wake => wake.key))).toEqual(new Set([`created-child:${created.task.id}`]));

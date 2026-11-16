@@ -267,6 +267,20 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
           });
           if (deferred) return;
         }
+        // A succeeded turn that already answered in the conversation (for example a CC Pocket main that posts its
+        // reply through the API during the turn instead of a final completion reply) has delivered the update;
+        // re-waking it only produces "duplicate notice" turns (Owner 2026-11-16, SHO-45 delivered four times).
+        if (run?.status === "succeeded") {
+          const [reply] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
+            eq(issueComments.companyId, claimed.companyId), eq(issueComments.issueId, row.handoff.conversationId),
+            eq(issueComments.createdByRunId, run.id), eq(issueComments.authorAgentId, row.handoff.agentId),
+            isNull(issueComments.deletedAt))).orderBy(desc(issueComments.createdAt)).limit(1);
+          if (reply) {
+            await db.update(deliveries).set({ status: "delivered", responseCommentId: reply.id, error: null })
+              .where(and(eq(deliveries.id, id), eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id)));
+            return;
+          }
+        }
         const advanced = await db.transaction(async tx => {
 
 
