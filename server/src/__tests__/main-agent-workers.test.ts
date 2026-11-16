@@ -107,13 +107,19 @@ describe("main agent worker policy and dispatch", () => {
     await expect(agentFileStore(db).write({ companyId, agentId: mainId, path: "PROJECT.md", bytes: Buffer.from("Changed"), baseHash: after.documentHash }, actor)).rejects.toThrow("managed worker table");
   });
 
-  it("expands an option ID into the worker, model and main-agent review", async () => {
+  it("expands an option ID into the worker and model without a forced main-agent review", async () => {
     const body: Record<string, unknown> = { title: "Use Codex", workspaceSelection, assigneeAdapterOverrides: { workerSelectionId: codexChoice } };
     expect(await post(body)).toBe(true);
     expect(body).toMatchObject({ projectId, assigneeAgentId: codexId, assigneeAdapterOverrides: { workerSelectionId: codexChoice, adapterConfig: { model: "gpt-6-astra" } },
       executionWorkspaceSettings: { mode: "isolated_workspace", sessionOnly: false } });
     const stages = (body.executionPolicy as { stages: Array<{ type: string; participants: Array<{ agentId?: string }> }> }).stages;
-    expect(stages).toEqual([expect.objectContaining({ type: "review", participants: [expect.objectContaining({ agentId: mainId })] })]);
+    expect(stages).toEqual([]);
+    // An explicit review stage by the main itself is still kept.
+    const reviewed: Record<string, unknown> = { title: "Risky", workspaceSelection, assigneeAdapterOverrides: { workerSelectionId: codexChoice },
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [{ type: "review", approvalsNeeded: 1, participants: [{ type: "agent", agentId: mainId }] }] } };
+    expect(await post(reviewed)).toBe(true);
+    expect((reviewed.executionPolicy as { stages: unknown[] }).stages).toEqual([expect.objectContaining({ type: "review",
+      participants: [expect.objectContaining({ agentId: mainId })] })]);
     const byDefault: Record<string, unknown> = { title: "Default", workspaceSelection, assigneeAgentId: claudeId };
     expect(await post(byDefault)).toBe(true);
     expect(byDefault).toMatchObject({ assigneeAgentId: claudeId, assigneeAdapterOverrides: { workerSelectionId: claudeChoice } });

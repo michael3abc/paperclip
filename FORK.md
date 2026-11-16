@@ -9,6 +9,10 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Main dispatch without forced review; completion replies count (Owner 2026-11-16 「開始 1~3」): a main's
+  dispatched worker task no longer gets an automatic main review stage (the main may still add one); a succeeded
+  completion turn that answered in its conversation through a plain comment counts as the delivered completion
+  reply, so the main is not re-woken every minute for the same task. Server-only.
 - Release cutover backup bound (2026-11-16): the operator API helper used by release cutovers
   allows 15 minutes for the production database backup (it now exceeds 120 s); other calls keep
   120 s. Ops script only.

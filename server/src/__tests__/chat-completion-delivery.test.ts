@@ -276,6 +276,21 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation", status: "claimed", runId: run.id, idempotencyKey: `chat-completion:${delivery.id}:0` });
     await f.service.deliver(delivery.id); expect(f.wakeup).not.toHaveBeenCalled();
   });
+  it("treats a succeeded turn's plain reply in the conversation as delivered instead of re-waking it", async () => {
+    const f = await seed(); await f.finish(); const run = await f.run();
+    const reply = await issueService(db).addComment(f.sourceId, "SHO-45 is done; the new option is live.", { agentId: f.agentId, runId: run.id });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    await f.due(); await f.service.sweepPending();
+    expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id, attempts: 0 }]);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+  });
+  it("still retries a succeeded turn that never answered in the conversation", async () => {
+    const f = await seed(); await f.finish(); const run = await f.run();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    await f.due(); await f.service.sweepPending();
+    expect(f.wakeup).toHaveBeenCalledTimes(2);
+    expect((await f.rows())[0]).toMatchObject({ attempts: 1 });
+  });
   it("serializes concurrent dispatch and retries a failed response without retrying delivered output", async () => {
     const f = await seed(); await f.finish(); const [delivery] = await f.rows();
     await Promise.all([f.service.deliver(delivery.id), f.service.deliver(delivery.id)]);

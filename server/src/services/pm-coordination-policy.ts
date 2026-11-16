@@ -272,9 +272,8 @@ export function pmDispatchExecutionPolicy(scope: PmCoordinationScope, requested:
   for (const stage of chosen.stages) {
     if (!stages.some(existing => JSON.stringify(existing) === JSON.stringify(stage))) stages.push(stage);
   }
-  if (!stages.some(stage => stage.type === "review" && stage.participants.length === 1 && stage.participants[0]?.agentId === scope.agentId)) {
-    stages.push({ type: "review", approvalsNeeded: 1, participants: [{ type: "agent", agentId: scope.agentId }] });
-  }
+  // Owner 2026-11-16 (「直接把 PM 這個邏輯拔掉」, then 「開始 1~3」): no automatic dispatcher review stage.
+  // A main reads the worker's result once on completion; it adds its own review stage only for risky work.
   const deliverables = new Map(base.requiredQualityReview?.deliverables.map(item => [item.key, item]) ?? []);
   for (const item of chosen.requiredQualityReview?.deliverables ?? []) {
     const existing = deliverables.get(item.key);
