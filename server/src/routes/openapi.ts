@@ -4752,15 +4752,19 @@ registry.registerPath({
   summary: "Continue an issue with its assignee agent",
   description:
     "Continues the original task assignee or current formal reviewer. The current project PM must send idempotencyKey, observedStatusVersion and observedRunId and cannot reopen completed/cancelled/backlog tasks. " +
-    "Board and assignee access retain their existing gates. Returns a durable receipt: 202 only for a real scheduled/running run; pending does not mean execution started. " +
-    "On an unknown outcome, GET the original receipt; do not submit another operation.",
+    "The project's lead main may continue its worker's task from any current run of that main: send commentId (a nonempty comment this main wrote on the task; no onBehalfOfUserId) and idempotencyKey. " +
+    "A done task, or one the worker or system cancelled, is reopened and its worker woken; an Owner-cancelled task, a paused/archived project, an Agent Chat issue or a newer human comment on the task refuses. " +
+    "The task keeps its pinned worker model; optional workerSelectionId switches to another option of the same worker in the current policy. observedStatusVersion/observedRunId are advisory for a main (observationStale marks a mismatch). " +
+    "Board and assignee access retain their existing gates. Returns a durable receipt with continuationCount: 202 only for a real scheduled/running run; pending does not mean execution started. " +
+    "The same idempotencyKey with the same body returns the original receipt; with a different body it is a 409 conflict. After an uncertain response, GET the original receipt or repeat the same request.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(continueIssueSchema),
   },
   responses: {
     200: r.ok(),
-    202: r.ok(z.object({ runId: z.string(), status: z.string(), receiptId: z.string(), outcome: z.enum(["scheduled", "running"]) })),
+    202: r.ok(z.object({ runId: z.string(), status: z.string(), receiptId: z.string(), outcome: z.enum(["scheduled", "running"]),
+      continuationCount: z.number().int().optional(), observationStale: z.boolean().optional() })),
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,

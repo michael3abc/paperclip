@@ -3809,21 +3809,35 @@ name the gate. GET /api/issues/:id/continuations/:receiptId reads the original r
 without dispatch. A settled run exposes runStatus and current task status separately;
 run succeeded never implies task done. Same-key calls do not replay the mutation.
 
-The current project main may also use this route for its existing worker tasks.
-It must act through the original Chat's current standard run credential and the
-latest accepted Owner input, with matching responsible user, conversation generation
-and original manual wake provenance. Supply a nonempty Owner-attributed handoff
-comment written by that run on the target task, `idempotencyKey`,
-`observedStatusVersion` and explicit `observedRunId` (including null). The server
-seals the request in the existing continuation receipt and rechecks its authority
-at queue admission and before the first worker dispatch after capacity waiting
-or restart. A newer Owner input, task instruction, binding, policy or hold
-can invalidate it. A normally succeeded main run retains only its already committed
-operation; a completed run cannot create a new operation. Bare requests and changed
-same-key requests fail visibly. This grants neither Board identity nor permission
-to replay unknown delivered input. Existing reconciliation, pause, dependency,
-budget, review and worker admission checks still apply. Inspect the original receipt
-after an uncertain response rather than submitting another operation.
+The lead main of the task's project may also use this route for its existing worker
+tasks (Owner 2026-11-16, option B). Any current run of that main qualifies: a Chat
+turn, a task turn, a worker-completion turn or its own initiative, with a current
+standard run credential (`assertAgentRunWriteAllowed`). There is no binding to the
+latest Owner message, run identity, wake receipt or conversation generation. Supply
+`commentId`, a nonempty comment this main wrote on the target task (any of its runs;
+no `onBehalfOfUserId`), and `idempotencyKey`. A newer human comment on the task
+supersedes the handoff (403 `MAIN_CONTINUE_HANDOFF_SUPERSEDED`). `observedStatusVersion`
+and `observedRunId` are optional and advisory: they are recorded in the activity log
+and `observationStale` marks a mismatch, but never cause a refusal.
+A done task reopens to todo and wakes the same worker in its native session. A
+task cancelled by its worker (giving it back), the main or the system is reopened the
+same way; a task the Owner cancelled (the latest cancelling `issue.updated` activity or
+board subtree cancel hold has a user actor) is refused with `MAIN_CONTINUE_OWNER_CANCELLED`.
+Only the project's lead main (same company, bound to that project) qualifies; a paused
+or archived project, a paused/held main and an Agent Chat issue are refused. The task
+keeps its pinned worker selection even when the worker policy changed since dispatch;
+an optional `workerSelectionId` switches it to another option of the same worker,
+validated like a new dispatch. The same key with the same body returns the original
+receipt; the same key with a different body is a 409 conflict. An earlier unresolved
+main receipt stays inspectable and does not block a new operation.
+The receipt is rechecked when the wake is queued and before the first worker dispatch
+after capacity waiting or restart. Only durable Owner controls apply there: an Owner
+Stop of the originating main run, a changed project lead, a paused/held main, a paused
+or archived project, a changed assignee, or a task closed again. A finished or
+system-interrupted main run, a later Chat message or a later human task comment (which
+has its own wake) does not withdraw it. Every response and the issue detail carry
+`continuationCount` (all receipts on the task; no cap). Existing reconciliation,
+pause, dependency, budget, review and worker admission checks still apply.
 An ordinary handoff comment and Continue may share the existing queued run. Before
 dispatch, validate Continue's own immutable wake receipt by key, company, agent and
 run; it need not be the wake that originally created the coalesced run. The same

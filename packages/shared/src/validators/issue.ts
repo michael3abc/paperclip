@@ -1186,6 +1186,8 @@ export const continueIssueSchema = z.object({
   idempotencyKey: z.string().uuid().optional(),
   observedStatusVersion: z.number().int().nonnegative().optional(),
   observedRunId: z.string().uuid().nullable().optional(),
+  /** Project main only: switch the task to another option of the same worker in the current policy. */
+  workerSelectionId: z.string().uuid().optional(),
 }).strict();
 
 export type ContinueIssue = z.infer<typeof continueIssueSchema>;

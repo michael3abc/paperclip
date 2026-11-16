@@ -8,10 +8,12 @@ source/episode, skipped-or-cancelled wake and absent execution/resource evidence
 must agree. Operator cancellation remains distinct; source history is retained.
 Explicit registration also adopts historical remote project-primary rows in place
 after owning-host Git evidence, without moving files or replaying their tasks.
-Project-main continuation uses the original accepted Owner Chat and a current
-run-authored handoff, with explicit task/run observations and a durable operation
-receipt. The route and queue retain unknown-delivery, cancellation, policy,
-supersession and human gates; no Board impersonation or empty-request bypass.
+Project-main continuation (relaxed 2026-11-16, option B) accepts any current run of
+the project's lead main with its own handoff comment and an idempotency key, and a
+durable operation receipt; observations are advisory and done or worker/system-
+cancelled tasks reopen. Owner cancellations, Owner pauses/holds, paused or archived
+projects and newer human task comments still refuse; no Board impersonation or
+empty-request bypass.
 
 2026-11-12 queued authority rejection: distinguish a proven pre-dispatch input
 rejection from uncertain provider delivery using the exact gate event, skipped

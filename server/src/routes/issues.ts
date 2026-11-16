@@ -34,8 +34,8 @@ import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssu
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { currentPmCoordinationScope } from "../services/pm-coordination-policy.js";
-import { assertPmContinuation, issueContinuationService } from "../services/issue-continuations.js";
-import { mainAgentDispatchScope } from "../services/main-agent-workers.js";
+import { assertMainContinuation, assertPmContinuation, issueContinuationService, resolveMainContinuationWorkerSelection } from "../services/issue-continuations.js";
+import { mainAgentProjectId } from "../services/main-agent-workers.js";
 import {
   childCreatedByRequest,
   loadCreationSourceAgent,
@@ -9700,6 +9700,7 @@ export function issueRoutes(
       currentExecutionWorkspace,
       workProducts,
       createdFrom,
+      continuationCount,
     ] = await Promise.all([
       timing.time("project_goal", () => resolveIssueProjectAndGoal(issue)),
       timing.time("ancestors", () => svc.getAncestors(issue.id)),
@@ -9723,6 +9724,8 @@ export function issueRoutes(
         : Promise.resolve(null)),
       timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
       timing.time("created_from", () => resolveVisibleIssueCreationSource(req, issue)),
+      // Untimed: the read-timing phases are a closed observability set.
+      issueContinuationService(db).countForIssue(issue.companyId, issue.id),
     ]);
     const [recoveryActionsByRelationIssue, revalidatedActiveRecoveryAction, mentionedProjects] = await Promise.all([
       timing.time("relation_recovery", () => relationRecoveryActionMap(recoveryActionsSvc, issue.companyId, relations)),
@@ -9773,6 +9776,7 @@ export function issueRoutes(
       workProducts,
       externalChannelBinding,
       createdFrom,
+      continuationCount,
     });
   });
 
@@ -19259,7 +19263,9 @@ export function issueRoutes(
         ? await db.select().from(agents).where(and(eq(agents.id, req.actor.agentId), eq(agents.companyId, issue.companyId))) : [];
       // The main-handoff path continues a worker's task. A main continuing its own
       // task is an ordinary assignee continuation (Owner 2026-11-15, HOM-327).
-      const main = mainAgent && issue.assigneeAgentId !== mainAgent.id ? mainAgentDispatchScope(mainAgent) : null;
+      // Any project main qualifies; lead/project/handoff checks run in begin
+      // (Owner 2026-11-16 option B). A worker policy is needed only for workerSelectionId.
+      const main = mainAgent && issue.assigneeAgentId !== mainAgent.id && mainAgentProjectId(mainAgent) ? mainAgent : null;
       if (req.actor.type === "agent") {
         const runId = requireAgentRunId(req, res);
         if (!runId) return;
@@ -19290,6 +19296,10 @@ export function issueRoutes(
         res.status(403).json({ error: "Board or agent authentication required" });
         return;
       }
+      if (body.workerSelectionId && !main) {
+        res.status(422).json({ error: "workerSelectionId is accepted only when a project main continues its worker's task" });
+        return;
+      }
       if (!issue.assigneeAgentId) {
         res.status(409).json({
           error: "Issue has no assignee agent to continue",
@@ -19314,10 +19324,40 @@ export function issueRoutes(
         }
       }
       const continuation = issueContinuationService(db);
+      // A new worker option is validated like a dispatch, outside the receipt lock; a
+      // replay of an existing key reads its original receipt instead.
+      let workerSelection: Record<string, unknown> | null = null;
+      if (main && body.workerSelectionId && !(await continuation.findByKey(issue, body.idempotencyKey))) {
+        await assertMainContinuation(db, { companyId: issue.companyId, agentId: main.id, runId: req.actor.runId! }, issue.id, body);
+        workerSelection = await resolveMainContinuationWorkerSelection(db, main, issue, body.workerSelectionId, req.actor);
+      }
       const operation = await continuation.begin(issue, req.actor.agentId ?? req.actor.userId ?? "local-board", body, req.actor.runId ?? null,
         main ? req.actor : undefined);
       if (operation.replay) { res.json(await continuation.inspect(operation.receipt.id)); return; }
       const receiptId = operation.receipt.id;
+      const continuationObservation = { statusVersion: operation.receipt.observedStatusVersion, runId: operation.receipt.observedRunId };
+      let selectedIssue: typeof issue | null = null;
+      if (workerSelection && !isDeepStrictEqual(workerSelection, operation.issue.assigneeAdapterOverrides)) {
+        const updated = await svc.update(issue.id, { assigneeAdapterOverrides: workerSelection, continuationObservation,
+          actorAgentId: main!.id });
+        if (!updated) { res.status(404).json({ error: "Issue not found" }); return; }
+        selectedIssue = updated;
+        const selectionActor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: selectionActor.actorType,
+          actorId: selectionActor.actorId,
+          agentId: selectionActor.agentId,
+          runId: selectionActor.runId,
+          agentApiKeyId: selectionActor.agentApiKeyId,
+          responsibleUserIdOverride: authenticatedActorResponsibleUserId(req),
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: issue.id,
+          details: { identifier: issue.identifier, assigneeAdapterOverrides: workerSelection, source: "continue",
+            continuationReceiptId: receiptId, _previous: { assigneeAdapterOverrides: operation.issue.assigneeAdapterOverrides ?? null } },
+        });
+      }
       const pause = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
       const dependencies = await svc.getDependencyReadiness(issue.id);
       if (pause || dependencies.unresolvedBlockerCount > 0) {
@@ -19333,7 +19373,7 @@ export function issueRoutes(
       }
       // Same gate as a comment with `resume: true`: low-trust actors, subtree
       // pause holds, unresolved blockers and non-resumable statuses are refused.
-      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true, authorizedPmId: pm?.agentId ?? main?.agentId }))) {
+      if (!(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true, authorizedPmId: pm?.agentId ?? main?.id }))) {
         await continuation.settle(receiptId, { status: issue.status as IssueContinueResult["status"], runId: null, outcome: "blocked", reason: "Current resume admission refused this operation" });
         return;
       }
@@ -19365,9 +19405,9 @@ export function issueRoutes(
 
       const reopened = isClosed || isBlocked;
       const reopenedFrom = reopened ? issue.status : null;
+      if (selectedIssue) currentIssue = selectedIssue;
       if (reopened) {
-        const updated = await svc.update(issue.id, { status: "todo", continuationObservation: {
-          statusVersion: operation.receipt.observedStatusVersion, runId: operation.receipt.observedRunId } });
+        const updated = await svc.update(issue.id, { status: "todo", continuationObservation });
         if (!updated) {
           res.status(404).json({ error: "Issue not found" });
           return;
@@ -19467,6 +19507,12 @@ export function issueRoutes(
           reopenedFrom,
           commentId: body.commentId ?? null,
           reason: body.reason ?? null,
+          continuationReceiptId: receiptId,
+          // Advisory main observations are recorded, never enforced.
+          observed: { statusVersion: body.observedStatusVersion ?? null, runId: body.observedRunId ?? null },
+          ...(operation.observationStale ? { observationStale: true } : {}),
+          ...(workerSelection ? { workerSelectionId: body.workerSelectionId } : {}),
+          continuationCount: await continuation.countForIssue(issue.companyId, issue.id),
           ...(wakeError ? { wakeError } : {}),
         },
       });
@@ -19474,7 +19520,8 @@ export function issueRoutes(
         res.status(503).json({ ...(await continuation.inspect(receiptId)), error: "Continuation outcome is unresolved. Inspect this original receipt; do not submit a new operation." });
         return;
       }
-      const result = await continuation.inspect(receiptId);
+      const inspected = await continuation.inspect(receiptId);
+      const result = operation.observationStale ? { ...inspected, observationStale: true } : inspected;
       if (result.outcome !== "pending") await continuation.settle(receiptId, result);
       res.status(result.outcome === "scheduled" || result.outcome === "running" ? 202 : 200).json(result);
     },
