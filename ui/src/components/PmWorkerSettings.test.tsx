@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PmWorkerPolicyView } from "@paperclipai/shared";
-import { PmWorkerSettings } from "./PmWorkerSettings";
+import { PmWorkerSettings, subagentModelHint } from "./PmWorkerSettings";
 
 const api = vi.hoisted(() => ({ workerPolicy: vi.fn(), saveWorkerPolicy: vi.fn() }));
 vi.mock("../api/agents", () => ({ agentsApi: api }));
@@ -17,8 +17,8 @@ const fixture = (): PmWorkerPolicyView => ({ documentPath: "WORKERS.md", policy:
       { id: "restricted-model", label: "Restricted", thinking: [], speeds: ["standard"] }] }],
 });
 let root: Root, container: HTMLDivElement, client: QueryClient;
-async function render() {
-  await act(async () => root.render(<QueryClientProvider client={client}><PmWorkerSettings agentId="pm" /></QueryClientProvider>));
+async function render(mainProvider?: "claude" | "codex") {
+  await act(async () => root.render(<QueryClientProvider client={client}><PmWorkerSettings agentId="pm" mainProvider={mainProvider} /></QueryClientProvider>));
   await vi.waitFor(() => expect(container.textContent).toContain("Add worker option"));
 }
 function button(text: string) { return [...container.querySelectorAll("button")].find(button => button.textContent === text)!; }
@@ -144,4 +144,25 @@ describe("PM worker settings", () => {
       selections: [{ model: "michael-server/antigravity/gemini-test", thinking: "high", permission: "full-access", speed: "standard" }] });
   });
 
+  it("tells a main agent what its native subagents use with the selected default", async () => {
+    const initial = fixture(); initial.policy = { version: 2, defaultSelectionId: choiceId, workers: [{ agentId: workerId, harness: "codex_local",
+      selections: [{ id: choiceId, model: "gpt-6.1-sol", thinking: "high", permission: "deny-all", speed: "fast" }] }] };
+    api.workerPolicy.mockResolvedValue(initial);
+    await render("codex");
+    expect(container.querySelector('[aria-label="Native subagent model"]')!.textContent).toContain("Native subagents use gpt-6.1-sol (high) for fresh spawns");
+    await act(async () => root.unmount()); root = createRoot(container);
+    await render("claude");
+    expect(container.querySelector('[aria-label="Native subagent model"]')!.textContent).toContain("main agent's own model: Codex gpt-6.1-sol cannot run as a Claude subagent");
+    await act(async () => root.unmount()); root = createRoot(container);
+    await render();
+    expect(container.querySelector('[aria-label="Native subagent model"]')).toBeNull();
+  });
+  it("derives the subagent hint for every harness", () => {
+    expect(subagentModelHint("codex", { harness: "agy_local", model: "gemini-4-hydrogen-high", thinking: "high" })).toContain("cannot run as a Codex subagent");
+    expect(subagentModelHint("claude", { harness: "claude_local", model: "claude-sonnet-5-5", thinking: null })).toBe(
+      "Native subagents use claude-sonnet-5-5, including Explore and Plan. It follows the main's subscription or Compass route and applies from the next turn.");
+    expect(subagentModelHint("codex", { harness: "ccpocket_bridge", model: "shopee-e/codex/gpt-6-astra", thinking: "high" })).toContain("Native subagents use gpt-6-astra (high)");
+    expect(subagentModelHint("codex", { harness: "ccpocket_bridge", model: "shopee-e/claude/sonnet", thinking: null })).toContain("Claude sonnet cannot run as a Codex subagent");
+    expect(subagentModelHint("codex", undefined)).toBeNull();
+  });
 });

@@ -16,6 +16,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 - Compass rate card `compass-official-2026-11-16` (Owner 2026-11-16 「跟 compass 計費」):
   official list prices for compass-6.1-terra, compass-6-luna, compass-fable5.2,
   compass-fable5 and compass-opus5; existing rates unchanged. Server-only.
+- Native subagent hint (Owner 2026-11-16 「C. 指定 subagent 用的模型，s.t. 會自動匯入我 worker 那邊設定的」):
+  a CC Pocket main agent's worker settings say what its native subagents use with the
+  selected default (the default's model when it runs on the main's harness, otherwise the
+  main's own model). The setting itself is applied by the CC Pocket adapter/Bridge
+  (`subagent_settings_v1`). UI-only overlay.
 
 - `/plan` command (Owner 2026-11-16): in main-agent Agent Chat, `/plan` alone
   switches the composer to Native plan; `/plan <text>` sends the text as a Native
