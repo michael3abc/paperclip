@@ -13,6 +13,9 @@ The local release line is `michael/main`; previous releases and consolidation me
   routing identity before invocation; Enter immediately delivers to the original
   native turn and waits for acknowledgement, including a stale browser run cache.
   Keep other harnesses' delivery behavior, original receipts and failure evidence.
+- Compass rate card `compass-official-2026-11-16` (Owner 2026-11-16 「跟 compass 計費」):
+  official list prices for compass-6.1-terra, compass-6-luna, compass-fable5.2,
+  compass-fable5 and compass-opus5; existing rates unchanged. Server-only.
 
 - `/plan` command (Owner 2026-11-16): in main-agent Agent Chat, `/plan` alone
   switches the composer to Native plan; `/plan <text>` sends the text as a Native
