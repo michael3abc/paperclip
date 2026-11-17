@@ -3835,12 +3835,21 @@ after capacity waiting or restart. Only durable Owner controls apply there: an O
 Stop of the originating main run, a changed project lead, a paused/held main, a paused
 or archived project, a changed assignee, or a task closed again. A finished or
 system-interrupted main run, a later Chat message or a later human task comment (which
-has its own wake) does not withdraw it. Every response and the issue detail carry
-`continuationCount` (all receipts on the task; no cap). Existing reconciliation,
+has its own wake) does not withdraw it. A transient retry of that dispatch, at any
+depth, copies the receipt id and gets the same recheck before its own first dispatch
+(liveness-first; a retry is never refused merely for not being the receipt's run). It
+is admitted only when its durable `retry_of_run_id` chain, inside the same company,
+agent and task, reaches the run the receipt's wake admitted and that run carries the
+same receipt; a run outside that chain cannot borrow the receipt. Release recovery
+(`issue_continuation_needed`) starts from a fresh context without the receipt, as
+ordinary assignee work; the stranded sweep resends a failed predecessor as its
+transient retry, which inherits the receipt through the chain. Every response and the
+issue detail carry `continuationCount` (all receipts on the task; no cap). Existing reconciliation,
 pause, dependency, budget, review and worker admission checks still apply.
 An ordinary handoff comment and Continue may share the existing queued run. Before
 dispatch, validate Continue's own immutable wake receipt by key, company, agent and
-run; it need not be the wake that originally created the coalesced run. The same
+the run it admitted (or a retry chained to that run); it need not be the wake that
+originally created the coalesced run. The same
 handoff is delivered to the provider once.
 Changing task status or assignment cannot settle unknown original input, provider
 effects or native-session ownership. Generic stale-recovery revalidation preserves

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,7 +12,7 @@ import { activityLog, agents, agentTaskSessions, agentWakeupRequests, authUsers,
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { claimAdapterSessionAuthority } from "../services/adapter-session-authority.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
-import { assertIssueContinuationWake, issueContinuationService } from "../services/issue-continuations.js";
+import { assertIssueContinuationWake, findContinuationWakeReceipt, issueContinuationService } from "../services/issue-continuations.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -545,4 +545,219 @@ describe("main continuation from any current run of the project main", () => {
     const other = await fixture();
     await expect(issueContinuationService(db).begin(other.task, f.mainId, { ...f.body, commentId: other.handoff.id }, f.run.id, f.actor)).rejects.toMatchObject({ status: 403 });
   });
+
+  // Liveness-first (Owner 2026-11-17): a transient failure of a continued worker run is
+  // retried automatically. The retry copies the run context (continuationReceiptId) and is
+  // admitted through its durable retry chain back to the run the receipt's wake admitted.
+  type HttpFixture = Awaited<ReturnType<typeof httpFixture>>;
+  /** The worker edge fails with each given transient code in turn, then completes the task. */
+  function failTransientlyThenComplete(codes: string[]) {
+    const remaining = [...codes];
+    execute.mockImplementation(async input => {
+      const code = remaining.shift();
+      if (code) return { exitCode: 1, signal: null, timedOut: false, errorCode: code, errorMessage: "Transient " + code };
+      const [currentRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+      await issueService(db).update(currentRun.contextSnapshot!.issueId as string, { status: "done" });
+      return { exitCode: 0, signal: null, timedOut: false, summary: "Existing task inspected and completed." };
+    });
+  }
+  const runById = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+  const describeRuns = async (f: HttpFixture) => JSON.stringify((await f.workerRuns()).map(run => ({ id: run.id, status: run.status,
+    wake: run.contextSnapshot?.wakeReason, receipt: run.contextSnapshot?.continuationReceiptId ?? null, code: run.errorCode,
+    error: run.error, retryOf: run.retryOfRunId, reason: run.scheduledRetryReason })));
+  /** Worker executions of this fixture only (the real queue is shared by every company in the database). */
+  const executedRuns = async (f: HttpFixture) => {
+    const own = new Set((await f.workerRuns()).map(run => run.id));
+    return execute.mock.calls.map(call => call[0].runId as string).filter(id => own.has(id));
+  };
+  /** Withdraw this fixture's pending successors so a later case's promotion cannot start them. */
+  const retirePending = (f: HttpFixture) => db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "test_fixture_retired" })
+    .where(and(eq(heartbeatRuns.companyId, f.companyId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"])));
+  /** Promote the worker's scheduled retry once its backoff (30s x 2^n) elapsed, and let the real queue claim it. */
+  async function promoteScheduledRetry(f: HttpFixture) {
+    const scheduled = (await f.workerRuns()).filter(run => run.status === "scheduled_retry");
+    expect(scheduled, await describeRuns(f)).toHaveLength(1);
+    await heartbeatService(db).promoteDueScheduledRetries(new Date(scheduled[0].scheduledRetryAt!.getTime() + 1));
+    await heartbeatService(db).resumeQueuedRuns(); await heartbeatService(db).drainActiveRunExecutions();
+    return runById(scheduled[0].id);
+  }
+  async function failedFirstContinuationRun(f: HttpFixture) {
+    const response = await f.post();
+    expect(response.status, code(response)).toBe(202);
+    await heartbeatService(db).drainActiveRunExecutions();
+    const runs = await f.workerRuns();
+    const first = runs.find(run => run.id === response.body.runId)!;
+    expect(first, await describeRuns(f)).toMatchObject({ status: "failed" });
+    expect(runs.filter(run => run.id !== first.id && run.status !== "scheduled_retry"), await describeRuns(f)).toHaveLength(0);
+    return { receiptId: response.body.receiptId as string, first };
+  }
+
+  it("HTTP a transient retry of a failed continuation run is admitted and runs", async () => {
+    const f = await httpFixture(); execute.mockClear();
+    failTransientlyThenComplete(["host_unavailable"]);
+    const { receiptId, first } = await failedFirstContinuationRun(f);
+    const retry = await promoteScheduledRetry(f);
+    expect(retry, await describeRuns(f)).toMatchObject({ status: "succeeded", retryOfRunId: first.id,
+      contextSnapshot: expect.objectContaining({ continuationReceiptId: receiptId, wakeReason: "transient_failure_retry" }) });
+    expect(await executedRuns(f)).toEqual([first.id, retry.id]);
+    expect((await f.workerRuns()).filter(run => run.errorCode === "queued_run_claim_rejected")).toHaveLength(0);
+    // The receipt keeps pointing at the run it admitted.
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, "issue-continue:" + receiptId));
+    expect(wake.runId).toBe(first.id);
+    expect((await f.currentTask()).status).toBe("done");
+    await retirePending(f);
+  }, 30_000);
+
+  it("HTTP a chained retry two levels deep is admitted and runs", async () => {
+    const f = await httpFixture(); execute.mockClear();
+    failTransientlyThenComplete(["host_unavailable", "provider_error"]);
+    const { receiptId, first } = await failedFirstContinuationRun(f);
+    const second = await promoteScheduledRetry(f);
+    expect(second, await describeRuns(f)).toMatchObject({ status: "failed", errorCode: "provider_error", retryOfRunId: first.id });
+    const third = await promoteScheduledRetry(f);
+    expect(third, await describeRuns(f)).toMatchObject({ status: "succeeded", retryOfRunId: second.id,
+      contextSnapshot: expect.objectContaining({ continuationReceiptId: receiptId }) });
+    expect(await executedRuns(f)).toEqual([first.id, second.id, third.id]);
+    expect((await f.currentTask()).status).toBe("done");
+    await retirePending(f);
+  }, 30_000);
+
+  // The retry is rechecked against the receipt's own run, so every durable Owner control
+  // that withdraws a first dispatch also withdraws its retry.
+  it.each(["task closed again", "Owner stop of the main run", "project lead changed", "main paused", "assignee changed"])(
+    "HTTP a transient retry of a continuation is still withdrawn by %s", async change => {
+      const f = await httpFixture(); execute.mockClear();
+      failTransientlyThenComplete(["host_unavailable"]);
+      const { first } = await failedFirstContinuationRun(f);
+      switch (change) {
+        case "task closed again": await issueService(db).update(f.task.id, { status: "done" }); break;
+        case "Owner stop of the main run": await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "cancelled",
+          resultJson: { cancelledByActorType: "user", cancelledByUserId: f.userId } }).where(eq(heartbeatRuns.id, f.run.id)); break;
+        case "project lead changed": await db.update(projects).set({ leadAgentId: f.workerId }).where(eq(projects.id, f.projectId)); break;
+        case "main paused": await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.mainId)); break;
+        case "assignee changed": await db.update(issues).set({ assigneeAgentId: f.mainId }).where(eq(issues.id, f.task.id)); break;
+      }
+      if ((await f.workerRuns()).some(run => run.status === "scheduled_retry")) await promoteScheduledRetry(f);
+      expect(await executedRuns(f), await describeRuns(f)).toEqual([first.id]);
+      const retry = (await f.workerRuns()).find(run => run.retryOfRunId === first.id);
+      if (retry) expect(retry, await describeRuns(f)).toMatchObject({ status: "cancelled", startedAt: null });
+      if (["Owner stop of the main run", "project lead changed", "main paused"].includes(change))
+        expect(retry, await describeRuns(f)).toMatchObject({ errorCode: "queued_run_claim_rejected" });
+      // Generic liveness recovery of a still-open task never inherits the withdrawn receipt.
+      const others = (await f.workerRuns()).filter(run => run.id !== first.id && run.id !== retry?.id);
+      expect(others.every(run => !run.contextSnapshot?.continuationReceiptId), await describeRuns(f)).toBe(true);
+      await retirePending(f);
+    }, 30_000);
+
+  /** Production-shaped rows: a Continue receipt whose wake admitted `receiptRun`, which then failed transiently. */
+  async function failedContinuationRows(f: HttpFixture) {
+    const operation = await f.begin();
+    const receiptId = operation.receipt.id;
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.task.id));
+    const context = { issueId: f.task.id, taskId: f.task.id, source: "issue.continue", wakeReason: "pm_continue",
+      continuationReceiptId: receiptId, commentId: f.handoff.id, wakeCommentId: f.handoff.id };
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.workerId, source: "automation",
+      triggerDetail: "system", reason: "pm_continue", status: "failed", idempotencyKey: "issue-continue:" + receiptId,
+      requestedByActorType: "agent", requestedByActorId: f.mainId, payload: { issueId: f.task.id } }).returning();
+    const [receiptRun] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.workerId, issueId: f.task.id,
+      status: "failed", errorCode: "host_unavailable", wakeupRequestId: wake.id, contextSnapshot: context, responsibleUserId: f.userId,
+      startedAt: new Date(Date.now() - 120_000), finishedAt: new Date(Date.now() - 90_000) }).returning();
+    await db.update(agentWakeupRequests).set({ runId: receiptRun.id }).where(eq(agentWakeupRequests.id, wake.id));
+    return { receiptId, context, receiptRun };
+  }
+  /** A run of the worker that carries `context` (with its copied receipt id), admitted by its own system wake. */
+  async function copiedRun(f: HttpFixture, context: Record<string, unknown>, retryOfRunId: string | null,
+    { issueId = f.task.id, agentId = f.workerId } = {}) {
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "transient_failure_retry", status: "queued", requestedByActorType: "system",
+      payload: { issueId, ...(retryOfRunId ? { retryOfRunId } : {}) } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, issueId, status: "queued",
+      invocationSource: "automation", triggerDetail: "system", wakeupRequestId: wake.id, retryOfRunId, responsibleUserId: f.userId,
+      scheduledRetryReason: retryOfRunId ? "transient_failure" : null, scheduledRetryAttempt: retryOfRunId ? 1 : 0,
+      contextSnapshot: { ...context, issueId, taskId: issueId, wakeReason: "transient_failure_retry", retryReason: "transient_failure",
+        ...(retryOfRunId ? { retryOfRunId } : {}) } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wake.id));
+    return run;
+  }
+  const claimQueued = async () => { await heartbeatService(db).resumeQueuedRuns(); await heartbeatService(db).drainActiveRunExecutions(); };
+
+  it("admits a queued copy whose retry chain reaches the receipt's own run", async () => {
+    const f = await httpFixture(); execute.mockClear(); failTransientlyThenComplete([]);
+    const { context, receiptRun } = await failedContinuationRows(f);
+    const retry = await copiedRun(f, context, receiptRun.id);
+    await claimQueued();
+    expect(await runById(retry.id), await describeRuns(f)).toMatchObject({ status: "succeeded" });
+    expect(await executedRuns(f)).toEqual([retry.id]);
+    await retirePending(f);
+  }, 30_000);
+
+  it.each(["no retry chain", "a chain through an unrelated run of the same task", "a receipt run admitted for another receipt"])(
+    "refuses a queued run outside the receipt's chain with a copied receipt id: %s", async variant => {
+      const f = await httpFixture(); execute.mockClear(); failTransientlyThenComplete([]);
+      const { context, receiptRun } = await failedContinuationRows(f);
+      let retryOf: string | null = null;
+      if (variant === "a chain through an unrelated run of the same task") {
+        const [unrelated] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.workerId, issueId: f.task.id,
+          status: "failed", errorCode: "host_unavailable", contextSnapshot: context, finishedAt: new Date() }).returning();
+        retryOf = unrelated.id;
+      }
+      if (variant === "a receipt run admitted for another receipt") {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...context, continuationReceiptId: randomUUID() } }).where(eq(heartbeatRuns.id, receiptRun.id));
+        retryOf = receiptRun.id;
+      }
+      const forged = await copiedRun(f, context, retryOf);
+      await claimQueued();
+      expect(await runById(forged.id), await describeRuns(f)).toMatchObject({ status: "cancelled", errorCode: "queued_run_claim_rejected",
+        startedAt: null, error: expect.stringContaining("Continuation run has no original wake receipt") });
+      expect(await executedRuns(f)).not.toContain(forged.id);
+      await retirePending(f);
+    }, 30_000);
+
+  it.each(["another task", "another agent", "another company"])("the receipt's retry chain never extends into %s", async variant => {
+    const f = await httpFixture();
+    const { context, receiptId, receiptRun } = await failedContinuationRows(f);
+    let issueId = f.task.id, agentId = f.workerId, companyId = f.companyId;
+    if (variant === "another task") issueId = (await db.insert(issues).values({ companyId, projectId: f.projectId, title: "Other task",
+      status: "in_progress", assigneeAgentId: f.workerId }).returning())[0]!.id;
+    if (variant === "another agent") agentId = f.mainId;
+    if (variant === "another company") companyId = (await httpFixture()).companyId;
+    const [copy] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: variant === "another company" ? null : issueId,
+      status: "queued", retryOfRunId: receiptRun.id, contextSnapshot: { ...context, issueId } }).returning();
+    expect(await findContinuationWakeReceipt(db, copy, issueId, receiptId)).toBeNull();
+    // The same copy inside the receipt's own company, agent and task is admitted through the chain.
+    const own = await copiedRun(f, context, receiptRun.id);
+    expect(await findContinuationWakeReceipt(db, own, f.task.id, receiptId)).toMatchObject({ admittedRunId: receiptRun.id });
+    expect(await findContinuationWakeReceipt(db, own, f.task.id, randomUUID())).toBeNull();
+    await retirePending(f);
+  });
+
+  it("the issue_continuation_needed sweep resends a failed continuation run whose retry is missing, through the chain", async () => {
+    const f = await httpFixture(); execute.mockClear(); failTransientlyThenComplete([]);
+    const { receiptId, receiptRun } = await failedContinuationRows(f);
+    // Scoped to this task: the sweep otherwise visits every company in the shared test database.
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.task.id });
+    const [resend] = (await f.workerRuns()).filter(run => run.retryOfRunId === receiptRun.id);
+    expect(resend, await describeRuns(f)).toMatchObject({ contextSnapshot: expect.objectContaining({ continuationReceiptId: receiptId }) });
+    const settled = resend.status === "scheduled_retry" ? await promoteScheduledRetry(f) : (await claimQueued(), await runById(resend.id));
+    expect(settled, await describeRuns(f)).toMatchObject({ id: resend.id, status: "succeeded" });
+    expect(await executedRuns(f)).toEqual([resend.id]);
+    await retirePending(f);
+  }, 30_000);
+
+  it("HTTP the issue_continuation_needed recovery after a refused copy starts without the receipt and dispatches", async () => {
+    const f = await httpFixture(); execute.mockClear(); failTransientlyThenComplete([]);
+    const { context } = await failedContinuationRows(f);
+    const forged = await copiedRun(f, context, null);
+    await claimQueued();
+    expect(await runById(forged.id), await describeRuns(f)).toMatchObject({ status: "cancelled", errorCode: "queued_run_claim_rejected" });
+    // Release recovery seeds a fresh context: ordinary assignee work, not continuation authority.
+    const [recovery] = (await f.workerRuns()).filter(run => run.retryOfRunId === forged.id);
+    expect(recovery, await describeRuns(f)).toMatchObject({ scheduledRetryReason: "issue_continuation_needed",
+      contextSnapshot: expect.objectContaining({ wakeReason: "issue_continuation_needed", retryOfRunId: forged.id }) });
+    expect(recovery.contextSnapshot).not.toHaveProperty("continuationReceiptId");
+    const settled = await promoteScheduledRetry(f);
+    expect(settled, await describeRuns(f)).toMatchObject({ id: recovery.id, status: "succeeded" });
+    expect(await executedRuns(f), await describeRuns(f)).toEqual([recovery.id]);
+    await retirePending(f);
+  }, 30_000);
 });

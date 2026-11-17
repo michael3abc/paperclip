@@ -15,6 +15,14 @@ The local release line is `michael/main`; previous releases and consolidation me
   paused/archived projects, Owner main pauses/holds, Agent Chat issues and newer human task comments still
   refuse. Pinned worker models are kept (optional same-worker workerSelectionId); observations are advisory;
   continuationCount on receipts and the issue detail. Server/shared source, no migration; released with a T4 change.
+- Continuation retry admission (`michael/continuation-retry-claim`, Owner 2026-11-17 「要修這個 bug」):
+  a transient retry of a continued worker run (any depth) is admitted at claim through its durable
+  retry_of_run_id chain (same company, agent and task) back to the run the `issue-continue:` wake
+  admitted for the same continuationReceiptId; the Owner-control recheck still runs against that run
+  (Owner stop, lead change, main pause/hold, project pause, assignee change, task closed again). Runs
+  outside the chain cannot borrow a copied receipt. Release recovery (`issue_continuation_needed`) keeps
+  its fresh context without the receipt. Fixes SHO-74/SHO-66 retries cancelled `queued_run_claim_rejected`.
+  Server-only, no migration.
 - Dashboard project usage (`michael/project-cost-usage`): same-period project
   token breakdown and recorded spend below the model charts, retaining
   Unattributed and separating subscription estimates/fees. UI-only overlay.
