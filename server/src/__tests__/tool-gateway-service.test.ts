@@ -362,6 +362,38 @@ describeEmbeddedPostgres("tool gateway service", () => {
       return { provider, release, started };
     }
 
+    it("surfaces an agent's Test-path approval as a human-only chat card bound to the request", async () => {
+      await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user",
+        principalId: "board", status: "active", membershipRole: "owner" });
+      const remote = await createRemoteMcpToolFixture(db, fixture.company.id);
+      await db.update(toolCatalogEntries).set({ isReadOnly: false, riskLevel: "write" })
+        .where(eq(toolCatalogEntries.id, remote.catalogEntry.id));
+      await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "Review connected writes",
+        policyType: "require_approval", priority: 10, selectors: { connectionId: remote.connection.id },
+        createdByUserId: "board" });
+      const provider = vi.fn();
+      gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+      const managementContext = {
+        actor: { type: "agent", agentId: fixture.agent.id, runId: fixture.run.id, keyId: null },
+        responsibleUserId: "board", resource: { type: "connection", id: remote.connection.id },
+        workContext: { runId: fixture.run.id, issueId: fixture.issue.id, projectId: null },
+        reauthorize: async () => undefined, audit: {},
+      } as unknown as NonNullable<Parameters<typeof gateway.executeTestCall>[0]["managementContext"]>;
+      const result = await gateway.executeTestCall({ companyId: fixture.company.id, connectionId: remote.connection.id,
+        agentId: fixture.agent.id, userId: "board", toolName: "needs_input", parameters: { value: "reviewed" },
+        managementContext });
+      expect(result.decision).toBe("ask_first");
+      const [pending] = await db.select().from(toolActionRequests);
+      expect(pending.status).toBe("pending");
+      expect(pending.interactionId).not.toBeNull();
+      expect((result as { interactionId?: string | null }).interactionId).toBe(pending.interactionId);
+      const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+      expect(card).toMatchObject({ issueId: fixture.issue.id, kind: "request_confirmation", status: "pending",
+        effectiveResolverPolicy: "human_only" });
+      expect((card.payload as { toolAction: { actionRequestId: string } }).toolAction.actionRequestId).toBe(pending.id);
+      expect(provider).not.toHaveBeenCalled();
+    });
+
     describe("tool review projection worker", () => {
       async function startProjection() {
         coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,

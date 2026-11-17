@@ -9762,6 +9762,32 @@ export function createToolGatewayService(
             },
           );
         }
+        if (session.issueId) {
+          // An agent-delegated call made from a task or chat must surface the same
+          // human-only approval card as a gateway call; otherwise the request has
+          // no interaction, never reaches the chat, and silently expires.
+          try {
+            await requestApprovalForRecordedToolCall({
+              invocation: recorded.invocation,
+              actionRequest: recorded.actionRequest,
+              session,
+              tool,
+              parameters: requestedParameters,
+              argumentsSummary: argumentValidation.summary,
+              policyDecision: accessDecision,
+            });
+          } catch (error) {
+            if (error instanceof ToolGatewayHttpError && error.reasonCode === "approval_required") {
+              return {
+                decision: "ask_first" as const,
+                invocationId,
+                actionRequestId: recorded.actionRequest.id,
+                interactionId: (error.details.interactionId as string | null | undefined) ?? null,
+              };
+            }
+            throw error;
+          }
+        }
         const pendingActionRequest = recorded.actionRequest;
         const canonicalArguments = canonicalToolArguments(requestedParameters);
         const canonicalArgumentsHash = toolRequestIdentityHash(requestedParameters, options.toolActionSigningSecret);
