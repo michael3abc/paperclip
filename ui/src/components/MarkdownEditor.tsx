@@ -729,6 +729,16 @@ function applyMention(markdown: string, state: MentionState, option: Autocomplet
 
 /* ---- Component ---- */
 
+/**
+ * Phones and tablets type on an on-screen keyboard whose Return key is the only
+ * way to start a new line, so chat Enter-to-send applies to hardware keyboards
+ * only; touch users send with the send button (Cmd/Ctrl+Enter still sends).
+ */
+export function touchKeyboardPrimary(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+
 export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(function MarkdownEditor({
   value,
   onChange,
@@ -748,6 +758,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
+  const enterSubmits = useMemo(() => submitOnEnter && !touchKeyboardPrimary(), [submitOnEnter]);
   const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
   const slashCommands = useMemo(
     () => [...actionCommands, ...sharedSlashCommands],
@@ -1373,9 +1384,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
             if (readOnly || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-            if (onSubmit && event.key === "Enter" && (submitOnEnter ? !event.shiftKey && !event.altKey : event.metaKey || event.ctrlKey)) {
+            if (onSubmit && event.key === "Enter" && (enterSubmits ? !event.shiftKey && !event.altKey : event.metaKey || event.ctrlKey)) {
               event.preventDefault();
-              if (!submitOnEnter || !event.repeat) onSubmit();
+              if (!enterSubmits || !event.repeat) onSubmit();
             }
           }}
           className={cn(
@@ -1409,7 +1420,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
-        if (submitOnEnter && e.key === "Enter" && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) return;
+        if (enterSubmits && e.key === "Enter" && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) return;
         if (
           (e.key === "Backspace" || e.key === "Delete")
           && e.target instanceof HTMLElement
@@ -1419,15 +1430,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           initialChildOnChangeRef.current = false;
         }
         // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey) && (!submitOnEnter || !e.shiftKey && !e.altKey)) {
+        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey) && (!enterSubmits || !e.shiftKey && !e.altKey)) {
           e.preventDefault();
           e.stopPropagation();
-          if (!submitOnEnter || !e.repeat) onSubmit();
+          if (!enterSubmits || !e.repeat) onSubmit();
           return;
         }
 
         // Mention keyboard handling
-        if (mentionActive && !(submitOnEnter && e.key === "Enter" && e.shiftKey)) {
+        if (mentionActive && !(enterSubmits && e.key === "Enter" && e.shiftKey)) {
           if (e.key === " " && mentionStateRef.current?.trigger === "skill") {
             mentionStateRef.current = null;
             skillEnterArmedRef.current = false;
@@ -1473,7 +1484,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }
         }
-        if (submitOnEnter && onSubmit && e.key === "Enter" && !e.shiftKey && !e.altKey) {
+        if (enterSubmits && onSubmit && e.key === "Enter" && !e.shiftKey && !e.altKey) {
           e.preventDefault();
           e.stopPropagation();
           if (!e.repeat) onSubmit();
