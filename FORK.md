@@ -23,6 +23,10 @@ The local release line is `michael/main`; previous releases and consolidation me
   outside the chain cannot borrow a copied receipt. Release recovery (`issue_continuation_needed`) keeps
   its fresh context without the receipt. Fixes SHO-74/SHO-66 retries cancelled `queued_run_claim_rejected`.
   Server-only, no migration.
+- Touch keyboard Return (`michael/touch-enter-newline`, Owner 2026-11-17 「我現在ios pwa按那個 回車會直接送出而不是換行
+  幫我改一下」): on touch-primary devices (`(hover: none) and (pointer: coarse)`, e.g. the iOS PWA) chat Enter-to-send
+  is off, so Return inserts a new line; the send button and Cmd/Ctrl+Enter still send. Hardware keyboards are
+  unchanged. UI only.
 - Test-path call budget (`michael/test-call-timeout`, Owner 2026-11-17 「啊這個又怎麼了」 on the 104 resume
   dry run that timed out): connection Test-path calls, which agents use for connected apps and which run
   approved Ask-first calls with no caller left, take the 60 s gateway cap instead of the 10 s interactive

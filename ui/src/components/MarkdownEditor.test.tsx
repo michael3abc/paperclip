@@ -377,6 +377,30 @@ describe("MarkdownEditor", () => {
     await act(async () => root.unmount());
   });
 
+  it.each([false, true])("touch keyboards keep Return for new lines; only Cmd/Ctrl+Enter sends (plain text: %s)", async (fallback) => {
+    // iOS PWA: the on-screen Return key is the only way to start a new line.
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(hover: none) and (pointer: coarse)", media: query,
+      addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false }));
+    mdxEditorMockState.throwOnRender = fallback;
+    const root = createRoot(container);
+    const submit = vi.fn();
+    await act(async () => {
+      root.render(<MarkdownEditor value="hello" onChange={() => {}} onSubmit={submit} submitOnEnter />);
+    });
+    const editor = container.querySelector(fallback ? "textarea" : '[contenteditable="true"]')!;
+    const plain = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { editor.dispatchEvent(plain); });
+    expect(submit).not.toHaveBeenCalled();
+    expect(plain.defaultPrevented).toBe(false);
+    for (const options of [{ ctrlKey: true }, { metaKey: true }]) {
+      await act(async () => {
+        editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...options }));
+      });
+    }
+    expect(submit).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
   it("applies async external value updates once the editor ref becomes ready", async () => {
     const root = createRoot(container);
 
