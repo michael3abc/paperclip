@@ -203,6 +203,7 @@ The first-parent inventory below includes retained consolidation history; it is 
   f8c6f832dd, 63d74fb700 (terminal releases every gate, abandon unknown priors), 9a7dd08744, 86932dd82f, c7a4743d3b,
   760f585562 (workspace = directory), d67e998d07 (workspace repair backoff, Retry placement); this list is updated by the
   commit that adds it.
+- `a8764b3e43` fix(tool-gateway): create the human-only approval card for agent Test-path Ask first calls (branch `michael/tool-test-review-card`, merged in `20ee2706a0`; released as `a8764b3e4-r2` on 2026-11-17, Owner-waived candidate smoke, related tests 8/8). A delegated connection Test call made from a task or chat only recorded an action request, so no card reached the chat and the request expired after an hour; it now reuses the gateway's approval builder when the call has an issue.
 
 ## Release
 
