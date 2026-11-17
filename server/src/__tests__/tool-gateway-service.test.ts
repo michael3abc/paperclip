@@ -394,6 +394,54 @@ describeEmbeddedPostgres("tool gateway service", () => {
       expect(provider).not.toHaveBeenCalled();
     });
 
+    describe("high-risk Test-path review with a formal board approval", () => {
+      async function destructiveCard(provider: NonNullable<ToolGatewayServiceOptions["remoteHttpRequest"]>) {
+        await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user",
+          principalId: "board", status: "active", membershipRole: "owner" });
+        const remote = await createRemoteMcpToolFixture(db, fixture.company.id);
+        await db.update(toolCatalogEntries).set({ isReadOnly: false, riskLevel: "destructive" })
+          .where(eq(toolCatalogEntries.id, remote.catalogEntry.id));
+        await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "Review connected writes",
+          policyType: "require_approval", priority: 10, selectors: { connectionId: remote.connection.id },
+          createdByUserId: "board" });
+        gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+        const managementContext = {
+          actor: { type: "agent", agentId: fixture.agent.id, runId: fixture.run.id, keyId: null },
+          responsibleUserId: "board", resource: { type: "connection", id: remote.connection.id },
+          workContext: { runId: fixture.run.id, issueId: fixture.issue.id, projectId: null },
+          reauthorize: async () => undefined, audit: {},
+        } as unknown as NonNullable<Parameters<typeof gateway.executeTestCall>[0]["managementContext"]>;
+        await gateway.executeTestCall({ companyId: fixture.company.id, connectionId: remote.connection.id,
+          agentId: fixture.agent.id, userId: "board", toolName: "needs_input", parameters: { value: "reviewed" },
+          managementContext });
+        const [pending] = await db.select().from(toolActionRequests);
+        expect(pending.approvalId).not.toBeNull();
+        expect((await db.select().from(approvals).where(eq(approvals.id, pending.approvalId!)))[0].status).toBe("pending");
+        return pending;
+      }
+
+      it("settles the linked formal approval when the human accepts the request's own card", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const pending = await destructiveCard(remoteCall.provider);
+        await gateway.approveActionRequest({ companyId: fixture.company.id, issueId: fixture.issue.id,
+          interactionId: pending.interactionId!, actionRequestId: pending.id, actor: { userId: "board" } });
+        const [formal] = await db.select().from(approvals).where(eq(approvals.id, pending.approvalId!));
+        expect(formal).toMatchObject({ status: "approved", decidedByUserId: "board" });
+        expect(remoteCall.provider).toHaveBeenCalledTimes(1);
+        expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status)
+          .toBe("executed");
+      });
+
+      it("keeps requiring the formal approval when the decision does not come through the request's card", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const pending = await destructiveCard(remoteCall.provider);
+        await expect(gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id,
+          actor: { userId: "board" } })).rejects.toMatchObject({ reasonCode: "formal_approval_required" });
+        expect((await db.select().from(approvals).where(eq(approvals.id, pending.approvalId!)))[0].status).toBe("pending");
+        expect(remoteCall.provider).not.toHaveBeenCalled();
+      });
+    });
+
     describe("tool review projection worker", () => {
       async function startProjection() {
         coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,

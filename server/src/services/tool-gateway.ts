@@ -169,6 +169,7 @@ import {
 } from "./tool-access-policy.js";
 import { toolDiscoveryScheduler, ToolDiscoveryBusyError } from "./tool-discovery-scheduler.js";
 import { assertDelegatedToolReview, commitToolActionReview, type ToolReviewActor } from "./tool-action-review.js";
+import { approvalResolutionRecords } from "../lib/approval-records.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
   createToolRuntimeSupervisor,
@@ -2510,6 +2511,34 @@ export function createToolGatewayService(
         instructions: await approvalRequiredInstructions(input.issueId),
       },
     );
+  }
+
+  /**
+   * A high-risk action carries a formal board approval next to its human-only chat
+   * card. The Owner accepting that card is the same human decision, so settle the
+   * approval it was created for in the same step instead of failing with a 409 that
+   * the card cannot explain. Only a human acting through the request's own card
+   * qualifies, and only for the approval this gateway created for this request.
+   */
+  async function settleFormalApprovalWithReviewCard(
+    actionRequest: typeof toolActionRequests.$inferSelect,
+    input: { companyId: string; interactionId?: string; actor: ToolReviewActor },
+  ) {
+    const userId = input.actor.userId;
+    if (!actionRequest.approvalId || !userId || input.actor.agentId) return;
+    if (!actionRequest.interactionId || input.interactionId !== actionRequest.interactionId) return;
+    if (!["pending", "approved"].includes(actionRequest.status)
+      || (actionRequest.expiresAt && actionRequest.expiresAt <= new Date())) return;
+    const [formal] = await db
+      .select({ id: approvals.id, status: approvals.status, type: approvals.type, payload: approvals.payload })
+      .from(approvals)
+      .where(and(eq(approvals.id, actionRequest.approvalId), eq(approvals.companyId, input.companyId)))
+      .limit(1);
+    const payload = (formal?.payload ?? {}) as Record<string, unknown>;
+    if (!formal || formal.status !== "pending" || formal.type !== "request_board_approval"
+      || payload.source !== "tool_gateway" || payload.actionRequestId !== actionRequest.id) return;
+    await approvalResolutionRecords(db).resolveApproval(formal.id, "approved", userId,
+      "Approved with the chat tool review card.");
   }
 
   async function requestApprovalForRecordedToolCall(input: {
@@ -10191,6 +10220,7 @@ export function createToolGatewayService(
           "action_request_invalidated",
         );
       }
+      await settleFormalApprovalWithReviewCard(actionRequest, input);
       if (actionRequest.approvalId) {
         const [formalApproval] = await db
           .select({ status: approvals.status })
