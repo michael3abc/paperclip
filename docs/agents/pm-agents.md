@@ -144,7 +144,8 @@ Done tasks and tasks the worker or system cancelled reopen; Owner-cancelled task
 paused/archived projects and Agent Chat issues do not. A newer human task comment
 supersedes the handoff. The task keeps its pinned worker model; an optional
 workerSelectionId must be another option of the same worker in the current policy.
-Queue admission rechecks only durable Owner controls before the first worker dispatch.
+Queue admission rechecks only durable Owner controls before the first worker dispatch;
+a transient retry of that dispatch is rechecked the same way through its retry chain.
 On a worker completion notice, continue only for a real defect, never for a repeated
 notice. continuationCount is shown on the receipt and the issue detail (no cap).
 Preserve human holds and original task/run history.
