@@ -23,6 +23,11 @@ The local release line is `michael/main`; previous releases and consolidation me
   outside the chain cannot borrow a copied receipt. Release recovery (`issue_continuation_needed`) keeps
   its fresh context without the receipt. Fixes SHO-74/SHO-66 retries cancelled `queued_run_claim_rejected`.
   Server-only, no migration.
+- Test-path call budget (`michael/test-call-timeout`, Owner 2026-11-17 「啊這個又怎麼了」 on the 104 resume
+  dry run that timed out): connection Test-path calls, which agents use for connected apps and which run
+  approved Ask-first calls with no caller left, take the 60 s gateway cap instead of the 10 s interactive
+  default (provider budgets such as Railway still apply). The completion event records `timeoutMs`.
+  Server-only, no migration.
 - Dashboard project usage (`michael/project-cost-usage`): same-period project
   token breakdown and recorded spend below the model charts, retaining
   Unattributed and separating subscription estimates/fees. UI-only overlay.
