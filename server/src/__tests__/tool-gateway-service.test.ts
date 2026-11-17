@@ -1641,6 +1641,18 @@ describeEmbeddedPostgres("tool gateway service", () => {
         expect(remoteCall.provider).toHaveBeenCalledOnce();
       });
 
+      it("gives an approved Test-tab call the 60 s budget instead of the 10 s interactive default", async () => {
+        // Approved Test-path calls run with no caller left to raise timeoutMs; the
+        // 104 resume editor takes ~16 s and was aborted at 10 s.
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider);
+        await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+        await executed(pending);
+        const [completed] = await db.select().from(toolCallEvents).where(and(
+          eq(toolCallEvents.invocationId, pending.invocationId), eq(toolCallEvents.eventType, "call_completed")));
+        expect(completed?.metadata).toMatchObject({ source: "test", timeoutMs: 60_000 });
+      });
+
       it("repairs completed Test-tab history without sending the request again", async () => {
         const remoteCall = providerFixture(); remoteCall.release();
         const { pending } = await testRequest(remoteCall.provider);

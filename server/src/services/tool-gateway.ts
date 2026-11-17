@@ -242,6 +242,7 @@ export function isConnectionGrantAudienceAllowed(
 // the full permitted headroom instead.
 const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
 const GITHUB_BOT_TOOL_TIMEOUT_MS = 60_000;
+const TEST_CALL_TIMEOUT_MS = 60_000;
 const ACTION_REQUEST_EXECUTION_POLL_MS = 25;
 // Approval execution performs live target, signature, managed-argument, and
 // issue-state checks before provider dispatch. Give that preparation a
@@ -7667,6 +7668,11 @@ export function createToolGatewayService(
     });
 
     const startedAt = Date.now();
+    // The Test path takes no caller budget: agents use it for connected apps,
+    // and approved calls run here with no caller left. Browser-driven tools
+    // (104 resume editor: ~16 s) exceed the 10 s interactive default, so use
+    // the 60 s cap. Provider budgets still apply (args.timeoutMs undefined).
+    const executionTimeoutMs = timeoutMs(args.timeoutMs ?? TEST_CALL_TIMEOUT_MS, args.tool);
     let connectedMcpExecution: Awaited<ReturnType<typeof executeRemoteHttpTool>> | Awaited<ReturnType<typeof executeLocalStdioTool>> | null;
     let resultValidation: Awaited<ReturnType<typeof validateToolContent>>;
     try {
@@ -7679,7 +7685,6 @@ export function createToolGatewayService(
           throw new ToolGatewayHttpError(403, current.explanation, current.reasonCode);
         }
       }
-      const executionTimeoutMs = timeoutMs(args.timeoutMs, args.tool);
       connectedMcpExecution =
         (args.tool.providerType === "mcp_remote_http" || args.tool.providerType === "provider_rest")
           ? await executeRemoteHttpTool(
@@ -7809,6 +7814,7 @@ export function createToolGatewayService(
       detectorMetadata: resultValidation.detectorMetadata,
       metadata: {
         source: "test",
+        timeoutMs: executionTimeoutMs,
         headerSummary: connectedMcpExecution.headerSummary ?? undefined,
         execution: connectedMcpExecution.execution,
       },
