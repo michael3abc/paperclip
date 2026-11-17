@@ -214,6 +214,34 @@ export function issueContinuationService(db: Db) {
   };
 }
 
+/** The original Continue wake receipt that admits a not-yet-started run carrying
+ * `continuationReceiptId`, and the run that receipt admitted. The receipt's own run
+ * (including a run a comment wake already owned) is admitted directly. Liveness-first:
+ * an automatic retry copies its predecessor's context, so it is admitted when its
+ * durable retry_of_run_id chain, inside the same company, agent and task, reaches the
+ * run the wake receipt points to and that run was admitted for the same receipt. A run
+ * outside that chain cannot borrow a copied receipt id (null). */
+export async function findContinuationWakeReceipt(db: Db, run: { id: string; companyId: string; agentId: string;
+  retryOfRunId: string | null }, issueId: string | null, receiptId: string) {
+  const [wake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.idempotencyKey, "issue-continue:" + receiptId))).limit(1);
+  if (!wake?.runId) return null;
+  if (wake.runId === run.id) return { wake, admittedRunId: run.id };
+  if (!issueId || !run.retryOfRunId) return null;
+  const [receiptRun] = await db.execute<{ id: string }>(sql`with recursive lineage as (
+      select id, retry_of_run_id, array[id] as visited from heartbeat_runs
+        where id = ${run.id}::uuid and company_id = ${run.companyId}::uuid and agent_id = ${run.agentId}::uuid
+          and issue_id = ${issueId}::uuid
+      union all
+      select parent.id, parent.retry_of_run_id, child.visited || parent.id
+        from heartbeat_runs parent join lineage child on parent.id = child.retry_of_run_id
+        where parent.company_id = ${run.companyId}::uuid and parent.agent_id = ${run.agentId}::uuid
+          and parent.issue_id = ${issueId}::uuid and not parent.id = any(child.visited)
+    ) select r.id from lineage join heartbeat_runs r on r.id = lineage.id
+      where r.id = ${wake.runId}::uuid and r.context_snapshot ->> 'continuationReceiptId' = ${receiptId} limit 1`);
+  return receiptRun ? { wake, admittedRunId: wake.runId } : null;
+}
+
 /** Recheck the persisted operation at admission; wake payloads cannot grant PM or main authority. */
 export async function assertIssueContinuationWake(db: Db, input: { companyId: string; agentId: string;
   issueId: string | null; key?: string | null; actorType?: string | null; actorId?: string | null; context?: Record<string, unknown>; admittedRunId?: string }) {
