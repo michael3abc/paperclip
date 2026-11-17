@@ -1,4 +1,5 @@
 import { PdfPreviewProvider } from "./components/PdfPreviewProvider";
+import { ArtifactPreviewProvider } from "./components/artifacts/ArtifactPreviewProvider";
 import { LocalVoiceCallProvider } from "./components/voice/LocalVoiceCallProvider";
 import { VoiceCallProvider } from "./components/voice/VoiceCallProvider";
 import { useAccountIdentity } from "./api/companies-query";
@@ -124,7 +125,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <DesignSandboxProvider><CompanyVoiceCalls><PdfPreviewProvider><App /></PdfPreviewProvider></CompanyVoiceCalls></DesignSandboxProvider>
+                                <DesignSandboxProvider><CompanyVoiceCalls><PdfPreviewProvider><ArtifactPreviewProvider><App /></ArtifactPreviewProvider></PdfPreviewProvider></CompanyVoiceCalls></DesignSandboxProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

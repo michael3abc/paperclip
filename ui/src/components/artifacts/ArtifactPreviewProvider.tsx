@@ -53,6 +53,49 @@ export function useArtifactPreviewClick() {
   }, [open, onPdfClick]);
 }
 
+const CONTENT_ROUTE = /^\/api\/(attachments|assets)\/[a-zA-Z0-9-]+\/content$/;
+
+/** Same-origin authenticated attachment/asset content path, or null for any other link. */
+export function mediaLinkPath(href: string, origin = typeof window === "undefined" ? null : window.location.origin): string | null {
+  if (!origin || /[\u0000-\u0020\\]/.test(href)) return null;
+  try {
+    const url = new URL(href, origin);
+    if (url.origin !== origin || url.username || url.password || url.search || url.hash || !CONTENT_ROUTE.test(url.pathname)) return null;
+    return url.pathname;
+  } catch { return null; }
+}
+
+/** Read only the response headers; the body is cancelled without being consumed. */
+async function sniffContentType(path: string): Promise<string | null> {
+  const response = await fetch(path, { credentials: "same-origin", redirect: "error" });
+  try {
+    return response.status === 200 ? response.headers.get("content-type") : null;
+  } finally {
+    await response.body?.cancel().catch(() => undefined);
+  }
+}
+
+/**
+ * Click handler for a Markdown link to an attachment: a plain click on an image,
+ * video or audio file opens the preview window. Every other type, a failed
+ * lookup and modifier clicks keep the link's native behaviour.
+ */
+export function useMediaLinkClick() {
+  const open = useContext(ArtifactPreviewContext);
+  return useCallback((event: MouseEvent, input: { href: string; filename: string }) => {
+    if (!open || !isPlainPrimaryClick(event)) return;
+    const path = mediaLinkPath(input.href);
+    if (!path) return;
+    event.preventDefault();
+    const native = () => { window.location.assign(path); };
+    void sniffContentType(path).then((contentType) => {
+      const preview = { href: path, filename: input.filename, contentType };
+      if (previewKind(preview) === "other") native();
+      else open(preview);
+    }, native);
+  }, [open]);
+}
+
 function PreviewBody({ input }: { input: ArtifactPreviewInput }) {
   const kind = previewKind(input);
   if (kind === "image") {
