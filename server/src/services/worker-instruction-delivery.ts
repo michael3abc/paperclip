@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { getServerAdapter } from "../adapters/index.js";
 import { conflict, notFound } from "../errors.js";
@@ -9,6 +9,7 @@ import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { logActivity } from "./activity-log.js";
 import { getNativeSessionSteeringState, steerNativeSession } from "./native-runtime/native-session-executor.js";
 import { reserveSteeredIdentity, reconcileSteeredIdentity, rejectSteeredIdentity, storedSteeringAcknowledgement } from "./run-identity.js";
+import { externalConversationStateSql } from "./slack-conversation-state.js";
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
 type Input = { issueId: string; companyId: string; actorId: string; actorRunId: string | null;
@@ -25,7 +26,7 @@ export function workerInstructionDelivery(db: Db) {
     if (!projectId) return false;
     const key = `worker-instruction:${input.commentId}`;
     const prepared = await db.transaction(async tx => {
-      const [issue] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+      const [issue] = await tx.select({ ...getTableColumns(issues), externalConversationState: externalConversationStateSql() }).from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
       if (!issue || issue.projectId !== projectId || !issue.assigneeAgentId || issue.assigneeAgentId === sender.id || issue.conversationAgentId || issue.externalConversationState) return null;
       const [project] = await tx.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.companyId, input.companyId)));
       if (project?.leadAgentId !== sender.id) return null;

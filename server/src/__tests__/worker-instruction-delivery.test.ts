@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues, issueTreeHolds, projects, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatConversations, chatEndpoints, companies, createDb, heartbeatRuns, issueComments, issues, issueTreeHolds, projects, toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { workerInstructionDelivery, inspectWorkerInstructionDelivery } from "../services/worker-instruction-delivery.js";
 
@@ -54,6 +54,18 @@ describe("main worker supplementary instruction receipts (owned PostgreSQL)", ()
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.workerId, source: "automation", status: "deferred_issue_execution", payload: { issueId: f.issue.id, ...(coalesced ? { _paperclipWakeContext: { wakeCommentIds: [f.input.commentId] } } : { commentId: f.input.commentId }) } });
     expect(await workerInstructionDelivery(db)(f.input)).toBe(false); expect(hook.send).not.toHaveBeenCalled();
     expect(await receipts(f.companyId)).toHaveLength(1);
+  });
+  it("preserves the attributed wake boundary of an external Slack conversation", async () => {
+    const f = await fixture();
+    const [application] = await db.insert(toolApplications).values({ companyId: f.companyId, name: "Owned Slack fixture", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+      name: "Owned Slack fixture", uid: randomUUID(), transport: "mcp_remote" }).returning();
+    const [endpoint] = await db.insert(chatEndpoints).values({ companyId: f.companyId, connectionId: connection.id,
+      provider: "slack", publicId: randomUUID(), assignedAgentId: f.workerId, status: "active" }).returning();
+    await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: endpoint.id, issueId: f.issue.id,
+      externalConversationId: "owned-channel", externalLabel: "Owned conversation", state: "active" });
+    expect(await workerInstructionDelivery(db)(f.input)).toBe(false);
+    expect(hook.send).not.toHaveBeenCalled(); expect(await receipts(f.companyId)).toHaveLength(0);
   });
   it("does not inject input the active run already consumed", async () => {
     const f = await fixture();

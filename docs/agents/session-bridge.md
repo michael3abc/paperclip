@@ -70,8 +70,8 @@ The project lead main's `POST /issues/:id/comments` and PATCH `comment` default 
 same-active-turn steer while that task's worker is running. `deliveryMode: queue`
 keeps normal wake delivery; idle workers and already queued messages retain their
 original delivery boundary. `POST /issues/:id/continue` with the same handoff comment
-reads its direct receipt instead of creating a second wake. System notices and
-non-main comments retain existing behavior. Owner holds, paused workers and closed
+reads its direct receipt instead of creating a second wake. System notices, external-chat tasks and
+non-main comments retain their existing attributed wake boundary. Owner holds, paused workers and closed
 or review-stage tasks never gain direct-input authority.
 
 A `clientRequestId` (`commentClientRequestId` on PATCH) preserves the agent-authored
