@@ -86,15 +86,20 @@ projection as desktop; do not toggle only the hidden desktop panel.
 
 ## Host subscription quota dashboard
 
-Dashboard also offers **主機 Claude 登入** to instance administrators. It lists
-hosts enrolled for the current company in `PAPERCLIP_CCPOCKET_HOSTS_FILE`
+The Dashboard Claude quota card offers sign-in to instance administrators only
+when a company host explicitly reports `loggedIn: false`. The card body then
+shows only logged-out hosts; logged-in hosts keep the normal quota view. Unknown
+or failed status checks retain quota content and show a contextual error. All
+hosts enrolled for the current company come from `PAPERCLIP_CCPOCKET_HOSTS_FILE`
 (default `~/.config/paperclip-ccpocket/hosts.json`). A host opts in with
 `claudeLogin: { command: "/absolute/path/to/claude", configDir?: "/absolute/path" }`.
 The existing `sshAlias` selects remote execution; no local fallback is used.
 The administrator starts sign-in, opens the Claude authorization page, pastes
 the browser code, and waits for the native CLI's successful exit plus a fresh
 `auth status --json` showing `loggedIn: true, authMethod: "claude.ai"`. Status
-checks are explicit; only an active five-minute login is polled. Existing host
+checks run on card mount and once per minute while visible, without retries.
+Only an active five-minute login is polled more frequently. Successful sign-in
+restores quota content and refreshes quota data. Existing host
 credentials are updated by Claude itself, independently of managed connections.
 
 Human-only endpoints under `/api/companies/:companyId/dashboard/host-claude`:

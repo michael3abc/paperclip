@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import type { ProviderQuotaResult } from "@paperclipai/shared";
 import { dashboardApi } from "@/api/dashboard";
@@ -28,7 +28,8 @@ export function quotaResetLabel(reset: string | null, now: number): string {
   return "Resets in " + Math.floor(hours / 24) + "d " + (hours % 24) + "h";
 }
 
-export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefresh }: {
+export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, failed, onRefresh }: {
+  companyId?: string;
   accounts: ProviderQuotaResult[];
   refreshing: boolean;
   failed: boolean;
@@ -59,26 +60,9 @@ export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefres
                 <CardDescription className="text-xs">{account?.accountLabel ?? "Host subscription"}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
-                {!account ? <p className="text-sm text-muted-foreground">{refreshing ? "Checking quota…" : "Quota unavailable"}</p>
-                  : !account.ok ? <p className="text-sm text-muted-foreground" role="status">{account.error ?? "Quota unavailable"}</p>
-                  : account.windows.map((window, index) => (
-                    <div key={window.label + ":" + index} className="space-y-1" title={window.detail ?? undefined}>
-                      {window.usedPercent == null ? (
-                        <div className="space-y-1 text-xs">
-                          <p className="text-muted-foreground">{window.label}</p>
-                          <p>{window.valueLabel ?? "Remaining quota not reported"}</p>
-                        </div>
-                      ) : (
-                        <QuotaBar label={window.label} percentUsed={window.usedPercent} valueMode="remaining"
-                          leftLabel={new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(100 - window.usedPercent) + "% remaining"} />
-                      )}
-                      {window.usedPercent != null && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
-                        {quotaResetLabel(window.resetsAt, now)}
-                      </p>}
-                    </div>
-                  ))}
-                {id === "antigravity" && <p className="text-xs text-muted-foreground">Only provider-reported model groups are shown. Other groups are unknown.</p>}
-                {account?.capturedAt && <p className="text-xs text-muted-foreground">Last checked {formatDateTime(account.capturedAt)}</p>}
+                {id === "anthropic" && companyId ? <HostClaudeLogin key={companyId} companyId={companyId}>
+                  <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />
+                </HostClaudeLogin> : <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />}
               </CardContent>
             </Card>
           );
@@ -88,7 +72,33 @@ export function SubscriptionQuotaPanels({ accounts, refreshing, failed, onRefres
   );
 }
 
+function QuotaContent({ provider, account, refreshing, now }: { provider: string; account?: ProviderQuotaResult; refreshing: boolean; now: number }) {
+  return <>
+    {!account ? <p className="text-sm text-muted-foreground">{refreshing ? "Checking quota…" : "Quota unavailable"}</p>
+      : !account.ok ? <p className="text-sm text-muted-foreground" role="status">{account.error ?? "Quota unavailable"}</p>
+      : account.windows.map((window, index) => (
+        <div key={window.label + ":" + index} className="space-y-1" title={window.detail ?? undefined}>
+          {window.usedPercent == null ? (
+            <div className="space-y-1 text-xs">
+              <p className="text-muted-foreground">{window.label}</p>
+              <p>{window.valueLabel ?? "Remaining quota not reported"}</p>
+            </div>
+          ) : (
+            <QuotaBar label={window.label} percentUsed={window.usedPercent} valueMode="remaining"
+              leftLabel={new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(100 - window.usedPercent) + "% remaining"} />
+          )}
+          {window.usedPercent != null && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
+            {quotaResetLabel(window.resetsAt, now)}
+          </p>}
+        </div>
+      ))}
+    {provider === "antigravity" && <p className="text-xs text-muted-foreground">Only provider-reported model groups are shown. Other groups are unknown.</p>}
+    {account?.capturedAt && <p className="text-xs text-muted-foreground">Last checked {formatDateTime(account.capturedAt)}</p>}
+  </>;
+}
+
 export function SubscriptionQuotaCards({ companyId }: { companyId: string }) {
+  const client = useQueryClient();
   const access = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(), retry: false, staleTime: 30_000,
@@ -102,6 +112,10 @@ export function SubscriptionQuotaCards({ companyId }: { companyId: string }) {
   });
   if (access.isError) return <p className="text-sm text-destructive">Could not check access to subscription quotas.</p>;
   if (!allowed) return null;
-  return <div className="space-y-6"><HostClaudeLogin companyId={companyId} /><SubscriptionQuotaPanels accounts={quotas.data ?? []} refreshing={quotas.isFetching}
-    failed={quotas.isError} onRefresh={() => { void quotas.refetch(); }} /></div>;
+  return <SubscriptionQuotaPanels companyId={companyId} accounts={quotas.data ?? []} refreshing={quotas.isFetching}
+    failed={quotas.isError} onRefresh={() => {
+      void quotas.refetch();
+      void client.invalidateQueries({ queryKey: ["host-claude-logins", companyId] });
+      void client.invalidateQueries({ queryKey: ["host-claude-status", companyId] });
+    }} />;
 }

@@ -1,6 +1,9 @@
 # AGENTS.md
 
-Host Claude sign-in on Dashboard is human-only and instance-admin-only. Use the
+Host Claude sign-in replaces the Claude quota card body only for hosts whose native
+status explicitly reports logged out; signed-in/unknown states keep quota content.
+Check company hosts while Dashboard is visible and refresh quota after sign-in.
+Sign-in is human-only and instance-admin-only. Use the
 company-scoped CC Pocket host registry and its explicit `claudeLogin.command`
 and optional `configDir`; never accept a client command, path or SSH target. Run
 native `claude auth login --claudeai` on that host; credentials stay there. Bind

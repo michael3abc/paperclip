@@ -1,23 +1,28 @@
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState, type ReactNode } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi, type HostClaudeSession } from "@/api/dashboard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-function HostLogin({ companyId, host }: { companyId: string; host: { id: string; label: string; available: boolean } }) {
+function HostLogin({ companyId, host, onAuthenticated }: {
+  companyId: string;
+  host: { id: string; label: string };
+  onAuthenticated: () => void;
+}) {
   const [session, setSession] = useState<HostClaudeSession>();
   const [code, setCode] = useState("");
-  const [message, setMessage] = useState("尚未檢查");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const active = !!session && ["starting", "waiting", "verifying"].includes(session.status);
+  useEffect(() => {
+    if (session?.status === "authenticated") onAuthenticated();
+  }, [session, onAuthenticated]);
   useEffect(() => {
     if (!session || !active) return;
     // Poll only this explicit five-minute sign-in; stop on terminal state/error.
     const timer = window.setTimeout(() => {
       void dashboardApi.hostClaudeSession(companyId, session.id).then(next => {
         setSession(next);
-        if (next.status === "authenticated") setMessage("已登入 Claude 訂閱");
       }).catch(() => { setSession(undefined); setError("無法取得登入狀態；請重新檢查主機。"); });
     }, 1500);
     return () => window.clearTimeout(timer);
@@ -26,20 +31,21 @@ function HostLogin({ companyId, host }: { companyId: string; host: { id: string;
     setBusy(true); setError("");
     try { await action(); } catch { setError("操作失敗，請確認主機連線或稍後再試。"); } finally { setBusy(false); }
   }
-  return <div className="space-y-2 rounded-md border p-3">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <div><p className="text-sm font-medium">{host.label}</p><p className="text-xs text-muted-foreground">{message}</p></div>
-      <div className="flex gap-2">
-        <Button size="sm" variant="ghost" disabled={busy || active || !host.available} onClick={() => void run(async () => {
-          const result = await dashboardApi.checkHostClaude(companyId, host.id);
-          setMessage(result.loggedIn === true ? "已登入 Claude 訂閱" : result.loggedIn === false ? "尚未登入 Claude 訂閱" : "無法檢查主機登入狀態");
-        })}>檢查狀態</Button>
-        <Button size="sm" variant="outline" disabled={busy || active || !host.available} onClick={() => void run(async () => {
+  return <div className="space-y-3" aria-label={`${host.label} Claude 登入`}>
+    <div className="space-y-1">
+      <p className="text-sm font-medium">{host.label} 尚未登入</p>
+      <p className="text-xs text-muted-foreground">登入 Claude 訂閱後即可查看配額。</p>
+    </div>
+    {!active && <div className="flex flex-wrap gap-2">
+        <Button size="sm" disabled={busy} onClick={() => void run(async () => {
           setCode(""); setSession(await dashboardApi.startHostClaude(companyId, host.id));
         })}>登入 Claude</Button>
-      </div>
-    </div>
-    {!host.available && <p className="text-xs text-muted-foreground">此主機尚未設定登入功能</p>}
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(async () => {
+          const result = await dashboardApi.checkHostClaude(companyId, host.id);
+          if (result.loggedIn === true) onAuthenticated();
+          if (result.loggedIn === null) setError("無法檢查主機登入狀態");
+        })}>檢查狀態</Button>
+    </div>}
     {active && <div className="space-y-2">
       <p className="text-xs text-muted-foreground">{session.status === "starting" ? "正在建立登入連結…" : session.status === "verifying" ? "正在驗證登入…" : "開啟授權頁完成登入，再貼回頁面顯示的驗證碼。連結五分鐘內有效。"}</p>
       {session.authorizationUrl && <a className="inline-block text-sm underline" href={session.authorizationUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">開啟 Claude 授權頁 ↗</a>}
@@ -59,12 +65,22 @@ function HostLogin({ companyId, host }: { companyId: string; host: { id: string;
   </div>;
 }
 
-export function HostClaudeLogin({ companyId }: { companyId: string }) {
+export function HostClaudeLogin({ companyId, children }: { companyId: string; children: ReactNode }) {
+  const client = useQueryClient();
   const hosts = useQuery({ queryKey: ["host-claude-logins", companyId], queryFn: () => dashboardApi.claudeHosts(companyId), retry: false, staleTime: 60_000 });
-  if (hosts.isError) return <p role="alert" className="text-sm text-destructive">無法載入 Claude 主機。</p>;
-  if (!hosts.data?.length) return null;
-  return <section className="space-y-3" aria-label="主機 Claude 登入">
-    <div><h2 className="text-sm font-semibold">主機 Claude 登入</h2><p className="text-xs text-muted-foreground">登入儲存在所選主機，供該主機的 Claude 訂閱使用。</p></div>
-    <div className="grid gap-3 md:grid-cols-3">{hosts.data.map(host => <HostLogin key={companyId + host.id} companyId={companyId} host={host} />)}</div>
-  </section>;
+  const enabledHosts = hosts.data?.filter(host => host.available) ?? [];
+  const statuses = useQueries({ queries: enabledHosts.map(host => ({
+    queryKey: ["host-claude-status", companyId, host.id],
+    queryFn: () => dashboardApi.checkHostClaude(companyId, host.id),
+    retry: false, staleTime: 60_000, refetchInterval: 60_000, refetchIntervalInBackground: false,
+  })) });
+  const loggedOut = enabledHosts.filter((_, index) => statuses[index].data?.loggedIn === false && !statuses[index].isError);
+  const unknown = hosts.isError || statuses.some(status => status.isError || status.data?.loggedIn === null);
+  return <>
+    {loggedOut.length ? <div className="space-y-6">{loggedOut.map(host => <HostLogin key={host.id} companyId={companyId} host={host} onAuthenticated={() => {
+      client.setQueryData(["host-claude-status", companyId, host.id], { loggedIn: true });
+      void client.invalidateQueries({ queryKey: ["dashboard-subscription-quotas", companyId] });
+    }} />)}</div> : children}
+    {unknown && <p role="alert" className="text-xs text-destructive">無法確認 Claude 主機登入狀態，請重新整理。</p>}
+  </>;
 }
