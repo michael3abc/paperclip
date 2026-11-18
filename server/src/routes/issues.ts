@@ -317,6 +317,11 @@ import {
 } from "../attachment-types.js";
 import { retainBacklogHumanAssignment } from "../services/human-directed-work.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  commentHasAgentMentions,
+  mentionSubtaskService,
+  type MentionSubtaskSourceComment,
+} from "../services/mention-subtasks.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
@@ -3523,6 +3528,24 @@ export function issueRoutes(
   };
   const enqueueStalledReviewDecisionWakeup =
     opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
+  const mentionSubtasks = mentionSubtaskService(db, {
+    wakeup: (agentId, wakeOpts) => heartbeat.wakeup(agentId, wakeOpts),
+  });
+  /**
+   * Owner 2026-11-18: an @agent mention in a board user's comment opens a
+   * linked subtask for that agent. It runs after the comment is saved and never
+   * fails or delays the comment request.
+   */
+  const scheduleMentionSubtasks = (
+    req: Request,
+    comment: MentionSubtaskSourceComment | null | undefined,
+  ) => {
+    if (!comment || req.actor.type !== "board" || !req.actor.userId) return;
+    if (getActorInfo(req).runId || !commentHasAgentMentions(comment.body)) return;
+    void (async () => mentionSubtasks.createForComment(comment))().catch((err) =>
+      logger.warn({ err, issueId: comment.issueId, commentId: comment.id }, "mention subtasks failed"),
+    );
+  };
   const enqueueRecoveryActionWakeup =
     opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
@@ -16607,6 +16630,8 @@ export function issueRoutes(
         }
       })();
 
+      scheduleMentionSubtasks(req, comment);
+
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};
       if (prefersMinimalIssueUpdateResponse(req)) {
@@ -17073,6 +17098,13 @@ export function issueRoutes(
         }),
       );
       publishActivity(activityPublication as ActivityPublication);
+      // An edit can add a mention. Agents that already have a subtask for this
+      // comment keep that one; only newly mentioned agents get a subtask.
+      if (commentHasAgentMentions(req.body.body)) {
+        void (async () => mentionSubtasks.createForCommentId(commentId))().catch((err) =>
+          logger.warn({ err, issueId: issue.id, commentId }, "mention subtasks failed after queued comment edit"),
+        );
+      }
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -19660,6 +19692,8 @@ export function issueRoutes(
             }),
           });
           await externalObjectsSvc.syncCommentSafely(receipt.id);
+          // A retried request may follow a lost first response; creation is idempotent.
+          scheduleMentionSubtasks(req, receipt);
           res.status(201).json(receipt);
           return;
         }
@@ -19924,6 +19958,7 @@ export function issueRoutes(
         });
         if (reopenResult.alreadyAccepted) {
           currentIssue = reopenResult.issue;
+          scheduleMentionSubtasks(req, reopenResult.comment);
           res.status(201).json(reopenResult.comment);
           return;
         }
@@ -20706,6 +20741,7 @@ export function issueRoutes(
         }
       })();
 
+      scheduleMentionSubtasks(req, comment);
 
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
       res.status(201).json(comment);

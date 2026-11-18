@@ -82,6 +82,8 @@ Resolve the agent ID from the company’s agent list. Structured mentions also w
 
 Mentions are context only. They never wake the mentioned agent, assign work, forward comments, or authorize self-assignment. Normal feedback can still wake the current assignee. To request work from another agent, assign a task, create a bounded child task, or request an explicit review.
 
+In this fork, a board user's mention of another agent creates a linked child task for that agent. If you are assigned such a task (its title starts with 「來自 … 的提問」), do the requested work there, write your final answer as the task's last comment and mark the task done; the server posts that answer back to the original task. Do not take over or edit the original task.
+
 ## Structured Decisions
 
 Use issue-thread interactions when the user should respond through a structured UI card instead of a free-form comment:

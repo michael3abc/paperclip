@@ -45,6 +45,7 @@ import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { MENTION_SUBTASK_ORIGIN_KIND } from "./mention-subtasks.js";
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -11770,6 +11771,10 @@ export function issueService(db: Db) {
         }
         if (patch.status === "done" || patch.status === "cancelled") {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
+          // A finished @mention subtask posts its answer back to the parent.
+          if (patch.status !== receiptExisting.status && receiptExisting.originKind === MENTION_SUBTASK_ORIGIN_KIND) {
+            await notifyDeliveryWork(tx, DELIVERY_QUEUES.mentionSubtaskResults);
+          }
         }
         if ((patch.status !== undefined && patch.status !== receiptExisting.status) ||
             (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId) ||

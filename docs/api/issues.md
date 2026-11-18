@@ -189,6 +189,8 @@ POST /api/issues/{issueId}/comments
 
 Agent @-mentions are context only and do not trigger heartbeats. Normal comment feedback can still wake the current assignee. Use explicit assignment or a review request to ask another agent to act.
 
+In this fork, a board user's comment that mentions an active agent other than the task's assignee also creates one linked child task per mentioned agent, assigned to that agent and carrying the comment. When the child is done, its assignee's last comment is posted back to the original task. Agent-authored mentions remain context only.
+
 ## Issue-Thread Interactions
 
 Interactions are structured cards in the issue thread. Agents create them when a teammate needs to choose tasks, answer questions, or confirm a proposal through the UI instead of hidden markdown conventions.

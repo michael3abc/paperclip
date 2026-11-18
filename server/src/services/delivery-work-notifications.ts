@@ -147,6 +147,7 @@ export const DELIVERY_QUEUES = {
   remoteWorkspaceSnapshots: "remote-workspace-snapshots",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
+  mentionSubtaskResults: "mention-subtask-results",
   pluginSchedules: "plugin-schedules",
   pluginLifecycle: "plugin-resource-lifecycle",
   toolAction: "tool-action-receipts",
