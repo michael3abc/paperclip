@@ -712,10 +712,12 @@ export const issuesApi = {
     attachmentIds?: string[],
     clientRequestId?: string,
     voiceSessionId?: string,
+    deliveryMode?: "steer" | "queue",
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(deliveryMode ? { deliveryMode } : {}),
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(voiceSessionId ? { metadata: { version: 1, voiceInput: { sessionId: voiceSessionId },
           sections: [{ title: "Voice input", rows: [{ type: "key_value", label: "Source", value: "Speech recognition; not an approval" }] }] } } : {}),

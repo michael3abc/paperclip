@@ -289,6 +289,24 @@ describe("Coordinator agents section", () => {
     expect(byLabel("amy").querySelector('[data-slot="badge"]')).toBeNull();
   });
 
+  it("shows a native plan as pending on a working non-PM chat, then restores working", async () => {
+    fixture.agents = roster;
+    fixture.liveRuns.mockResolvedValue([{ id: "r", agentId: "a-zed", status: "running" }]);
+    fixture.attention.mockResolvedValue(feed([{ ...pending("native-plan"), project: null,
+      subject: { ...pending("native-plan").subject, metadata: { createdByAgentId: "a-zed", kind: "request_confirmation" } },
+    } as AttentionItem]));
+    await renderSidebar(); await flush(); await flush();
+    const row = () => rows().find(row => row.textContent?.startsWith("Zed"))!;
+    expect(row().textContent).toContain("pending");
+    expect(row().textContent).not.toContain("working");
+    expect(row().className).toContain("ring-orange");
+    expect(row().querySelector(".bg-orange-500")).not.toBeNull();
+    await act(async () => { client.setQueryData(coordinatorAttentionQueryKey("company"), feed([])); });
+    await flush(); await flush();
+    expect(row().textContent).toContain("working");
+    expect(row().className).not.toContain("ring-orange");
+  });
+
   describe("project PM status", () => {
     const byLabel = (label: string) => rows().find(row => row.textContent?.startsWith(label))!;
     const status = () => byLabel("Zed")?.getAttribute("data-agent-status");
@@ -306,7 +324,7 @@ describe("Coordinator agents section", () => {
       fixture.attention.mockResolvedValue(feed([request]));
       await renderSidebar(); await settle();
       expect(status()).toBe("needs_input");
-      expect(byLabel("Zed").textContent).toContain("needs input");
+      expect(byLabel("Zed").textContent).toContain("pending");
       fixture.preferences.mockResolvedValue({ ...preference, excludedPmStatusAgentIds: ["a-zed"] });
       await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.sidebarPreferences.projectOrder("company", "reviewer") }); });
       await settle();
@@ -334,7 +352,7 @@ describe("Coordinator agents section", () => {
       expect(byLabel("amy").getAttribute("data-agent-status")).toBeNull();
     });
 
-    it("lets PM needs input and working outrank waiting for task", async () => {
+    it("lets PM pending and working outrank waiting for task", async () => {
       fixture.chats = [{ id: "chat-zed", isUnreadForMe: false, conversationAgentId: "a-zed", hasLiveChildTasks: true }];
       fixture.attention.mockResolvedValue(feed([request]));
       await renderSidebar(); await settle();
@@ -451,14 +469,14 @@ describe("Coordinator agents section", () => {
       ]);
     });
 
-    it("marks the main agent working from its own run, honors exclusions and reads no full attention feed", async () => {
+    it("marks the main agent working from its own run, honors exclusions and shares the Owner attention feed", async () => {
       fixture.preferences.mockResolvedValue({ orderedIds: [], excludedPmStatusAgentIds: ["a-ceo"], updatedAt: null });
       await renderSidebar(); await settle();
       expect(rows().map(row => row.getAttribute("href"))).toEqual(["/chats/all-set", "/chats/momo"]);
       expect(byLabel("All-Set").getAttribute("data-agent-status")).toBe("working");
       expect(byLabel("momo").getAttribute("data-agent-status")).toBeNull();
       expect(fixture.preferences).toHaveBeenCalled();
-      expect(fixture.attention).not.toHaveBeenCalled();
+      expect(fixture.attention).toHaveBeenCalledWith("company", { all: true });
     });
 
     it("claims no status while the exclusion list is unknown and reports the failure", async () => {

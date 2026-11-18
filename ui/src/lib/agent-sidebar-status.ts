@@ -4,7 +4,7 @@ import type { LiveRunForIssue } from "../api/heartbeats";
 /**
  * Sidebar status for a project PM row.
  *
- * - `needs_input`: a request is waiting on the human Owner personally.
+ * - `needs_input`: a request is waiting on the human Owner personally (label: `pending`).
  * - `working`: a task of the PM's project (subtasks included) is executing, or
  *   an opted-in agent (`selfRunAgentIds`) is executing its own run.
  * - `waiting_for_task` (Coordinator chat rows only): the agent is not working
@@ -29,9 +29,8 @@ const WORKING_PHASES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Feed items that ask the Owner for input. The server feed already narrows
- * interactions to those addressed to this person (resolver policy, addressee
- * and delegation), so only the kind needs filtering here. Reviews, failed
+ * Feed items that ask the Owner for input. The server feed narrows requests
+ * to this person; reject stale, expired or agent-addressed snapshots as well. Reviews, failed
  * runs, recoveries, blockers and alerts need attention, not an answer.
  */
 const INPUT_REQUEST_KINDS: ReadonlySet<AttentionSourceKind> = new Set([
@@ -43,7 +42,7 @@ const INPUT_REQUEST_KINDS: ReadonlySet<AttentionSourceKind> = new Set([
 type LiveRunLike = Pick<LiveRunForIssue, "agentId" | "status" | "projectId" | "execution">;
 type PmWorkspaceLike = Pick<PmWorkspaceListing, "agentId" | "projectId" | "status">;
 type AttentionItemLike = Pick<AttentionItem, "sourceKind" | "project"> &
-  Partial<Pick<AttentionItem, "shelf" | "archivedAt" | "dismissal" | "snoozedUntil">>;
+  Partial<Pick<AttentionItem, "shelf" | "archivedAt" | "dismissal" | "snoozedUntil" | "subject" | "expiresAt" | "resolverAudience">>;
 
 export function isWorkingLiveRun(run: Pick<LiveRunForIssue, "status" | "execution">): boolean {
   if (run.status !== "running") return false;
@@ -60,6 +59,9 @@ export function isWorkingLiveRun(run: Pick<LiveRunForIssue, "status" | "executio
 
 export function isOwnerInputRequest(item: AttentionItemLike, now: number): boolean {
   if (!INPUT_REQUEST_KINDS.has(item.sourceKind)) return false;
+  if (item.subject?.status && !["pending", "open"].includes(item.subject.status)) return false;
+  if (item.expiresAt && Date.parse(item.expiresAt) <= now) return false;
+  if (item.resolverAudience?.addresseeAgentId) return false;
   if (item.archivedAt || item.shelf) return false;
   if (item.dismissal?.isActive) return false;
   if (item.snoozedUntil) {
@@ -82,7 +84,7 @@ export interface ProjectPmSidebarStatusInput {
    * Agents that are not project PMs but whose own readable working run marks
    * them `working` (the Coordinator lists project main agents, which do their
    * work in their own runs). Only `run.agentId` counts here: no project
-   * attribution and no `needs_input`. PM-bound and excluded agents are ignored.
+   * attribution for working; Owner requests are attributed by their creator. PM-bound and excluded agents are ignored.
    */
   selfRunAgentIds?: readonly string[] | null;
   now?: number;
@@ -136,9 +138,12 @@ export function deriveProjectPmSidebarStatus({
   }
 
   for (const item of attentionItems ?? []) {
+    if (!isOwnerInputRequest(item, now)) continue;
+    const metadata = item.subject?.metadata;
+    const originId = metadata?.createdByAgentId ?? metadata?.requestedByAgentId ?? metadata?.originAgentId;
+    if (typeof originId === "string" && selfIds.has(originId)) result.set(originId, "needs_input");
     const projectId = item.project?.id;
-    if (!projectId || !isOwnerInputRequest(item, now)) continue;
-    const projectPms = pmIdsByProject.get(projectId);
+    const projectPms = projectId ? pmIdsByProject.get(projectId) : undefined;
     if (projectPms) for (const agentId of projectPms) result.set(agentId, "needs_input");
   }
 
@@ -208,7 +213,7 @@ export function agentSidebarStatusStyle(status: AgentSidebarStatus): AgentSideba
 
 const STATUS_LABELS: Record<AgentSidebarStatus, string> = {
   working: "working",
-  needs_input: "needs input",
+  needs_input: "pending",
   waiting_for_task: "waiting for task",
 };
 

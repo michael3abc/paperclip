@@ -67,6 +67,16 @@ describe("paperclip MCP tools", () => {
     vi.restoreAllMocks();
   });
 
+  it("forwards explicit worker queue delivery without inventing a mode for default instructions", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "comment-receipt" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipAddComment");
+    await tool.execute({ issueId: "HOM-381", body: "Wait until the turn boundary", deliveryMode: "queue" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ deliveryMode: "queue" });
+    await tool.execute({ issueId: "HOM-381", body: "Apply the new constraint now" });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty("deliveryMode");
+  });
+
   it("adds auth headers and run id to mutating requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ ok: true }),

@@ -1,3 +1,4 @@
+import { workerInstructionDelivery, inspectWorkerInstructionDelivery } from "../services/worker-instruction-delivery.js";
 import { reconcileWorkspaceHolder } from "../services/recovery/workspace-holder.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { isDeepStrictEqual } from "node:util";
@@ -14416,6 +14417,7 @@ export function issueRoutes(
       const {
         comment: commentBody,
         commentClientRequestId,
+        deliveryMode,
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
         reviewRequest,
@@ -15378,7 +15380,7 @@ export function issueRoutes(
                 },
                 {
                   attachmentIds: commentAttachmentIds,
-                  clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+                  clientRequestId: commentClientRequestId,
                   mirrorToSlack: actor.actorType === "user",
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: transactionalCommentSourceTrust,
@@ -15991,7 +15993,7 @@ export function issueRoutes(
           },
           {
             authorizationReason: issueMutationAuthorizationReason,
-            clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+            clientRequestId: commentClientRequestId,
             mirrorToSlack: actor.actorType === "user",
             sourceTrust: await sourceTrustForActorWrite(issue, actor),
           },
@@ -16008,8 +16010,13 @@ export function issueRoutes(
           : await addCommentAndReceipt(db);
         await issueReferencesSvc.syncComment(comment.id);
         await externalObjectsSvc.syncCommentSafely(comment.id);
+        if (actor.actorType === "agent" && comment.authorType !== "system" && actor.actorId !== issue.assigneeAgentId) {
+          goalCommentSteered = await workerInstructionDelivery(db)({ companyId: issue.companyId, issueId: issue.id,
+            actorId: actor.actorId, actorRunId: actor.runId, commentId: comment.id, message: comment.body,
+            deliveryMode, hasAttachments: !!commentAttachmentIds?.length });
+        }
         if (
-          issue.assigneeAgentId &&
+          !goalCommentSteered && deliveryMode !== "queue" && issue.assigneeAgentId &&
           !issue.externalConversationState &&
           !(
             actor.actorType === "agent" &&
@@ -19270,6 +19277,12 @@ export function issueRoutes(
     });
   }
 
+  router.get("/issues/:id/worker-instructions/:receiptId", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue) return;
+    res.json(await inspectWorkerInstructionDelivery(db, issue.companyId, issue.id, req.params.receiptId as string));
+  });
+
   router.get("/issues/:id/continuations/:receiptId", async (req, res) => {
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue) return;
@@ -19400,6 +19413,19 @@ export function issueRoutes(
       if (operation.issue.executionRunId) {
         const [active] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, operation.issue.executionRunId),
           eq(heartbeatRuns.companyId, issue.companyId), inArray(heartbeatRuns.status, ["running", "queued", "scheduled_retry"])));
+        if (active && main && body.commentId) {
+          const [handoff] = await db.select().from(issueComments).where(and(eq(issueComments.id, body.commentId),
+            eq(issueComments.issueId, issue.id), eq(issueComments.companyId, issue.companyId)));
+          try {
+            if (handoff) await workerInstructionDelivery(db)({ companyId: issue.companyId, issueId: issue.id,
+              actorId: main.id, actorRunId: req.actor.runId ?? null, commentId: handoff.id, message: handoff.body,
+              deliveryMode: workerSelection ? "queue" : body.deliveryMode });
+          } catch (error) {
+            await continuation.settle(receiptId, { status: issue.status as IssueContinueResult["status"], outcome: "blocked", runId: null,
+              reason: "Direct worker input was rejected or unconfirmed. Inspect the original input receipt; do not enqueue it again." });
+            throw error;
+          }
+        }
         if (active) { res.json(await continuation.settle(receiptId, { runId: active.id, status: issue.status as IssueContinueResult["status"],
           outcome: active.status === "running" ? "running" : "scheduled" })); return; }
       }
@@ -19911,7 +19937,7 @@ export function issueRoutes(
             presentation: commentPresentation,
             metadata: req.body.metadata ?? null,
             attachmentIds: req.body.attachmentIds,
-            clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
+            clientRequestId: req.body.clientRequestId,
             mirrorToSlack: actor.actorType === "user",
             authorizationReason: commentAuthorizationReason,
             sourceTrust,
@@ -20104,7 +20130,7 @@ export function issueRoutes(
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
-          clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
+          clientRequestId: req.body.clientRequestId,
           mirrorToSlack: actor.actorType === "user",
           sourceTrust,
         };
@@ -20217,7 +20243,7 @@ export function issueRoutes(
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
-          clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
+          clientRequestId: req.body.clientRequestId,
           mirrorToSlack: actor.actorType === "user",
           authorizationReason: commentAuthorizationReason,
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
@@ -20317,8 +20343,13 @@ export function issueRoutes(
       });
       else await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
+      if (actor.actorType === "agent" && comment.authorType !== "system" && actor.actorId !== currentIssue.assigneeAgentId) {
+        goalCommentSteered = await workerInstructionDelivery(db)({ companyId: currentIssue.companyId, issueId: currentIssue.id,
+          actorId: actor.actorId, actorRunId: actor.runId, commentId: comment.id, message: comment.body,
+          deliveryMode: req.body.deliveryMode, hasAttachments: !!req.body.attachmentIds?.length });
+      }
       if (
-        currentIssue.assigneeAgentId &&
+        !goalCommentSteered && req.body.deliveryMode !== "queue" && currentIssue.assigneeAgentId &&
         // Slack-linked messages need the normal attributed wake boundary so
         // the accepted requester and return-thread receipt travel with the run.
         !currentIssue.externalConversationState &&

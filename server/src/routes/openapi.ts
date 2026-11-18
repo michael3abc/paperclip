@@ -4754,6 +4754,7 @@ registry.registerPath({
     "Continues the original task assignee or current formal reviewer. The current project PM must send idempotencyKey, observedStatusVersion and observedRunId and cannot reopen completed/cancelled/backlog tasks. " +
     "The project's lead main may continue its worker's task from any current run of that main: send commentId (a nonempty comment this main wrote on the task; no onBehalfOfUserId) and idempotencyKey. " +
     "A done task, or one the worker or system cancelled, is reopened and its worker woken; an Owner-cancelled task, a paused/archived project, an Agent Chat issue or a newer human comment on the task refuses. " +
+    "While its worker runs, a new main handoff defaults to same-turn steer; deliveryMode=queue and already queued comments retain their delivery boundary. Unknown or rejected delivery never queues or resends the comment. " +
     "The task keeps its pinned worker model; optional workerSelectionId switches to another option of the same worker in the current policy. observedStatusVersion/observedRunId are advisory for a main (observationStale marks a mismatch). " +
     "Board and assignee access retain their existing gates. Returns a durable receipt with continuationCount: 202 only for a real scheduled/running run; pending does not mean execution started. " +
     "The same idempotencyKey with the same body returns the original receipt; with a different body it is a 409 conflict. After an uncertain response, GET the original receipt or repeat the same request.",
@@ -4773,6 +4774,16 @@ registry.registerPath({
     429: r.tooManyRequests,
     503: { description: "Outcome unresolved; inspect the original continuation receipt" },
   },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/issues/{id}/worker-instructions/{receiptId}", tags: ["issues"],
+  summary: "Inspect the original direct worker input receipt without resending",
+  description: "Reads an issue-scoped receipt and reconciles a late acknowledgement for its original native turn. Never sends input or creates a session.",
+  request: { params: z.object({ id: z.string(), receiptId: z.string().uuid() }) },
+  responses: { 200: r.ok(z.object({ receiptId: z.string().uuid(), commentId: z.string().uuid(), targetRunId: z.string().uuid(),
+    status: z.enum(["sending", "acknowledged", "rejected", "uncertain"]), turnId: z.string().nullable(), reasonCode: z.string().nullable() })),
+    401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

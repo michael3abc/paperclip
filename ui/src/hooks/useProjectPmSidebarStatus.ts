@@ -18,7 +18,7 @@ function useStatusReadError(companyId: string | null | undefined, source: string
     pushToast({
       dedupeKey: `sidebar-pm-status-${source}:${companyId}`,
       title,
-      body: error instanceof Error ? error.message : "PM working and needs-input status is hidden until they load.",
+      body: error instanceof Error ? error.message : "Agent working and pending status is hidden until they load.",
       tone: "error",
     });
   }, [companyId, source, title, isError, error, errorUpdatedAt, pushToast]);
@@ -27,7 +27,8 @@ function useStatusReadError(companyId: string | null | undefined, source: string
 /**
  * Presentation only; callers retain live-run ownership and shared polling.
  * `selfRunAgentIds` opts listed non-PM agents (project main agents) into
- * `working` for their own running runs; the viewer's exclusions still apply.
+ * `working` for their own runs and `pending` for their Owner requests;
+ * the viewer's exclusions still apply.
  */
 export function useProjectPmSidebarStatus(
   companyId: string | null | undefined,
@@ -50,12 +51,12 @@ export function useProjectPmSidebarStatus(
     // Exclusions apply to own-run status too, so it waits for the same list.
     enabled: !!companyId && !!userId && (hasBindings || (!!bindings.data && hasSelfRunAgents)),
   });
-  // Deliberate full-feed navigation exception for bound PMs. Share the page's
+  // Full-feed navigation exception for PM and listed Agent Chat decisions. Share the page's
   // complete snapshot and invalidation prefix; the count-only key stays separate.
   const attention = useQuery({
     queryKey: coordinatorAttentionQueryKey(companyId!),
     queryFn: () => attentionApi.list(companyId!, { all: true }),
-    enabled: !!companyId && hasBindings,
+    enabled: !!companyId && (hasBindings || hasSelfRunAgents),
     // Bindings may finish after the page's feed. Reuse that fresh snapshot
     // instead of downloading it again when this observer becomes enabled.
     staleTime: 60_000,

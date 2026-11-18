@@ -296,6 +296,13 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Main→worker comments default to active-turn steer for a running worker of the lead main's project;
+explicit deliveryMode=queue, idle and already queued inputs keep their boundary. Direct-input
+receipts are never replayed or silently queued after rejection/unknown acknowledgement. Agent Chat
+cards show orange `pending` for Owner-actionable plan/approval decisions, ahead of working/waiting;
+resolved, expired, draft and agent-delegated requests do not qualify. See docs/agents/session-bridge.md
+and docs/agents/ui-features.md.
+
 Codex main Chat sends use native steer by default, including Enter during an
 active response. Persist the effective role/provider/model before Bridge dispatch;
 never derive the active run's routing from subsequently edited agent settings.

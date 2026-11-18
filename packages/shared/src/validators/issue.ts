@@ -979,6 +979,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
     commentClientRequestId: z.string().uuid().optional(),
+    deliveryMode: z.enum(["steer", "queue"]).optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
     onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
@@ -1165,6 +1166,7 @@ export const sendChatMessageSchema = z.object({
 export const markIssueReadSchema = z.object({ throughCommentId: z.uuid().optional() }).strict();
 
 export const addIssueCommentSchema = z.object({
+  deliveryMode: z.enum(["steer", "queue"]).optional(),
   clientRequestId: z.string().uuid().optional(),
   body: multilineTextSchema.pipe(z.string().min(1)),
   attachmentIds: issueCommentAttachmentIdsSchema.optional(),
@@ -1181,6 +1183,7 @@ export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
 /** `POST /api/issues/:id/continue`: reopen a closed issue if needed and wake its assignee. */
 export const continueIssueSchema = z.object({
+  deliveryMode: z.enum(["steer", "queue"]).optional(),
   commentId: z.string().uuid().optional(),
   reason: z.string().trim().min(1).max(500).optional(),
   idempotencyKey: z.string().uuid().optional(),

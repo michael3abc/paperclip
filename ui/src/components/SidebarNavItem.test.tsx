@@ -215,13 +215,13 @@ describe("SidebarNavItem", () => {
       expect(classTokens(label)).toContain("text-blue-600");
     });
 
-    it("frames a row that needs input in orange and labels it needs input", () => {
+    it("frames a row that pending in orange and labels it pending", () => {
       render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="needs_input" />);
 
       expect(link().getAttribute("data-agent-status")).toBe("needs_input");
       expect(classTokens(link()).some((token) => token.startsWith("ring-orange-"))).toBe(true);
       expect(classTokens(link()).some((token) => token.startsWith("ring-blue-"))).toBe(false);
-      const label = statusLabel("needs input");
+      const label = statusLabel("pending");
       expect(label).toBeTruthy();
       expect(classTokens(label)).toContain("text-orange-600");
     });
@@ -236,7 +236,7 @@ describe("SidebarNavItem", () => {
     it("shows the status label for a row that is not live-counted", () => {
       render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="needs_input" />);
 
-      expect(container.textContent).toContain("needs input");
+      expect(container.textContent).toContain("pending");
     });
 
     it("pulses the working dot", () => {
@@ -258,16 +258,16 @@ describe("SidebarNavItem", () => {
       expect(classTokens(link()).some((token) => token.startsWith("ring-blue-"))).toBe(false);
       expect(classTokens(link()).some((token) => token.startsWith("ring-orange-"))).toBe(false);
       expect(container.textContent).not.toContain("working");
-      expect(container.textContent).not.toContain("needs input");
+      expect(container.textContent).not.toContain("pending");
     });
 
     it("surfaces the status in the rail aria-label and as a dot on the icon", () => {
       sidebarState.collapsed = true;
       render(<SidebarNavItem to="/agents/all-set" label="All-Set" icon={Inbox} status="needs_input" />);
 
-      expect(link().getAttribute("aria-label")).toBe("All-Set, needs input");
+      expect(link().getAttribute("aria-label")).toBe("All-Set, pending");
       expect(link().getAttribute("data-agent-status")).toBe("needs_input");
-      expect(container.textContent).not.toContain("needs input");
+      expect(container.textContent).not.toContain("pending");
       expect(container.querySelector("[class*='bg-orange-']")).not.toBeNull();
     });
 

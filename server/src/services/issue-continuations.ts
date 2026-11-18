@@ -15,6 +15,7 @@ function continuationRequestHash(body: ContinueIssue) {
   return createHash("sha256").update(JSON.stringify({ commentId: body.commentId ?? null, reason: body.reason ?? null,
     observedStatusVersion: body.observedStatusVersion ?? null, observedRunId: body.observedRunId ?? null,
     // Omitted when absent, so receipts written before this field keep their original hash.
+    ...(body.deliveryMode ? { deliveryMode: body.deliveryMode } : {}),
     ...(body.workerSelectionId ? { workerSelectionId: body.workerSelectionId } : {}) })).digest("hex");
 }
 

@@ -6695,6 +6695,7 @@ function leaseDb(
     insert,
     execute: async () => [],
     select,
+    selectDistinct: select,
     update,
   };
   return {
@@ -9099,6 +9100,14 @@ describe("native session same-turn steering", () => {
 
     state.release?.();
     await running;
+  });
+
+  it("does not substitute a successor turn for the main's observed worker turn", async () => {
+    const { running } = await startActiveSession();
+    await expect(steerNativeSession({ runId: execution.binding.runId, message: "For the original turn only",
+      correlationId: "worker-original-turn", expectedTurnId: "provider-turn-before" })).rejects.toMatchObject({ code: "steering_stale_turn" });
+    expect(steer).not.toHaveBeenCalled();
+    state.release?.(); await running;
   });
 
   it("bounds the provider acknowledgement wait", async () => {

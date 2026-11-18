@@ -7501,6 +7501,7 @@ export async function steerNativeSession(input: {
   message: string;
   correlationId: string;
   timeoutMs?: number;
+  expectedTurnId?: string;
   onAcknowledged?: () => Promise<void>;
 }): Promise<{ turnId: string }> {
   const active = activeNativeSessions.get(input.runId);
@@ -7519,7 +7520,7 @@ export async function steerNativeSession(input: {
   }
   const snapshot = await active.session.snapshot();
   const turnId = snapshot.activeTurnId ?? null;
-  if (!turnId) {
+  if (!turnId || (input.expectedTurnId !== undefined && turnId !== input.expectedTurnId)) {
     throw new NativeSessionSteeringError(
       "steering_stale_turn",
       "The target turn is no longer active.",

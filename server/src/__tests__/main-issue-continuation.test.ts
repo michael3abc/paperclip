@@ -21,10 +21,11 @@ import { getExecutionBlocker } from "../services/execution-blocker.js";
 
 // Only the external execution edge is fake. HTTP authorization, task mutation,
 // durable wake, queue admission and delayed claim use the production services.
+const workerSteering = vi.hoisted(() => ({ state: vi.fn(), send: vi.fn() }));
 const execute = vi.hoisted(() => vi.fn(async (_input: any): Promise<any> => ({ exitCode: 0, signal: null, timedOut: false })));
 vi.mock("../adapters/index.js", async original => {
   const actual = await original<typeof import("../adapters/index.js")>();
-  const adapter = (type: string) => type === "process" ? { ...actual.getServerAdapter(type), execute } : actual.getServerAdapter(type);
+  const adapter = (type: string) => type === "ccpocket_bridge" ? { chatSteering: workerSteering } : type === "process" ? { ...actual.getServerAdapter(type), execute } : actual.getServerAdapter(type);
   return { ...actual, getServerAdapter: adapter, findActiveServerAdapter: adapter };
 });
 // The dispatch-grade validation of a new worker option is covered in main-agent-workers;
@@ -203,6 +204,38 @@ describe("main continuation from any current run of the project main", () => {
     await heartbeatService(db).drainActiveRunExecutions();
     expect(execute).toHaveBeenCalledTimes(1);
     expect((await f.receipts())[0]).toMatchObject({ actorId: f.mainId, actorRunId: run.id });
+  }, 30_000);
+
+  it.each(["post", "patch", "continue"])("HTTP %s steers a busy worker once and preserves the original receipt", async method => {
+    const f = await httpFixture(); execute.mockClear(); workerSteering.send.mockClear();
+    workerSteering.state.mockResolvedValue({ disposition: "available", turnId: "turn-live", nativeSessionId: "native-live", bridgeSessionId: "bridge-live" });
+    workerSteering.send.mockResolvedValue({ status: "acknowledged", turnId: "turn-live" });
+    const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.workerId, issueId: f.task.id,
+      status: "running", invocationSource: "on_demand", contextSnapshot: { issueId: f.task.id },
+      runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: { role: "worker", provider: "codex" } } } as never }).returning();
+    await db.update(issues).set({ status: "in_progress", executionRunId: busy.id }).where(eq(issues.id, f.task.id));
+    // PATCH retains the existing checkout boundary; this owned fixture grants
+    // the main its manager authority instead of weakening production policy.
+    if (method === "patch") await db.update(agents).set({ reportsTo: f.mainId }).where(eq(agents.id, f.workerId));
+    let commentId = f.handoff.id;
+    if (method === "continue") {
+      expect((await f.post({ commentId, idempotencyKey: randomUUID() })).status).toBe(200);
+    } else {
+      const requestId = randomUUID();
+      const send = () => method === "post"
+        ? request(f.app).post(`/api/issues/${f.task.id}/comments`).send({ body: "Inspect the new requirement immediately", clientRequestId: requestId })
+        : request(f.app).patch(`/api/issues/${f.task.id}`).send({ comment: "Inspect the new requirement immediately", commentClientRequestId: requestId });
+      const response = await send(); expect(response.status, code(response)).toBe(method === "post" ? 201 : 200);
+      commentId = method === "post" ? response.body.id : response.body.comment.id;
+      const duplicate = await send(); expect(duplicate.status, code(duplicate)).toBe(response.status);
+      expect(method === "post" ? duplicate.body.id : duplicate.body.comment.id).toBe(commentId);
+    }
+    const continued = await f.post({ commentId, idempotencyKey: randomUUID() });
+    expect(continued.status, code(continued)).toBe(200);
+    expect(continued.body.runId).toBe(busy.id); expect(workerSteering.send).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    const wakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.agentId, f.workerId)));
+    expect(wakes).toHaveLength(1); expect(wakes[0]).toMatchObject({ status: "skipped", reason: "worker_instruction" });
   }, 30_000);
 
   it("HTTP continue keeps the task's pinned model although the current worker policy no longer lists it", async () => {

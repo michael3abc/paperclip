@@ -455,11 +455,11 @@ describe("deriveProjectPmSidebarStatus", () => {
 });
 
 describe("agent sidebar status presentation", () => {
-  it("labels working in English and the input request in Chinese", () => {
+  it("labels the working and pending states", () => {
     expect(agentSidebarStatusLabel("working")).toBe("working");
-    expect(agentSidebarStatusLabel("needs_input")).toBe("needs input");
+    expect(agentSidebarStatusLabel("needs_input")).toBe("pending");
     expect(agentSidebarStatusAnnouncement("working")).toBe("working");
-    expect(agentSidebarStatusAnnouncement("needs_input")).toBe("needs input");
+    expect(agentSidebarStatusAnnouncement("needs_input")).toBe("pending");
   });
 
   it("keeps blue for working and orange for needs_input across frame, text and dot", () => {
@@ -519,5 +519,29 @@ describe("deriveChatWaitingForTaskAgentIds", () => {
   it("tolerates missing chats and live runs", () => {
     expect(deriveChatWaitingForTaskAgentIds({ chats: undefined, liveRuns: undefined }).size).toBe(0);
     expect([...deriveChatWaitingForTaskAgentIds({ chats: [chat("main-a", true)], liveRuns: null })]).toEqual(["main-a"]);
+  });
+});
+
+
+describe("Agent Chat Owner decisions", () => {
+  const ownRun = run({ agentId: "main", projectId: null });
+  const derive = (attentionItems: ItemInput) => deriveProjectPmSidebarStatus({
+    pmWorkspaces: [], selfRunAgentIds: ["main"], liveRuns: [ownRun], attentionItems, now: NOW,
+  }).get("main");
+  it.each(["issue_thread_interaction", "approval", "decision"])("attributes %s to its requesting agent without a PM binding", sourceKind => {
+    const metadata = sourceKind === "approval" ? { requestedByAgentId: "main" }
+      : sourceKind === "decision" ? { originAgentId: "main" } : { createdByAgentId: "main", kind: "request_confirmation" };
+    const request = item({ sourceKind, project: null, subject: { status: "pending", metadata } });
+    expect(derive([request])).toBe("needs_input");
+    expect(agentSidebarStatusLabel("needs_input")).toBe("pending");
+    expect(derive([])).toBe("working");
+  });
+  it.each(["accepted", "rejected", "expired", "cancelled", "draft"])("does not flag a %s decision", status => {
+    expect(derive([item({ subject: { status, metadata: { createdByAgentId: "main" } } })])).toBe("working");
+  });
+  it("excludes expired and agent-addressed requests", () => {
+    const subject = { status: "pending", metadata: { createdByAgentId: "main" } };
+    expect(derive([item({ subject, expiresAt: "2026-11-07T00:00:00Z" })])).toBe("working");
+    expect(derive([item({ subject, resolverAudience: { addresseeAgentId: "delegate" } })])).toBe("working");
   });
 });

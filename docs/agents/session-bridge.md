@@ -62,3 +62,27 @@ dispatch receipts); unknown errors stay redacted. Never replace an upstream fail
 with success. Uncertain provider sends follow the liveness-first resend rule. Update
 the canonical contract in doc/plans/2026-11-10-session-bridge-key-scope.md with
 protocol changes.
+
+
+## Main → worker instructions
+
+The project lead main's `POST /issues/:id/comments` and PATCH `comment` default to
+same-active-turn steer while that task's worker is running. `deliveryMode: queue`
+keeps normal wake delivery; idle workers and already queued messages retain their
+original delivery boundary. `POST /issues/:id/continue` with the same handoff comment
+reads its direct receipt instead of creating a second wake. System notices and
+non-main comments retain existing behavior. Owner holds, paused workers and closed
+or review-stage tasks never gain direct-input authority.
+
+A `clientRequestId` (`commentClientRequestId` on PATCH) preserves the agent-authored
+comment identity on retries. The skipped `worker-instruction:<commentId>` wake row
+is a direct-input receipt, never executable queue work; its primary-key UUID is the comment UUID. Reserve it under the issue
+lock before provider I/O. Preserve the active dispatch's adapter and exact native
+session/turn, and wait for acknowledgement. Rejected, unsupported and unknown sends
+return 409 with the comment, target run and receipt IDs; they never silently queue,
+resend or create a session, including a subsequent Continue or mode change.
+`GET /issues/:id/worker-instructions/:receiptId` reads the original receipt and
+reconciles a late acknowledgement only for its pinned turn; it never sends input.
+Existing run recovery follows liveness-first independently; these input errors do not pause
+or cancel the active worker. Codex Bridge workers require the paired adapter's
+`chatSteering` registration; other providers must expose steering explicitly.

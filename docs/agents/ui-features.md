@@ -45,14 +45,18 @@ visible in the roster/detail even when that agent's chat entry is hidden.
 Project PM sidebar rows show a presentation-only status. CoordinatorSidebar and
 both SidebarAgents variants use useProjectPmSidebarStatus; change all three in lockstep. Blue frame, `working` label and pulsing dot:
 a readable running live run belongs to a task of the PM's project, subtasks included,
-or is the PM's own run. Orange frame and `needs input`, which overrides blue: an
+or is the PM's own run. Orange frame and `pending`, which overrides blue: an
 Owner-addressed `issue_thread_interaction`, `approval` or `decision` item of that
 project is pending. Zero-slot PMs work through shared workers, so attribute through
 `GET /companies/:id/pm-workspaces` and the live run's `projectId` (omitted on runs the
 viewer cannot read), never `run.agentId`. In the Coordinator only, a listed agent that is
 not a project PM (a project main agent; momo and personal agent rows unless the person
 excluded them) shows blue `working` while its own readable run is working, by
-`run.agentId` only: no project attribution, no `needs input`, no full attention read, and
+`run.agentId` only. Owner-actionable requests also show orange `pending`, attributed by
+the request creator (`createdByAgentId`, `requestedByAgentId`, or `originAgentId`); this includes
+native plan confirmations and outranks working/waiting. Draft, resolved, expired and
+agent-addressed requests do not qualify. The shared full attention snapshot is enabled
+for listed Chat agents as well as project PMs, and
 the person's exclusion list must be loaded first. Classic SidebarAgents keeps its live dot
 for such agents. Read the
 complete attention snapshot (`attentionApi.list(..., { all: true })`), not the ranked
@@ -66,7 +70,7 @@ through the nonoptional toast actions (company/source dedupe key and failure tim
 A failed refetch retains the loaded snapshots. Use coordinatorAttentionQueryKey for
 the full feed, shared with Needs You/task attention pages and their invalidations,
 with the existing 60-second cadence. Bound PM status is the explicit full-feed
-navigation exception to upstream #18323; no bindings means no full-feed read. Keep
+navigation exception to upstream #18323; no bindings or listed Chat agents means no full-feed read. Keep
 the count-only summary separate and live-run/shared-polling ownership in callers.
 Do not restore the old Coordinator open-task query, chat inference or working ring.
 The status never changes dispatch,
@@ -91,7 +95,7 @@ viewer's chat with that agent reports `hasLiveChildTasks` from
 sets it when a readable, unhidden task that chat created in its current session
 (`chat_task_handoffs`) or a direct subtask of the chat has a `queued`, `running` or
 `scheduled_retry` run (`server/src/services/agent-chat-live-tasks.ts`). Working and
-needs input outrank it; it is computed from runs, not chat state, and does not read
+`pending` outrank it; it is computed from runs, not chat state, and does not read
 the PM status exclusion list. Native subagents exist only in run transcripts and are
 not included. Run lifecycle live events (queued, and every status except `running`)
 refetch the viewer's chat list unless the run belongs to the chat itself; there is

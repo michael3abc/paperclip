@@ -13207,9 +13207,9 @@ export function issueService(db: Db) {
           .censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
-      if (actor.userId && options?.clientRequestId) {
+      if ((actor.userId || actor.agentId) && options?.clientRequestId) {
         const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
-          eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));
+          actor.agentId ? eq(issueComments.authorAgentId, actor.agentId) : eq(issueComments.authorUserId, actor.userId!), eq(issueComments.clientRequestId, options.clientRequestId)));
         if (existing) {
           if (existing.body !== redactedBody) throw conflict("Message request ID was already used for different content");
           return existing;
