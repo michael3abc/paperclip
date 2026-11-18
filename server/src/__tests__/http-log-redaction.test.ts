@@ -7,6 +7,19 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
 import { HTTP_LOG_REDACT_PATHS } from "../middleware/http-log-redaction.js";
+
+it.each([400, 500])("keeps host Claude login codes out of %i diagnostics", async status => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.use(express.json());
+  const canary = "host-claude-private-code-canary";
+  app.use((_req, _res, next) => next(new HttpError(status, canary)));
+  app.use(errorHandler);
+  await request(app).post("/api/companies/company/dashboard/host-claude/sessions/id/code").send({ browserCode: canary });
+  expect(chunks.join("")).not.toContain(canary);
+});
 import { errorHandler } from "../middleware/error-handler.js";
 import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";

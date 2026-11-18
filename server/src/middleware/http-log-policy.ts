@@ -113,10 +113,15 @@ export function isPrivateWebhookHttpRequest(
  * error metadata for the whole route. Webhook failures also use generic error
  * metadata: raw provider text/files/credentials cannot be named-field redacted.
  */
+export function isPrivateHostClaudeHttpRequest(url: string | undefined): boolean {
+  return !!url && /^\/api\/companies\/[^/]+\/dashboard\/host-claude(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""));
+}
+
 export function isSecretSensitiveHttpRequest(
   method: string | undefined,
   url: string | undefined,
 ): boolean {
+  if (isPrivateHostClaudeHttpRequest(url)) return true;
   if (isPrivateWebPushHttpRequest(url)) return true;
   if (isPrivateWebhookHttpRequest(method, url) || isPrivateMuseHttpRequest(url)) return true;
   if (url && normalizePath(url).startsWith("/mcp/files/")) return true;

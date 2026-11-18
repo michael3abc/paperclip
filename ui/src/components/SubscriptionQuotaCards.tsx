@@ -8,6 +8,7 @@ import { formatDateTime } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { QuotaBar } from "./QuotaBar";
+import { HostClaudeLogin } from "./HostClaudeLogin";
 
 const PROVIDERS = [
   { id: "openai", title: "Codex" },
@@ -101,6 +102,6 @@ export function SubscriptionQuotaCards({ companyId }: { companyId: string }) {
   });
   if (access.isError) return <p className="text-sm text-destructive">Could not check access to subscription quotas.</p>;
   if (!allowed) return null;
-  return <SubscriptionQuotaPanels accounts={quotas.data ?? []} refreshing={quotas.isFetching}
-    failed={quotas.isError} onRefresh={() => { void quotas.refetch(); }} />;
+  return <div className="space-y-6"><HostClaudeLogin companyId={companyId} /><SubscriptionQuotaPanels accounts={quotas.data ?? []} refreshing={quotas.isFetching}
+    failed={quotas.isError} onRefresh={() => { void quotas.refetch(); }} /></div>;
 }

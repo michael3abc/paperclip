@@ -86,6 +86,28 @@ projection as desktop; do not toggle only the hidden desktop panel.
 
 ## Host subscription quota dashboard
 
+Dashboard also offers **主機 Claude 登入** to instance administrators. It lists
+hosts enrolled for the current company in `PAPERCLIP_CCPOCKET_HOSTS_FILE`
+(default `~/.config/paperclip-ccpocket/hosts.json`). A host opts in with
+`claudeLogin: { command: "/absolute/path/to/claude", configDir?: "/absolute/path" }`.
+The existing `sshAlias` selects remote execution; no local fallback is used.
+The administrator starts sign-in, opens the Claude authorization page, pastes
+the browser code, and waits for the native CLI's successful exit plus a fresh
+`auth status --json` showing `loggedIn: true, authMethod: "claude.ai"`. Status
+checks are explicit; only an active five-minute login is polled. Existing host
+credentials are updated by Claude itself, independently of managed connections.
+
+Human-only endpoints under `/api/companies/:companyId/dashboard/host-claude`:
+GET lists enrolled hosts; POST `/:hostId/check` reads native login status; POST
+`/:hostId/login` starts a login; GET `/sessions/:id` reads that user's session;
+POST `/sessions/:id/code` accepts `{ browserCode }`; POST `/sessions/:id/cancel` stops it.
+Responses are no-store. Sessions/URLs/codes live only in memory, are scoped to
+company and initiating administrator, and disappear on restart/expiry. CLI and
+SSH diagnostics are discarded. Cancellation/EOF/deadline kill the terminal's
+process group on its host. Closing the page leaves at most the five-minute
+deadline; sign-in failures are explicit and never retried automatically.
+No inference, Bridge restart, new database table or new dependency is required.
+
 Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service
 to show Codex, Claude and Antigravity subscription cards on Dashboard. This is
 off by default. GET /api/companies/:companyId/dashboard/subscription-quotas

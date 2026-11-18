@@ -1,5 +1,13 @@
 # AGENTS.md
 
+Host Claude sign-in on Dashboard is human-only and instance-admin-only. Use the
+company-scoped CC Pocket host registry and its explicit `claudeLogin.command`
+and optional `configDir`; never accept a client command, path or SSH target. Run
+native `claude auth login --claudeai` on that host; credentials stay there. Bind
+temporary sessions to company/user/host, allow one active login per host, expire
+after five minutes, and confirm `auth status --json` reports a Claude.ai login.
+Never persist authorization URLs, codes, CLI output or credentials in audit/logs.
+
 Guidance for human and AI contributors working in this repository.
 
 Execution is liveness-first (Owner 2026-11-13). The binding source is

@@ -1683,6 +1683,7 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
+  if (path.startsWith("/api/companies/{companyId}/dashboard/host-claude")) return "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
       || key === "POST /api/mcp/requests/{id}/dot-pairing/preview"
@@ -6446,6 +6447,66 @@ registry.registerPath({
   summary: "Read the company-selected host subscription quotas",
   description: "Instance administrators only, with company access. Explicit PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 opt-in; otherwise returns an empty list. Uses the company-selected host's Codex, Claude and Antigravity CLI logins, independently of managed AI connections. Operator configuration selects local or remote SSH collection; client host parameters cannot override it. Remote credentials stay on their host, without local fallback. No inference or credit overage is started. Results are cached for 60 seconds per company and source; unavailable quotas remain explicit failures.",
   request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/dashboard/host-claude", tags: ["dashboard"],
+  summary: "List company host Claude login capabilities",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-claude/{hostId}/check", tags: ["dashboard"],
+  summary: "Check native host Claude login",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-claude/{hostId}/login", tags: ["dashboard"],
+  summary: "Start native host Claude sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/dashboard/host-claude/sessions/{id}", tags: ["dashboard"],
+  summary: "Read own host Claude sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-claude/sessions/{id}/code", tags: ["dashboard"],
+  summary: "Submit own host Claude authorization code",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }), body: { content: { "application/json": { schema: z.object({ browserCode: z.string().min(1).max(4096) }) } } } },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-claude/sessions/{id}/cancel", tags: ["dashboard"],
+  summary: "Cancel own host Claude sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 

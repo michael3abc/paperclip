@@ -9,6 +9,12 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Host Claude login (`michael/host-claude-login`): Dashboard administrators can
+  check or sign into company-enrolled local/SSH hosts through native Claude
+  browser authorization and code submission. Native host credentials remain
+  on their host; one bounded session per host, scoped to company and user.
+  No migration or new dependency. See doc/DEVELOPING.md.
+
 - Pending request lifecycle (`michael/pending-request-lifecycle`, HOM-394): an
   authorized explicit cancellation abandons review without a rejection or worker
   wake. Task-scoped obsolete AI authentication cards formally expire on canonical
