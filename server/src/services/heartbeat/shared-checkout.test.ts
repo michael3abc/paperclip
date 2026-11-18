@@ -249,7 +249,7 @@ it("releases a terminal local-process holder at once and still records its bound
   const [a, b] = await fixture(false); await claimSharedCheckout(db, a); await claimSharedCheckout(db, b);
   await runChildProcess(a.runId, process.execPath, ["-e", "console.log('settled-process')"], {
     cwd: a.cwd, env: {}, timeoutSec: 5, graceSec: 1, onLog: async () => {},
-    onSpawn: async meta => { await persistHeartbeatRunProcessMetadata(db, a.runId, meta); },
+    onSpawn: async meta => { await persistHeartbeatRunProcessMetadata(db, a.runId, { ...meta, targetKind: "local" }); },
   });
   await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, a.runId));
   await expect(retirementEligible(b)).resolves.toBe(true);

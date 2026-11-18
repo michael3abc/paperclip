@@ -276,7 +276,7 @@ function preDispatchExecutionWaitPredicate() {
     OR ${supersededScheduledDispositionRepairPredicate()})`;
 }
 
-export async function isPreDispatchExecutionWaitVerified(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+export async function isPreDispatchExecutionWaitVerified(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "errorCode" | "runtimeMode"> & Partial<Pick<typeof heartbeatRuns.$inferSelect, "scheduledRetryReason">>): Promise<boolean> {
   if (run.runtimeMode !== "legacy" ||
       run.errorCode !== "execution_reconciliation_required" && run.errorCode !== "legacy_disposition_repair_suppressed"
       && run.errorCode !== "issue_disposition_repair_superseded"

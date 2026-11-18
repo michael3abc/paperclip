@@ -14,7 +14,7 @@ vi.mock("../api/costs", () => ({ costsApi: { byProject } }));
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const row = (overrides: Partial<CostByProject> = {}): CostByProject => ({
-  projectId: "project-1", projectName: "Research", eventCount: 1, estimatedEventCount: 0,
+  projectId: "project-1", projectName: "Research", eventCount: 1, estimatedEventCount: 0, unpricedEventCount: 0,
   costCents: 0, inputTokens: 100, cachedInputTokens: 50, outputTokens: 10, ...overrides,
 });
 

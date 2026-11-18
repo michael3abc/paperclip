@@ -10,9 +10,41 @@ Human messages use their stored authenticated author. Queued messages retain the
 
 Delegated work and interactions persist their originating context. Retries retain the originating run's active context. Background continuations carry their source run; dependency wakes use the task's continuation context, independently of its owner. Scheduled and webhook routines use the routine's responsible person; manual invocations use the caller, and edits preserve the routine's responsible person.
 
+An accepted connection request continues for the addressed person who connected
+the account. If an authorized transfer changed that person, the new run records
+a connection handoff and keeps the original context as its audit parent.
+Declined or automatically closed requests and ordinary approvals retain their
+originating identity. Automatic retirement observes the addressee's existing
+access; its wake does not attribute work to that person or authorize use of that
+person's accounts. A request transfer alone cannot authorize that identity.
+Retries keep the previous run's latest accepted context,
+even when the retry still references the original request. If that context is
+unavailable, a retry that references a connection request stops instead of replaying
+the handoff or falling back to another person. An ordinary approval retry
+restores the approval's saved originating context when the prior run never
+initialized an identity, including an explicitly absent person. Otherwise,
+an ordinary retry after a
+preparation failure retains its existing responsible-user resolution when no
+identity context was initialized. It prefers the source run's stored person
+when available and can process newly authorized messages. It does not adopt
+the task's old continuation identity. A new explicit operator action retains
+precedence.
+A transfer grants no
+credential access; connection selection still checks the new person's grants and
+policies.
+
 ## Managed GitHub operations
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.
+
+When the broker returns a managed credential, `gh repo create`, its
+`gh repo new` alias, and `gh repo fork` stop before they run. The message
+names the connection's `create_repository` or `fork_repository` tool. Those
+tools apply the connection's tool access rules, approvals, owner defaults, and
+audit, which a raw `gh` command cannot. The agent then uses Git to push to the
+new repository or to clone the fork. `--help` still runs. Without a managed
+credential, `gh` runs these commands unchanged. This guidance is not a
+security boundary: any command that receives the token can call the GitHub API.
 
 A `git` command that never uses the network does not ask the broker. The launcher reads past the global options, such as `-C` and `-c`, and checks the subcommand against a short list (for example `status`, `diff`, `diff-files`, `write-tree`, `log`, `rev-parse`, `add`, `config`, `branch`, `checkout`). This includes the index comparison and tree writing used by workspace snapshots. An unknown subcommand or option still asks. `commit` and `var` still ask, because the managed author comes from the broker answer. The launcher keeps no broker answer between invocations and never writes a credential to a file.
 
@@ -55,12 +87,19 @@ the active run through that broker. They do not require a persistent GitHub CLI
 login or inherit an ambient host broker capability.
 
 Claude through native ACPX retains the controller-projected broker URL and
-session/bridge capabilities alongside its managed launcher paths. Both isolated
+session/bridge capabilities alongside its managed launcher paths through both
+the Rust daemon-to-sidecar and TypeScript provider launch boundaries. Both isolated
 and preconfigured homes use this transport for shell `git` and `gh` operations.
 These capabilities stay out of persisted session environment data. Raw GitHub
 tokens remain confined to each managed command; ambient host capabilities and
 task-supplied broker overrides are excluded. A working connector tool alone does
 not prove that the terminal received its broker transport.
+
+The Rust sidecar launch accepts this transport only for Claude with a nonempty
+managed launcher directory. Existing saved sessions retain their profile and
+checkpoint format. A running provider needs its normal retirement and restart
+to receive the repaired launch environment; reconnecting the GitHub account
+does not repair a process that already started without the transport.
 
 Without a managed identity, local commits default to
 `Paperclip <noreply@paperclip.ing>`. The launcher writes this token-free default
@@ -177,6 +216,15 @@ these company-scoped records when their company is deleted. Run-scoped adapters 
 Native warm sessions retain their token-free launchers and inactive broker until
 session retirement; environment deletion and orderly controller shutdown close
 idle owners first. Cleanup failures are logged and do not change the run result.
+
+Remote native sessions verify the GitHub callback bridge from inside their execution
+environment before publishing the launcher environment. The probe authenticates
+to the inactive broker and acquires no GitHub credential. If the HTTP/2 bridge
+fails this startup check, the controller closes it and tries the existing file
+bridge once. Both transports use the same live identity and credential resolver.
+An unverified final bridge is stopped before anonymous launchers are returned.
+This startup fallback cannot replay an agent command. A later HTTP/2 loss
+still makes the warm session unavailable for reuse.
 
 ## Project authorization for background repository work
 

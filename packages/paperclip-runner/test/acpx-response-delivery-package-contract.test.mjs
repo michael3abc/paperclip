@@ -9,7 +9,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const acpxRoot = process.env.PAPERCLIP_TEST_ACPX_PACKAGE_ROOT ?? dirname(require.resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js")));
+const { J: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/queue-owner-runtime-ucHvXJ33.js")));
 const deferred = () => Promise.withResolvers();
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 

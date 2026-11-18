@@ -16,6 +16,8 @@ import {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceSummaryIdsQuerySchema,
+  executionWorkspaceSummaryPageQuerySchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
@@ -135,7 +137,17 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
+    let ids: string[] | undefined;
+    if (req.query.ids !== undefined) {
+      const parsedIds = executionWorkspaceSummaryIdsQuerySchema.safeParse(req.query.ids);
+      if (!parsedIds.success) {
+        res.status(422).json({ error: "Invalid workspace ids", details: parsedIds.error.flatten() });
+        return;
+      }
+      ids = parsedIds.data;
+    }
     const filters = {
+      ids,
       readCondition: await executionWorkspaceReadSqlCondition(db, req.actor),
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
@@ -144,6 +156,15 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       reuseEligible: req.query.reuseEligible === "true",
       selectableForTask: req.query.selectableForTask === "true",
     };
+    if (req.query.summary === "true" && (req.query.limit !== undefined || req.query.cursor !== undefined)) {
+      const pagination = executionWorkspaceSummaryPageQuerySchema.safeParse({ limit: req.query.limit, cursor: req.query.cursor });
+      if (!pagination.success) {
+        res.status(422).json({ error: "Invalid workspace summary pagination", details: pagination.error.flatten() });
+        return;
+      }
+      res.json(await svc.listSummaries(companyId, filters, pagination.data));
+      return;
+    }
     const workspaces = req.query.summary === "true"
       ? await svc.listSummaries(companyId, filters)
       : await svc.list(companyId, filters);
@@ -584,7 +605,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       },
       run: async (reportProgress) => {
         const ensureWorkspaceAvailable = async () =>
-          await ensurePersistedExecutionWorkspaceAvailable({
+          await withExecutionWorkspaceLifecycleLock(db, existing.id, () => ensurePersistedExecutionWorkspaceAvailable({
             base: {
               baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
@@ -625,7 +646,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               companyId: existing.companyId,
             },
             recorder,
-          });
+          }));
 
         if (action === "run") {
           if (!workspaceCommand || workspaceCommand.kind !== "job") {

@@ -4,8 +4,39 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded merge base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (2026-11-18 merge candidate; deployment pending). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
+
+## 2026-11-18 upstream merge (HOM-396; candidate)
+
+Merge upstream tip 8282d386da5a36ae2c4d8846f227c3d26e2b4049 into the
+92b9f2a7cf980cacd38bf18f1989b83eb4cd450e fork history, retaining custom
+behavior and the original commit graph. Initial conflicts: 233 files. Decisions
+and measured checks: [sync-decisions](/HOM/issues/HOM-396#document-sync-decisions).
+This entry records the merge candidate, not a production release. The live
+baseline at the start was a614a7c5a-r1; deployment needs the task's separate
+confirmation, DB clone upgrade, candidate smoke and T4 cutover gates.
+
+Upstream 0432–0498 stays unchanged. Fork migration SQL bytes and hashes stay
+unchanged, so the published hash-only migration history recognizes them after
+renumbering. The merged journal has 509 entries; a reconciled baseline has
+442 applied entries, leaving 67 upstream migrations. Both SQL histories must
+be reviewed and proved on an isolated production DB clone.
+
+| Published fork file | Merged file |
+| --- | --- |
+| `0432_productive_changeling.sql` | `0499_productive_changeling.sql` |
+| `0433_ambitious_the_order.sql` | `0500_ambitious_the_order.sql` |
+| `0434_sturdy_maestro.sql` | `0501_sturdy_maestro.sql` |
+| `0435_giant_thunderbird.sql` | `0502_giant_thunderbird.sql` |
+| `0436_woozy_blizzard.sql` | `0503_woozy_blizzard.sql` |
+| `0437_sparkling_puma.sql` | `0504_sparkling_puma.sql` |
+| `0438_curved_luckman.sql` | `0505_curved_luckman.sql` |
+| `0439_cloudy_dark_phoenix.sql` | `0506_cloudy_dark_phoenix.sql` |
+| `0440_fine_leper_queen.sql` | `0507_fine_leper_queen.sql` |
+| `0441_robust_ironclad.sql` | `0508_robust_ironclad.sql` |
+| `0442_loose_masque.sql` | `0509_loose_masque.sql` |
+| `0443_square_doorman.sql` | `0510_square_doorman.sql` |
 
 ## Custom history
 

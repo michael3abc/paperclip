@@ -5,11 +5,12 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const root = dirname(require.resolve("acpx/package.json"));
+const root = process.env.PAPERCLIP_TEST_ACPX_PACKAGE_ROOT ?? dirname(require.resolve("acpx/package.json"));
 const {
-  _: createConversation, y: recordSubmission, n: runPromptTurn,
-  dt: serialize, ut: parse, tt: assertKeyPolicy,
-} = await import(pathToFileURL(join(root, "dist/live-checkpoint-BSIrfgVo.js")));
+  H: createConversation, W: recordSubmission, l: runPromptTurn,
+} = await import(pathToFileURL(join(root, "dist/queue-owner-runtime-ucHvXJ33.js")));
+
+const { U: serialize, V: parse, B: assertKeyPolicy } = await import(pathToFileURL(join(root, "dist/ipc-CQUNQ8QQ.js")));
 
 async function recordReceipt(metadata, usage = { inputTokens: 12, outputTokens: 3 }) {
   const conversation = createConversation();

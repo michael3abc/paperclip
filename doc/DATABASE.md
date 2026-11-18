@@ -1,6 +1,6 @@
 # Database
 
-### Durable native provider backups
+How to run Paperclip against PostgreSQL, change the schema, and write migrations.
 
 `native_harness_backups` journals encrypted provider-session archives in object
 storage. One current row per company and session scope selects the published
@@ -445,17 +445,6 @@ That's it. On first start the server:
 
 Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
 
-Subscription reporting adds `ai_subscriptions` (company-scoped account identity),
-`ai_subscription_prices` (immutable price revisions), and
-`ai_subscription_connections` (selected grant-to-account bindings). New managed
-subscription receipts also have a nullable `cost_events.subscription_id`.
-Migration `0322_reflective_kree.sql` is replay-safe and leaves existing cost
-amounts and receipts untouched. No historical account attribution is inferred.
-Deleting a connection removes its binding but retains subscription price history;
-disconnecting is not proof that provider billing ended. See
-[subscription cost reporting](connections/AI-CONNECTIONS.md#subscription-cost-reporting)
-for the reporting and ownership rules.
-
 If you need to apply pending migrations manually, run:
 
 ```sh
@@ -463,18 +452,6 @@ pnpm db:migrate
 ```
 
 When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
-
-Issue reference mentions follow the normal migration path: the schema migration creates the tracking table, but it does not backfill historical issue titles, descriptions, comments, or documents automatically.
-
-To backfill existing content manually after migrating, run:
-
-```sh
-pnpm issue-references:backfill
-# optional: limit to one company
-pnpm issue-references:backfill -- --company <company-id>
-```
-
-Future issue, comment, and document writes sync references automatically without running the backfill command.
 
 This mode is ideal for local development and one-command installs.
 
@@ -552,138 +529,6 @@ DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGIO
 
 If your transaction-mode pooler does not support protocol-level named prepared statements, set `DATABASE_PREPARED_STATEMENTS=false`. If your pooler supports them, you can opt in with `DATABASE_PREPARED_STATEMENTS=true`. Check your provider's pooler configuration before you enable this setting. Keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
 
-### Client tuning (optional)
-
-All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
-
-```sh
-DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
-DATABASE_POOL_MAX=25                 # connection pool size; default: 10
-DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
-DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
-DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
-DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
-```
-
-An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
-for parameterized ORM queries, transactions, reserved connections, and dedicated
-clients. Postgres.js manages the statement cache. This does not cache query
-results. Bound values and returned data stay fresh. Explicit per-query options
-still apply, including `prepare: false` and simple-protocol execution. With the
-setting unset, ORM queries keep their existing unprepared behavior and tagged
-SQL uses the driver default. With `false`, preparation stays disabled.
-
-### Bounded response diagnostics
-
-`PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW=<start>/<end>` enables one explicit UTC
-window. Both timestamps use ISO format ending in `Z`. The window lasts at most
-60 seconds and starts within 30 minutes. Unset, invalid, and expired windows
-leave database construction unchanged. An expired window stays inactive after a
-restart; remove the setting after the investigation.
-
-The diagnostic measures awaited Postgres.js `unsafe` responses before Drizzle
-column decoding. It issues no queries. Configuration is read when each database
-client is created; setting the environment on an already-running process does
-not install the capture on existing clients. Prepare the deployment artifact
-before choosing the UTC window, then start the window after rollout and warm-up.
-
-Server entry points use `withDatabaseOperation(owner, action)` to name the work
-that executes queries. Owners are fixed semantic labels, never request paths,
-company or run IDs, user input, or SQL. The execution owner is captured for each
-query and retained through completion, including transactions and dedicated
-pools. A prepared query reused by different operations keeps the owner of each
-execution. The builder caller is separate from that execution owner.
-Owner context is active while a valid future window is armed, up to 30 minutes
-before its start, so work that crosses the start boundary keeps its owner. Query
-accounting starts only at the window start. With no armed window, or after
-expiry, the owner helper calls the action directly without a context scope.
-
-The capture aggregates owner, static schema table, operation, calls, returned
-rows, query errors, and total/maximum completion wall time. `totalWallMs` and
-`maxWallMs` include pool, database, network, and event-loop waits; they are not
-CPU measurements, and concurrent query durations overlap. Timing excludes the
-capture's response sizing. Rank calls and returned rows both per second and per
-completed service operation; a busy owner is not necessarily wasteful.
-
-Response sizing samples successful results 1, 17, 33, and so on per aggregate
-group (`sampleEvery: 16`). It examines at most
-256 cells, 65,536 string code units, and 65,536 value bytes per sampled result;
-an individual string over 16,384 code units is not measured. Parsed objects and
-other complex values are not serialized. Oversized, complex, or unexamined
-values leave an incomplete sample. `sampledValueBytes` is a lower bound over
-sampled primitive values, not a total response-size estimate or network bytes.
-Do not extrapolate it as the total bytes returned by the database. Inspect
-`sampledResults`, `sampledRows`, `measuredValues`, `unmeasuredValues`, and
-`incompleteSamples` alongside it. `sizingWallMs` records the diagnostic's sizing
-work separately. Use a separate capture-disabled CPU profile to measure normal
-processing cost.
-
-The diagnostic emits at most 2,048 aggregate groups and a summary. Measurement
-stops at the deadline. Environment-enabled
-captures emit at most 64 records per second and can take another 33 seconds to
-finish writing the bounded output. Wait for the summary before collecting it.
-It never logs SQL, parameters, result
-values, connection strings, or query errors. In-flight queries continue normally.
-
-Semantic owners work in a bundled server without source maps. Specific owners
-avoid stack capture. The generic `http.request` owner keeps its exact name but,
-like an unowned query, also captures a bounded caller location during the window.
-For wrapped query builders, a map-free hosted bundle retains one static generated
-construction-site anchor (`dist-runtime/server.mjs`, `index.mjs`, or
-`chunk-<build hash>.mjs`, with line and column). Correlate it with the exact serving
-revision and bundle; it is not a TypeScript location or an execution-time CPU
-owner. Capture wrapper frames are excluded before reading the stack, and deeper
-frames in the same bundle are omitted.
-
-Unscoped driver calls, including relational queries, do not accept generated
-anchors: a bundled ORM helper could otherwise be mistaken for an application
-caller. They can still retain existing public source/dist locations; linked
-source maps and Node's `--enable-source-maps` may help resolve those locations.
-Restore prior Node options after capture. Missing callers remain unknown and
-still contribute to totals. Disabled, future and expired windows do not capture
-stacks; wrappers installed for an armed window remain after expiry. Active census
-stack capture, grouping and bounded sizing add measurement overhead. More caller
-groups still share the existing group, page and output-rate caps. This diagnostic
-is not a production performance improvement.
-
-Look for `paperclip.db_response_capture.entry.v2` and
-`paperclip.db_response_capture.summary.v2` in the process logs. Version 2 uses
-sampled, bounded primitive-value sizing; do not interpret it as the version 1
-all-result byte estimate. A log provider
-can store `event` as a structured field instead of message text. Filter by that
-field or read the bounded window from the exact deployment. Check the summary
-and group totals, including the unattributed overflow group.
-
-Fetch a complete capture as follows:
-
-1. Read the summary events from the exact deployment and window. Keep each
-   distinct `captureId` separately.
-2. Each entry has a unique `groupIndex` within that capture and a `groupPage`.
-   The summary gives `groupPageSize` (128) and `groupPages`. Fetch every page
-   from zero through `groupPages - 1`, filtering on the entry event, `captureId`,
-   and `groupPage`. Request at least `groupPageSize` matching records per page.
-   A structured query can use
-   `@event:paperclip.db_response_capture.entry.v2 AND @captureId:<id> AND @groupPage:0`.
-3. If the provider's record limit is smaller than a page, fetch each
-   `groupIndex` separately with the same capture ID. Each index matches one
-   entry. Do not split by timestamp: entries can share a timestamp.
-4. Deduplicate by `(captureId, groupIndex)`. Require every index from zero
-   through `groups - 1`, with no gaps. Entry count must equal `groups`, summed
-   `calls` must equal `completedQueries`, and summed `rows`, `sampledResults`,
-   and `sampledValueBytes` must equal their summary totals. A missing page is an
-   incomplete measurement. Keep overflow and unattributed groups visible.
-
-Tagged raw-driver calls, streams, unawaited raw-driver
-dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
-Queries still in flight at the deadline are reported separately. The census does
-not include every PostgreSQL statement or internal transaction command, so its
-calls are not interchangeable with database-wide commit counters. It does not
-measure SQL compilation, driver parsing CPU, or Drizzle row-mapping CPU. Use the
-ranked owners to choose a narrow follow-up profile or synchronous-stage
-measurement; do not attribute CPU by subtracting process CPU usage across an
-asynchronous query. Remove the capture setting after collecting its final
-summary; the absolute deadline already prevents further measurement.
-
 ### Push the schema
 
 ```sh
@@ -700,14 +545,239 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
-## Connection loss and retries
+## Client tuning (optional)
 
-HTTP access logs distinguish a completed response from a connection that closes
-before or during the response. An aborted request has no success status in the
-log message. The structured response status is null when headers were not sent;
-after headers, it retains the status sent before the abort. These logs describe
-HTTP delivery, not database settlement. A disconnected issue PATCH may continue
-running, so an aborted response does not prove that its writes rolled back.
+All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
+
+```sh
+DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
+DATABASE_POOL_MAX=25                 # connection pool size; default: 10
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
+DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
+DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default for the server's main pool: paperclip:<boot id>
+```
+
+The server names its main pool `paperclip:<boot id>`, so after a restart the
+sessions of each server process can be told apart in `pg_stat_activity`. When a
+run's event, process identity, or event-write operation stays unfinished for
+30 seconds, the server logs one warning per stalled run ("runner event intake
+stalled"). The warning lists the pending operations of each run, the pool size,
+the database sessions per application name and state, and the sessions that
+wait for a lock or hold one (`pg_blocking_pids`, query text without literals,
+cut to 160 characters). It also logs the event-loop lag. A second line
+("runner event intake stall cleared") records when the operation finished. The
+check runs only while an operation is pending, and it reads `pg_stat_activity`
+only when it reports a stall.
+
+`withDedicatedDbConnection` gives an action exclusive use of one session outside
+the main pool (application name `paperclip-workspace-finalization-lock`). Each
+`createDb` owner keeps released single-connection clients idle for reuse: always
+up to `DEDICATED_CONNECTION_IDLE_MAX` (4), and more while idle plus in-use
+clients stay within `DATABASE_DEDICATED_CONNECTION_MAX`, so a recurring burst
+reuses the sessions the previous burst opened instead of reconnecting. They
+follow the same idle timeout and max lifetime as the main pool, so a retained
+client closes its session after `DATABASE_IDLE_TIMEOUT_SECONDS` without use. At most `DATABASE_DEDICATED_CONNECTION_MAX`
+(default 24) dedicated clients are in use at once per owner. A caller that
+finds the limit reached waits in a first-in, first-out queue. A caller that
+already holds a dedicated client, or runs inside an open transaction of the
+same process, is admitted at once, because its wait could deadlock with the
+holder that it blocks. A caller that holds another bounded resource that a
+holder can need passes `{ admitWithoutWaiting: true }` for the same reason; the
+skill package store does this while it holds one of its package I/O permits
+(at most 2 storage and 2 response permits). Such callers can take the in-use
+count above the limit.
+A caller that waits longer than `DATABASE_DEDICATED_CONNECTION_WAIT_MS`
+(default 30000) is admitted over the limit, so a lock cycle that the database
+cannot see ends in a delay, not a hang. A connection whose action throws is
+closed, never reused. Actions must keep
+session state transaction-scoped (`pg_advisory_xact_lock`,
+`set_config(..., true)`). Like the main pool, a retained session sees an
+`ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
+that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
+and ending the owner client close the idle set.
+
+Connections per server process, at most (`databaseConnectionBudget` in
+`packages/db/src/client.ts` computes this, and a test keeps it equal to the
+pool settings):
+
+| Source | Connections |
+| --- | --- |
+| Main pool | `DATABASE_POOL_MAX` (driver default 10) |
+| Private pools: controller lease 2, legacy controller lease 1, controller-instance lease 1, runner checkpoint 3, file storage 2 | 9 |
+| Notification listeners: plugin lifecycle 1, deployment notifications 1 | 2 |
+| Dedicated clients: 2 x `DATABASE_DEDICATED_CONNECTION_MAX` in use (one nested client per holder) + 4 idle | 52 with the default limit |
+| Total with defaults | 73 |
+
+A separate `DATABASE_MIGRATION_URL` adds a second owner with its own pools.
+Admission over the limit after the wait bound can exceed this total.
+
+An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
+for parameterized ORM queries, transactions, reserved connections, and dedicated
+clients. Postgres.js manages the statement cache. This does not cache query
+results. Bound values and returned data stay fresh. Explicit per-query options
+still apply, including `prepare: false` and simple-protocol execution. With the
+setting unset, ORM queries keep their existing unprepared behavior and tagged
+SQL uses the driver default. With `false`, preparation stays disabled.
+
+With `true`, a database client and its private pools prepare at most 1,000
+distinct SQL texts, and never a text longer than 8 KB; other texts run
+unprepared. A transaction-mode pooler
+(PgBouncer 1.22 or later, Neon `-pooler` hosts) shares prepared statements by
+SQL text across clients, so after a migration changes a column type, the
+pooler's statement for an affected text keeps failing with `cached plan must
+not change result type` for every client and every process. When a statement
+fails with that error, `prepared statement does not exist` (26000), or a
+duplicate statement name (42P05), the client stops preparing that text for the
+rest of the process and retries once without preparation. A pooled statement
+is retried on its own. When the failed statement is the first one that the
+transaction ran (after `SET TRANSACTION` only), the client rolls back, begins
+again with the same options, repeats the `SET TRANSACTION` statements, and runs
+the statement unprepared on the same connection. The transaction callback does
+not run again and receives the result. A later statement in a transaction, or a
+statement in a savepoint, is not retried, so that transaction or savepoint fails
+once for each affected text in each process. `preparedStatementStats(db)`
+reports the prepared texts and the unprepared, demoted, retried, and restarted
+counts.
+
+## Switching between modes
+
+The database mode is controlled by `DATABASE_URL`:
+
+| `DATABASE_URL` | Mode |
+|---|---|
+| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| `postgres://...localhost...` | Local Docker PostgreSQL |
+| `postgres://...supabase.com...` | Hosted Supabase |
+
+Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+
+## Schema change workflow
+
+When you change the data model:
+
+1. Edit `packages/db/src/schema/*.ts`.
+2. Export each new table from `packages/db/src/schema/index.ts`.
+3. Generate the migration from the repository root:
+
+   ```sh
+   pnpm db:generate
+   ```
+
+4. Validate that everything compiles:
+
+   ```sh
+   pnpm -r typecheck
+   ```
+
+`pnpm db:generate` compiles `packages/db` first, because
+`packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
+Then update every layer that the change affects: `packages/shared` types and
+validators, `server` routes and services, and `ui` API clients and pages.
+
+### Migration compatibility with the running release
+
+Paperclip Cloud starts a new release while the previous one is still serving
+against the same database. Every migration is therefore classified by
+`packages/db/src/migration-compatibility.ts` as one of:
+
+| Class | Meaning | Examples |
+| --- | --- | --- |
+| `online_compatible` | The previous release keeps working and no lock is held for long. A deployer applies it without a pause. | `CREATE TABLE` and anything on a table created in the same migration, `CREATE INDEX CONCURRENTLY`, `ADD COLUMN` that is nullable or has a constant default, `ADD CONSTRAINT ... NOT VALID`, `CREATE TYPE`, `ALTER TYPE ... ADD VALUE` |
+| `requires_staging` | The previous release breaks or its writes are rejected. Ship it in two releases: expand first, contract later. | `DROP TABLE`/`DROP COLUMN`, renames, `ALTER COLUMN ... TYPE`, `SET NOT NULL`, `DROP DEFAULT`, a `NOT NULL` column without a default, a validated `CHECK`, a `UNIQUE` constraint or unique index on an existing table, `TRUNCATE`, `DELETE` |
+| `unknown` | The classifier cannot prove either. This includes every statement it does not recognize and every lock or duration hazard (reason codes starting with `lock_hazard_`). | plain `CREATE INDEX` on an existing table, a validated foreign key on an existing table, `VALIDATE CONSTRAINT`, `UPDATE` backfills, procedural `DO` blocks, `CREATE OR REPLACE FUNCTION`, triggers on existing tables, `DROP INDEX`, `DROP CONSTRAINT` |
+
+A migration takes the worst class of its statements. Lock and duration hazards
+are `unknown`, not compatible with a warning.
+
+A table counts as created in the migration when the statement is a plain
+`CREATE TABLE`, or a `CREATE TABLE IF NOT EXISTS` for a table that no earlier
+migration created. `IF NOT EXISTS` on a table from an earlier migration proves
+nothing, so later statements on that table are judged as changes to an existing
+table.
+
+`drizzle-kit` emits validated foreign keys and plain indexes. For an existing
+table, edit the generated SQL: append `NOT VALID` to the foreign key, and use
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS`.
+
+PostgreSQL rejects `CONCURRENTLY` inside a transaction, and the migrator runs
+each migration file in one transaction. A migration that uses `CONCURRENTLY`
+must therefore be listed in `MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS` in
+`packages/db/src/client.ts`, and every statement in it must be idempotent,
+because a failed run starts again from the first statement. The pull-request
+guard fails a new `CONCURRENTLY` migration that is not in that list.
+
+**The rule for a new migration.** A pull request fails when a migration it adds
+is `unknown`. Rewrite the migration, split it into expand and contract
+migrations, or, when you have verified the migration yourself, state the class
+in the first lines of the migration file:
+
+```sql
+-- paperclip:migration-compat online_compatible: <why the previous release keeps working and no lock is held long>
+```
+
+Use `requires_staging` in place of `online_compatible` when the previous
+release cannot run against the migration. The justification is mandatory. The
+override is read only from the migration file, so it is reviewed with the SQL
+and travels with it. A contract migration (for example the `DROP COLUMN` that
+follows an expand release) always classifies as `requires_staging`; mark it
+`online_compatible` this way once no running release uses the column.
+`requires_staging` does not fail the pull request yet; it prints a notice.
+
+Check a migration locally:
+
+```sh
+cd packages/db
+pnpm exec tsx scripts/migration-compatibility.ts src/migrations/0468_busy_wendell_rand.sql
+pnpm exec tsx scripts/migration-compatibility.ts            # distribution over all migrations
+pnpm exec tsx scripts/migration-compatibility.ts --check    # the pull-request guard
+```
+
+The guard runs in `check:migrations` (so in the `@paperclipai/db` typecheck and
+build). In this fork, when both refs exist, it compares SQL blobs against the
+ancestor merge bases with `origin/michael/main` and `upstream/master`. Otherwise
+it uses `origin/master`, then `master`. An explicit `--base` uses only that ref.
+This recognizes byte-preserving renumbering and inherited upstream SQL, while
+still checking edits under existing filenames and SQL from unmerged tips. This
+authorship guard is not production upgrade proof: all pending upstream SQL still
+needs release compatibility review and the mandatory isolated DB clone upgrade.
+The pull-request policy job uses `.github/scripts/check-pr-migration-order.mjs`. Migrations
+that were already on `master` when the classifier shipped are not annotated.
+
+Deployers read the result from the cloud migrator manifest
+(`cloud-migrators/v1/<sha>/manifest.json`, built by
+`scripts/cloud-migrator-artifacts.mjs`). Its `migrationCompatibility.migrations`
+array lists every packed migration in journal order with `idx`, `tag`,
+`sqlSha256` (the hash the migrator records in the migration history),
+`compatibility`, `classified` (the classifier's verdict before an override),
+`override`, `overrideJustification`, and `reasons`.
+
+## Migration authoring checklist
+
+Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
+both `SQL_ASCII` and UTF-8 databases.
+
+The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
+
+When authoring migrations or one-time backfills:
+
+- Create the supporting index for the batch predicate before the backfill loop runs.
+- Bound batches by an indexed key, such as an id range or keyset pagination cursor. Do not use `OFFSET` pagination or a query shape that re-scans already-visited rows each batch.
+- Avoid unbounded full-table `UPDATE` or `DELETE` statements. Add a selective predicate and process rows in bounded batches when table size can be large.
+- Use `CREATE INDEX CONCURRENTLY` for large existing tables when the migration can run outside a transaction and must avoid long write locks.
+- Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
+- Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
+
+## Migration snapshots
+
+`drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.
+
+- Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
+- Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
+- The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
+- `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
+
+## Connection loss and retries
 
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
@@ -1629,55 +1699,23 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
-### Installed skill packages
+## Plugin database namespaces
 
-`company_skill_repository_snapshots` retains its identity and company/content-hash
-uniqueness. Despite its historical name, it can also hold editable skill packages.
-Migration 0414 (`0414_sleepy_payback.sql`) adds `storage` (archive/manifest receipts) and `upload` (a bounded
-pending attempt). `file_inventory` remains the legacy payload, defaulting to `[]`.
-`company_skill_versions.package_snapshot_id` and `package_file_map` preserve the
-public version file inventory without storing its contents again. Existing repository
-snapshot/entrypoint references and version IDs remain unchanged. Reference indexes
-support bounded orphan checks; restrictive FKs protect retained version packages.
-Version mappings preserve kinds and encodings when identical bytes share a package.
-Authored saves mark the storage receipt `durable`; retirement atomically respects that
-marker even when the save joins a concurrent Git upload.
+The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
 
-`skill_package_deletions` is a durable object-deletion outbox populated by snapshot
-update/delete triggers. Its company ID deliberately has no cascading company FK:
-cleanup must retain exact object keys after company deletion. Upload promotion skips
-retirement; replacing a pending token retires only the old attempt's unique keys.
-The same migration adds exact-commit restore recipes and indexed conversion/maintenance
-deadlines. A bounded coordinator worker automatically converts and clears verified
-legacy payloads; no migration command is required. Warm reads exclude recipe manifests.
-See [package storage](skill-package-storage.md) for acquisition, retention, compatibility
-overrides, independent restore verification and coordinated backup policy.
+## Backups
 
-### Project repository skill synchronization
+Paperclip supports automatic and manual logical database backups. These dumps include
+non-system database schemas such as `public`, the Drizzle migration journal, and
+plugin-owned database schemas. See `doc/database-backups.md` for the current
+`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
+configuration.
 
-`project_skill_sources` stores durable workspace import jobs and originating project
-access provenance. Active bindings track their repository/ref; inactive bindings retain
-access to installed versions. Project deletion removes bindings, but retained skills
-with `access_source_id` stay restricted when no originating project remains.
-Removing a project source hides tracking using `company_skill_sources.removed_at`
-while retaining its access identity for editable copies and forks. Bindings become
-inactive and refresh leases are invalidated transactionally. Reattachment preserves
-removal; explicit adoption creates or joins an active source with a separate identity.
-Migration 0341 limits repository/ref uniqueness to active sources. Removed sources
-retain their original project audience; editable forks capture independent retained
-provenance so later attachments cannot expose their local edits. Membership and
-project visibility are still evaluated dynamically.
+Database backups do not include non-database instance files such as local-disk
+uploads, workspace files, or the local encrypted secrets master key. Back those paths
+up separately when you need full instance disaster recovery.
 
-`company_skill_sources` stores automatic-update and future-import preferences, setup
-user/agent and connection/grant IDs, next-check time, failure count and existing refresh
-leases. Existing sources default to automatic updates with their selection preserved.
-Credential values remain in the connection secret system. No project membership lists
-are copied into skills. Background publication uses normal immutable versions and
-transactional activity attribution. Setup agent and connection identifiers remain after
-those identities are deleted. Refresh then requires explicit repair; deletion cannot
-silently substitute board authority or another connection. Execution snapshots keep
-only the delivered skill keys and their immutable version IDs. New executions resolve
-the latest installed versions without an upstream fetch.
+## More documentation
 
 Project-derived sources retain `HEAD` for an unspecified repository ref. It follows
 GitHub's current default branch. An explicitly configured branch has a separate
@@ -1991,3 +2029,9 @@ keys, including skipped/failed receipts. Unknown delivery must be inspected, nev
 replayed with a fresh key. Migration 0437 adds the tracking/receipt structure; 0438
 adds originating run identity and wake uniqueness. Published SQL/journal entries are
 preserved; snapshot pruning follows the five-newest-snapshots rule.
+| Area | Doc |
+| --- | --- |
+| Automatic backups and restore | [database-backups.md](database-backups.md) |
+| Response-size diagnostics, the postgres.js patch, transaction memory | [database-client-internals.md](database-client-internals.md) |
+| Remote workspace snapshot storage | [workspace-storage.md](workspace-storage.md#experimental-remote-workspace-snapshots) |
+| Execution admission tables | [server/src/modules/README.md](../server/src/modules/README.md#execution-admission-accounting) |

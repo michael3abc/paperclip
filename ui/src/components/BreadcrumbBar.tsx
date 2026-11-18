@@ -21,6 +21,14 @@ import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentatio
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
+const MAX_TASK_TITLE_CHARACTERS = 48;
+function taskTitleLabel(title: string) {
+  const characters = Array.from(title);
+  return characters.length > MAX_TASK_TITLE_CHARACTERS
+    ? `${characters.slice(0, MAX_TASK_TITLE_CHARACTERS - 1).join("")}…`
+    : title;
+}
+
 /** Task identifier rendered in gray monospace beside its breadcrumb label. */
 function CrumbIdentifier({ identifier }: { identifier?: string }) {
   if (!identifier) return null;
@@ -53,7 +61,7 @@ function GlobalToolbar({
   );
 }
 
-export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle = taskDetailLayout }: { taskDetailLayout?: boolean; showPropertiesToggle?: boolean }) {
   const coordinatorEnabled = useCoordinatorPresentation();
   const {
     breadcrumbs,
@@ -66,13 +74,20 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
   const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
-  const mobileTaskPanelControl = isMobile && breadcrumbPanelControl ? (
-    <Button variant="ghost" size="icon-sm" className="size-9 shrink-0"
+  const propertiesToggle = (showPropertiesToggle || (isMobile && breadcrumbPanelControl)) ? (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="ml-5 size-9 shrink-0 text-muted-foreground"
+      onClick={toggleTaskPanel}
       aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
-      onClick={toggleTaskPanel}>
+      title={taskPanelOpen ? "Hide properties" : "Show properties"}
+    >
       {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
     </Button>
   ) : null;
+
+  const mobileTaskPanelControl = isMobile && breadcrumbPanelControl ? propertiesToggle : null;
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -123,7 +138,9 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
   );
 
   const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
-  if (isMobile && breadcrumbs[0]?.label === "Tasks" && currentCrumb.identifier) {
+  const isTaskTrail = Boolean(currentCrumb.identifier);
+  const visibleBreadcrumbs = isMobile && isTaskTrail && breadcrumbs.length > 1 ? breadcrumbs.slice(1) : breadcrumbs;
+  if (isMobile && isTaskTrail && visibleBreadcrumbs.length === 1) {
     return (
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
         {menuButton}
@@ -131,7 +148,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           {currentCrumb.leading ? (
             <span className="flex shrink-0 items-center self-center">{currentCrumb.leading}</span>
           ) : null}
-          <span className="min-w-0 flex-1 truncate" title={currentCrumb.label}>{currentCrumb.label}</span>
+          <span className="min-w-0 flex-1 truncate" title={currentCrumb.label} aria-label={currentCrumb.label}>{taskTitleLabel(currentCrumb.label)}</span>
           <CrumbIdentifier identifier={currentCrumb.identifier} />
         </h1>
         {globalToolbarSlots}
@@ -144,52 +161,57 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
     <div className="min-w-0 overflow-hidden flex-1">
       <Breadcrumb className="min-w-0 overflow-hidden">
         <BreadcrumbList className="flex-nowrap">
-          {breadcrumbs.map((crumb, i) => {
-            const isLast = i === breadcrumbs.length - 1;
-            const pinnedIdentifier = taskDetailLayout && isLast && Boolean(crumb.identifier);
+          {visibleBreadcrumbs.map((crumb, i) => {
+            const isLast = i === visibleBreadcrumbs.length - 1;
+            const isTask = isTaskTrail && (isMobile || i > 0 || visibleBreadcrumbs.length === 1);
+            const pinnedIdentifier = (taskDetailLayout || isMobile) && isLast && Boolean(crumb.identifier);
+            const label = isTask ? taskTitleLabel(crumb.label) : crumb.label;
+            const accessibleLabel = [crumb.label, crumb.identifier].filter(Boolean).join(" ");
             return (
               <Fragment key={i}>
                 {i > 0 && <BreadcrumbSeparator />}
-                <BreadcrumbItem className={cn(isLast ? "min-w-0" : "shrink-0", pinnedIdentifier && "flex-1")}>
+                <BreadcrumbItem className={cn(isLast || isTask ? "min-w-0" : "shrink-0", isTask && !isLast && "max-w-(--breadcrumb-parent-max-width)", pinnedIdentifier && "flex-1")}>
                   {crumb.control ?? (isLast || !crumb.href ? (
                     crumb.leading || crumb.identifier ? (
-                      <BreadcrumbPage className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline", pinnedIdentifier && "flex-1")}>
+                      <BreadcrumbPage aria-current={isLast ? "page" : undefined} aria-label={accessibleLabel} className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline", (isTask || pinnedIdentifier) && "flex-1")}>
                         {crumb.leading && (
                           <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
                         )}
-                        {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
-                        <span className={cn("min-w-0 truncate", pinnedIdentifier && "flex-1")}>{crumb.label}</span>
-                        {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                        {!taskDetailLayout && !isMobile ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                        <span title={crumb.label} className={cn("min-w-0 truncate", pinnedIdentifier && "flex-1")}>{label}</span>
+                        {(taskDetailLayout || isMobile) && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
                       </BreadcrumbPage>
                     ) : (
-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                      <BreadcrumbPage aria-current={isLast ? "page" : undefined} aria-label={accessibleLabel} title={crumb.label} className="truncate">{label}</BreadcrumbPage>
                     )
                   ) : (
                     <BreadcrumbLink asChild>
                       {crumb.leading || crumb.identifier ? (
                         <Link
                           to={crumb.href} onClick={crumb.onClick}
+                          title={crumb.label} aria-label={accessibleLabel}
                           className={cn(
                             "flex min-w-0 items-baseline gap-1.5",
-                            i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
+                            isTask && "flex-1",
+                            i === 0 && !isTask && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
                           )}
                         >
                           {crumb.leading && (
                             <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
                           )}
-                          {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
-                          <span className="min-w-0 truncate">{crumb.label}</span>
-                          {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                          {!isMobile ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                          <span className="min-w-0 truncate">{label}</span>
                         </Link>
                       ) : (
                         <Link
                           to={crumb.href} onClick={crumb.onClick}
+                          title={crumb.label} aria-label={accessibleLabel}
                           className={cn(
                             "min-w-0 truncate",
-                            i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
+                            i === 0 && !isTask && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
                           )}
                         >
-                          {crumb.label}
+                          {label}
                         </Link>
                       )}
                     </BreadcrumbLink>
@@ -219,7 +241,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
                 <span className="flex shrink-0 items-center self-center">{breadcrumbs[0].leading}</span>
               )}
               <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
-              <span className="truncate">{breadcrumbs[0].label}</span>
+              <span className="truncate" title={breadcrumbs[0].label}>{isTaskTrail ? taskTitleLabel(breadcrumbs[0].label) : breadcrumbs[0].label}</span>
             </h1>
           ) : (
             <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
@@ -232,7 +254,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
         ) : null}
         {pageActions}
         {globalToolbarSlots}
-        {mobileTaskPanelControl}
+        {propertiesToggle}
       </div>
     );
   }
@@ -249,18 +271,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       {breadcrumbTrail}
       {pageActions}
       {globalToolbarSlots}
-      {taskDetailLayout ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="ml-5 size-9 shrink-0 text-muted-foreground"
-          onClick={toggleTaskPanel}
-          aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
-          title={taskPanelOpen ? "Hide properties" : "Show properties"}
-        >
-          {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
-        </Button>
-      ) : null}
+      {isMobile && isTaskTrail ? mobileTaskPanelControl : propertiesToggle}
     </div>
   );
 }
