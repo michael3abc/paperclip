@@ -25,7 +25,7 @@ The local release line is `michael/main`; previous releases and consolidation me
   Server-only, no migration.
 - Shared home directory repositories (`michael/shared-home-repositories`, Owner 2026-11-18 「你先人工處理一下這個」
   on HOM-377, where every michael follow-up run failed at setup): a shared local workspace (mode
-  `shared_workspace`, provider `local_fs`) is the project's real directory, so sibling project repositories are
+  `shared_workspace`, provider `local_fs`) whose directory has only an ignore-only `.git` (no HEAD) is a plain directory, so sibling project repositories are
   no longer copied into it; workspace hints keep their own cwd. A home directory with an ignore-only `~/.git`
   plus a sibling project workspace with a repository URL made `git rev-parse --git-path info/exclude` fail every
   run. Server-only, no migration.

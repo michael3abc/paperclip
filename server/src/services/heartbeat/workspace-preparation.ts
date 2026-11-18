@@ -1459,12 +1459,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         agentId: agent.id, runId: run.id, responsibleUserId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
-  // Liveness-first rule 3 (workspace = directory): a shared local workspace is the project's real
-  // directory (for example a main agent's home). Sibling project repositories stay at their own
-  // directories (workspace hints below keep their source cwd); copying them into the shared
-  // directory is pointless and failed setup in a home directory with an ignore-only ~/.git.
+  // Liveness-first rule 3 (workspace = directory): a shared local workspace whose directory holds
+  // only an ignore-only .git (a main agent's home: /home/michael has just .git/info/exclude) is a
+  // plain directory, not a repository. Sibling project repositories stay at their own directories
+  // (workspace hints below keep their source cwd); copying them in failed every run at
+  // `git rev-parse --git-path info/exclude` (HOM-377).
   const sharedLocalDirectory = persistedExecutionWorkspace?.mode === "shared_workspace"
-    && persistedExecutionWorkspace.providerType === "local_fs";
+    && persistedExecutionWorkspace.providerType === "local_fs"
+    && await hasIgnoreOnlyGitDirectory(executionWorkspace.cwd);
   if (!sessionOnly && !managedWorkspace && !preserveTaskWorkspace && !pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && executionWorkspace.projectId
     && !sharedLocalDirectory
     && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
@@ -1788,4 +1790,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     executionTarget,
     workspaceRestoreSource,
   };
+}
+
+/** A `.git` directory without HEAD (for example only `info/exclude`) is ignore metadata, not a repository. */
+async function hasIgnoreOnlyGitDirectory(cwd: string): Promise<boolean> {
+  const entry = await fs.lstat(path.join(cwd, ".git")).catch(() => null);
+  if (!entry?.isDirectory() || entry.isSymbolicLink()) return false;
+  return !(await fs.lstat(path.join(cwd, ".git", "HEAD")).catch(() => null));
 }
