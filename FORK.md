@@ -23,6 +23,12 @@ The local release line is `michael/main`; previous releases and consolidation me
   outside the chain cannot borrow a copied receipt. Release recovery (`issue_continuation_needed`) keeps
   its fresh context without the receipt. Fixes SHO-74/SHO-66 retries cancelled `queued_run_claim_rejected`.
   Server-only, no migration.
+- Shared home directory repositories (`michael/shared-home-repositories`, Owner 2026-11-18 「你先人工處理一下這個」
+  on HOM-377, where every michael follow-up run failed at setup): a shared local workspace (mode
+  `shared_workspace`, provider `local_fs`) is the project's real directory, so sibling project repositories are
+  no longer copied into it; workspace hints keep their own cwd. A home directory with an ignore-only `~/.git`
+  plus a sibling project workspace with a repository URL made `git rev-parse --git-path info/exclude` fail every
+  run. Server-only, no migration.
 - Touch keyboard Return (`michael/touch-enter-newline`, Owner 2026-11-17 「我現在ios pwa按那個 回車會直接送出而不是換行
   幫我改一下」): on touch-primary devices (`(hover: none) and (pointer: coarse)`, e.g. the iOS PWA) chat Enter-to-send
   is off, so Return inserts a new line; the send button and Cmd/Ctrl+Enter still send. Hardware keyboards are

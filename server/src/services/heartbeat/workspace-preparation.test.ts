@@ -568,6 +568,25 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source,"README.md"),"utf8")).toBe("source content\n");
     await expect(access(join(source,".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("keeps sibling project repositories in place for a shared home directory with an ignore-only .git", async () => {
+    // HOM-377: michael's home (/home/michael) holds only .git/info/exclude; a sibling project
+    // workspace with a repository URL made every run fail at `git rev-parse --git-path info/exclude`.
+    const { input, source, issue } = await fixture(); input.agent.runtimeConfig = { requireProjectWorkspace: true };
+    await rm(join(source, ".git"), { recursive: true });
+    await mkdir(join(source, ".git", "info"), { recursive: true });
+    await writeFile(join(source, ".git", "info", "exclude"), "**/.claude/worktrees/\n");
+    const sibling = join(source, "..", `sibling-${issue.id}`);
+    await mkdir(sibling);
+    await execFile("git", ["init", "--initial-branch=main", sibling]);
+    const [siblingWorkspace] = await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: issue.projectId!,
+      name: "Sibling repository", cwd: sibling, repoUrl: pathToFileURL(sibling).href }).returning();
+    const result = await prepareHeartbeatWorkspace(db, input);
+    expect(result.persistedExecutionWorkspace).toMatchObject({ cwd: source, mode: "shared_workspace", providerType: "local_fs" });
+    await expect(access(join(source, ".paperclip-repositories"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(source, ".git", "info", "exclude"), "utf8")).toBe("**/.claude/worktrees/\n");
+    expect(input.task.context.paperclipWorkspaces ?? result.resolvedWorkspace?.workspaceHints ?? []).not.toContainEqual(
+      expect.objectContaining({ workspaceId: siblingWorkspace.id, cwd: expect.stringContaining(".paperclip-repositories") }));
+  });
   it.each(["source", "source_ignore_only", "retained", "canonical_active", "canonical_idle", "canonical_pm_overlap"])("starts and settles a document worker through heartbeat without a Git repository (%s)", async scenario => {
     const retained = scenario !== "source" && scenario !== "source_ignore_only";
     const canonical = scenario.startsWith("canonical_");

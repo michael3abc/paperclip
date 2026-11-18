@@ -1459,7 +1459,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         agentId: agent.id, runId: run.id, responsibleUserId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
+  // Liveness-first rule 3 (workspace = directory): a shared local workspace is the project's real
+  // directory (for example a main agent's home). Sibling project repositories stay at their own
+  // directories (workspace hints below keep their source cwd); copying them into the shared
+  // directory is pointless and failed setup in a home directory with an ignore-only ~/.git.
+  const sharedLocalDirectory = persistedExecutionWorkspace?.mode === "shared_workspace"
+    && persistedExecutionWorkspace.providerType === "local_fs";
   if (!sessionOnly && !managedWorkspace && !preserveTaskWorkspace && !pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && !remoteWorkerHost && executionWorkspace.projectId
+    && !sharedLocalDirectory
     && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
     && !resolvedWorkspace.baseCwdFallback && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(
