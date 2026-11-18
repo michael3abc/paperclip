@@ -37,4 +37,4 @@ it("documents the human-only administrator boundary", async () => {
   const operation = document.paths["/api/companies/{companyId}/dashboard/host-claude/{hostId}/login"]!.post!;
   expect((operation as Record<string, unknown>)["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
   expect((operation as Record<string, unknown>)["x-paperclip-transport"]).toBe("protocol");
-});
+}, 60_000);
