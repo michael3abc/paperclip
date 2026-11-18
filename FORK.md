@@ -9,6 +9,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Worker steer and sidebar pending (`michael/worker-steer-pending`, HOM-381/HOM-391): project-main
+  comments to an active worker default to its current turn, preserving explicit queue, idle and direct-input
+  receipts. Owner-actionable plan/approval requests show orange `pending` ahead of working/waiting.
+  Paired ccpocket adapter required for plain Codex worker steering; Claude main Chat steering is retained.
+  No migration or new dependency. See docs/agents/session-bridge.md and docs/agents/ui-features.md.
 - Claude Chat steering (`michael/claude-chat-steering`, Owner 2026-11-18 「幫我改 設一個時間（例如 5 分鐘），超過就自動改成打斷」):
   a ccpocket Bridge main-agent Chat run with provider `claude` (or a `/claude/` model) uses the same Bridge
   chat-steering receipt path as Codex. The Bridge (`paperclip_claude_steer_v1`) delivers the supplement into the
