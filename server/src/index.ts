@@ -162,6 +162,7 @@ import {
   workspaceOperationService,
 } from "./services/index.js";
 import { questionResponseDeliveryService, registerQuestionResponseDeliveryWork } from "./services/question-response-delivery.js";
+import { mentionSubtaskService, registerMentionSubtaskResultWork } from "./services/mention-subtasks.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { registerStatusCardEvaluationWork, statusCardEvaluationService } from "./services/status-card-evaluation.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
@@ -1401,6 +1402,10 @@ async function startServerWithDatabaseTeardown(
   }));
   deliveryWorkers.push(registerQuestionResponseDeliveryWork(deliveryWork, questionResponseDeliveries,
     deploymentListenUrl ? undefined : config.heartbeatSchedulerIntervalMs));
+  // Owner 2026-11-18: a finished @mention subtask posts its answer back to the original task.
+  deliveryWorkers.push(registerMentionSubtaskResultWork(deliveryWork, mentionSubtaskService(db as any, {
+    wakeup: (agentId, wakeOpts) => environmentLeaseCleanupHeartbeat.wakeup(agentId, wakeOpts),
+  })));
   // Preserve the existing task-scoped activity fast path. Claims in the
   // delivery service arbitrate with the coordinator's startup/recovery sweep.
   const unsubscribeChatCompletions = subscribeAllCompanyLiveEvents(event => {

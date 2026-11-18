@@ -9,6 +9,19 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Mention subtasks (`michael/mention-subtasks`, Owner 2026-11-18 「改成 @ 表示 系統自動開一個連到原任務的子任務指派給它，
+  內容是你那則留言；它做完後把結果回貼到原任務。這樣 @ 就有實際作用，又不會兩個 agent 搶同一個任務。」): a board user's own
+  comment (standalone, issue update, client retry or queued-comment edit) that mentions an active agent of the company
+  other than the task's assignee creates one child task per agent (same project, `todo`, assigned to it,
+  `originKind=mention_subtask`, `originId=<commentId>:<agentId>`) carrying the full comment, a link back and the
+  instruction to answer in a final comment and mark it done; the normal assignment wake starts it. When the child is
+  done, the `mention-subtask-results` delivery queue posts the child assignee's last comment (4000 characters, link when
+  truncated) on the parent as that agent and wakes the parent's assignee like any other author's comment; it waits up to
+  40 minutes for the child's running run so a reply written after the status change is kept. A cancelled child gets a
+  short system note without a wake. Idempotent per (comment, agent) by advisory lock and origin, and per child by the
+  parent comment's clientRequestId. Agent/run comments, the assignee and paused/terminated/pending/unknown agents are
+  skipped; failures never fail the comment. Upstream 2de43fc909's rules hold: the mentioned agent never runs on the
+  original task and each task keeps one assignee. Server-only, no migration.
 - Main task continuation with protections (`michael/main-continue-relaxed`, Owner 2026-11-16 「我覺得 B 不錯」):
   any current run of the project's lead main may continue its worker's task with its own nonempty handoff
   comment and an idempotency key. Done and worker/system-cancelled tasks reopen; Owner-cancelled tasks,

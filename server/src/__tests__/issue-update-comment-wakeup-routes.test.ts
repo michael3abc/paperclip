@@ -32,6 +32,11 @@ const mockIssueService = vi.hoisted(() => ({
   listReviewAttention: vi.fn(),
 }));
 
+const mockMentionSubtasks = vi.hoisted(() => ({
+  createForComment: vi.fn(),
+  createForCommentId: vi.fn(),
+}));
+
 const mockPauseGate = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
 const mockExecutionBlocker = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
 vi.mock("../services/execution-blocker.js", () => ({ getExecutionBlocker: mockExecutionBlocker }));
@@ -146,6 +151,10 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/mention-subtasks.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../services/mention-subtasks.js")>()),
+    mentionSubtaskService: () => mockMentionSubtasks,
+  }));
   vi.doMock("../services/external-objects.js", () => ({
     externalObjectService: () => ({
       syncCommentSafely: vi.fn(async () => undefined),
@@ -292,6 +301,7 @@ describe("issue update comment wakeups", () => {
     mockPauseGate.mockResolvedValue(null);
     mockExecutionBlocker.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockMentionSubtasks.createForComment.mockResolvedValue({ created: [], existing: [], skipped: [] });
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -893,6 +903,15 @@ describe("issue update comment wakeups", () => {
       }));
     }
     expect(mockIssueService.update.mock.calls.every(([id]) => id === existing.id)).toBe(true);
+    // Fork (Owner 2026-11-18): a board user's own mention is handed to the
+    // mention-subtask service, which opens a separate child task; run-authored
+    // comments never are. The mentioned agent is still never woken here.
+    if (selfComment) {
+      expect(mockMentionSubtasks.createForComment).not.toHaveBeenCalled();
+    } else {
+      expect(mockMentionSubtasks.createForComment).toHaveBeenCalledTimes(1);
+      expect(mockMentionSubtasks.createForComment).toHaveBeenCalledWith(originalComment);
+    }
   });
 
   it("preserves an explicit resume on a run-authenticated top-level comment", async () => {
