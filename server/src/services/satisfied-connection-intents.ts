@@ -11,6 +11,7 @@ import { chatCredentialRotationId, connectionIntentService } from "./connection-
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logger } from "../middleware/logger.js";
 import { createToolGatewayService } from "./tool-gateway.js";
+import { expireInapplicableAiConnectionIntents } from "./ai-connection-intent-applicability.js";
 
 type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | "status" | "assigneeAgentId" | "assigneeUserId">;
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
@@ -101,7 +102,9 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     eq(issueThreadInteractions.companyId, task.companyId), eq(issueThreadInteractions.issueId, task.id),
     or(eq(issueThreadInteractions.status, "pending"), and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "expired"))),
   ));
+  const obsolete = await expireInapplicableAiConnectionIntents(db, interactions);
   for (const interaction of interactions) {
+    if (obsolete.has(interaction.id)) continue;
     const retired = interaction.status === "expired" && interaction.result?.outcome === "expired"
       && "connectionId" in interaction.result && typeof interaction.result.connectionId === "string";
     if (interaction.status !== "pending" && !retired) continue;

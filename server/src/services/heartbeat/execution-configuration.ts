@@ -19,6 +19,7 @@ import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiA
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
+import { aiConnectionRequirementIdentity } from "../ai-auth-failure.js";
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
@@ -211,6 +212,9 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         return { prepared: false as const };
       }
       if (responsibleUserId && issueId) {
+        // Bind the request to this task's effective runtime before its failure
+        // receipt is written. Never infer it later from another Chat's success.
+        await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnectionRequirement: aiConnectionRequirementIdentity(agent.adapterType, sourceWorkspaceConfig, aiBinding) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
         await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
           logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
         });

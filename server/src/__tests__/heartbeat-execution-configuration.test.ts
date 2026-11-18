@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments, connectionGrants } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, issueThreadInteractions, projects, plugins, environments, connectionGrants } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
@@ -187,6 +187,22 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(finished).toBeDefined();
     return { finished, input: captured.get(run!.id) };
   }
+
+  it("preserves task AI requirement evidence after managed-auth setup failure", async () => {
+    const f = await seed();
+    await db.update(agents).set({ runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" } } })
+      .where(eq(agents.id, f.agentId));
+    const { finished, input } = await execute(f);
+    expect(input).toBeUndefined();
+    expect(finished).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+      contextSnapshot: { issueId: f.issueId, aiConnectionRequirement: { version: 1, adapterType,
+        model: "issue-model", provider: null, binding: { provider: "openai", method: "api_key", mode: "responsible_user" } } } });
+    expect(JSON.stringify(finished.contextSnapshot?.aiConnectionRequirement)).not.toContain(f.credential);
+    expect(finished.contextSnapshot?.aiConnectionRequirement).not.toHaveProperty("env");
+    const requests = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.sourceRunId, finished.id));
+    expect(requests).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "connection_intent",
+      payload: expect.objectContaining({ purpose: "ai", serviceSlug: "openai" }) })]));
+  });
 
   it.each([
     { saved: "isolated", managed: true, failure: "saved managed login required" },

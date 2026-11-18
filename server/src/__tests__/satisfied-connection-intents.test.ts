@@ -15,6 +15,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { aiConnectionRequirementIdentity } from "../services/ai-auth-failure.js";
+import { attentionService } from "../services/attention.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../services/legacy-execution-recovery.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -62,6 +65,123 @@ describePostgres("already available connection requests", () => {
       responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId }, resultJson: { conversationContinuation: "continue_conversation_v1" } }).returning();
     return run!;
   }
+
+  async function aiRequest() {
+    const f = await seed();
+    const binding = { mode: "responsible_user" as const, provider: "anthropic" as const, method: "subscription" as const };
+    const config = { model: "claude-sonnet-4-5" };
+    await db.update(agents).set({ adapterConfig: config, runtimeConfig: { aiConnection: binding } }).where(eq(agents.id, f.agentId));
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId));
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+      status: "failed", errorCode: "configuration_incomplete", contextSnapshot: { issueId: f.issueId,
+        aiConnectionRequirement: aiConnectionRequirementIdentity("claude_local", config, binding) } }).returning();
+    await db.update(issueThreadInteractions).set({ sourceRunId: source.id, payload: { version: 1, purpose: "ai",
+      serviceSlug: "anthropic", serviceName: "Anthropic", requestingAgentId: f.agentId, requestingAgentName: "Assignee", phase: "requested" } })
+      .where(eq(issueThreadInteractions.id, f.intent.id));
+    return { ...f, binding, config, source };
+  }
+
+  it.each(["provider", "model", "ownership", "done", "cancelled"])("expires only proven obsolete AI requests: %s", async change => {
+    const f = await aiRequest();
+    if (change === "provider") await db.update(agents).set({ adapterType: "codex_local", adapterConfig: { model: "gpt-5" },
+      runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "openai", method: "subscription" } } }).where(eq(agents.id, f.agentId));
+    if (change === "model") await db.update(agents).set({ adapterConfig: { model: "claude-opus-4-1" } }).where(eq(agents.id, f.agentId));
+    if (change === "ownership") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+    if (change === "done" || change === "cancelled") await db.update(issues).set({ status: change }).where(eq(issues.id, f.issueId));
+    const svc = issueThreadInteractionService(db);
+    expect(await svc.getById(f.intent.id)).toMatchObject({ status: "expired", result: { outcome: "expired" } });
+    expect((await svc.listForIssue(f.issueId))[0].status).toBe("expired");
+    expect(await svc.getById(f.intent.id)).toMatchObject({ status: "expired" });
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("keeps a matching blocked AI request despite a successful Chat and a working agent", async () => {
+    const f = await aiRequest();
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, f.agentId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded", contextSnapshot: { aiConnection: { provider: "anthropic" } } });
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: "pending" });
+    const feed = await attentionService(db).list(f.companyId, { userId: "connection-owner" });
+    expect(feed.items.some(item => item.subject.id === f.intent.id)).toBe(true);
+  });
+
+  it("retains the task-specific provider when the agent's Chat uses another provider", async () => {
+    const f = await aiRequest();
+    await db.update(issues).set({ assigneeAdapterOverrides: { adapterConfig: f.config, aiConnection: f.binding } }).where(eq(issues.id, f.issueId));
+    await db.update(agents).set({ adapterConfig: { model: "other-default" }, runtimeConfig: {
+      aiConnection: { mode: "responsible_user", provider: "openai", method: "api_key" } } }).where(eq(agents.id, f.agentId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded", contextSnapshot: { aiConnection: { provider: "openai" } } });
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: "pending" });
+  });
+
+  it("uses the blocked reviewer's own configuration instead of the worker override", async () => {
+    const f = await aiRequest();
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent", agentId: f.agentId }] }] })!;
+    await db.update(issues).set({ executionPolicy: policy as unknown as Record<string, unknown>, executionState: { status: "pending",
+      currentStageId: policy.stages[0].id, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: f.agentId }, returnAssignee: { type: "user", userId: "connection-owner" },
+      completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null },
+      assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5" }, aiConnection: { mode: "responsible_user", provider: "openai", method: "subscription" } } }).where(eq(issues.id, f.issueId));
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: "pending" });
+  });
+
+  it.each(["feed", "summary"])("retires obsolete AI requests through attention %s reads without hiding real questions or tool gates", async read => {
+    const f = await aiRequest();
+    const retained = await db.insert(issueThreadInteractions).values([
+      { companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", addresseeUserId: "connection-owner", payload: { version: 1, questions: [{ id: "q", prompt: "Which target?", selectionMode: "single", options: [] }] } },
+      { companyId: f.companyId, issueId: f.issueId, kind: "connection_intent", status: "pending", addresseeUserId: "connection-owner", payload: { ...f.intent.payload, accessRequest: { connectionId: f.connection.id, connectionName: "Sentry", tools: [{ catalogEntryId: f.tool.id, toolName: f.tool.toolName, versionHash: "v1", permission: "ask_first" }] } } },
+    ]).returning();
+    await db.update(agents).set({ adapterType: "codex_local", runtimeConfig: {} }).where(eq(agents.id, f.agentId));
+    if (read === "summary") {
+      await attentionService(db).summary(f.companyId, { userId: "connection-owner" });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    }
+    const feed = await attentionService(db).list(f.companyId, { userId: "connection-owner" });
+    expect(feed.items.some(item => item.subject.id === f.intent.id)).toBe(false);
+    for (const row of retained) expect(feed.items.some(item => item.subject.id === row.id)).toBe(true);
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0].status).toBe("expired");
+    const summary = await attentionService(db).summary(f.companyId, { userId: "connection-owner" });
+    expect(summary).toBeDefined();
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
+  it("concurrent AI-card reads retire once and leave no continuation delivery", async () => {
+    const f = await aiRequest();
+    await db.update(agents).set({ adapterConfig: { model: "claude-opus-4-1" } }).where(eq(agents.id, f.agentId));
+    const svc = issueThreadInteractionService(db);
+    const [one, two] = await Promise.all([svc.getById(f.intent.id), svc.listForIssue(f.issueId)]);
+    expect(one?.status).toBe("expired");
+    expect(two[0].status).toBe("expired");
+    const audit = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issueId));
+    expect(audit.filter(row => row.details?.resolutionSource === "obsolete_ai_requirement")).toHaveLength(1);
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+  });
+
+  it.each([false, true])("uses durable pool replacement evidence for an AI router card: %s", async replaced => {
+    const f = await aiRequest();
+    const poolId = randomUUID();
+    await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: poolId } } }).where(eq(agents.id, f.agentId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, aiRouterSelection: { poolId: replaced ? randomUUID() : poolId } } }).where(eq(heartbeatRuns.id, f.source.id));
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: replaced ? "expired" : "pending" });
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+  });
+
+  it("keeps legacy AI cards without configuration identity until provider obsolescence is proven", async () => {
+    const f = await aiRequest();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId } }).where(eq(heartbeatRuns.id, f.source.id));
+    await db.update(agents).set({ adapterConfig: { model: "claude-opus-4-1" } }).where(eq(agents.id, f.agentId));
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: "pending" });
+    await db.update(agents).set({ adapterType: "codex_local", runtimeConfig: {} }).where(eq(agents.id, f.agentId));
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: "expired" });
+  });
+
+  it("does not treat malformed source identity as proof of obsolete AI configuration", async () => {
+    const f = await aiRequest();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, aiConnectionRequirement: { version: 1 } } })
+      .where(eq(heartbeatRuns.id, f.source.id));
+    await db.update(agents).set({ adapterConfig: { model: "claude-opus-4-1" } }).where(eq(agents.id, f.agentId));
+    expect(await issueThreadInteractionService(db).getById(f.intent.id)).toMatchObject({ status: "pending" });
+  });
 
   it("wakes governed response recovery only when automatic cleanup retires a connection card", async () => {
     const f = await seed();

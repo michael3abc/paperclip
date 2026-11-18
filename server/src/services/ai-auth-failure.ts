@@ -1,4 +1,12 @@
-import { AI_PROVIDERS, AI_CONNECTION_CAPABILITIES, isAiConnectionCompatible, type AiConnectionBinding, type AiProvider } from "@paperclipai/shared";
+import { AI_PROVIDERS, AI_CONNECTION_CAPABILITIES, aiRuntimeConnectionBindingSchema, isAiConnectionCompatible, type AiConnectionBinding, type AiProvider } from "@paperclipai/shared";
+
+/** Only routing identity, never environment, credentials, or account health. */
+export function aiConnectionRequirementIdentity(adapterType: string, config: Record<string, unknown>, binding: unknown) {
+  const setting = (key: string) => typeof config[key] === "string" ? config[key] : null;
+  return { version: 1, adapterType, model: setting("model"), provider: setting("provider"),
+    acpxAgent: setting("acpxAgent"), homeMode: setting("homeMode"),
+    binding: binding ? aiRuntimeConnectionBindingSchema.parse(binding) : null };
+}
 
 type AuthenticationFailure = {
   errorCode?: string | null;

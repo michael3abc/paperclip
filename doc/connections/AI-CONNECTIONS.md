@@ -1,5 +1,21 @@
 # AI Connections
 
+Pending AI authentication requests belong to the task's effective execution
+configuration. Canonical task/card/attention reads and continuation checks expire
+a request when task closure, reassignment, incompatible harness/provider or a
+recorded source configuration replacement proves it obsolete. Worker task overrides
+and worker selections take precedence over agent defaults; a pending reviewer uses
+its own runtime, including while blocked. New managed-auth failures record only
+the non-secret routing identity in the source run. Older cards remain pending
+unless current facts prove obsolescence. Router cards require pool-replacement
+evidence; inspecting a card never selects or repairs an allocation.
+
+Expiry is neither human acceptance nor credential success: it grants no access,
+creates no run/continuation and preserves history. Still-matching requests remain
+pending on blocked tasks. Elapsed time, a failed source run, agent activity, ordinary
+comments and another Chat's successful authentication do not clear them. Tool
+Ask-first and permission cards retain their existing gates.
+
 AI accounts use the existing Apps/Connections substrate. Manage them at
 `/:company/apps`; select their use beside an agent's harness/model settings.
 Onboarding, new-agent setup, account creation/reconnect, and inline task requests

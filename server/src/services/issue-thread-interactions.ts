@@ -11,6 +11,7 @@ import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { historicalQuestionCondition } from "./issue-question-context.js";
+import { expireInapplicableAiConnectionIntents } from "./ai-connection-intent-applicability.js";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -3158,8 +3159,10 @@ export function issueThreadInteractionService(
           .then((issueRows) => issueRows[0]),
       ]);
 
-      const interactions = rows.map((row) =>
-        hydrateInteraction(
+      const retiredAi = await expireInapplicableAiConnectionIntents(db, rows);
+      const interactions = rows.map((stored) => {
+        const row = retiredAi.get(stored.id) ?? stored;
+        return hydrateInteraction(
           issue &&
             isTerminalIssueStatus(issue.status) &&
             row.status === "pending"
@@ -3170,8 +3173,8 @@ export function issueThreadInteractionService(
                 resolvedAt: row.updatedAt,
               }
             : row,
-        ),
-      );
+        );
+      });
       return withAcceptanceReadiness(interactions, issue);
     },
 
@@ -3182,7 +3185,9 @@ export function issueThreadInteractionService(
         .where(eq(issueThreadInteractions.id, interactionId))
         .then((rows) => rows[0] ?? null);
 
-      return row ? (await withAcceptanceReadiness([hydrateInteraction(row)]))[0] : null;
+      if (!row) return null;
+      const retiredAi = await expireInapplicableAiConnectionIntents(db, [row]);
+      return (await withAcceptanceReadiness([hydrateInteraction(retiredAi.get(row.id) ?? row)]))[0];
     },
 
     recordSecretProposalExecutionResult: async (

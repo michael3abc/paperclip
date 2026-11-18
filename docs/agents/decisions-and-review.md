@@ -1,5 +1,13 @@
 # decisions-and-review
 
+An explicit `status=cancelled` through an already-authorized task update abandons
+the execution-review cycle, including a pending review whose task is blocked. The
+active reviewer, project lead and board retain their existing route/company
+permissions; unrelated agents cannot cancel a pending stage. Clear executionState
+without creating an approval/changes-requested decision, reassigning to the original
+worker or enqueuing work. Ordinary request-changes and approve paths are unchanged;
+the terminal task lifecycle cancels runs, queued wakes and retries.
+
 Moved from `AGENTS.md` on 2026-11-13; read this file before acting on the topic. `/home/michael/services/docs/agents/liveness-first.md` (Owner 2026-11-13) is binding and wins over any conflicting statement here. PM decision authority, review decisions, decision delegation, secret delegation, review recovery
 
 Owner-issued `project-pm-decision-authority` is separate from company delegation.

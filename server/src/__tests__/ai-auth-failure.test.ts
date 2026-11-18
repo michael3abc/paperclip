@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aiBindingForAuthRecovery, isAiAuthenticationBlocked, isAiAuthenticationRepairable } from "../services/ai-auth-failure.js";
+import { aiBindingForAuthRecovery, aiConnectionRequirementIdentity, isAiAuthenticationBlocked, isAiAuthenticationRepairable } from "../services/ai-auth-failure.js";
 import { classifyRunLiveness } from "../services/run-liveness.js";
 
 const missingClaudeKey = {
@@ -51,5 +51,16 @@ describe("personal AI credential preflight recovery", () => {
       livenessState: "blocked", nextAction: "Complete the connection request to continue this task",
     });
     expect(classifyRunLiveness({ ...input, ...failure([]), authenticationRepairRequested: true }).livenessState).toBe("failed");
+  });
+});
+
+
+describe("AI request routing evidence", () => {
+  it("retains only typed routing fields and the validated binding", () => {
+    const binding = { mode: "responsible_user" as const, provider: "anthropic" as const, method: "subscription" as const };
+    const identity = aiConnectionRequirementIdentity("claude_local", { model: "claude-sonnet-4-5", env: { TEST_SECRET: "synthetic-secret" }, provider: { invalid: "synthetic-secret" }, cwd: "/private/path" }, binding);
+    expect(identity).toEqual({ version: 1, adapterType: "claude_local", model: "claude-sonnet-4-5", provider: null, acpxAgent: null, homeMode: null, binding });
+    expect(JSON.stringify(identity)).not.toContain("synthetic-secret");
+    expect(JSON.stringify(identity)).not.toContain("/private/path");
   });
 });

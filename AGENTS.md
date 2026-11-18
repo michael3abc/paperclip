@@ -296,6 +296,15 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+Explicit task cancellation by an authorized reviewer, project lead or board actor
+abandons execution review without a changes-requested decision or worker wake. AI
+connection requests expire only on task closure, ownership change or proven changes
+to that task's effective AI requirement. Preserve worker overrides and reviewer
+isolation, including blocked reviews; time, failed source runs and other Chat
+successes prove nothing. Task/card/attention reads share canonical expiry; cleanup
+never grants access or resumes work. See doc/connections/AI-CONNECTIONS.md and
+docs/agents/decisions-and-review.md.
+
 Main→worker comments default to active-turn steer for a running worker of the lead main's project;
 explicit deliveryMode=queue, idle and already queued inputs keep their boundary. Direct-input
 receipts are never replayed or silently queued after rejection/unknown acknowledgement. Agent Chat

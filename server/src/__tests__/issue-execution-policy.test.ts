@@ -2059,6 +2059,21 @@ describe("review round circuit breaker", () => {
     };
   }
 
+  it.each(["in_review", "blocked"])("an authorized reviewer cancels %s directly without a decision or worker assignment", status => {
+    const result = applyIssueExecutionPolicyTransition({ issue: reviewPendingIssue({ status }), policy,
+      requestedStatus: "cancelled", requestedAssigneePatch: {}, actor: { agentId: qaAgentId } });
+    expect(result).toEqual({ patch: { executionState: null } });
+  });
+
+  it("the project main can cancel a human-held review without returning it to the worker", () => {
+    const issue = reviewPendingIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: boardUserId },
+      { currentParticipant: { type: "user", userId: boardUserId }, changesRequestedCount: 3 });
+    expect(applyIssueExecutionPolicyTransition({ issue, policy, requestedStatus: "cancelled", requestedAssigneePatch: {},
+      actor: { agentId: ctoAgentId }, actorIsProjectLead: true })).toEqual({ patch: { executionState: null } });
+    expect(() => applyIssueExecutionPolicyTransition({ issue, policy, requestedStatus: "cancelled", requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId } })).toThrow("Only the active reviewer");
+  });
+
   it("counts agent-initiated changes-requested rounds on the hand-back", () => {
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue(),

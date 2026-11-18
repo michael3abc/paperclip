@@ -423,7 +423,7 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
 
 /** Stage assignment grants review work, not the original worker's runtime. */
 export function isPendingExecutionReviewForAgent(issue: { status?: string; executionState?: unknown }, agentId: string): boolean {
-  if (issue.status !== "in_review") return false;
+  if (issue.status !== "in_review" && issue.status !== "blocked") return false;
   const state = parseIssueExecutionState(issue.executionState);
   return state?.status === "pending"
     && state.currentParticipant?.type === "agent"
@@ -682,6 +682,22 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   const effectiveReviewRequest = input.reviewRequest === undefined
     ? existingState?.reviewRequest ?? null
     : input.reviewRequest;
+
+  // Cancellation abandons the workflow. It is never a review decision or a
+  // return to the executor, including when a pending review drifted to blocked.
+  if (requestedStatus === "cancelled") {
+    const participant = existingState?.currentParticipant ?? (activeStage ? selectStageParticipant(activeStage, { exclude: existingState?.returnAssignee ?? null }) : null);
+    const escalated = activeStage && participant?.type === "user" && !stageHasParticipant(activeStage, participant)
+      && (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy!);
+    const authorized = input.allowBoardOverride || input.actorIsProjectLead
+      || (participant && principalsEqual(participant, actor) && (!activeStage || stageHasParticipant(activeStage, participant) || escalated))
+      || (escalated && actor?.type === "agent" && stageHasParticipant(activeStage!, actor));
+    if (activeStage && !authorized) {
+      throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
+    }
+    patch.executionState = null;
+    return { patch };
+  }
 
   if (!input.policy) {
     if (existingState) {

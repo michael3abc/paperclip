@@ -1,5 +1,17 @@
 # Developing
 
+AI connection-request applicability belongs to
+`server/src/services/ai-connection-intent-applicability.ts`. Task/card/attention reads
+and continuation checks retire only observed pending AI cards, under task and card
+locks, using the task's current assignee, review role, worker selection/overrides
+and provider compatibility. New managed-auth failures retain a non-secret routing
+identity in the source run's contextSnapshot.aiConnectionRequirement for exact
+configuration replacement checks. Legacy cards without that identity need current
+provider/ownership evidence; a failed source run or unrelated successful Chat never
+satisfies a credential request. No new timer, migration, credential probe, grant or
+connection-continuation delivery is introduced. Test with the execution-policy unit
+and route suites, satisfied-connection-intents and attention regressions on owned PG.
+
 ## Shared Bridge workers across hosts
 
 Plain shared workers can set `runtimeConfig.bridgeWorkerHostCapacity` to an

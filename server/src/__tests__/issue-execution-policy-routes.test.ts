@@ -1,11 +1,14 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
+  getDependencyReadiness: vi.fn(async () => ({ unresolvedBlockerCount: 0, unresolvedBlockerIssueIds: [] })),
   findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
@@ -73,90 +76,93 @@ const mockRunnerGoalService = vi.hoisted(() => ({
   act: vi.fn(),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("../services/queued-interaction-response.js", () => ({
-    hasQueuedInteractionResponse: vi.fn(async () => false),
-  }));
-  vi.doMock("../services/runner-goals.js", () => ({
-    runnerGoalService: () => mockRunnerGoalService,
-    RunnerGoalActionError: class RunnerGoalActionError extends Error {},
-    RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
-  }));
+// This suite replaces interaction persistence below; do not load its
+// independent connection reconciliation graph through another route import.
+vi.mock("../services/ai-connection-intent-applicability.js", () => ({
+  expireInapplicableAiConnectionIntents: vi.fn(async () => new Map()),
+}));
+vi.mock("../services/queued-interaction-response.js", () => ({
+  hasQueuedInteractionResponse: vi.fn(async () => false),
+}));
+vi.mock("../services/runner-goals.js", () => ({
+  runnerGoalService: () => mockRunnerGoalService,
+  RunnerGoalActionError: class RunnerGoalActionError extends Error {},
+  RunnerGoalConflictError: class RunnerGoalConflictError extends Error {},
+}));
 
-  vi.doMock("../services/index.js", () => ({
-    companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1" })),
-    }),
-    accessService: () => mockAccessService,
-    agentService: () => ({
-      getById: vi.fn(async (agentId: string) => ({
-        id: agentId,
+vi.mock("../services/index.js", () => ({
+  companyService: () => ({
+    getById: vi.fn(async () => ({ id: "company-1" })),
+  }),
+  accessService: () => mockAccessService,
+  agentService: () => ({
+    getById: vi.fn(async (agentId: string) => ({
+      id: agentId,
+      companyId: "company-1",
+      permissions: null,
+    })),
+    resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
+      ambiguous: false,
+      agent: {
+        id: reference,
         companyId: "company-1",
-        permissions: null,
-      })),
-      resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
-        ambiguous: false,
-        agent: {
-          id: reference,
-          companyId: "company-1",
-          status: "idle",
-          orgChainHealth: { status: "healthy" },
-        },
-      })),
+        status: "idle",
+        orgChainHealth: { status: "healthy" },
+      },
+    })),
+  }),
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentService: () => ({}),
+  executionWorkspaceService: () => ({}),
+  feedbackService: () => ({
+    listIssueVotesForUser: vi.fn(async () => []),
+    saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+  }),
+  goalService: () => ({}),
+  heartbeatService: () => mockHeartbeatService,
+  environmentService: () => ({
+    getById: vi.fn(async () => null),
+  }),
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => ({
+      id: "instance-settings-1",
+      general: {
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      },
+    })),
+    listCompanyIds: vi.fn(async () => ["company-1"]),
+  }),
+  issueApprovalService: () => mockIssueApprovalService,
+  issueReferenceService: () => ({
+    deleteDocumentSource: async () => undefined,
+    diffIssueReferenceSummary: () => ({
+      addedReferencedIssues: [],
+      removedReferencedIssues: [],
+      currentReferencedIssues: [],
     }),
-    companySkillService: () => ({
-      completeTestRunForIssue: vi.fn(async () => null),
-    }),
-    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
-    executionWorkspaceService: () => ({}),
-    feedbackService: () => ({
-      listIssueVotesForUser: vi.fn(async () => []),
-      saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
-    }),
-    goalService: () => ({}),
-    heartbeatService: () => mockHeartbeatService,
-    environmentService: () => ({
-      getById: vi.fn(async () => null),
-    }),
-    instanceSettingsService: () => ({
-      get: vi.fn(async () => ({
-        id: "instance-settings-1",
-        general: {
-          censorUsernameInLogs: false,
-          feedbackDataSharingPreference: "prompt",
-        },
-      })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
-    issueApprovalService: () => mockIssueApprovalService,
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
-    issueRecoveryActionService: () => ({
-      getActiveForIssue: vi.fn(async () => null),
-      listActiveForIssues: vi.fn(async () => new Map()),
-    }),
-    issueService: () => mockIssueService,
-    issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: mockLogActivity,
-    projectService: () => ({}),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
-    workProductService: () => ({}),
-  }));
-}
+    emptySummary: () => ({ outbound: [], inbound: [] }),
+    listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
+    syncComment: async () => undefined,
+    syncDocument: async () => undefined,
+    syncIssue: async () => undefined,
+  }),
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
+  }),
+  issueService: () => mockIssueService,
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
+  logActivity: mockLogActivity,
+  projectService: () => ({}),
+  routineService: () => ({
+    syncRunStatusForIssue: vi.fn(async () => undefined),
+  }),
+  workProductService: () => ({}),
+}));
 
 type TestActor =
   | {
@@ -173,15 +179,7 @@ type TestActor =
       runId: string | null;
     };
 
-async function loadAppModules() {
-  // Install route mocks before traversing their shared middleware graph.
-  const middleware = await import("../middleware/index.js");
-  const routes = await import("../routes/issues.js");
-  return [middleware, routes] as const;
-}
-
 async function createApp(actor?: TestActor) {
-  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -200,15 +198,6 @@ async function createApp(actor?: TestActor) {
 }
 
 describe("issue execution policy routes", () => {
-  beforeAll(async () => {
-    vi.resetModules();
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
-    await loadAppModules();
-  });
-
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
@@ -930,6 +919,27 @@ describe("issue execution policy routes", () => {
       expect.any(Array),
     );
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["in_review", "blocked"])("keeps an agent reviewer's explicit %s cancellation terminal with no worker wake", async status => {
+    const reviewer = "33333333-3333-4333-8333-333333333333";
+    const worker = "44444444-4444-4444-8444-444444444444";
+    const policy = normalizeIssueExecutionPolicy({ stages: [{ type: "review", participants: [{ type: "agent", agentId: reviewer }] }] })!;
+    const issue = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status,
+      assigneeAgentId: reviewer, assigneeUserId: null, executionPolicy: policy, identifier: "PAP-1008", title: "Cancel review",
+      executionState: { status: "pending", currentStageId: policy.stages[0].id, currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewer }, returnAssignee: { type: "agent", agentId: worker },
+        completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch, updatedAt: new Date() }));
+    const res = await request(await createApp({ type: "agent", agentId: reviewer, companyId: "company-1", runId: "55555555-5555-4555-8555-555555555555" }))
+      .patch(`/api/issues/${issue.id}`).send({ status: "cancelled" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ status: "cancelled", executionState: null, assigneeAgentId: reviewer });
+    const patch = mockIssueService.update.mock.calls[0][1];
+    expect(patch).not.toHaveProperty("assigneeAgentId");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity.mock.calls.some(([, data]) => JSON.stringify(data).includes("changes_requested"))).toBe(false);
   });
 
   it("preserves blocked status and pending review during a workspace-only repair", async () => {

@@ -52,6 +52,7 @@ import type {
   IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
+import { expireInapplicableAiConnectionIntents } from "./ai-connection-intent-applicability.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import {
@@ -1184,7 +1185,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           status: issueThreadInteractions.status,
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
-          payload: summaryOnly ? sql<Record<string, unknown>>`jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview')` : issueThreadInteractions.payload,
+          payload: summaryOnly ? sql<Record<string, unknown>>`case when ${issueThreadInteractions.kind} = 'connection_intent' then ${issueThreadInteractions.payload} else jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview') end` : issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           addresseeUserId: issueThreadInteractions.addresseeUserId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
@@ -1225,7 +1226,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           .where(eq(agents.companyId, companyId))
         : [];
       const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
-      const boardInteractionRows = interactionRows.filter((row) =>
+      const retiredAi = await expireInapplicableAiConnectionIntents(db, interactionRows);
+      const boardInteractionRows = interactionRows.filter((row) => !retiredAi.has(row.id) &&
         (row.addresseeAgentId === null ||
           !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
         && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
@@ -1243,6 +1245,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const interaction of visibleInteractionRows) {
         const issue = interactionIssueMap.get(interaction.issueId) ?? null;
         if (!issue) continue;
+        // Governed requests cannot remain actionable after their task closes,
+        // including legacy stored-pending rows. Ordinary questions keep history.
+        if (["done", "cancelled"].includes(issue.status) && interaction.kind !== "ask_user_questions") continue;
         const payload = readRecord(interaction.payload);
         const detail = summaryOnly ? null : interactionDetail({
           kind: interaction.kind,

@@ -9,6 +9,13 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Pending request lifecycle (`michael/pending-request-lifecycle`, HOM-394): an
+  authorized explicit cancellation abandons review without a rejection or worker
+  wake. Task-scoped obsolete AI authentication cards formally expire on canonical
+  reads, including blocked tasks, without accepting/granting/resuming anything.
+  Matching missing-auth requests, real questions and tool permission gates remain.
+  Server-only, no migration.
+
 - Worker steer and sidebar pending (`michael/worker-steer-pending`, HOM-381/HOM-391): project-main
   comments to an active worker default to its current turn, preserving explicit queue, idle and direct-input
   receipts. Owner-actionable plan/approval requests show orange `pending` ahead of working/waiting.
