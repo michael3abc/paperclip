@@ -9,6 +9,11 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Claude Chat steering (`michael/claude-chat-steering`, Owner 2026-11-18 「幫我改 設一個時間（例如 5 分鐘），超過就自動改成打斷」):
+  a ccpocket Bridge main-agent Chat run with provider `claude` (or a `/claude/` model) uses the same Bridge
+  chat-steering receipt path as Codex. The Bridge (`paperclip_claude_steer_v1`) delivers the supplement into the
+  live turn, and Claude absorbs it at its next tool boundary; an input still unabsorbed after 5 minutes interrupts
+  the turn once. Bridges without the capability answer `unsupported`. Server-only, no migration.
 - Mention subtasks (`michael/mention-subtasks`, Owner 2026-11-18 「改成 @ 表示 系統自動開一個連到原任務的子任務指派給它，
   內容是你那則留言；它做完後把結果回貼到原任務。這樣 @ 就有實際作用，又不會兩個 agent 搶同一個任務。」): a board user's own
   comment (standalone, issue update, client retry or queued-comment edit) that mentions an active agent of the company

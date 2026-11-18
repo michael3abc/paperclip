@@ -108,12 +108,21 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.run()).resultJson).toMatchObject({ originalResult: "retained", queuedSteeringAcknowledgements: { [input.commentId]: { status: "acknowledged" } } });
   });
 
-  it.each(["foreign owner", "Claude", "wrong issue", "stale revision"])("rejects %s before native input", async scenario => {
+  it("steers a Claude main-agent Chat run through the same receipt path", async () => {
+    // Owner 2026-11-18: Claude Chats steer too; the Bridge falls back to an interrupt after 5 minutes.
+    const f = await fixture(), input = { ...f.input };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge",
+      adapterConfig: { role: "main", provider: "claude", model: "michael-server/claude/family:opus-5.5" } } } }).where(eq(heartbeatRuns.id, input.targetRunId));
+    await f.service.deliver(input);
+    expect(steering.send).toHaveBeenCalledOnce();
+  });
+
+  it.each(["foreign owner", "Claude worker", "wrong issue", "stale revision"])("rejects %s before native input", async scenario => {
     const f = await fixture(), input = { ...f.input };
     if (scenario === "foreign owner") input.actorId = "other-owner";
     if (scenario === "stale revision") input.revision = "stale";
     if (scenario === "wrong issue") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, input.targetRunId));
-    if (scenario === "Claude") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: { role: "main", provider: "claude" } } } }).where(eq(heartbeatRuns.id, input.targetRunId));
+    if (scenario === "Claude worker") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: { role: "worker", provider: "claude" } } } }).where(eq(heartbeatRuns.id, input.targetRunId));
     await expect(f.service.deliver(input)).rejects.toThrow(); expect(steering.send).not.toHaveBeenCalled();
     expect((await f.wake()).payload).not.toHaveProperty("bridgeChatSteering");
   });
