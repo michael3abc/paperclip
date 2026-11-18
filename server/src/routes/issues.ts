@@ -419,7 +419,7 @@ import {
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import { observeSessionBridgeWrite } from "../services/session-bridge-write-limit.js";
-import { bridgeChatSteeringService, bridgeSteeringAttempt, isCodexBridgeChatDispatch } from "../services/bridge-chat-steering.js";
+import { bridgeChatSteeringService, bridgeSteeringAttempt, isSteerableBridgeChatDispatch } from "../services/bridge-chat-steering.js";
 import { deliverInteractionToAddresseeConversation } from "../services/interaction-addressee-conversation.js";
 import {
   getNativeSessionSteeringState,
@@ -7645,7 +7645,7 @@ export function issueRoutes(
       assignedAgentAdapterType: assignedAgent?.adapterType ?? null,
       queuedCommentCount: comments.length,
     });
-    const chatSteers = Boolean(input.issue.conversationAgentId && isCodexBridgeChatDispatch(input.activeRun ?? {
+    const chatSteers = Boolean(input.issue.conversationAgentId && isSteerableBridgeChatDispatch(input.activeRun ?? {
       runnerProfileJson: { adapterDispatch: assignedAgent },
     }));
     const pendingSteering = bridgeSteeringAttempt(wake?.payload);

@@ -33,7 +33,7 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
-import { isCodexBridgeChatDispatch } from "../bridge-chat-steering.js";
+import { isSteerableBridgeChatDispatch } from "../bridge-chat-steering.js";
 import { logger } from "../../middleware/logger.js";
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
@@ -162,7 +162,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
         } }, retainedEvidence: { version: 1 },
       });
       const control = await createHeartbeatRunState(db).getRunIssueControl(run.id);
-      expect(isCodexBridgeChatDispatch(control!)).toBe(true);
+      expect(isSteerableBridgeChatDispatch(control!)).toBe(true);
       return { exitCode: 0, signal: null, timedOut: false };
     });
     expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });

@@ -12,11 +12,19 @@ const object = (v: unknown): Record<string, unknown> => v && typeof v === "objec
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson">;
 
 /** The active run's saved dispatch owns delivery, never a newly edited agent config. */
-export function isCodexBridgeChatDispatch(run: Run) {
+/**
+ * A ccpocket Bridge main-agent Chat run whose provider steers supplements into the live turn:
+ * Codex (native turn/steer) and, since Owner 2026-11-18 「幫我改 設一個時間（例如 5 分鐘），超過就自動改成打斷」,
+ * Claude (absorbed at the next tool boundary; the Bridge interrupts after 5 minutes unabsorbed).
+ * Bridges without the provider's steering capability answer `unsupported` through the adapter.
+ */
+export function isSteerableBridgeChatDispatch(run: Run) {
   const dispatch = object(run.runnerProfileJson?.adapterDispatch);
   const config = object(dispatch.adapterConfig);
+  const model = typeof config.model === "string" ? config.model : "";
   return dispatch.adapterType === "ccpocket_bridge" && config.role === "main" &&
-    (config.provider === "codex" || (!config.provider && typeof config.model === "string" && config.model.includes("/codex/")));
+    (config.provider === "codex" || config.provider === "claude" ||
+      (!config.provider && (model.includes("/codex/") || model.includes("/claude/"))));
 }
 
 export function bridgeSteeringAttempt(payload: unknown) {
@@ -42,7 +50,7 @@ export function bridgeChatSteeringService(db: Db, hook = () => getServerAdapter(
       if (!pending || pending.runId !== attempt.runId || pending.commentId !== attempt.commentId || pending.turnId !== attempt.turnId) return;
       const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, attempt.runId),
         eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, attempt.agentId))).for("update");
-      if (!run || !isCodexBridgeChatDispatch(run) || run.contextSnapshot?.issueId !== issueId) throw conflict("Original steering run is unavailable");
+      if (!run || !isSteerableBridgeChatDispatch(run) || run.contextSnapshot?.issueId !== issueId) throw conflict("Original steering run is unavailable");
       const now = new Date();
       const payload = { ...object(wake.payload) };
       if (status === "uncertain") payload.bridgeChatSteering = { ...pending, status };
@@ -93,7 +101,7 @@ export function bridgeChatSteeringService(db: Db, hook = () => getServerAdapter(
         eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, issue.conversationAgentId))).for("update");
       const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.targetRunId),
         eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, issue.conversationAgentId))).for("update");
-      if (!run || !isCodexBridgeChatDispatch(run) || run.contextSnapshot?.issueId !== issue.id) throw conflict("The original Codex Chat run is unavailable");
+      if (!run || !isSteerableBridgeChatDispatch(run) || run.contextSnapshot?.issueId !== issue.id) throw conflict("The original Chat run is unavailable");
       const prior = object(object(run.resultJson?.queuedSteeringAcknowledgements)[input.commentId]);
       if (prior.status === "acknowledged" && prior.queueId === input.queueId) return null;
       if (!wake || wake.status !== "deferred_issue_execution" || wake.payload?.issueId !== issue.id ||
