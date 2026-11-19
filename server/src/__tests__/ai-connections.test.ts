@@ -13,7 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, access, readFile, readdir, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -1487,6 +1487,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     }, "github_pat_fixture_migration");
     await service.setDefault(companyId, "migration-copilot", copilot.grantId);
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0361_mighty_dracula.sql", import.meta.url), "utf8");
+    const migrationsDir = new URL("../../../packages/db/src/migrations/", import.meta.url);
+    const restoreFiles = (await readdir(migrationsDir)).filter(file => file.endsWith("_robust_ironclad.sql"));
+    expect(restoreFiles).toHaveLength(1);
+    const restoreMigration = await readFile(new URL(restoreFiles[0]!, migrationsDir), "utf8");
     try {
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await db.transaction(async (tx) => {
@@ -1507,7 +1511,6 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       });
       expect(selectedCopilot.grant.id).toBe(copilot.grantId);
     } finally {
-      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0441_robust_ironclad.sql", import.meta.url), "utf8");
       await db.transaction(async (tx) => {
         for (const statement of restoreMigration.split("--> statement-breakpoint")) {
           if (statement.trim()) await tx.execute(sql.raw(statement));

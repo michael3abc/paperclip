@@ -105,6 +105,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let routineRoutes: typeof import("../routes/routines.js")["routineRoutes"];
   let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+  let assignmentDeniedUserId: string | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
@@ -149,6 +150,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   beforeEach(async () => {
+    assignmentDeniedUserId = null;
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -167,10 +169,15 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../middleware/index.js");
     registerRoutineServiceMock();
     vi.doMock("../services/index.js", async () => {
-      const [{ accessService }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
+      const [{ accessService: realAccess }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
         import("../services/access.js"), import("../services/document-annotations.js"),
         import("../services/activity-log.js"), import("../services/routines.js"),
       ]);
+      const accessService = (database: typeof db) => {
+        const access = realAccess(database);
+        return { ...access, canUser: async (...args: Parameters<typeof access.canUser>) =>
+          (args[1] === assignmentDeniedUserId && args[2] === "tasks:assign" ? false : access.canUser(...args)) };
+      };
       return { accessService, documentAnnotationService, logActivity, routineService };
     });
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -1066,7 +1073,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       projectWorkspaceId,
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: { mode: "isolated_workspace" },
+      executionWorkspaceSettings: { mode: "isolated_workspace", sessionOnly: false },
     });
   });
 
@@ -1142,18 +1149,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       const memberId = randomUUID();
       await accessService(db).ensureMembership(companyId, "user", memberId, "operator", "active");
       // A member who may not assign tasks, as under a restricted assignment policy.
-      vi.doMock("../services/index.js", async () => {
-        const [{ accessService: realAccess }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
-          import("../services/access.js"), import("../services/document-annotations.js"),
-          import("../services/activity-log.js"), import("../services/routines.js"),
-        ]);
-        const accessService = (database: typeof db) => {
-          const access = realAccess(database);
-          return { ...access, canUser: async (...args: Parameters<typeof access.canUser>) =>
-            (args[1] === memberId && args[2] === "tasks:assign" ? false : access.canUser(...args)) };
-        };
-        return { accessService, documentAnnotationService, logActivity, routineService };
-      });
+      assignmentDeniedUserId = memberId;
       const ownersRoutine = await personRoutine(companyId, agentId, userId);
       const membersRoutine = await personRoutine(companyId, agentId, userId, { status: "paused" });
       await db.update(routines).set({ responsibleUserId: memberId }).where(eq(routines.id, membersRoutine));

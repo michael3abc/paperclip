@@ -357,7 +357,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
   });
 
-  it("delivers a comment saved behind a concurrent recovery hold to one run on repeated retry", async () => {
+  it("delivers a comment behind concurrent resolved recovery history to one run on repeated admission", async () => {
     const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
     await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
       .where(eq(issues.id, issue.id));
@@ -394,30 +394,28 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       await pending;
     }
 
-    await expect(pending).resolves.toBeNull();
-    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    const admitted = await pending;
+    expect(admitted).toMatchObject({ status: "queued" });
+    expect(await db.select().from(heartbeatRuns)).toEqual([expect.objectContaining({ id: admitted!.id })]);
     const receipts = await db.select().from(agentWakeupRequests);
     expect(receipts).toEqual([
-      expect.objectContaining({ status: "deferred_issue_execution", runId: null,
-        payload: expect.objectContaining({ issueId: issue.id, commentId: comment.id,
-          executionWait: expect.objectContaining({ recoveryActionId: actionId }) }) }),
+      expect.objectContaining({ status: "queued", runId: admitted!.id,
+        payload: expect.objectContaining({ issueId: issue.id, commentId: comment.id }) }),
     ]);
     const [receipt] = receipts;
     const controlDeps = runControlCallbacks(db);
     vi.mocked(controlDeps.enqueueWakeup).mockImplementation(queue.enqueueWakeup);
     const control = createHeartbeatRunControl(db, controlDeps);
 
-    deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
-    await control.resumeSavedLegacyComments(company.id, receipt.id);
-    expect(await db.select().from(heartbeatRuns)).toEqual([]);
-
-    await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, actionId));
-    deps.getSchedulingSuppression.mockResolvedValueOnce({ suppressed: false, reason: null });
     await control.resumeSavedLegacyComments(company.id, receipt.id);
     await control.resumeSavedLegacyComments(company.id, receipt.id);
+    await Promise.all([enqueue(), enqueue()]);
     expect(await db.select().from(heartbeatRuns)).toEqual([expect.objectContaining({
+      id: admitted!.id,
       contextSnapshot: expect.objectContaining({ wakeCommentIds: [comment.id] }),
     })]);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId)))
+      .toEqual([expect.objectContaining({ status: "resolved", evidence: { automaticRecovery: { replay: "blocked" } } })]);
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 

@@ -261,19 +261,19 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }
   });
 
-  it.each([false, true])("uses one scoped recovery query for a locked task without history (lease held: %s)", async leaseHeld => {
+  it.each([null, "local", "daytona"])("uses one scoped recovery query for a locked task without history (lease provider: %s)", async provider => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
     const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId } });
     await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } })
       .where(eq(heartbeatRuns.id, runId));
-    if (leaseHeld) await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId });
+    if (provider) await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId, provider });
     const queries: string[] = [];
     const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as Db;
     await createPostgresIssueWakeAdmission(recorded)({ companyId, issueId }, async (_tx, { recovery }) => {
       const { blocker } = await recovery.readBlocker({ commentId: null });
-      if (leaseHeld) expect(blocker).toMatchObject({ cause: "execution_owner_active", runId, recoveryActionId: null });
+      if (provider === "daytona") expect(blocker).toMatchObject({ cause: "execution_owner_active", runId, recoveryActionId: null });
       else expect(blocker).toBeNull();
       return { kind: "skipped" };
     });
@@ -282,7 +282,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     ]);
   });
 
-  it.each(["insert", "reparent"])("serializes a recovery %s and honors the resolved no-replay hold afterward", async operation => {
+  it.each(["insert", "reparent"])("serializes a recovery %s and leaves resolved no-replay evidence as history", async operation => {
     const companyId = await seedCompany();
     const issueId = await seedIssue({ companyId });
     const action = {
@@ -310,8 +310,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await writeAction(db);
     await admit({ companyId, issueId }, async (_tx, { recovery }) => {
       await expect(recovery.readBlocker({ commentId: null })).resolves.toMatchObject({
-        blocker: { recoveryActionId: action.id, cause: action.cause },
+        blocker: null,
       });
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))
+        .toEqual([expect.objectContaining({ status: "resolved", evidence: action.evidence })]);
       return { kind: "skipped" };
     });
   });
