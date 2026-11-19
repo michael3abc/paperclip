@@ -48,6 +48,11 @@ recovery, stranded-issue reconciliation).
   notice per (issue, code). Notices never block dispatch.
 - Unknown codes: retry 3 times as transient, then treat as deterministic.
 
+Shutdown and process-loss recovery keep the chain's persisted failure counter and
+backoff; they do not implicitly open a separate upstream server-restart window.
+Preparations proved to have started no provider work retain their own durable
+counter without a retry limit.
+
 Immediate release recovery obeys the same backoff. A per-host in-memory circuit
 breaker (`server/src/services/host-circuit-breaker.ts`) defers wakes for an
 unavailable host until its `openUntil` (30s doubling to 30 min); deferrals are not

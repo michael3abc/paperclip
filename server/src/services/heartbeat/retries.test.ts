@@ -212,34 +212,7 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it("decides an interaction continuation retry from a refused exact resume's refusal, not its earlier spawn failure", async () => {
-    const refusal = "Plugin Runner retained session is not authorized";
-    const interaction = { issueId: "issue", interactionId: "interaction-1", interactionStatus: "answered", mutation: "interaction",
-      wakeReason: "issue_commented", timerClaimWasFirstHeartbeat: true };
-    // The retry budget is spent, so an eligible run reports exhaustion
-    // without scheduling, and an ineligible one escalates directly.
-    const failed = { ...unitRun(), status: "failed", errorCode: "adapter_failed", scheduledRetryAttempt: 2,
-      scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, contextSnapshot: interaction } as Run;
-    const refused = { ...failed,
-      error: `native_session_interrupted: failed to start command: spawn agent ENOENT; exact checkpoint resume refused: ${refusal}`,
-      resultJson: { nativeExactResumeRefusal: { originalFailureCode: "native_session_interrupted",
-        originalMessage: "failed to start command: spawn agent ENOENT", interruptedAttempt: 1, refusal } } } as Run;
-    const spawnFailure = { ...failed, error: "failed to start command: spawn agent ENOENT", resultJson: {} } as Run;
-    const exhaustion = expect.objectContaining({ retryExhaustion: expect.objectContaining({
-      retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON }) });
 
-    const database = guardedDatabase();
-    const refusedDeps = callbacks();
-    await expect(extracted.createHeartbeatRetries(database.db, refusedDeps)
-      .scheduleInteractionContinuationInfrastructureRetryIfEligible(refused, { adapterType: "codex_local" } as Agent)).resolves.toBeNull();
-    expect(refusedDeps.appendRunEvent).not.toHaveBeenCalledWith(refused, exhaustion);
-    expect(refusedDeps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledOnce();
-
-    const spawnDeps = callbacks();
-    await extracted.createHeartbeatRetries(database.db, spawnDeps)
-      .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
-    expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
-    expect(database.access).not.toHaveBeenCalled();  });
 });
 
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -298,7 +271,48 @@ describePostgres("heartbeat retry module database wiring", () => {
     return { companyId, agent, issue, run };
   }
 
-  it.each([false, true])("records a workspace wait only for the deferral's workspace (task moved after cancel: %s)", async (moved) => {
+  it.each(["transient_failure", "workspace_busy"])("keeps shutdown backoff after %s instead of starting a restart window", async scheduledRetryReason => {
+    const { run, agent } = await fixture();
+    const source = { ...run, status: "interrupted", runtimeMode: "legacy", errorCode: "server_shutdown_interrupted",
+      scheduledRetryReason, scheduledRetryAttempt: scheduledRetryReason === "workspace_busy" ? 1 : 2, resultJson: {},
+      contextSnapshot: { ...run.contextSnapshot, executionRetryAccounting: { version: 1, failureRetries: 2, maxTurnContinuations: 0 } },
+    } as Run;
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(source, agent, { now });
+    expect(result).toMatchObject({ outcome: "scheduled", attempt: 3, maxAttempts: Infinity });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 3,
+      scheduledRetryAt: new Date(now.getTime() + 120_000),
+      contextSnapshot: { executionRetryAccounting: { failureRetries: 3 } } });
+  });
+
+  it.each(["adapter_failed", "invalid_config"])("classifies a refused exact resume by its durable failure code: %s", async errorCode => {
+    const { run, agent } = await fixture();
+    const refusal = "Plugin Runner retained session is not authorized";
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: run.companyId, agentId: agent.id,
+      runId: run.id, source: "automation", status: "failed" }).returning();
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode, wakeupRequestId: wake.id,
+      scheduledRetryAttempt: 2, scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      error: "native_session_interrupted: spawn agent ENOENT; exact checkpoint resume refused: " + refusal,
+      resultJson: { nativeExactResumeRefusal: { originalFailureCode: "native_session_interrupted",
+        originalMessage: "spawn agent ENOENT", interruptedAttempt: 1, refusal } },
+      contextSnapshot: { issueId: run.issueId, interactionId: randomUUID(), interactionStatus: "answered",
+        mutation: "interaction", wakeReason: "issue_commented" },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const { retries, deps } = boundRetries();
+    const result = await retries.scheduleInteractionContinuationInfrastructureRetryIfEligible(failed, agent);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    if (errorCode === "adapter_failed") {
+      expect(result).toMatchObject({ outcome: "scheduled", maxAttempts: Infinity });
+      expect(successors).toHaveLength(1);
+      expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).not.toHaveBeenCalled();
+    } else {
+      expect(result).toBeNull();
+      expect(successors).toHaveLength(0);
+      expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each([false, true])("parks the admitted row and retains the original deferral workspace (task moved: %s)", async (moved) => {
     const { run, agent, issue, companyId } = await fixture();
     const [project] = await db.insert(projects).values({ companyId, name: "Shared" }).returning();
     const [deferredOn, movedTo] = await db.insert(projectWorkspaces).values([
@@ -309,7 +323,7 @@ describePostgres("heartbeat retry module database wiring", () => {
       await db.update(issues).set({ projectId: project.id, projectWorkspaceId: deferredOn.id }).where(eq(issues.id, issue.id));
       await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, errorCode: null }).where(eq(heartbeatRuns.id, run.id));
       const { retries, deps } = boundRetries();
-      // The move lands in the gap after the cancellation commits, as a user edit can.
+      // The move lands after parking, before the settlement notification.
       deps.setRunStatusIfRunning.mockImplementation(async (runId, status, patch) => {
         const [cancelled] = await db.update(heartbeatRuns).set({ status, ...patch }).where(eq(heartbeatRuns.id, runId)).returning();
         if (moved) await db.update(issues).set({ projectWorkspaceId: movedTo.id }).where(eq(issues.id, issue.id));
@@ -319,11 +333,13 @@ describePostgres("heartbeat retry module database wiring", () => {
         holder: { runId: randomUUID(), agentId: agent.id, issueId: randomUUID(), issueIdentifier: null },
         projectWorkspaceId: deferredOn.id, deferralAttempt: 0, wasIssueAssignee: true,
       }));
-      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
-      expect(successor?.status).toBe("scheduled_retry");
-      const wait = (successor!.contextSnapshot as Record<string, unknown>).workspaceBusyWait;
-      if (moved) expect(wait).toBeUndefined();
-      else expect(wait).toMatchObject({ key: `project:${deferredOn.id}`, issueProjectWorkspaceId: deferredOn.id, issueExecutionWorkspaceId: null });
+      const [parked] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(parked).toMatchObject({ status: "scheduled_retry", scheduledRetryAt: null,
+        scheduledRetryReason: "workspace_busy", resultJson: { workspaceBusy: { projectWorkspaceId: deferredOn.id },
+          executionRecovery: { kind: "workspace_wait", providerWorkStarted: false } } });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0])
+        .toMatchObject({ executionRunId: run.id, projectWorkspaceId: moved ? movedTo.id : deferredOn.id });
     } finally {
       await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
@@ -354,7 +370,7 @@ describePostgres("heartbeat retry module database wiring", () => {
       retryReason: "interrupted_preparation", executionRetryAccounting: { failureRetries: 0 } });
   });
 
-  it("bounds answered chat attestation retries across restarts and escalates their exhaustion", async () => {
+  it("retains unknown attestation input for three retries and then reports exhaustion", async () => {
     const { run, agent, companyId } = await fixture();
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: agent.id,
       runId: run.id, source: "automation", status: "failed" }).returning();
@@ -365,10 +381,10 @@ describePostgres("heartbeat retry module database wiring", () => {
       errorCode: "reviewed_chat_execution_binding_not_ready", contextSnapshot,
     }).where(eq(heartbeatRuns.id, run.id)).returning();
     let predecessor = failed!;
-    for (const attempt of [1, 2]) {
+    for (const attempt of [1, 2, 3]) {
       const { retries, deps } = boundRetries();
       expect(await retries.scheduleInteractionContinuationInfrastructureRetryIfEligible(predecessor, agent))
-        .toMatchObject({ outcome: "scheduled", attempt, maxAttempts: 2 });
+        .toMatchObject({ outcome: "scheduled", attempt, maxAttempts: Infinity });
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor.id));
       expect(successors).toHaveLength(1);
       const successor = successors[0]!;
@@ -381,16 +397,14 @@ describePostgres("heartbeat retry module database wiring", () => {
       }).where(eq(heartbeatRuns.id, successor.id)).returning();
       predecessor = next!;
     }
-    const { retries, deps } = boundRetries();
-    expect(await retries.scheduleInteractionContinuationInfrastructureRetryIfEligible(predecessor, agent))
-      .toMatchObject({ outcome: "retry_exhausted", maxAttempts: 2 });
-    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledOnce();
-    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention)
-      .toHaveBeenCalledWith(expect.objectContaining({ attempt: 2, maxAttempts: 2, run: predecessor }));
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    expect(await boundRetries().retries.scheduleInteractionContinuationInfrastructureRetryIfEligible(predecessor, agent))
+      .toMatchObject({ outcome: "retry_exhausted", attempt: 4, maxAttempts: 0 });
+    expect(predecessor.contextSnapshot).toMatchObject({ interactionId: contextSnapshot.interactionId,
+      interactionStatus: "answered", wakeCommentIds: contextSnapshot.wakeCommentIds });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
   });
 
-  it("a lasting outage gets at most the task's hourly cap of automatic attempts across the sweep and the transient lane", async () => {
+  it("a transient outage retains a retry after the former hourly attempt cap", async () => {
     const { run, agent, issue, companyId } = await fixture();
     const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
     const failed = { ...run, errorCode: "repository_catalog_unavailable",
@@ -405,11 +419,11 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system", action: "issue.continued_automatically",
       entityType: "issue", entityId: issue.id, details: {}, createdAt: minutesAgo(55) });
     expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 }))
-      .toMatchObject({ outcome: "retry_exhausted" });
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+      .toMatchObject({ outcome: "scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(1);
   });
 
-  it("re-checks the task's hourly cap under the task lock when the sweep records an attempt while the retry is being prepared", async () => {
+  it("a concurrent sweep receipt does not impose the former hourly retry cap", async () => {
     const { run, agent, issue, companyId } = await fixture();
     const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
     const failed = { ...run, errorCode: "repository_catalog_unavailable",
@@ -430,8 +444,8 @@ describePostgres("heartbeat retry module database wiring", () => {
       return deps.getAgentInvokability(target);
     } });
     expect(await racing.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 }))
-      .toMatchObject({ outcome: "retry_exhausted" });
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+      .toMatchObject({ outcome: "scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(1);
   });
 
   it("keeps the accepted interaction owner and its catalog provider deadline", async () => {

@@ -1461,7 +1461,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.policy.requestedExecutionWorkspaceMode = requestedMode;
     input.policy.issueExecutionWorkspaceSettings = { sharedWorkspaceConcurrency: "allow" };
     const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("qualified native sandbox");
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("Remote workspace storage requires a supported remote environment");
     expect(acquire).toHaveBeenCalledOnce();
   });
 
@@ -2278,13 +2278,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(again.persistedExecutionWorkspace!.id).toBe(workspace.id);
     expect(await readFile(join(again.executionWorkspace.cwd, "bootstrap.txt"), "utf8")).toBe("written before the restart\n");
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(workspace.id);
-    // Another run's attempt directory is still not this run's fresh workspace.
+    // Liveness-first: a different run can use the task's existing directory;
+    // the original attempt's files must survive the metadata mismatch.
     const [other] = await db.insert(heartbeatRuns).values({ companyId: input.run.companyId, agentId: input.agent.id,
       issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
     input.run = other;
-    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-      resultJson: { workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issue.id } },
-    });
+    const next = await prepareHeartbeatWorkspace(db, input);
+    expect(next.executionWorkspace.cwd).toBe(workspace.cwd);
+    expect(await readFile(join(next.executionWorkspace.cwd, "bootstrap.txt"), "utf8")).toBe("written before the restart\n");
   });
 
   it("reuses a successful fresh task attempt for the next ordinary user turn", async () => {
@@ -2345,7 +2346,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       if (change === "closed_workspace") await db.update(executionWorkspaces).set({ status: "archived" }).where(eq(executionWorkspaces.id, workspace.id));
       if (change === "foreign_company") {
         // The company boundary still applies after the binding mismatch is logged.
-        await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(/Task workspace unavailable/);
+        await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("workspace_source_company_mismatch");
       } else {
         // Liveness-first rule 3: the binding mismatch is logged and the task's own saved directory is used.
         const result = await prepareHeartbeatWorkspace(db, input);
@@ -2892,7 +2893,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       : null;
     // The terminal reaper and preparation rollback call the shared destructive primitive without hooks.
     const cleanup = await cleanupExecutionWorkspaceArtifacts({ workspace: row!, projectWorkspace, runCleanupCommands: false });
-    expect(cleanup).toMatchObject({ cleanedPath: source, cleaned: false });
+    // Cleanup is complete when an operator-owned directory is retained by design.
+    // The file assertions below prove that completion never means removal here.
+    expect(cleanup).toMatchObject({ cleanedPath: source, cleaned: true });
     await intact();
 
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
@@ -2922,7 +2925,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         recorder: workspaceOperationService(db).createRecorder({ companyId: row!.companyId, executionWorkspaceId: row!.id }),
       }),
     });
-    expect(fenced).toMatchObject({ skippedReopened: false, result: { cleanedPath: source, cleaned: false, warnings: [] } });
+    expect(fenced).toMatchObject({ skippedReopened: false, result: { cleanedPath: source, cleaned: true, warnings: [] } });
     // Both hooks ran inside the fixed directory, and the directory and everything in it survived.
     const fixedDir = `${await realpath(source)}\n`;
     expect(await readFile(join(markers, "cleanup"), "utf8")).toBe(fixedDir);

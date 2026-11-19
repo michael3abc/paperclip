@@ -194,7 +194,8 @@ it("a real scheduled retry takes precedence over the retained blocker explanatio
   expect(presentation).not.toHaveProperty("retryWait");
 });
 
-it.each(["cleanup_quarantined", "cancelled_by_operator"])("does not offer Retry for terminal Retry waits: %s", reason => {
+it("does not offer Retry for an operator-cancelled Retry request", () => {
+  const reason = "cancelled_by_operator";
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
     wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))

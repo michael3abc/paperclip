@@ -703,7 +703,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
             await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
         },
         beforeResolvedInteractionContinuationDispatchCheck: async ({ runId }) => {
-          if (response === "changed_before_dispatch" || response === "workspace_wait_changed" && deferredSourceId && runId !== deferredSourceId)
+          if (response === "changed_before_dispatch" || response === "workspace_wait_changed" && deferredSourceId && runId === deferredSourceId)
             await db.update(issueThreadInteractions).set({ resolvedByUserId: null, resolvedByAgentId: agentId })
               .where(eq(issueThreadInteractions.id, interaction.id));
         },
@@ -715,14 +715,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         expect(wake).not.toBeNull();
         await service.drainActiveRunExecutions();
         expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.id)))[0])
-          .toMatchObject({ status: "cancelled", errorCode: "workspace_busy" });
+          .toMatchObject({ status: "scheduled_retry", errorCode: "workspace_busy", scheduledRetryAt: null });
         expect(mockAdapterExecute).not.toHaveBeenCalled();
-        const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, wake!.id));
-        expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, wake!.id))).toHaveLength(0);
         deferredSourceId = wake!.id;
-        dispatchedRunId = retry.id;
         workspace!.mockRestore();
-        expect((await service.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).toContain(retry.id);
+        // The lease deadline is the durable trigger for the original parked
+        // row. Reconsider it without creating a successor or losing its input.
+        await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'` })
+          .where(eq(heartbeatRuns.id, wake!.id));
+        const { reconcileWorkspaceWaits } = await import("../services/heartbeat/workspace-wait-settlement.js");
+        await reconcileWorkspaceWaits(db);
+        expect((await service.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).toContain(wake!.id);
         await service.resumeQueuedRuns();
       }
       const shouldDeliver = ["answered", "accepted", "rejected", "workspace_wait", "blocker_finishes"].includes(response);

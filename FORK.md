@@ -34,6 +34,13 @@ reassigning a cooperative task, remove local Git-copy admission locks, break a
 dispatch/recovery initialization cycle, and keep PRP control replies responsive
 during replay while retaining hard queue bounds. Test fixtures track the actual
 CLI startup, monitor, workspace API and liveness-first retry contracts.
+The subsequent main-line merge b71e7abf13 includes d29db6287a and retains
+attention-read authorization and privacy boundaries. Restart recovery keeps
+the durable transient backoff counter; a persisted bootstrap certificate keeps
+preparation retries separate after terminal settlement clears execution stage.
+Historical provider evidence does not hold a distinct authorized human input.
+Failed validation receipts and baseline-comparison limitations remain recorded
+in sync-decisions; these fixes do not certify every historical test as passing.
 
 | Published fork file | Merged file |
 | --- | --- |

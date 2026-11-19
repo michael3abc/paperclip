@@ -239,7 +239,7 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
 
   it.each((["resume_stopped_native_workspace", "reuse_issue_workspace"] as const).flatMap(retainedMode =>
     ["preserved", "changed_binding", "changed_cwd"].map(mode => [retainedMode, mode] as const)))(
-    "pins the verified Retry workspace during environment selection (%s, %s)", async (retainedMode, mode) => {
+    "resolves the current Retry directory after binding changes (%s, %s)", async (retainedMode, mode) => {
     const { input, issue, workspace } = await fixture();
     const saved = await workspace();
     await db.update(issues).set({ executionWorkspaceId: saved.id }).where(eq(issues.id, issue.id));
@@ -250,7 +250,13 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     if (mode === "changed_binding") input.task.issueRef!.executionWorkspaceId = (await workspace()).id;
     if (mode === "changed_cwd") await executionWorkspaceService(db).update(saved.id, { cwd: join(home, "changed") });
     if (mode !== "preserved") {
-      await expect(selectHeartbeatEnvironment(db, input)).rejects.toThrow("The saved Retry workspace binding changed.");
+      // A stale placement receipt is diagnostic, not an execution gate.
+      const current = await selectHeartbeatEnvironment(db, input);
+      expect(current.existingExecutionWorkspace).toMatchObject({
+        id: input.task.issueRef!.executionWorkspaceId,
+        cwd: mode === "changed_cwd" ? join(home, "changed") : home,
+      });
+      expect(current.nativeRecoveryExecutionWorkspaceId).toBeNull();
       return;
     }
     const result = await selectHeartbeatEnvironment(db, input);

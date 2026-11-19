@@ -24,7 +24,8 @@ else a new one, prefixed 「上一次可能已部分執行，先檢查現況再�
 releases every gate; stop evidence is background best-effort. Failures are
 transient (30s×2ⁿ backoff capped at 30 min, unlimited, one notice at the 5th
 consecutive failure), deterministic (no auto retry, one notice per issue and code)
-or unknown (3 transient retries, then deterministic); see
+or unknown (3 transient retries, then deterministic). Shutdown/process-loss retries
+retain the durable backoff counter instead of opening a fresh restart window; see
 `server/src/services/recovery/failure-classification.ts`. Owner Stop/cancel and
 manual pause still apply and revoke automatic retry. New human or project-main
 input supersedes automatic retry of a failed predecessor and keeps its own input

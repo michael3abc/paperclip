@@ -162,7 +162,7 @@ describe("deferred receipt durable dispatch", () => {
       // receipt backlog; a 1s wall deadline expired before the first attempt returned.
     }, { timeout: 15_000 });
   }
-  it.each([false, true])("reconstructs the original fresh deferred input after queued authority rejection without replay (provider evidence: %s)", async providerEvidence => {
+  it.each([false, true])("delivers fresh saved input after historical authority rejection without changing source evidence (provider evidence: %s)", async providerEvidence => {
     const f = await fixture(), finishedAt = new Date(Date.now() - 60_000);
     const error = "Saved input authority could not be verified. Reconcile the original delivery receipts before sending.";
     const executionWait = { issueId: f.issue.id, reason: "delivery_unknown" };
@@ -204,9 +204,9 @@ describe("deferred receipt durable dispatch", () => {
     await quiet();
     const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
-    expect(runs).toHaveLength(providerEvidence ? 1 : 2);
-    if (providerEvidence) expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
-    else {
+    // Historical provider evidence must not hold a distinct, authorized human input.
+    expect(runs).toHaveLength(2);
+    {
       expect(saved.runId).not.toBeNull();
       expect(runs.find(run => run.id === saved.runId)).toMatchObject({ status: "queued", retryOfRunId: null,
         contextSnapshot: { wakeCommentIds: [comment.id] } });

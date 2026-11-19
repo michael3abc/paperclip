@@ -564,14 +564,21 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const now = opts?.now ?? new Date();
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
-    const interruptedPreparation = ["interrupted", "failed"].includes(run.status) &&
-      preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
-      && (run.status === "interrupted" || await isInterruptedNativePreparation(db, run));
-    // A run that a server restart or replacement ended did not fail: it
-    // continues in the server-restart lane and never spends the failure budget.
+    // Shutdown can replace the bootstrap result marker. The persisted stage
+    // and existing preparation lane still retain that lane's retry accounting.
+    // Terminal settlement can also clear executionStage. Its durable bootstrap
+    // certificate chooses accounting only; dispatch still checks authority.
+    const interruptedPreparation = (run.status === "interrupted" && run.executionStage === "preparing"
+      && run.scheduledRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
+      || (["interrupted", "failed"].includes(run.status)
+        && preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false);
+    // Liveness-first: shutdown/process loss uses the same durable backoff as
+    // other transient failures. Switching implicitly to server_restart would
+    // reset a chain that already failed twice back to attempt 1 (30 seconds).
+    // Preparations with proof that provider work never started keep their own
+    // durable counter; neither lane acquires the upstream restart-window cap.
     const retryReason = opts?.retryReason ??
-      (usesServerRestartLane(run, interruptedPreparation) ? SERVER_RESTART_RETRY_REASON
-        : interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+      (interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);

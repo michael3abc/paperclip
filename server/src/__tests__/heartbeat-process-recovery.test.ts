@@ -1,6 +1,6 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
-import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
+import { SERVER_RESTART_RETRY_MAX_ATTEMPTS } from "../services/execution-recovery-attempt.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -3715,7 +3715,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
-      error: "Process lost -- server may have restarted; retrying once" });
+      error: "Process lost -- server may have restarted; retrying automatically" });
     expect(reaped?.resultJson).toMatchObject({
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
       processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true },
@@ -3826,7 +3826,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
   });
 
-  it("does not promise a process-loss retry once the failure budget is spent", async () => {
+  it("keeps preparation retries uncharged after earlier transient failures", async () => {
     const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
     const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     await db.update(heartbeatRuns).set({
@@ -3837,17 +3837,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
-      error: "Process lost -- server may have restarted" });
-    expect(reaped?.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: false } });
+      error: expect.stringContaining("retrying automatically") });
+    expect(reaped?.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: true } });
     expect(await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId),
       eq(heartbeatRuns.retryOfRunId, runId),
-    ))).toEqual([]);
+    ))).toEqual([expect.objectContaining({ status: "scheduled_retry",
+      scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 1,
+      contextSnapshot: expect.objectContaining({ executionRetryAccounting: expect.objectContaining({
+        failureRetries: 2, interruptedPreparations: 1,
+      }) }),
+    })]);
   });
 
   // A routine deploy replaces the server: the old one drains its runs at
   // SIGTERM (server_shutdown_interrupted), and a run whose owner died without a
-  // drain is found by the new one (process_lost). Neither is a failed attempt.
+  // drain is found by the new one (process_lost). Both retain transient backoff.
   describe("runs ended by a server restart or replacement", () => {
     const successorsOf = (companyId: string, runId: string) => db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
@@ -3868,6 +3873,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           ? sql`clock_timestamp() + interval '1 minute'`
           : sql`clock_timestamp() - make_interval(secs => ${input.leaseExpiredSeconds ?? 1})`,
         executionStage: input.executionStage ?? "dispatching",
+        ...(input.adapterType === "paperclip_runner" ? { runnerProfileJson: {
+          adapterDispatch: { adapterType: "paperclip_runner" } } } : {}),
         ...(input.alreadyRetried ? { scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2 } : {}),
         contextSnapshot: {
           ...(seeded!.contextSnapshot ?? {}),
@@ -3880,15 +3887,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     async function expectOneRestartContinuation(fixture: { companyId: string; agentId: string; runId: string; issueId: string },
-      failureRetries: number) {
+      failureRetries: number, preparation = false) {
       const successors = await successorsOf(fixture.companyId, fixture.runId);
-      expect(successors).toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryReason: "server_restart",
-        scheduledRetryAttempt: 1, agentId: fixture.agentId })]);
+      const attempt = preparation ? 1 : failureRetries + 1;
+      expect(successors).toEqual([expect.objectContaining({ status: "scheduled_retry",
+        scheduledRetryReason: preparation ? "interrupted_preparation" : "transient_failure",
+        scheduledRetryAttempt: attempt, agentId: fixture.agentId })]);
       const [successor] = successors;
-      // Started at once, and the failure budget is carried, never spent.
-      expect(successor!.scheduledRetryAt!.getTime()).toBeLessThanOrEqual(Date.now());
-      expect(successor!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries, serverRestarts: 1 });
-      // The continuation still serves the original wake (a monitor check).
+      // The durable failure counter drives backoff across server replacements.
+      const delay = successor!.scheduledRetryAt!.getTime() - successor!.createdAt.getTime();
+      expect(delay).toBeGreaterThanOrEqual(runFailureBackoffMs(attempt) - 1000);
+      expect(delay).toBeLessThanOrEqual(runFailureBackoffMs(attempt) + 1000);
+      expect(successor!.contextSnapshot?.executionRetryAccounting).toMatchObject({
+        failureRetries: preparation ? failureRetries : attempt,
+        ...(preparation ? { interruptedPreparations: 1 } : {}),
+      });
       const continuation = await executionContinuation.buildExecutionContinuation({ db, companyId: fixture.companyId,
         issueId: fixture.issueId, agentId: fixture.agentId, context: successor!.contextSnapshot ?? {}, runId: successor!.id,
         summary: null, exposeLowTrustRaw: false });
@@ -3976,42 +3989,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
     });
 
-    it("stops after the restart bound in one window, says so on the run, and starts a new window later", async () => {
-      const recent = new Date(Date.now() - 10 * 60_000).toISOString();
+    it.each([10, 61])("ignores a legacy restart-window cap aged %s minutes and retains transient backoff", async ageMinutes => {
       const fixture = await seedInterruptibleRun({ alreadyRetried: false, owner: "this_server",
-        accounting: { serverRestarts: SERVER_RESTART_RETRY_MAX_ATTEMPTS, serverRestartWindowStartedAt: recent } });
-
-      const drained = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
-
-      expect(drained.retryRunIds).toEqual([]);
-      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
-      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
-      expect(events).toEqual(expect.arrayContaining([expect.objectContaining({
-        payload: expect.objectContaining({ retryReason: "server_restart",
-          scheduledRetryAttempt: SERVER_RESTART_RETRY_MAX_ATTEMPTS, maxAttempts: SERVER_RESTART_RETRY_MAX_ATTEMPTS }),
-      })]));
-      // The sweeper makes the stop visible instead of retrying again.
-      const reconciled = await heartbeatService(db).reconcileStrandedAssignedIssues();
-      expect(reconciled.escalated).toBe(1);
-      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
-
-      // The same count in a window that has closed is not a loop.
-      const old = await seedInterruptibleRun({ alreadyRetried: false, owner: "this_server",
         accounting: { serverRestarts: SERVER_RESTART_RETRY_MAX_ATTEMPTS,
-          serverRestartWindowStartedAt: new Date(Date.now() - SERVER_RESTART_RETRY_WINDOW_MS - 60_000).toISOString() } });
-      await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM", new Date(), [old.runId]);
-      expect(await successorsOf(old.companyId, old.runId)).toEqual([expect.objectContaining({
-        scheduledRetryReason: "server_restart", scheduledRetryAttempt: 1 })]);
+          serverRestartWindowStartedAt: new Date(Date.now() - ageMinutes * 60_000).toISOString() } });
+      const heartbeat = heartbeatService(db);
+      const drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM");
+      const successor = await expectOneRestartContinuation(fixture, 0);
+      expect(drained.retryRunIds).toEqual([successor.id]);
+      expect(successor.contextSnapshot?.executionRetryAccounting).toMatchObject({
+        failureRetries: 1, serverRestarts: SERVER_RESTART_RETRY_MAX_ATTEMPTS,
+      });
+      expect((await heartbeat.reconcileStrandedAssignedIssues()).escalated).toBe(0);
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
     });
 
     // Production shape (staging, 2026-11-12): every run the replacement server
     // reaped was a Runner run still preparing (no process recorded), so the
     // reaper marked it bootstrap/providerWorkStarted=false. Those successors
-    // went to the charged transient_failure lane instead of server_restart.
+    // must keep their own durable preparation counter without charging failures.
     it.each([
       { name: "a first attempt", alreadyRetried: false },
       { name: "a run that was already the last automatic retry", alreadyRetried: true },
-    ])("continues $name that a replaced server left preparing, in the restart lane", async ({ alreadyRetried }) => {
+    ])("continues $name that a replaced server left preparing, without charging the failure counter", async ({ alreadyRetried }) => {
       // The replaced server stamped its process on the claim. It is in another
       // container and has no live server lease, so it is not proven alive.
       const bootId = randomUUID();
@@ -4026,7 +4026,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
       expect(lost!.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         processLossDiagnostic: { controllerReplaced: true, retryEligible: true } });
-      await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0);
+      await expectOneRestartContinuation(fixture, alreadyRetried ? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS : 0, true);
       await heartbeatService(db).reconcileStrandedAssignedIssues();
       expect(await successorsOf(fixture.companyId, fixture.runId)).toHaveLength(1);
     });
@@ -4066,7 +4066,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
           const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
           expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
-          if (executionStage === "preparing") await expectOneRestartContinuation(fixture, 0);
+          if (executionStage === "preparing") await expectOneRestartContinuation(fixture, 0, true);
         });
 
       it("recovers the run when its live owner has not settled it within the grace", async () => {
@@ -4078,11 +4078,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
         const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
         expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
-        await expectOneRestartContinuation(fixture, 0);
+        await expectOneRestartContinuation(fixture, 0, true);
       });
     });
 
-    it("keeps the failure budget for a run that failed on its own", async () => {
+    it("continues an adapter transient after the historical two-retry limit", async () => {
       const fixture = await seedInterruptibleRun({ alreadyRetried: true, owner: "this_server" });
       await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", error: "Adapter failed",
         finishedAt: new Date(), resultJson: { conversationContinuation: "continue_conversation_v1" } })
@@ -4091,7 +4091,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
       await heartbeatService(db).reconcileStrandedAssignedIssues();
 
-      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([]);
+      expect(await successorsOf(fixture.companyId, fixture.runId)).toEqual([expect.objectContaining({
+        status: "scheduled_retry", scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 3,
+      })]);
     });
   });
 
@@ -5687,18 +5689,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("keeps resending a shutdown-interrupted run past the former retry budget", async () => {
+  it.each([false, true])("keeps resending a shutdown-interrupted run past the former retry budget (preparation: %s)", async (preparation) => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "running",
-      contextSnapshot: { executionRetryAccounting: spentRestartRetryAccounting() },
+      contextSnapshot: { executionRetryAccounting: { ...spentRestartRetryAccounting(),
+        ...(preparation ? { interruptedPreparations: 2 } : {}) } },
     });
     await db
       .update(heartbeatRuns)
       .set({
         scheduledRetryAttempt: 2,
-        resultJson: {
+        scheduledRetryReason: preparation ? "interrupted_preparation" : "transient_failure",
+        resultJson: preparation ? {
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-        },
+        } : {},
       })
       .where(eq(heartbeatRuns.id, runId));
     await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
@@ -5714,6 +5718,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "scheduled_retry",
       retryOfRunId: runId,
       scheduledRetryAttempt: 3,
+      scheduledRetryReason: preparation ? "interrupted_preparation" : "transient_failure",
     });
     const retry = runs.find((run) => run.id !== runId)!;
     const dueInMs = new Date(retry.scheduledRetryAt!).getTime() - new Date(runs.find((run) => run.id === runId)!.finishedAt!).getTime();
@@ -8711,7 +8716,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceIssue?.assigneeAgentId).toBe(agentId);
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retry budget is spent");
+    expect(comments[0]?.body).toContain("Press Retry");
     expect(comments[0]?.body).not.toContain("invalid_config");
     expect(commentMetadataRows(comments[0])).toContainEqual({
       type: "key_value",
@@ -9847,6 +9852,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId, wakeReason: "issue_commented", wakeCommentIds: commentIds,
         } },
       }).returning();
+      // Both authors are authorized members. Otherwise the second queue fails
+      // authorization before dispatch and correctly schedules an unknown-code retry.
+      await db.insert(authUsers).values({ id: "other-user", name: "Other user", email: "other-user@example.test",
+        emailVerified: true, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "other-user",
+        status: "active", membershipRole: "member" });
       // A different actor's older queue must not consume this interrupt.
       const [otherComment] = await db.insert(issueComments).values({
         companyId, issueId, authorUserId: "other-user", body: "Other actor's input",
@@ -9872,7 +9883,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const runs = await selectRecoveryRunsByAgent(agentId);
       const successors = runs.filter((run) => run.id !== runId)
         .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
-      expect(successors).toHaveLength(state === "pending" ? 2 : 0);
+      expect(successors, JSON.stringify(successors.map(r => ({ id: r.id, status: r.status, retryOfRunId: r.retryOfRunId,
+        wakeReason: r.contextSnapshot?.wakeReason, wakeCommentIds: r.contextSnapshot?.wakeCommentIds })))).toHaveLength(state === "pending" ? 2 : 0);
       if (state === "pending") {
         expect(successors[0]!.contextSnapshot?.wakeCommentIds).toEqual(commentIds);
         // Only the requested turn's normal completion can drain the other queue.
@@ -13717,7 +13729,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           row.label === "Recovery owner" &&
           row.value === "Board decision required",
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       await db
         .select({ id: heartbeatRuns.id })
@@ -13794,8 +13806,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("non-retryable failure");
-    expect(comments[0]?.body).toContain(code);
+    expect(comments[0]?.body).toContain("then press Retry");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value", label: "Failure code", value: code,
+    });
 
     const followupRuns = await selectRecoveryRunsByAgent(agentId);
     const continuationRetryRun = followupRuns.find((row) => {

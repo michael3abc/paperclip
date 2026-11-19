@@ -851,8 +851,8 @@ describe("releaseIssueExecution", () => {
   });
 
   it.each([
-    ["retries a continuation that lost its controller lease before provider work through the bounded sweep", true, "released"],
-    ["still blocks a continuation whose automatic retry failed after provider work could have started", false, "blocked"],
+    ["requeues a continuation that lost its controller lease before provider work", true, "queued_recovery"],
+    ["requeues a continuation with unknown provider work after controller lease loss", false, "queued_recovery"],
   ] as const)("%s", async (_label, retryableBeforeProviderWork, expected) => {
     const transaction = createFakeTransaction();
     const recovery = createFakeRecovery();
@@ -864,11 +864,11 @@ describe("releaseIssueExecution", () => {
     });
     const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
     expect(result.outcome.kind).toBe(expected);
-    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
-    expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(expected === "blocked" ? 1 : 0);
+    expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledOnce();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
   });
 
-  it("leaves a failed interrupted-preparation successor of a continuation to its bounded lane instead of queuing a fresh continuation", async () => {
+  it("requeues a transient interrupted preparation beyond the former retry limit", async () => {
     const transaction = createFakeTransaction();
     const recovery = createFakeRecovery();
     const release = createReleaseIssueExecution({
@@ -879,8 +879,8 @@ describe("releaseIssueExecution", () => {
       recovery,
     });
     const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
-    expect(result.outcome.kind).toBe("released");
-    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledOnce();
     expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
   });
 
