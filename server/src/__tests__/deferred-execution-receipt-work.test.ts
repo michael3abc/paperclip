@@ -288,13 +288,9 @@ describe("deferred receipt durable dispatch", () => {
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
     await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     if (lease) {
-      await waitForReal(async () => {
-        await Promise.allSettled([...passes]);
-        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
-      }, { timeout: 10_000 });
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id)))[0])
-        .toMatchObject({ status: "deferred_issue_execution", runId: null });
-      await environmentService(db).releaseLease(lease.id, "retained", { cleanupStatus: "success" });
+      // Terminal execution releases admission while remote cleanup remains
+      // outstanding. The saved dependency wake must still run exactly once.
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0].status).toBe("active");
     }
     await waitForReal(async () => {
       await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
@@ -311,6 +307,7 @@ describe("deferred receipt durable dispatch", () => {
     expect(resumed).toMatchObject({ status: "succeeded", stdoutExcerpt: expect.stringContaining("receipt-proof"),
       contextSnapshot: { wakeReason: "issue_blockers_resolved" } });
     expect(resumed.contextSnapshot?.dependencyBlockedInteraction).not.toBe(true);
+    if (lease) await environmentService(db).releaseLease(lease.id, "retained", { cleanupStatus: "success" });
     await heartbeat.resumeQueuedRuns();
     const after = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
     expect(after.filter(run => run.contextSnapshot?.wakeReason === "issue_blockers_resolved")).toHaveLength(1);
@@ -319,15 +316,25 @@ describe("deferred receipt durable dispatch", () => {
       .toMatchObject({ status: "done", executionRunId: null, checkoutRunId: null });
     await quiet();
   });
-  it.each(["paused", "cleanup", "cancelled"] as const)("keeps the %s gate when recovering a dependency wake", async gate => {
+  it.each(["paused", "cleanup", "cancelled"] as const)("honors Owner gates but releases terminal cleanup when recovering a dependency wake: %s", async gate => {
     const f = await strandedDependency();
     if (gate === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
     if (gate === "cancelled") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issue.id));
     if (gate === "cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId,
       heartbeatRunId: f.source.id, issueId: f.issue.id, provider: "daytona", providerLeaseId: "dependency-cleanup",
       status: "active", leasePolicy: "reuse_by_environment" });
+    if (gate === "cleanup") await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
     const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.receipt.id));
+    if (gate === "cleanup") {
+      expect(saved.runId).toEqual(expect.any(String));
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const continuations = runs.filter(run => run.contextSnapshot?.wakeReason === "issue_blockers_resolved");
+      expect(continuations.map(run => run.id)).toEqual([saved.runId]);
+      await finish(f.issue.id);
+      return;
+    }
     expect(saved).toMatchObject({ status: gate === "cancelled" ? "cancelled" : "deferred_issue_execution", runId: null });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
   });
@@ -1306,7 +1313,7 @@ describe("deferred receipt durable dispatch", () => {
     });
     await quiet(); expect(dispatchNative).not.toHaveBeenCalled();
   });
-  it("delivers messages saved behind a finishing native run once, when its environment cleanup settles", async () => {
+  it("delivers messages saved behind a terminal native run once before environment cleanup settles", async () => {
     // Remote native finalization commits Done and projects the run terminal
     // without the in-process release. The provider environment then settles
     // (harness backup, warm retention). Messages the user sent after the final
@@ -1334,16 +1341,9 @@ describe("deferred receipt durable dispatch", () => {
     const readWake = async () => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0];
     const issueRuns = () => db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issue.id}`);
 
-    // The receipt is checked while the source environment is still active.
+    // Terminal status releases saved input before cleanup. A later cleanup
+    // signal must not create a second turn.
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
-    await waitForReal(async () => {
-      await Promise.allSettled([...passes]);
-      expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
-    }, { timeout: 10_000 });
-    expect(await readWake()).toMatchObject({ status: "deferred_issue_execution", runId: null });
-    expect(await issueRuns()).toHaveLength(1);
-
-    await environmentService(db).releaseLease(lease.id, "retained", { cleanupStatus: "success" });
     await waitForReal(async () => {
       await Promise.allSettled([...passes]);
       expect((await readWake()).runId).toBeTruthy();

@@ -262,6 +262,31 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, agent, service };
   }
 
+  it.each([
+    { body: "Continue", actorType: "user", foreign: false },
+    { body: "/new", actorType: "user", foreign: false },
+    { body: "Continue", actorType: "user", foreign: true },
+    { body: "/new", actorType: "user", foreign: true },
+    { body: "Continue", actorType: "system", foreign: true },
+    { body: "Continue", actorType: "agent", foreign: true },
+  ] as const)("checks the Chat requester before persisting $body ($actorType, foreign=$foreign)", async ({ body, actorType, foreign }) => {
+    const f = await waitingConversationFixture();
+    await db.update(issues).set({ conversationState: "active", status: "in_progress" }).where(eq(issues.id, f.issue.id));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
+      authorType: "user", authorUserId: f.user.id, body }).returning();
+    const wake = await f.queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual",
+      reason: "issue_commented", requestedByActorType: actorType,
+      requestedByActorId: foreign ? "another-requester" : f.user.id,
+      payload: { issueId: f.issue.id, commentId: comment.id },
+      contextSnapshot: { issueId: f.issue.id, wakeCommentId: comment.id, source: "issue.comment" },
+    });
+    const rejected = actorType === "user" && foreign;
+    if (rejected) expect(wake).toBeNull(); else expect(wake).not.toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id))).toHaveLength(rejected ? 0 : 1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agent.id))).toHaveLength(rejected ? 0 : 1);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("admits the owner's context compaction maintenance request while its conversation waits", async () => {
     const f = await waitingCompactionFixture();
     const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });

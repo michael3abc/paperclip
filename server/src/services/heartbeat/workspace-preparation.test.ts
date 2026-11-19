@@ -32,6 +32,7 @@ import * as managedRepositoryCheckout from "../managed-repository-checkout.js";
 import * as freshWorkspaceSeed from "../fresh-workspace-seed.js";
 import { requestTaskRetry } from "../task-retry.js";
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
+import { readFailedPreparationSettlement } from "../failed-preparation-settlement.js";
 import { createSystemRecovery } from "../system-recovery-state.js";
 import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js";
 import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
@@ -2105,7 +2106,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(prepared.persistedExecutionWorkspace!.id);
   });
 
-  it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_repaired_git"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
+  it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_retry_metadata", "canonical_retry_provider", "canonical_promotion_time", "canonical_repaired_git"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
     const { input, issue } = await fixture();
     const userId = `directory-owner-${randomUUID()}`;
     await db.insert(authUsers).values({ id: userId, name: "Directory owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -2138,7 +2139,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       if (scenario === "symlink_path") await symlink(preservedCwd, workspace.cwd!);
     }
     if (scenario === "binding_changed") await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, issue.id));
-    const freshExpected = ["canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement"].includes(scenario);
+    const freshExpected = ["canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_retry_metadata", "canonical_retry_provider", "canonical_promotion_time"].includes(scenario);
     const executed = vi.fn(async (execution: AdapterExecutionContext) => {
       const [lease] = await leases(execution.runId);
       if (freshExpected) {
@@ -2146,13 +2147,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
         return { exitCode: 0, signal: null, timedOut: false, summary: "Fresh workspace required" };
       }
-      if (scenario !== "canonical_repaired_git") expect(lease.executionWorkspaceId).toBe(workspace.id);
+      expect(lease.executionWorkspaceId).toBe(workspace.id);
       const activeWorkspace = await input.services.executionWorkspacesSvc.getStoredById(input.agent.companyId, lease.executionWorkspaceId!);
+      expect(activeWorkspace?.cwd).toBe(workspace.cwd);
       if (scenario === "canonical_repaired_git") {
-        expect(execution.config.workspaceStrategy).toMatchObject({ type: "git_worktree" });
+        // Requested adapter config can still say git_worktree. The realized
+        // placement and saved files must remain in the original directory.
         expect((await execFile("git", ["-C", activeWorkspace!.cwd!, "rev-parse", "--is-inside-work-tree"])).stdout.trim()).toBe("true");
       }
-      else expect(activeWorkspace?.cwd).toBe(workspace.cwd);
       expect(await readFile(join(activeWorkspace!.cwd!, "saved-review.txt"), "utf8")).toBe("completed snapshot review\n");
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
       return { exitCode: 0, signal: null, timedOut: false, summary: "Retained review confirmed" };
@@ -2178,10 +2180,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         let failedRunId = next!.id;
         for (let attempt = 1; attempt <= 3; attempt++) {
           const [scheduled] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.retryOfRunId, failedRunId), eq(heartbeatRuns.status, "scheduled_retry")));
-          expect(scheduled).toMatchObject({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt });
+          expect(scheduled).toMatchObject({ scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: attempt });
           if (attempt === 1) expect(await requestTaskRetry({ db, companyId: input.agent.companyId, issueId: issue.id, actorId: userId,
             actorSource: "local_implicit", observedRunId: failedRunId, idempotencyKey: randomUUID() })).toMatchObject({ requestId: null, stale: true, observedRunId: scheduled.id });
-          expect(await heartbeat.promoteDueScheduledRetries(scheduled.scheduledRetryAt!)).toMatchObject({ promoted: 1 });
+          // Promotion's durable event must occur after its due time. Passing a
+          // future clock argument alone would forge an impossible certificate.
+          const due = new Date(Date.now() - 1_000);
+          await db.update(heartbeatRuns).set({ scheduledRetryAt: due,
+            contextSnapshot: { ...scheduled.contextSnapshot, scheduledRetryAt: due.toISOString() },
+          }).where(eq(heartbeatRuns.id, scheduled.id));
+          expect(await heartbeat.promoteDueScheduledRetries()).toMatchObject({ promoted: 1 });
           await heartbeat.resumeQueuedRuns();
           await heartbeat.drainActiveRunExecutions();
           expect(await readRun(scheduled.id)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
@@ -2189,6 +2197,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         }
         expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failedRunId))).toEqual([]);
         expect(executed).not.toHaveBeenCalled();
+        const failedPreparation = await readRun(failedRunId);
+        expect(failedPreparation.executionStage).toBe("preparing");
+        expect(await readFailedPreparationSettlement(db, failedPreparation)).not.toBeNull();
         if (scenario.includes("warning")) {
           // On a promoted automatic retry the promotion lifecycle event precedes the warning.
           const warning = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId))).find(event => event.eventType === "agent_observability.unavailable")!;
@@ -2201,6 +2212,16 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         if (scenario === "canonical_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, failedRunId));
         if (scenario === "canonical_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, failedRunId));
         if (scenario === "canonical_measurement") { const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId)); const measured = events.find(event => event.eventType === "lifecycle" && event.message === "task.run.measured")!; await db.update(heartbeatRunEvents).set({ payload: { ...measured.payload, durationMs: -1 } }).where(eq(heartbeatRunEvents.id, measured.id)); }
+        if (scenario === "canonical_retry_metadata" || scenario === "canonical_retry_provider") {
+          const exhausted = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId)))
+            .find(event => event.message?.startsWith("No automatic retry:"))!;
+          await db.update(heartbeatRunEvents).set(scenario === "canonical_retry_metadata"
+            ? { payload: { ...exhausted.payload, scheduledRetryAttempt: 2 } }
+            : { sourceEventId: randomUUID() }).where(eq(heartbeatRunEvents.id, exhausted.id));
+        }
+        if (scenario === "canonical_promotion_time") await db.update(heartbeatRunEvents)
+          .set({ createdAt: new Date(failedPreparation.scheduledRetryAt!.getTime() - 1) })
+          .where(and(eq(heartbeatRunEvents.runId, failedRunId), eq(heartbeatRunEvents.seq, 1)));
         if (scenario === "canonical_repaired_git") {
           await execFile("git", ["init", "--initial-branch=main", workspace.cwd!]);
           await execFile("git", ["-C", workspace.cwd!, "config", "user.email", "test@example.com"]);
@@ -2225,7 +2246,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         expect(receipt).toMatchObject({ status: "skipped", reason: "workspace_worktree_requires_project", runId: null });
       } else {
         expect(next).not.toBeNull();
-        expect(await readRun(finalRunId!)).toMatchObject(continued
+        const finalRun = await readRun(finalRunId!);
+        expect(finalRun, JSON.stringify({ error: finalRun.error, result: finalRun.resultJson })).toMatchObject(continued
           ? { status: "succeeded", errorCode: null } : { status: "failed", errorCode: "workspace_validation_failed" });
       }
       expect(executed).toHaveBeenCalledTimes(continued ? 1 : 0);

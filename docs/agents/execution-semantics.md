@@ -32,6 +32,15 @@ once: workspace, holders, slots, retirement and the next run. Native-stop
 verification, stop evidence and cleanup receipts are collected best-effort in the
 background and never block admission, dispatch, retirement or another run.
 Owner Recheck may still inspect a cancelled run; it is diagnostic only.
+Saved-message recovery follows the same rule: a terminal native source does not
+need a committed finalization record. Preserve missing or failed finalization
+evidence while the next authorized input passes normal admission.
+Preparation-only Retry can retain its saved directory after automatic retries
+are exhausted. The host exhaustion event must match the run's failure class and
+durable retry accounting; promotion must occur after the recorded due time.
+Provider events, changed retry metadata and execution evidence still invalidate
+that preparation-only certificate. Requested adapter strategy is distinct from
+the realized directory; verify placement and preserved files.
 
 ## Failure classes
 

@@ -2983,6 +2983,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
           throw new HttpError(403, "Only the conversation owner can start a chat run");
         }
+        // A saved owner-authored comment does not grant its requester's authority.
+        if (opts.requestedByActorType === "user"
+          && conversation!.conversationUserId !== opts.requestedByActorId) return null;
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;

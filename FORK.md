@@ -39,6 +39,13 @@ attention-read authorization and privacy boundaries. Restart recovery keeps
 the durable transient backoff counter; a persisted bootstrap certificate keeps
 preparation retries separate after terminal settlement clears execution stage.
 Historical provider evidence does not hold a distinct authorized human input.
+Human Chat wakes also validate the requester against the conversation owner
+before persisting a run or wake; saved owner messages cannot lend authority.
+Stranded-message recovery releases terminal native sources without waiting for
+committed finalization; original failed/unfinished records remain unchanged.
+Preparation-only workspace reuse recognizes the host retry-exhaustion event
+with matching failure classification and durable accounting; provider evidence
+and invalid promotion timing still reject that certificate.
 Failed validation receipts and baseline-comparison limitations remain recorded
 in sync-decisions; these fixes do not certify every historical test as passing.
 

@@ -265,17 +265,18 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
     if (receipt.status === "deferred_issue_execution") {
       await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, receipt.id));
-      await Promise.all([heartbeat.resumeExecutionWaitComments(), heartbeat.resumeExecutionWaitComments()]);
+      await Promise.all([heartbeat.resumeQueuedRuns(), heartbeat.resumeQueuedRuns()]);
     }
     const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
-    expect(delivered).toMatchObject({ status: origin === "new" ? "queued" : "coalesced", runId: expect.any(String) });
+    expect(delivered).toMatchObject({ status: "queued", runId: expect.any(String) });
     const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       eq(heartbeatRuns.status, "queued")));
     expect(successors).toHaveLength(1);
     expect(delivered.runId).toBe(successors[0].id);
     expect(successors[0]).toMatchObject({ agentId: f.agentId, contextSnapshot: {
-      forceFreshSession: true, previousRunId: source.id, wakeCommentIds: [f.commentId],
+      wakeCommentIds: [f.commentId],
     } });
+    // Ordinary input does not require a recovery hold or a forced session reset.
     await heartbeat.resumeRemoteStopComments(source);
     expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       eq(heartbeatRuns.status, "queued")))).toHaveLength(1);
@@ -1344,14 +1345,22 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   );
 
   it("keeps the user's continuation while it waits out a storage outage", async () => {
-    const f = await seedTimedOutExplicitTurn();
-    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "storage_unavailable" }).where(eq(heartbeatRuns.id, f.parent.id));
-    const scheduled = await heartbeatService(db).scheduleBoundedRetry(f.parent.id, { now: f.now });
+    const f = await seed(), now = new Date();
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    const [parent] = await db.insert(heartbeatRuns).values({ id: f.successorRunId, companyId: f.companyId,
+      agentId: f.agentId, status: "failed", errorCode: "storage_unavailable", runtimeMode: "legacy",
+      responsibleUserId: f.actorId, startedAt: now, finishedAt: now,
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: f.commentId,
+        wakeCommentIds: [f.commentId] },
+    }).returning();
+    await db.update(issues).set({ status: "in_progress", executionRunId: parent.id }).where(eq(issues.id, f.issueId));
+    const scheduled = await heartbeatService(db).scheduleBoundedRetry(parent.id, { now });
     expect(scheduled.outcome).toBe("scheduled");
-    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id));
-    expect(successor).toMatchObject({ scheduledRetryReason: "storage_unavailable_wait",
-      contextSnapshot: { explicitUserContinuation: { previousRunId: f.parent.id } } });
-    await expect(dispatchExplicitRetry(f, successor!)).resolves.toBeTruthy();
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, parent.id));
+    expect(successor).toMatchObject({ scheduledRetryReason: "storage_unavailable_wait", responsibleUserId: f.actorId,
+      contextSnapshot: { wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } });
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, f.commentId)))[0])
+      .toMatchObject({ authorUserId: f.actorId, body: "What happened?" });
   });
 
   it("binds the initial user-message admission before any automatic retry", async () => {

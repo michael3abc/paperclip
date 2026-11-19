@@ -365,6 +365,15 @@ See `docs/agents/session-bridge.md` for queue and unavailable-turn semantics.
 Chat presentation uses the shared IssueComment origin type so native inbox and
 mirrored messages retain their provenance through the UI adapter.
 
+Human Chat wake requesters must be the conversation owner before queue admission;
+an owner-authored saved message never grants another requester's authority. See
+docs/agents/session-bridge.md.
+
+Saved input behind a terminal native run must not wait for finalization to become
+committed; retain the original evidence. See docs/agents/execution-semantics.md.
+Preparation Retry fixtures must promote an actually due durable retry. Preserve
+saved directory identity and content; do not assert placement from adapter config.
+
 Skill heading changes must synchronize both Runner capability inventories
 (`generated/capability` and `spec/capability`), their generated contracts/docs and
 baseline-count tests. Verify both check:capability-contract and check:capability-inventory.

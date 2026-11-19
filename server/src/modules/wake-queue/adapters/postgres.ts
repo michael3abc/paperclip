@@ -3,7 +3,7 @@ import { wakeMustNotJoinActiveRun } from "../domain/context.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { notifyRunDispatch, notifyQueuedRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { accountingForScheduledRetry, executionFailureRetryCount } from "../../../services/execution-recovery-attempt.js";
-import { isTransientRunFailureCode, runFailureBackoffMs } from "../../../services/recovery/failure-classification.js";
+import { runFailureBackoffMs } from "../../../services/recovery/failure-classification.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -34,10 +34,8 @@ import {
   chatActions,
   heartbeatRuns,
   issueComments,
-  issueRecoveryActions,
   issueRelations,
   issues,
-  nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { readQueuedInteractionResponse } from "../../../services/queued-interaction-response.js";
@@ -54,7 +52,6 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/reco
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
 import { executionRetryAccounting } from "../../../services/execution-recovery-attempt.js";
 import { issueService } from "../../../services/issues.js";
-import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
@@ -904,103 +901,6 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
   };
 }
 
-async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, issue: IssueRow, now: Date): Promise<boolean> {
-  const applies =
-    run.runtimeMode === "native" &&
-    ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
-    issue.assigneeAgentId === run.agentId &&
-    !["done", "cancelled"].includes(issue.status);
-  if (!applies || isAcknowledgedNativeStop(run) || isAcknowledgedNativeReassignmentStop(run)) return false;
-  // Liveness-first (rules 1 and 4): a transient native failure is resent by
-  // release recovery with backoff; it no longer blocks the issue behind a
-  // board-owned reconciliation action.
-  if (isTransientRunFailureCode(run.errorCode)) return false;
-  // A pause's stop is intentional: the task keeps its status and resuming
-  // continues it. It is never a reconciliation incident with no control. A
-  // termination that replaced the pause shares its stop reason, so the agent
-  // must still be pausable, not terminating or terminated.
-  if (isGovernancePauseStop(run)) {
-    const [agent] = await tx.select({ lifecycleState: agents.lifecycleState }).from(agents)
-      .where(and(eq(agents.id, run.agentId), eq(agents.companyId, issue.companyId)));
-    if (agent && !["terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState)) return false;
-  }
-
-  const existing = await tx
-    .select({ id: issueRecoveryActions.id, evidence: issueRecoveryActions.evidence })
-    .from(issueRecoveryActions)
-    .where(
-      and(
-        eq(issueRecoveryActions.companyId, issue.companyId),
-        eq(issueRecoveryActions.sourceIssueId, issue.id),
-        or(
-          inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'runId' = ${run.id}`,
-        ),
-      ),
-    )
-    .limit(1);
-  let nativeFailureBlock: { runId: string; statusVersion: number } | undefined;
-  if (issue.status !== "blocked") {
-    const projected = await issueService(tx).update(issue.id, { status: "blocked" }, tx);
-    if (projected) {
-      nativeFailureBlock = { runId: run.id, statusVersion: projected.statusVersion };
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${issue.id}`);
-      await tx.insert(activityLog).values({
-        companyId: issue.companyId, actorType: "system", actorId: "execution-recovery",
-        action: "issue.updated", entityType: "issue", entityId: issue.id, runId: run.id,
-        details: { status: "blocked", previousStatus: issue.status, reason: "native_continuation_requires_reconciliation" },
-      });
-    }
-  }
-  // Status projection is required even when restart/finalization created the
-  // incident first. Preserve its owner, cause, retry budget, and prior evidence.
-  if (nativeFailureBlock) {
-    for (const action of existing) {
-      await tx.update(issueRecoveryActions).set({
-        evidence: { ...action.evidence, nativeFailureBlock }, updatedAt: now,
-      }).where(and(eq(issueRecoveryActions.id, action.id), eq(issueRecoveryActions.companyId, issue.companyId)));
-    }
-  }
-  if (!existing.length) {
-    await notifyQueuedRunDispatch(tx, { companyId: issue.companyId });
-    await tx
-      .update(nativeRunFinalizations)
-      .set({
-        phase: "terminal_failure",
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        nextAttemptAt: null,
-        recoveryState: "blocked",
-        failureCode: "native_continuation_requires_reconciliation",
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(nativeRunFinalizations.companyId, issue.companyId),
-          eq(nativeRunFinalizations.runId, run.id),
-          isNull(nativeRunFinalizations.resultId),
-        ),
-      );
-    await issueRecoveryActionService(tx).upsertSourceScoped({
-      companyId: issue.companyId,
-      sourceIssueId: issue.id,
-      kind: "active_run_watchdog",
-      ownerType: "board",
-      returnOwnerAgentId: run.agentId,
-      cause: "native_continuation_requires_reconciliation",
-      fingerprint: `native-continuation:${run.id}`,
-      evidence: { runId: run.id, originalFailureCode: run.errorCode, ...(nativeFailureBlock ? { nativeFailureBlock } : {}) },
-      // The fresh-continuation fallback settles this hold unless its cause is
-      // the person's; the text never asks anyone to repair the run.
-      nextAction: "The run stopped before it finished. Paperclip continues the task from its last saved work.",
-      maxAttempts: 3,
-      wakePolicy: null,
-      supersedeOnIdentityChange: true,
-    });
-  }
-  return true;
-}
-
 /**
  * Builds the temporary transaction-scope handle the admission port needs.
  * `heartbeat.ts` calls this through `createWakeQueue`'s own wrapper; it
@@ -1351,25 +1251,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
-        // A run the fresh-continuation fallback replaced is settled for good: its
-        // finalization may stay terminal_failure (restart recovery ended it), and
-        // the saved input queued behind it is now the task's next turn.
-        if (input.resumeStrandedQueue && run.runtimeMode === "native" && !agentRunSupersededByFreshContinuation(run)) {
-          const [finalized] = contextIssueId && run.nativeIssueId === contextIssueId
-            ? await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
-                eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id),
-                eq(nativeRunFinalizations.issueId, run.nativeIssueId), eq(nativeRunFinalizations.phase, "committed"),
-              )).limit(1)
-            : [];
-          if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
+        // Terminal status releases saved input independently of finalization.
+        // Keep incomplete/failed finalization evidence for background recovery.
+        const terminal = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(run.status);
         // These two holds protect the old executor's workspace and resources. A
         // continuation in a new isolated workspace (or an abandoned remote epoch)
         // reuses none of them, so they no longer hold the task's next turn; any
         // other replacement still waits for them.
         const isolatedReplacement = agentRunSupersededByFreshContinuation(run)
           ? await freshContinuationIsolatesRun(tx, { companyId: input.companyId, runId: run.id }) : false;
-        if (!isolatedReplacement && await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
+        if (!terminal && !isolatedReplacement && await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1521,12 +1412,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           && issueRow.status === "blocked" && issueRow.assigneeAgentId === run.agentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        // The fallback already decided this run's continuation; a reconciliation
-        // incident would re-block the task it just released.
-        if (!handoffAssigneeAgentId && !agentRunSupersededByFreshContinuation(run)
-          && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
+        // Failure classification owns automatic retries. Releasing this source
+        // must neither create a reconciliation hold nor rewrite finalization;
+        // saved input still passes the normal admission checks below.
 
         // A release must leave deferred messages intact while execution is held.
         // The finishing conversation may still own its lease until finally cleanup.

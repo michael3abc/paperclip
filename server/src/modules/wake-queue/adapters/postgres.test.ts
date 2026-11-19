@@ -337,6 +337,25 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(drained).toBe(true);
   });
 
+  it.each(["succeeded", "failed", "cancelled", "timed_out", "interrupted"] as const)("releases a terminal native %s source without committed finalization", async status => {
+    const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status, contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    const [evidence] = await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId,
+      phase: "terminal_failure", failureCode: "native_retry_cancelled", failureDetail: {
+        systemRecovery: { ...createSystemRecovery(runId), state: "exhausted" },
+      } }).returning();
+    let drained = false;
+    await createPostgresWakeQueueAdapter(db, stubDeps).withIssueExecutionLock(
+      { companyId, runId, now: new Date(), resumeStrandedQueue: true },
+      async () => { drained = true; return { outcome: { kind: "released" }, postCommitEffects: [] }; },
+    );
+    expect(drained).toBe(true);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0]).toEqual(evidence);
+  });
+
   it.each(["unfinished", "running"])("does not drain a stranded queue through an %s source", async kind => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });

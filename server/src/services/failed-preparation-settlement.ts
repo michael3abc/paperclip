@@ -1,6 +1,7 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
+import { classifyRunFailure, UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS } from "./recovery/failure-classification.js";
 
 type Source = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "error">;
 
@@ -10,7 +11,7 @@ export async function readFailedPreparationSettlement(db: Db, source: Source, al
   if (typeof source.error !== "string" || !source.error.length) return null;
   const events = await db.select().from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, source.companyId), eq(heartbeatRunEvents.runId, source.id),
-  )).orderBy(asc(heartbeatRunEvents.seq)).limit(allowRunStarted ? 7 : 6);
+  )).orderBy(asc(heartbeatRunEvents.seq)).limit(allowRunStarted ? 8 : 7);
   const hostEvent = (event: typeof heartbeatRunEvents.$inferSelect) => event.agentId === source.agentId
     && event.stream === "system" && event.sourceInstanceId === null && event.sourceEventId === null
     && event.sourceSeq === null && event.sourcePayloadSha256 === null && event.protocolSchemaVersion === null;
@@ -35,18 +36,46 @@ export async function readFailedPreparationSettlement(db: Db, source: Source, al
     if (!hostEvent(started) || started.seq !== 1 + offset || started.level !== "info" || started.payload !== null) return null;
     offset++;
   }
-  const [error, measured, settledHold] = events.slice(offset);
-  if (settledHold && !(hostEvent(settledHold) && await isRecoveryHoldSettlement(db, source, settledHold, 3 + offset))) return null;
-  if (events.length !== (settledHold ? 3 : 2) + offset || !error || !measured || !hostEvent(error) || !hostEvent(measured)
+  const error = events[offset];
+  const retryExhausted = events[offset + 1];
+  let retryOffset = 0;
+  if (retryExhausted?.message?.startsWith("No automatic retry:")) {
+    if (!hostEvent(retryExhausted) || retryExhausted.seq !== 2 + offset
+      || retryExhausted.eventType !== "lifecycle" || retryExhausted.level !== "warn"
+      || !await matchesPreparationRetryExhaustion(db, source, retryExhausted)) return null;
+    retryOffset = 1;
+  }
+  const [measured, settledHold] = events.slice(offset + 1 + retryOffset);
+  if (settledHold && !(hostEvent(settledHold) && await isRecoveryHoldSettlement(db, source, settledHold, 3 + offset + retryOffset))) return null;
+  if (events.length !== (settledHold ? 3 : 2) + offset + retryOffset || !error || !measured || !hostEvent(error) || !hostEvent(measured)
     || error.seq !== 1 + offset || error.eventType !== "error" || error.level !== "error"
     || error.message !== source.error || error.payload !== null
-    || measured.seq !== 2 + offset || measured.eventType !== "lifecycle" || measured.level !== "info" || measured.message !== "task.run.measured"
+    || measured.seq !== 2 + offset + retryOffset || measured.eventType !== "lifecycle" || measured.level !== "info" || measured.message !== "task.run.measured"
     || measured.payload?.phase !== "task.run.measured" || measured.payload.outcome !== "failed"
     || measured.payload.durableSettlement !== true
     || Object.keys(measured.payload).some(key => !["phase", "outcome", "durationMs", "durableSettlement"].includes(key))
     || typeof measured.payload.durationMs !== "number"
     || !Number.isFinite(measured.payload.durationMs) || measured.payload.durationMs < 0) return null;
   return { unsupportedHarnessWarning };
+}
+
+async function matchesPreparationRetryExhaustion(db: Db, source: Source, event: typeof heartbeatRunEvents.$inferSelect) {
+  const [run] = await db.select({ errorCode: heartbeatRuns.errorCode,
+    scheduledRetryReason: heartbeatRuns.scheduledRetryReason, scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, source.companyId),
+    eq(heartbeatRuns.agentId, source.agentId), eq(heartbeatRuns.id, source.id)));
+  if (!run) return false;
+  const failureClass = classifyRunFailure(run.errorCode);
+  const attempt = run.scheduledRetryAttempt ?? 0;
+  // This host event accounts for a stopped automatic retry chain; it is not
+  // provider output. Preserve the strict preparation-only event certificate.
+  return run.scheduledRetryReason === "interrupted_preparation"
+    && Number.isSafeInteger(attempt) && attempt >= 0
+    && (failureClass === "deterministic" || failureClass === "unknown" && attempt >= UNKNOWN_FAILURE_TRANSIENT_ATTEMPTS)
+    && event.message === `No automatic retry: failure code ${run.errorCode ?? "(none)"} is not retryable (${failureClass === "unknown" ? "unknown code after three attempts" : "deterministic"})`
+    && event.payload?.retryReason === run.scheduledRetryReason
+    && event.payload.scheduledRetryAttempt === attempt && event.payload.maxAttempts === 0
+    && Object.keys(event.payload).every(key => ["retryReason", "scheduledRetryAttempt", "maxAttempts"].includes(key));
 }
 
 async function matchesScheduledRetryPromotion(db: Db, source: Source, event: typeof heartbeatRunEvents.$inferSelect) {
