@@ -1,7 +1,9 @@
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, MessageSquare, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
+import { usePdfThumbnail } from "@/hooks/usePdfThumbnail";
 import { artifactFileLink } from "@/lib/artifact-file-link";
+import { pdfPreviewSource } from "@/lib/pdf-preview";
 import { useArtifactPreviewClick } from "./ArtifactPreviewProvider";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
@@ -34,7 +36,7 @@ function PlaceholderPreview({ label }: { label?: string }) {
   );
 }
 
-type PreviewArtifact = Pick<CompanyArtifact, "mediaKind" | "contentPath" | "title"> & Partial<Pick<CompanyArtifact, "source" | "previewText">>;
+type PreviewArtifact = Pick<CompanyArtifact, "mediaKind" | "contentPath" | "title"> & Partial<Pick<CompanyArtifact, "source" | "previewText" | "contentType">>;
 
 function ImagePreview({ artifact }: { artifact: PreviewArtifact }) {
   const [errored, setErrored] = useState(false);
@@ -135,6 +137,30 @@ function VideoPreview({ artifact }: { artifact: PreviewArtifact }) {
   );
 }
 
+/** First page of a PDF, drawn once the card is near the viewport; the file placeholder stays when it cannot be read. */
+function PdfPreview({ artifact }: { artifact: PreviewArtifact }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const source = artifact.contentPath
+    ? pdfPreviewSource({ href: artifact.contentPath, filename: artifact.title, contentType: artifact.contentType })
+    : null;
+  const state = usePdfThumbnail(frame, source);
+  if (!source || state.status === "failed") return <PlaceholderPreview label="PDF" />;
+  return (
+    <PreviewFrame>
+      <div ref={frame} className="absolute inset-0" data-pdf-thumbnail={state.status}>
+        {state.status === "ready" ? (
+          <img
+            src={state.thumbnail.url}
+            alt={artifact.title}
+            className="h-full w-full object-cover object-top"
+            draggable={false}
+          />
+        ) : null}
+      </div>
+    </PreviewFrame>
+  );
+}
+
 function TextPreview({ artifact }: { artifact: PreviewArtifact }) {
   const preview = artifact.previewText?.trim();
   if (!preview) {
@@ -162,7 +188,9 @@ export function ArtifactPreview({ artifact }: { artifact: PreviewArtifact }) {
     case "document":
       return <TextPreview artifact={artifact} />;
     case "file":
-      return <PlaceholderPreview label="File" />;
+      return pdfPreviewSource({ href: artifact.contentPath ?? "", filename: artifact.title, contentType: artifact.contentType })
+        ? <PdfPreview key={artifact.contentPath} artifact={artifact} />
+        : <PlaceholderPreview label="File" />;
     case "empty":
     default:
       return <PlaceholderPreview />;

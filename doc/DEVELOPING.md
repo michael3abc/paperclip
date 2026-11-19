@@ -2072,8 +2072,10 @@ Preview loading uses one authenticated GET with redirects rejected. Require HTTP
 filename), a %PDF- header in the first 1024 bytes and at most 32 MiB, checking
 both Content-Length and streamed bytes. Embed only the validated PDF blob and
 abort/revoke it on close or navigation. Errors expose explicit retry and retain
-raw/download actions; no automatic retry or PDF renderer dependency. The native
-viewer requires an unsandboxed iframe. Mobile viewport tests cover navigation
+raw/download actions; no automatic retry. The preview dialog uses the native
+viewer in an unsandboxed iframe. Artifacts cards separately load pdf.js lazily
+to draw first-page thumbnails through the same validated read (see
+`docs/fork/artifacts-and-mobile.md`). Mobile viewport tests cover navigation
 and layering, not physical iOS PWA/Android native PDF rendering.
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:
