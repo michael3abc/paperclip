@@ -6,9 +6,9 @@
   },
   "dialect": "postgresql",
   "enums": {},
-  "id": "819c5866-5dbd-44b5-9f06-c17062262337",
+  "id": "aff41516-af56-4b68-b47e-a355888b3424",
   "policies": {},
-  "prevId": "aff41516-af56-4b68-b47e-a355888b3424",
+  "prevId": "81e8d5e1-2895-4e0e-a027-a5e027a9d173",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -2059,12 +2059,6 @@
         "starred_at": {
           "name": "starred_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "chat_pinned": {
-          "name": "chat_pinned",
-          "type": "boolean",
           "primaryKey": false,
           "notNull": false
         },

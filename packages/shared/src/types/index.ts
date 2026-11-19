@@ -545,6 +545,7 @@ export type {
   ConnectToolAppResult,
   MachineSignInPublicKey,
   MachineSignInStatus,
+  AwsConnectionSetup,
   MachineSignInSetupResult,
   ToolAppMetadataPreflightAttempt,
   ToolAppMetadataPreflightResult,
