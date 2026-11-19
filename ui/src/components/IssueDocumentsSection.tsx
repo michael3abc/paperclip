@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Check, Copy, Diff, Download, FilePenLine, FileText, Lock, MoreHorizontal, Plus, Trash2, Unlock, X } from "lucide-react";
 import { DocumentDiffModal } from "./DocumentDiffModal";
+import { storedTodoDocument, todoDocumentMarkdown } from "../lib/todo-document";
 import { DocumentFrameHeader, type DocumentFrameHeaderRevisionActor } from "./DocumentFrameHeader";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { Badge } from "@/components/ui/badge";
@@ -585,6 +586,8 @@ function AccountIssueDocumentsSection({
   const beginEdit = (key: string) => {
     const doc = sortedDocuments.find((entry) => entry.key === key);
     if (!doc) return;
+    // The agent's TODO is JSONL kept by its helper; a markdown edit here would break that store.
+    if (storedTodoDocument(doc.key, doc.body)) return;
     const storedDraft = loadStoredDocumentDraft(draftScope, key);
     const conflictedDraft = documentConflict?.key === key
       ? documentConflict.localDraft
@@ -1244,6 +1247,8 @@ function AccountIssueDocumentsSection({
             ?? (documentHashTarget?.documentKey === doc.key && documentHashTarget.revisionId === doc.latestRevisionId
               ? documentHashTarget.revisionId : undefined);
           const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? currentRevision.body;
+          const storedTodo = activeDraft ? null : storedTodoDocument(doc.key, displayedBody);
+          const isReadOnlyTodo = storedTodoDocument(doc.key, doc.body) !== null;
           const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? currentRevision.revisionNumber;
           const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? currentRevision.createdAt;
           const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
@@ -1342,13 +1347,13 @@ function AccountIssueDocumentsSection({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        {!isHistoricalPreview && !isLocked ? (
+                        {!isHistoricalPreview && !isLocked && !isReadOnlyTodo ? (
                           <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
                             <FilePenLine className="h-3.5 w-3.5" />
                             Edit document
                           </DropdownMenuItem>
                         ) : null}
-                        {!isHistoricalPreview && !isLocked ? <DropdownMenuSeparator /> : null}
+                        {!isHistoricalPreview && !isLocked && !isReadOnlyTodo ? <DropdownMenuSeparator /> : null}
                         <DropdownMenuItem
                           onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                         >
@@ -1516,6 +1521,16 @@ function AccountIssueDocumentsSection({
                     {(() => {
                       // Loading and error copy must never become editor input
                       // or annotation content. A blocked draft stays editable.
+                      if (storedTodo && !waitingForLinkedRevision) {
+                        return (
+                          <div data-testid="todo-document-readonly">
+                            {renderFoldableBody(todoDocumentMarkdown(storedTodo), documentBodyContentClassName, externalReferences)}
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              Kept by the agent with its TODO helper. Open the TODO tab in the task side panel to follow it or cancel an item.
+                            </p>
+                          </div>
+                        );
+                      }
                       const renderedDocumentBody = waitingForLinkedRevision && !activeDraft ? null : isHistoricalPreview ? (
                         renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences, { documentKey: doc.key, revisionId: galleryRevisionId, currentIssueId: issue?.id })
                       ) : activeDraft ? (
