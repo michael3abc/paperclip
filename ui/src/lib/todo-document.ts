@@ -119,6 +119,20 @@ export function todoDisplayText(value: string): string {
     .trim();
 }
 
+// A bare URL runs to the next ASCII space in GFM, so "http://host:8931/（235 筆）" would take the full-width bracket
+// and what follows into the link. Mark where the address really ends before the markdown renderer sees it.
+const BARE_URL = /(^|[^\w(<\[`"'=])(https?:\/\/[\x21-\x7e]+)/g;
+const URL_TRAILING = /[.,;:!?)\]}'"*_~]+$/;
+
+/** Item text as markdown for the app's renderer, with bare addresses turned into explicit autolinks. */
+export function todoMarkdownText(value: string): string {
+  return value.replace(BARE_URL, (_match, before: string, url: string) => {
+    const trailing = URL_TRAILING.exec(url)?.[0] ?? "";
+    const address = trailing ? url.slice(0, -trailing.length) : url;
+    return address.length > "https://".length ? `${before}<${address}>${trailing}` : `${before}${url}`;
+  });
+}
+
 /**
  * The Owner's cancel request, posted as a comment in the conversation. The agent stops the task or job behind the
  * item and records the cancellation; this UI never cancels a task itself.

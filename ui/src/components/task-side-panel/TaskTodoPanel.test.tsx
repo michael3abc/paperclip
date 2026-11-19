@@ -9,7 +9,10 @@ import { TaskTodoPanel } from "./TaskTodoPanel";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const mocks = vi.hoisted(() => ({ getDocument: vi.fn(), get: vi.fn(), addComment: vi.fn() }));
 vi.mock("@/api/issues", () => ({ issuesApi: { getDocument: mocks.getDocument, get: mocks.get, addComment: mocks.addComment } }));
-vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...rest }: { to: string; children: ReactNode }) => <a href={to} {...rest}>{children}</a> }));
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, disableIssueQuicklook, ...rest }: { to: string; children: ReactNode; disableIssueQuicklook?: boolean }) =>
+    <a href={to} data-quicklook={disableIssueQuicklook ? "off" : "on"} {...rest}>{children}</a>,
+}));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: ReactNode }) => <div data-testid="markdown">{children}</div> }));
 
 const NOW = new Date("2026-11-19T12:00:00.000Z");
@@ -66,9 +69,16 @@ describe("TaskTodoPanel", () => {
     expect(container.querySelector('[data-testid="todo-open-3"]')?.getAttribute("data-state")).toBe("waiting");
     expect(container.querySelector('[data-testid="todo-open-4"]')?.getAttribute("data-state")).toBe("next");
     expect(container.querySelector('[data-testid="todo-open-6"]')?.getAttribute("data-state")).toBe("queued");
-    expect(text('[data-testid="todo-open-3"]')).toContain("HOM-389 aux 出來後照分岔表執行");
-    expect(text('[data-testid="todo-open-3"]')).toContain("in progress");
-    expect(container.querySelector('[data-testid="todo-open-3"] a')?.getAttribute("href")).toBe("/issues/HOM-389");
+    // Item text goes to the app's markdown renderer unchanged, so links and task identifiers in it are clickable.
+    expect(text('[data-testid="todo-open-3"] [data-testid="markdown"]')).toBe("[HOM-389](/HOM/issues/HOM-389) aux 出來後照分岔表執行");
+    expect(text('[data-testid="todo-finished-2"]')).toContain("釋放 746 GiB");
+    // The text of item 3 already names HOM-389 (that mention is the link), so there is no extra chip. Item 6 does not
+    // name its task: it gets a chip that opens like a row of the Tasks list, in a new tab without a hover preview.
+    expect(container.querySelector('[data-testid="todo-open-3"] a')).toBeNull();
+    const chip = container.querySelector('[data-testid="todo-open-6"] a');
+    expect(chip?.getAttribute("href")).toBe("/issues/HOM-390");
+    expect(chip?.getAttribute("target")).toBe("_blank");
+    expect(chip?.getAttribute("data-quicklook")).toBe("off");
     expect(text('[data-testid="todo-open-4"]')).toContain("Next");
     // Markers are the task-list status glyphs: the linked task's own status, a plain to-do without one.
     const glyph = (testId: string) => container.querySelector(`[data-testid="${testId}"] svg[role="img"]`)?.getAttribute("aria-label");

@@ -14,6 +14,7 @@ import {
   parseTodoDocument,
   todoCancelComment,
   todoDisplayText,
+  todoMarkdownText,
   todoView,
   TODO_OPEN_VISIBLE,
   type TodoItem,
@@ -40,27 +41,39 @@ function SectionTitle({ children, count, className }: { children: ReactNode; cou
   );
 }
 
-/** Long text is clamped to two lines; a click shows all of it. */
+// Inside a row, a task link in the text keeps its link but not its own status glyph: the row's marker already
+// shows the status, the way a row of the Tasks list does.
+const ROW_MARKDOWN = "[&_.paperclip-markdown-issue-ref>svg]:hidden";
+
+/**
+ * Item text is the agent's markdown: links open, task identifiers such as HOM-389 link to their task, code and
+ * emphasis render as elsewhere in the app. Long text is held to two lines (2 × leading-5) until "more" is clicked.
+ */
 function ItemText({ value, className }: { value: string; className?: string }) {
   const [open, setOpen] = useState(false);
-  const display = todoDisplayText(value);
-  const long = display.length > 96;
+  const long = todoDisplayText(value).length > 96;
   return (
-    <p className={cn("text-sm leading-snug [overflow-wrap:anywhere]", className)}>
-      <span className={cn(long && !open && "line-clamp-2")}>{display}</span>
+    <div className={cn("min-w-0", ROW_MARKDOWN, className)}>
+      <div className={cn(long && !open && "max-h-10 overflow-hidden")}>
+        <MarkdownBody className="text-sm! leading-5!" softBreaks={false} linkIssueReferences>{todoMarkdownText(value)}</MarkdownBody>
+      </div>
       {long && (
-        <button type="button" className="ml-1 text-xs text-muted-foreground underline-offset-2 hover:underline" onClick={() => setOpen(!open)}>
+        <button type="button" className="text-xs text-muted-foreground underline-offset-2 hover:underline" onClick={() => setOpen(!open)}>
           {open ? "less" : "more"}
         </button>
       )}
-    </p>
+    </div>
   );
 }
 
 function TaskChip({ reference, task }: { reference: string; task: LinkedTask | undefined }) {
   return (
     <Link
+      // Opens the way the Tasks list does: a new tab, so the conversation stays where it is.
       to={`/issues/${task?.identifier ?? reference}`}
+      disableIssueQuicklook
+      target="_blank"
+      rel="noreferrer"
       title={task?.title ?? reference}
       className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background py-0.5 pl-2 pr-0.5 hover:bg-accent"
     >
@@ -85,9 +98,13 @@ function FinishedRow({ item }: { item: TodoItem }) {
   return (
     <li className="flex items-start gap-2.5 px-3 py-2" data-testid={`todo-finished-${item.id}`}>
       <StatusIcon status={cancelled ? "cancelled" : "done"} className="mt-0.5 shrink-0" />
-      <div className="min-w-0 flex-1">
-        <ItemText value={item.text} className={cn("text-muted-foreground", cancelled && "line-through decoration-muted-foreground/50")} />
-        {item.note && <p className="mt-0.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">{todoDisplayText(item.note)}</p>}
+      <div className="min-w-0 flex-1 opacity-70">
+        <ItemText value={item.text} className={cn(cancelled && "line-through decoration-muted-foreground/50")} />
+        {item.note && (
+          <div className={cn("mt-0.5", ROW_MARKDOWN)}>
+            <MarkdownBody className="text-xs! leading-4!" softBreaks={false} linkIssueReferences>{todoMarkdownText(item.note)}</MarkdownBody>
+          </div>
+        )}
       </div>
       {item.closedAt && <time dateTime={item.closedAt} className="shrink-0 pt-0.5 text-xs text-muted-foreground">{relativeTime(item.closedAt)}</time>}
     </li>
@@ -106,6 +123,11 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
 
   // An item that names this conversation itself ("attach it to HOM-265") is not waiting on another task.
   const linkedTask = (item: TodoItem) => (item.task && item.task !== issue.identifier ? item.task : null);
+  // The text usually names the task, and that mention is already a link; the chip is for a task it does not name.
+  const chipFor = (item: TodoItem) => {
+    const reference = linkedTask(item);
+    return reference && !todoDisplayText(item.text).includes(reference) ? reference : null;
+  };
   const references = useMemo(() => {
     const all = [...(view?.open ?? []), ...(view?.owner ?? [])]
       .map((item) => (item.task && item.task !== issue.identifier ? item.task : null))
@@ -200,11 +222,14 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
           <SectionTitle count={view.owner.length} className="text-amber-700 dark:text-amber-300"><Hand className="h-3.5 w-3.5" />Needs you</SectionTitle>
           <ul className="mt-2 space-y-2">
             {view.owner.map((item) => (
-              <li key={item.id} className="flex items-start gap-2">
-                <span className="pt-0.5 font-mono text-xs text-muted-foreground">#{item.id}</span>
-                <div className="min-w-0 flex-1 space-y-1">
+              <li key={item.id} className="flex items-start gap-2.5" data-testid={`todo-owner-${item.id}`}>
+                <OpenGlyph task={linkedTask(item) ? tasks.get(item.task!) : undefined} />
+                <div className="min-w-0 flex-1">
                   <ItemText value={item.text} />
-                  {linkedTask(item) && <div className="text-xs text-muted-foreground"><TaskChip reference={item.task!} task={tasks.get(item.task!)} /></div>}
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="font-mono">#{item.id}</span>
+                    {chipFor(item) && <TaskChip reference={item.task!} task={tasks.get(item.task!)} />}
+                  </div>
                 </div>
               </li>
             ))}
@@ -227,7 +252,7 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                       <span className="font-mono">#{item.id}</span>
                       {state === "next" && <span className="rounded-full bg-blue-500/10 px-1.5 py-0.5 font-medium text-blue-700 dark:text-blue-300">Next</span>}
-                      {linkedTask(item) && <TaskChip reference={item.task!} task={tasks.get(item.task!)} />}
+                      {chipFor(item) && <TaskChip reference={item.task!} task={tasks.get(item.task!)} />}
                     </div>
                   </div>
                   {requested.has(item.id) ? (

@@ -3,6 +3,7 @@ import {
   parseTodoDocument,
   todoCancelComment,
   todoDisplayText,
+  todoMarkdownText,
   todoView,
   TODO_RECENT_LIMIT,
   TODO_RECENT_WINDOW_MS,
@@ -73,6 +74,15 @@ describe("todo document", () => {
 
   it("renders item text as plain words", () => {
     expect(todoDisplayText("[HOM-389](/HOM/issues/HOM-389) aux 出來後跑 `tolerant_em.py`，**重要**")).toBe("HOM-389 aux 出來後跑 tolerant_em.py，重要");
+  });
+
+  it("ends a bare address where it really ends, so CJK text after it is not taken into the link", () => {
+    expect(todoMarkdownText("SHO-93：Rule 2 品質 GUI http://127.0.0.1:8931/（235 筆）")).toBe("SHO-93：Rule 2 品質 GUI <http://127.0.0.1:8931/>（235 筆）");
+    expect(todoMarkdownText("看 https://example.com/a?b=1，再回報。")).toBe("看 <https://example.com/a?b=1>，再回報。");
+    expect(todoMarkdownText("See https://example.com/path). Next")).toBe("See <https://example.com/path>). Next");
+    // Addresses that are already marked up, or sit inside code, are left alone.
+    for (const kept of ["[頁面](https://example.com/x)", "<https://example.com/x>", "`https://example.com/x`", "沒有連結的文字", "href=\"https://example.com\""])
+      expect(todoMarkdownText(kept)).toBe(kept);
   });
 
   it("asks the agent to cancel an item by id, naming its task once", () => {
