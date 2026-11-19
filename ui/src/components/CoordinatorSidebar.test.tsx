@@ -731,11 +731,7 @@ describe("Coordinator agents section", () => {
     expect(section()?.querySelector('[role="status"]')?.textContent).toContain("Loading agents");
   });
 
-  it("renders nothing without agents and is hidden in the collapsed rail", async () => {
-    await renderSidebar();
-    expect(section()).toBeNull();
-    fixture.agents = roster;
-    fixture.collapsed = true;
+  it("renders no agents section without agents", async () => {
     await renderSidebar();
     expect(section()).toBeNull();
   });

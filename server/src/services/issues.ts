@@ -10979,7 +10979,7 @@ export function issueService(db: Db) {
         }
         const cooperativeWorkspace = await resolveCooperativeTaskWorkspace(tx as unknown as Db, {
           companyId, projectId: issueData.projectId, conversationAgentId: issueData.conversationAgentId,
-          executionWorkspaceId, executionWorkspaceSettings,
+          projectWorkspaceId, executionWorkspaceId, executionWorkspaceSettings,
         });
         executionWorkspaceId = cooperativeWorkspace.executionWorkspaceId;
         projectWorkspaceId = cooperativeWorkspace.projectWorkspaceId;
@@ -12209,6 +12209,8 @@ export function issueService(db: Db) {
           Object.assign(patch, await resolveCooperativeTaskWorkspace(tx as unknown as Db, {
             companyId: receiptExisting.companyId, projectId: patch.projectId ?? receiptExisting.projectId,
             conversationAgentId: receiptExisting.conversationAgentId,
+            projectWorkspaceId: patch.projectWorkspaceId !== undefined ? patch.projectWorkspaceId
+              : patch.projectId !== undefined && patch.projectId !== receiptExisting.projectId ? null : receiptExisting.projectWorkspaceId,
             executionWorkspaceId: patch.executionWorkspaceId !== undefined ? patch.executionWorkspaceId : receiptExisting.executionWorkspaceId,
             executionWorkspaceSettings: patch.executionWorkspaceSettings !== undefined ? patch.executionWorkspaceSettings : receiptExisting.executionWorkspaceSettings,
           }));

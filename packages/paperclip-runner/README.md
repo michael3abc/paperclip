@@ -40,6 +40,9 @@ the existing shared PRP control plane. PRP owns authentication, commands, replay
 tool authority, and run transitions. Process ownership hooks provide launch,
 verified adoption, and durable state access. A lost connection does not prove
 process termination, and a required checkpoint failure must prevent lease release.
+Replay keeps ingress open for authenticated lease renewals and order-independent
+command results while event commits wait. Hard queue limits bound pending frames
+and bytes; TCP pausing must not starve those control messages.
 
 The driver is an in-process interface. Its filesystem paths and process launch
 specifications are internal to built-in execution; they are not a plugin wire

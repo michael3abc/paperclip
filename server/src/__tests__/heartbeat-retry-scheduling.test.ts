@@ -544,7 +544,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
   });
 
-  it("re-queues a native pre-dispatch database failure without charging an attempt, until its lane is spent", async () => {
+  it("re-queues transient native pre-dispatch failures with backoff without charging provider attempts", async () => {
     const { agentId, issueId, runId, now } = await seedMaxTurnFixture();
     await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } })
       .where(eq(agents.id, agentId));
@@ -559,23 +559,31 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       const [child] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor));
       expect(child).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "interrupted_preparation",
         scheduledRetryAttempt: attempt });
-      // Uncharged: the failure budget stays untouched; the first attempt is due at once.
+      // The preparation lane stays uncharged; liveness-first backoff still applies.
       expect(child!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, interruptedPreparations: attempt });
-      if (attempt === 1) expect(child!.scheduledRetryAt?.getTime()).toBe(now.getTime());
+      expect(child!.scheduledRetryAt?.getTime()).toBe(now.getTime() + 30_000 * 2 ** (attempt - 1));
       expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.executionRunId).toBe(child!.id);
       predecessor = child!.id;
       await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", errorCode: "adapter_failed", resultJson, finishedAt: now })
         .where(eq(heartbeatRuns.id, predecessor));
     }
-    // A failure that keeps recurring ends visibly failed once the lane is spent.
+    // adapter_failed is transient under liveness-first, including when an
+    // older release persisted a spent preparation counter.
     const [last] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, predecessor));
     await db.update(heartbeatRuns).set({ contextSnapshot: { ...last!.contextSnapshot, executionRetryAccounting: {
       version: 1, failureRetries: 0, maxTurnContinuations: 0, interruptedPreparations: INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS } } })
       .where(eq(heartbeatRuns.id, predecessor));
-    expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now, retryReason: "interrupted_preparation" }))
-      .toMatchObject({ outcome: "retry_exhausted", maxAttempts: INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS });
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor))).toHaveLength(0);
-    expect((await heartbeat.getRun(predecessor))?.status).toBe("failed");
+    const third = await heartbeatService(db).scheduleBoundedRetry(predecessor, { now, retryReason: "interrupted_preparation" });
+    expect(third.outcome).toBe("scheduled");
+    if (third.outcome !== "scheduled") throw new Error("Expected another transient retry");
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", errorCode: "adapter_failed", resultJson, finishedAt: now })
+      .where(eq(heartbeatRuns.id, third.run.id));
+    const fourth = await heartbeatService(db).scheduleBoundedRetry(third.run.id, { now, retryReason: "interrupted_preparation" });
+    expect(fourth).toMatchObject({ outcome: "scheduled", attempt: third.attempt + 1 });
+    if (fourth.outcome !== "scheduled") throw new Error("Expected transient retries beyond the old cap");
+    expect(fourth.run.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, third.run.id))).toHaveLength(1);
+    expect((await heartbeat.getRun(third.run.id))?.status).toBe("failed");
   });
 
   it("retains the reviewed chat admission on a durable retry without approving the task", async () => {
@@ -642,7 +650,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     ]);
     expect(third.every(outcome => outcome.outcome === "scheduled")).toBe(true);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor))).toHaveLength(1);
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(SERVER_RESTART_RETRY_MAX_ATTEMPTS + 2);
     const { getExecutionBlocker } = await import("../services/execution-blocker.js");
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });

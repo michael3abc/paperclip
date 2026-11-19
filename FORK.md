@@ -22,6 +22,18 @@ unchanged, so the published hash-only migration history recognizes them after
 renumbering. The merged journal has 509 entries; a reconciled baseline has
 442 applied entries, leaving 67 upstream migrations. Both SQL histories must
 be reviewed and proved on an isolated production DB clone.
+The source-candidate clone applied those 67 migrations once (442 to 509),
+recognized all twelve fork hashes, and preserved the original data under the
+documented lifecycle-default transformation. The retained a614a7c5a-r1 passed
+isolated boot/health, project and session reads on the upgraded clone. Receipts
+and verifier corrections are in sync-decisions; the final sealed-release proof
+and deployment confirmation remain pending.
+
+Integration follow-ups retain the selected project source when creating or
+reassigning a cooperative task, remove local Git-copy admission locks, break a
+dispatch/recovery initialization cycle, and keep PRP control replies responsive
+during replay while retaining hard queue bounds. Test fixtures track the actual
+CLI startup, monitor, workspace API and liveness-first retry contracts.
 
 | Published fork file | Merged file |
 | --- | --- |

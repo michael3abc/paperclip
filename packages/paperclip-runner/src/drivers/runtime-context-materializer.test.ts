@@ -29,6 +29,7 @@ import {
   prepareIsolatedCodexRecoveryHome,
   prepareIsolatedCodexHome,
 } from "./runtime-context-materializer.js";
+import { nativeMcpLaunchBinding } from "./native-mcp.js";
 
 const roots: string[] = [];
 

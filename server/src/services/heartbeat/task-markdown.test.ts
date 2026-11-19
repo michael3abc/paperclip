@@ -131,7 +131,7 @@ describe("heartbeat task markdown rendering", () => {
     expect(isMainAgent({ adapterType: "claude_local", adapterConfig: { role: "main" } })).toBe(false);
     for (const workMode of ["standard", "planning"] as const) {
       const main = buildPaperclipTaskMarkdown({ issue: { ...chat, workMode }, mainAgent: true })!;
-      expect(main).toContain(MAIN_AGENT_CHAT_DIRECTIVE);
+      expect(main).toContain(MAIN_AGENT_CHAT_DIRECTIVE.replaceAll("/<prefix>/", "/TEST/"));
       expect(main).toContain(`Current composer mode: ${workMode}.`);
       expect(main).toContain("plan and implement the requested work directly in this chat, using native subagents");
       expect(main).toContain("Create a separate task only when the work needs separate tracking, must outlive this session, or the user asks for one.");
@@ -140,7 +140,7 @@ describe("heartbeat task markdown rendering", () => {
       expect(main).not.toContain("Put implementation and substantial execution into separate tasks.");
       expect(main).not.toContain("never implementation on this conversation");
       const ordinary = buildPaperclipTaskMarkdown({ issue: { ...chat, workMode } })!;
-      expect(ordinary).toContain(AGENT_CHAT_DIRECTIVE);
+      expect(ordinary).toContain(AGENT_CHAT_DIRECTIVE.replaceAll("/<prefix>/", "/TEST/"));
       expect(ordinary).toContain("Put implementation and substantial execution into separate tasks.");
     }
     // Every substitution must apply; a silent no-op would leave the handoff-only text.

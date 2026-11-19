@@ -315,6 +315,7 @@ function loadActualRoutes() {
       }
     }
     const variablePaths = file === "dot-runner.ts" ? ["path", "invitePath"]
+      : file === "dashboard.ts" ? ["loginPath"]
       : file === "grok-bot.ts" ? ["path"]
       : file === "muse.ts" ? ["path", "invite"]
       : file === "muse-qualification.ts" ? ["path"] : [];
@@ -323,7 +324,11 @@ function loadActualRoutes() {
       if (!basePath) throw new Error(`${file} ${name} route prefix is missing`);
       const methods = new RegExp(`router\\.(get|post|put|delete)\\(\\s*${name}(?:\\s*\\+\\s*"([^"]+)")?\\s*,`, "g");
       for (const match of source.matchAll(methods)) {
-        routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
+        const routePath = basePath + (match[2] ?? "");
+        // The shared session handler admits exactly these two actions.
+        const paths = file === "dashboard.ts" && routePath.endsWith("/:action")
+          ? ["code", "cancel"].map(action => routePath.replace("/:action", `/${action}`)) : [routePath];
+        for (const route of paths) routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + route)}`);
       }
     }
     if (file === "session-bridge.ts") {

@@ -278,7 +278,7 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     [IssueMonitorBanner, null],
     [IssueMonitorComposerStrip, NOW.toISOString()],
     [IssueMonitorComposerStrip, null],
-  ] as const)("cancels the displayed workspace wait in %s with deadline %s", async (Surface, scheduledRetryAt) => {
+  ] as const)("keeps workspace waits quiet in %s with deadline %s", async (Surface, scheduledRetryAt) => {
     const issue = { id: "issue-1", companyId: "company-1", status: "todo",
       scheduledRetry: { runId: "waiting-run", agentId: "worker-1", status: "scheduled_retry",
         scheduledRetryReason: "workspace_busy", scheduledRetryAt },
@@ -290,6 +290,12 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     const root = createRoot(container);
     try {
       flushSync(() => root.render(<QueryClientProvider client={client}><Surface issue={issue} /></QueryClientProvider>));
+      if (Surface === IssueMonitorBanner) {
+        // Workspace waits live in the composer strip, not a pinned banner.
+        expect(container.textContent).toBe("");
+        expect(cancel).not.toHaveBeenCalled();
+        return;
+      }
       expect(container.textContent).toContain("Waiting for workspace");
       expect(container.textContent).not.toMatch(/due now|overdue|Attempt/);
       const button = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Cancel run");

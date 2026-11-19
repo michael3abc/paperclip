@@ -254,7 +254,6 @@ function SortableQueuedMessage({
         disabled={
           busy ||
           Boolean(queue.steeringDelivery) ||
-          (!queue.queueId && !entry.comment.id.startsWith("optimistic-")) ||
           !entry.canDiscard
         }
         title="Discard queued message"

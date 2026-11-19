@@ -24,6 +24,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  retryScheduledRetryNow: vi.fn(async () => ({ outcome: "no_scheduled_retry" })),
   triggerIssueMonitor: vi.fn(async (): Promise<{ outcome: "triggered" } | { outcome: "skipped"; reason: string }> => ({ outcome: "triggered" })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),

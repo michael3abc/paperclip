@@ -1964,8 +1964,6 @@ export interface TransportCloseReason {
 export interface PrpWireConnection {
   sendJson(value: unknown): void;
   close(code?: number): void;
-  pause?(): void;
-  resume?(): void;
   onJson(listener: (value: unknown) => void): void;
   onClose(listener: (reason: TransportCloseReason) => void): void;
 }
@@ -2023,8 +2021,6 @@ class RawWebSocketWireConnection implements PrpWireConnection {
   acceptInitialData(data: Buffer<ArrayBufferLike>): void {
     if (data.length > 0) this.#consume(data);
   }
-    pause() { this.socket.pause(); }
-    resume() { if (!this.#closed) this.socket.resume(); }
 
   sendJson(value: unknown): void {
     this.sendText(JSON.stringify(value));
@@ -3332,8 +3328,6 @@ export class DurablePrpControlPlane {
   attachWireConnection(wire: PrpWireConnection): PrpWireAttachment {
     let connection!: AuthorityConnection;
     let processing = Promise.resolve();
-    let pendingFrames = 0;
-    let pendingBytes = 0;
     // Frames received before the secure channel existed (or behind such a
     // frame) are decrypted in order by the serialized chain. Once none are
     // pending, frames are decrypted on arrival so that lease renewal can be
@@ -3378,12 +3372,11 @@ export class DurablePrpControlPlane {
             connection.close();
             return;
         }
-        pendingFrames += 1;
-        pendingBytes += bytes;
         this.#queuedFrames += 1;
         this.#queuedBytes += bytes;
-        if (pendingFrames >= 64 || pendingBytes >= 1024 * 1024)
-            wire.pause?.();
+        // Keep ingress open for order-independent command results and lease
+        // renewals. Pausing TCP behind a slow replay also blocks those frames;
+        // the hard frame/byte caps above bound the serialized event backlog.
         connection.queuedInboundFrames += 1;
         processing = processing
           .then(async () => {
@@ -3395,11 +3388,8 @@ export class DurablePrpControlPlane {
           .then(() => connection.queuedInboundFrames === 1 ? this.#acknowledgeDeferredEvents(connection) : undefined)
           .catch(() => connection.close())
           .finally(() => {
-            pendingFrames -= 1;
-            pendingBytes -= bytes;
             this.#queuedFrames -= 1;
             this.#queuedBytes -= bytes;
-            if (pendingFrames < 16 && pendingBytes < 256 * 1024) wire.resume?.();
             connection.queuedInboundFrames -= 1;
             this.#inboundFrameSettledAt = Date.now();
             if (queuedResult === null) return;

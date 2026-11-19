@@ -204,6 +204,10 @@ function isManagedAdmissionAuthorityFailure(error: unknown): boolean {
 }
 
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
+  // Local cwd resolution is a directory operation. Source-copy locks belong to
+  // remote materialization; Git metadata must never become local run admission.
+  const driver = input.environment.selectedEnvironmentForConfig?.driver;
+  if (!driver || driver === "local") return prepareHeartbeatWorkspaceLocked(db, input);
   if (isMainManagedExecutionWorkspace(input.reuse.reusableExistingExecutionWorkspace ?? input.reuse.existingExecutionWorkspace)) {
     return prepareHeartbeatWorkspaceLocked(db, input);
   }

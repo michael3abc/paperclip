@@ -373,7 +373,12 @@ keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate th
 Runner capability source anchors when legacy definitions move, and verify both
 catalog surfaces without granting session-only tools to heartbeat clients.
 
+Runner replay must keep authenticated lease renewals and order-independent command
+results responsive during slow event commits; bound the queue without pausing TCP ingress.
 
+
+Local preparation never acquires Git source-copy locks; remote materialization
+keeps source-copy coordination inside its own preparation path.
 Workspace = directory. The run cwd is the run-requested cwd, else the agent's fixed
 cwd, else the project default cwd, else `~/.paperclip/instances/default/workspaces/<agentId>`;
 it is created with `mkdir -p` (over ssh on remote hosts). Admission, registration,

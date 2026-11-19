@@ -2,7 +2,10 @@ import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON } from "./environment-provider-wait.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
-import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
+// The public facade loads the dispatch adapter and heartbeat recovery. Import
+// this dependency-free contract directly so recovery accounting can initialize
+// before that graph (including agent-directory-busy) is evaluated.
+import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/domain/wake-context.js";
 
 /**
  * A preparation that a restart interrupted before any provider work started

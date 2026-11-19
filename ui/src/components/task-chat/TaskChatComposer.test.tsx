@@ -2690,9 +2690,14 @@ it("keeps Shift+Enter with the editor and submits on Enter", async () => {
       adapterConfig: { role: "main", hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-astra", effort: "high" } } as unknown as Agent;
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
-    const paint = (agent: Agent | null) => { render(<></>); render(<QueryClientProvider client={client}><ToastProvider>
-      <TaskChatComposer onAdd={onAdd} conversationMode companyId="chat-company" workMode="standard" onWorkModeChange={onWorkModeChange}
+    function ControlledComposer({ agent }: { agent: Agent | null }) {
+      const [mode, setMode] = useState<IssueWorkMode>("standard");
+      return <TaskChatComposer onAdd={onAdd} conversationMode companyId="chat-company" workMode={mode}
+        onWorkModeChange={async next => { await onWorkModeChange(next); setMode(next); }}
         currentAssigneeValue="agent:main-agent" modelAgents={agent ? new Map([[agent.id, agent]]) : undefined} />
+    }
+    const paint = (agent: Agent | null) => { render(<></>); render(<QueryClientProvider client={client}><ToastProvider>
+      <ControlledComposer agent={agent} />
     </ToastProvider></QueryClientProvider>); };
     const chip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
     try {

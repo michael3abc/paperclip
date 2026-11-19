@@ -163,6 +163,7 @@ function createServerEnv(
   env.SERVE_UI = "false";
   env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
   env.PAPERCLIP_DECISION_SIGNING_SECRET = "company-import-export-decision-signing-secret";
+  env.PAPERCLIP_AGENT_JWT_SECRET = "company-import-export-e2e-fixture-jwt-secret";
   env.HEARTBEAT_SCHEDULER_ENABLED = "false";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY = "true";
   env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
@@ -325,6 +326,10 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     requestedPortReservation = await reserveRequestedPort();
     const { port } = requestedPortReservation;
     writeTestConfig(configPath, tempRoot, port, tempDb.connectionString);
+    // This lane validates company transfers. The doctor now rejects an occupied
+    // configured port, so release the allocation before starting the server.
+    await requestedPortReservation.release();
+    requestedPortReservation = null;
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
@@ -355,7 +360,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       child,
       output,
     );
-    expect(new URL(apiBase).port).not.toBe(String(port));
+    expect(new URL(apiBase).port).toBe(String(port));
     // Room for the embedded database start on top of the server budget.
   }, SERVER_STARTUP_TIMEOUT_MS + 30_000);
 

@@ -3103,7 +3103,7 @@
           "uniqueItems": true
         },
         "description": {
-          "description": "Task description.",
+          "description": "Child task description.",
           "maxLength": 20000,
           "type": [
             "string",
