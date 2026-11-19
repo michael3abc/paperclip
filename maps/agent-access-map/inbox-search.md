@@ -106,13 +106,18 @@ API: `present` — representative operation IDs:
 - `GET /api/companies/{companyId}/decision-queues`.
 - `GET /api/companies/{companyId}/decision-queues/{key}/items`.
 - `GET /api/companies/{companyId}/attention/summary` — canonical outstanding
-  counts without decision cards, images, plan bodies, or pagination. Board user
-  and company access are required. Task privacy, addressee, dismissal, snooze,
+  counts without decision cards, images, plan bodies, or pagination. Company
+  access is required. Task privacy, addressee, dismissal, snooze,
   archive, and complete-set counting rules match the attention feed. This read
-  grants no agent or resolution authority.
+  grants no resolution authority.
 - `GET /api/companies/{companyId}/attention/tasks` — the same canonical counts
-  and distinct accessible task IDs for Needs attention. It has the same board,
+  and distinct accessible task IDs for Needs attention. It has the same
   company, privacy, addressee, dismissal, snooze, and archive gates as the feed.
+- Agent reads of the feed, summary and tasks projections (not history) cover
+  only the run's responsible user. They require an explicit `inbox:manage`
+  grant that the user's inbox agent policy still admits, and the agent's own
+  task-read privacy limits the result. Decide, dismiss and triage routes stay
+  board-only.
 - `GET /api/companies/{companyId}/attention/history` — read-only canonical
   interaction/Decisions-v1 projection with cursor, search, outcome, agent, project,
   date, and chronological sort filters. Each source and v1 target must pass task
@@ -128,7 +133,7 @@ this is not a deployed user/agent credential test.
 
 `GET /api/companies/{companyId}/attention` also projects existing pending
 interactions from persistent agent chats, including `ask_user_questions`, under
-the same board, company, task-read, and addressee rules. The execution-container
+the same company, task-read, and addressee rules. The execution-container
 exclusion does not suppress an explicit human request. Resolution still uses
 the owning interaction API and its resolver policy; ordinary chat prose and idle
 review status do not become decision records. Source and isolated PostgreSQL

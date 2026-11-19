@@ -1446,8 +1446,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
-  "GET /api/companies/{companyId}/attention/summary",
-  "GET /api/companies/{companyId}/attention/tasks",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -6550,6 +6548,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/attention",
   tags: ["inbox"],
   summary: "List decision-only attention feed items",
+  description: "Read-only. A board user reads their own attention feed. An agent may read only its run's responsible user's set, with an explicit inbox:manage grant that the user's inbox policy admits, limited to tasks the agent can read. Resolving, dismissing and triaging items stay board-only.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: z.object({
@@ -6584,7 +6583,7 @@ for (const [projection, responseSchema] of [
     path: `/api/companies/{companyId}/attention/${projection}`,
     tags: ["inbox"],
     summary: projection === "summary" ? "Get canonical attention counts" : "Get complete attention task membership",
-    description: "Requires a board user with company access. Reads the complete canonical attention set with current task privacy, addressee, dismissal, snooze, and archive rules. Returns counts without decision cards, images, plan bodies, or pagination. The tasks projection also returns distinct accessible task IDs. This read grants no resolution authority.",
+    description: "Requires a board user with company access, or an agent reading its responsible user's set (explicit inbox:manage grant, admitted by the user's inbox policy, limited to tasks the agent can read). Reads the complete canonical attention set with current task privacy, addressee, dismissal, snooze, and archive rules. Returns counts without decision cards, images, plan bodies, or pagination. The tasks projection also returns distinct accessible task IDs. This read grants no resolution authority.",
     request: { params: z.object({ companyId: z.string() }) },
     responses: { 200: r.ok(responseSchema), 401: r.unauthorized, 403: r.forbidden },
   });
