@@ -1,5 +1,10 @@
 # AGENTS.md
 
+Fork note: this is the `michael3abc/paperclip` fork. Paragraphs that cite the
+Owner, HOM issue keys or `/home/michael` paths are the maintainer's host rules and
+bind every agent on that host. On another machine, read
+`docs/fork/host-operations.md` to see which rules apply to you.
+
 Host Claude sign-in replaces the Claude quota card body only for hosts whose native
 status explicitly reports logged out; signed-in/unknown states keep quota content.
 Check company hosts while Dashboard is visible and refresh quota after sign-in.
