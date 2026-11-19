@@ -362,11 +362,15 @@ describe("openapi routes", () => {
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
   });
-  it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
+  it.each(["summary", "tasks"])("documents the compact attention %s contract for board users and granted agents", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
-    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
-    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.security).toEqual(spec.security);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    expect(operation.description).toContain("inbox:manage");
+    expect(operation.description).toContain("responsible user");
+    const history = spec.paths["/api/companies/{companyId}/attention/history"].get;
+    expect(history["x-paperclip-authorization"]).toEqual({ actor: "board" });
     expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
     const response = operation.responses["200"].content["application/json"].schema;
     expect(response.properties.totalCount).toMatchObject({ type: "integer", minimum: 0 });
