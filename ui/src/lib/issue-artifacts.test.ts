@@ -10,7 +10,7 @@ import {
   workProductHref,
 } from "./issue-artifacts";
 
-it.each(["plan", " Plan ", "artifact-review-output", "pipeline-case-body", "continuation-summary"])("keeps %s out of general document authoring", key => {
+it.each(["plan", " Plan ", "todo", " TODO ", "artifact-review-output", "pipeline-case-body", "continuation-summary"])("keeps %s out of general document authoring", key => {
   expect(isGeneralTaskDocumentKey(key)).toBe(false);
 });
 it("allows ordinary general document keys", () => {

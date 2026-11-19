@@ -2266,6 +2266,7 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
     setupOnly?: boolean;
+    previous?: { adapterType: string | null | undefined; adapterConfig: Record<string, unknown> };
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2287,6 +2288,7 @@ export function agentRoutes(
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
+      input.previous,
     );
     return normalizePaperclipRunnerAdapterConfig(
       input.adapterType ?? "",
@@ -2469,8 +2471,14 @@ export function agentRoutes(
     companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
+    previous?: { adapterType: string | null | undefined; adapterConfig: Record<string, unknown> },
   ) {
     if (adapterType && findServerAdapter(adapterType)?.catalogScope === "company") {
+      // An unchanged saved selection is not re-validated: a host catalog that stops
+      // advertising it must not block unrelated edits (secrets, permissions). Any
+      // change of model, host or executor still requires a currently offered model.
+      if (previous?.adapterType === adapterType
+        && (["model", "hostId", "provider"] as const).every(key => previous.adapterConfig[key] === adapterConfig[key])) return;
       const models = await listAdapterModels(adapterType, { companyId,
         hostId: asNonEmptyString(adapterConfig.hostId) ?? undefined,
         provider: asNonEmptyString(adapterConfig.provider) ?? undefined });
@@ -5978,6 +5986,7 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
         setupOnly: existing.lifecycleHolds?.includes("setup"),
+        previous: { adapterType: existing.adapterType, adapterConfig: existing.adapterConfig as Record<string, unknown> },
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {

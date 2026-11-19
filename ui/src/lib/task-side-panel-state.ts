@@ -36,6 +36,7 @@ export type TaskSidePanelTabPayload =
   | { kind: "subtasks" }
   | { kind: "artifacts" }
   | { kind: "agent-tasks" }
+  | { kind: "todo" }
   | { kind: "attachment"; attachmentId: string }
   | { kind: "skill"; skillId: string }
   | { kind: "issue-document"; documentKey: string; revisionId?: string; documentIssueId?: string }
@@ -99,6 +100,7 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   if (kind === "subtasks") return { kind };
   if (kind === "artifacts") return { kind };
   if (kind === "agent-tasks") return { kind };
+  if (kind === "todo") return { kind };
   if (kind === "attachment") {
     return typeof input.attachmentId === "string" && input.attachmentId.length > 0 ? { kind, attachmentId: input.attachmentId } : null;
   }
@@ -233,6 +235,11 @@ export function taskPanelSubtasksTab(): SidePanelTabRecord<TaskSidePanelTabPaylo
 /** Agent chats only: every task the conversation's agent has worked on. */
 export function taskPanelAgentTasksTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: "agent-tasks", type: "agent-tasks", label: "Tasks", closable: true, contentMode: "padded", payload: { kind: "agent-tasks" } };
+}
+
+/** The conversation's TODO: the agent's goal and checklist (fork feature, see lib/todo-document.ts). */
+export function taskPanelTodoTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: "todo", type: "todo", label: "TODO", closable: true, contentMode: "padded", payload: { kind: "todo" } };
 }
 
 export function taskPanelArtifactsTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {

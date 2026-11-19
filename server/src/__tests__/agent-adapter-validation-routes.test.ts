@@ -548,6 +548,31 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("keeps an unchanged company-catalog model saveable after the host stops offering it", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    const listModels = vi.fn(async () => [{ id: "host-e/claude/family:opus-5.5[1m]", label: "Opus 1M" }]);
+    registerServerAdapter({ ...externalAdapter, catalogScope: "company", listModels });
+    const existing = { ...(await mockAgentService.getById()), adapterType: "external_test",
+      adapterConfig: { model: "host-e/claude/family:opus-5.5", hostId: "host-e", provider: "claude" } };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const patch = (adapterConfig: Record<string, unknown>) => requestApp(app, base => request(base)
+      .patch(`/api/agents/${existing.id}`).send({ adapterConfig }));
+    // An unrelated edit (env/secret binding) with the same saved model is not re-validated.
+    const unchanged = await patch({ ...existing.adapterConfig, env: { API_KEY: { type: "plain", value: "fixture" } } });
+    expect(unchanged.status, JSON.stringify(unchanged.body)).toBe(200);
+    expect(listModels).not.toHaveBeenCalled();
+    // Choosing a model the host no longer offers is still refused.
+    const stale = await patch({ ...existing.adapterConfig, model: "host-e/claude/gone" });
+    expect(stale.status).toBe(422);
+    expect(stale.body.error).toContain("Select a model available");
+    // Changing the host re-validates even with the same model text.
+    const moved = await patch({ ...existing.adapterConfig, hostId: "host-d" });
+    expect(moved.status).toBe(422);
+    const offered = await patch({ ...existing.adapterConfig, model: "host-e/claude/family:opus-5.5[1m]" });
+    expect(offered.status, JSON.stringify(offered.body)).toBe(200);
+  });
+
   it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);

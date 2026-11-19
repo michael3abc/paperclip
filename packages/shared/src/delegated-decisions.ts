@@ -44,6 +44,10 @@ export interface DelegatedDecisionContext {
   requiredScopes: DecisionDelegationScope["scopes"];
   notifiedRevision?: string;
   deliveryError?: string;
+  /** Consecutive transient delivery failures for this revision; cleared on delivery. */
+  deliveryAttempts?: number;
+  /** ISO time of the next transient delivery retry. */
+  deliveryRetryAt?: string;
 }
 
 export const updateDecisionDelegationSchema = z.object({

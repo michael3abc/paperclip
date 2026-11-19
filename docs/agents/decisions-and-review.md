@@ -49,6 +49,14 @@ grant version, run and reason. A missing delegate or expired provider request is
 an explicit unresolved failure, not consent. Test the real pinned ACP/SDK under
 approve-all as well as HTTP scope, dispatch/review and save/finalization behavior.
 
+Delegated-request delivery (Owner 2026-11-19 「好，一次發布」): the server's
+`decision-delegation` sweep may wake the recipient main's idle (waiting) Chat;
+other system wakes still cannot. A dropped or failed delivery keeps
+`deliveryError` visible and retries liveness-first: 30 s doubling to a 30-minute
+cap, unlimited, each attempt with a new receipt key (`:retry-N`), activity on the
+first and fifth consecutive failure. Only `delegation_changed` is deterministic.
+Delivery clears the error fields; nothing is replayed beyond the one wake.
+
 Main-agent secret delegation is task-scoped API access through existing bindings,
 not an agent-wide shared-worker grant. Reauthorize the running standard JWT,
 current project lead, own task, v2 worker policy, same-host eligibility and original

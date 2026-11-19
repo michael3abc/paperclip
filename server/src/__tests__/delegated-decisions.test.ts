@@ -443,6 +443,65 @@ describe("Owner-issued layered decision authority", () => {
       "Delegate tries")).rejects.toThrow(/human Owner/);
     expect((await approvalRecords(db).getById(legacy.id))?.status).toBe("pending");
   });
+  it("retries a dropped delivery with backoff and a fresh receipt key, then clears the failure", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const request = await question(workerId), conversationId = randomUUID();
+    await db.insert(issues).values({ id: conversationId, companyId, projectId, title: "Main conversation", conversationAgentId: mainId,
+      conversationUserId: ownerId, assigneeAgentId: mainId, conversationState: "waiting", status: "in_review" });
+    let admit = false;
+    const wakeup = vi.fn(async (id: string, input: Parameters<Parameters<typeof delegatedDecisionDelivery>[1]["wakeup"]>[1] = {}) => {
+      if (!admit) return null as never; // the wake was dropped: no receipt
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: id, source: "automation",
+        idempotencyKey: String(input.idempotencyKey), payload: input.payload as Record<string, unknown> }).returning();
+      return wake as never;
+    });
+    const delivery = delegatedDecisionDelivery(db, { wakeup });
+    const load = async () => (await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.id)))[0]!;
+    await delivery.sweep();
+    const failed = await load();
+    expect(failed.delegation).toMatchObject({ deliveryError: "delegate_wake_not_admitted", deliveryAttempts: 1 });
+    const retryAt = Date.parse(failed.delegation!.deliveryRetryAt!);
+    expect(retryAt - Date.now()).toBeGreaterThan(20_000);
+    expect(retryAt - Date.now()).toBeLessThanOrEqual(30_000);
+    // Other companies' rows may be due sooner; this row is never due later than its retry time.
+    expect(await delivery.nextDue()).toBeLessThanOrEqual(retryAt);
+    const mine = () => wakeup.mock.calls.filter(call => (call[1]?.payload as { delegatedRequest?: { requestId?: string } })?.delegatedRequest?.requestId === request.id);
+    await delivery.sweep(); // not due yet
+    expect(mine()).toHaveLength(1);
+    await db.update(issueThreadInteractions).set({ delegation: { ...failed.delegation!, deliveryRetryAt: new Date(0).toISOString() } })
+      .where(eq(issueThreadInteractions.id, request.id));
+    admit = true;
+    await delivery.sweep();
+    expect(mine()).toHaveLength(2);
+    expect(mine()[1]?.[1]?.idempotencyKey).toMatch(/:retry-1$/);
+    const delivered = await load();
+    expect(delivered.delegation?.notifiedRevision).toBe(delivered.delegation?.revision);
+    expect(delivered.delegation).not.toHaveProperty("deliveryError");
+    expect(delivered.delegation).not.toHaveProperty("deliveryAttempts");
+    expect(delivered.delegation).not.toHaveProperty("deliveryRetryAt");
+    await delivery.sweep();
+    expect(mine()).toHaveLength(2);
+  });
+  it("redelivers a legacy permanent failure once but keeps a changed delegation stopped", async () => {
+    const mainId = await addLeadMain();
+    await activate();
+    const legacy = await question(workerId), changed = await question(workerId);
+    await db.insert(issues).values({ id: randomUUID(), companyId, projectId, title: "Main conversation", conversationAgentId: mainId,
+      conversationUserId: ownerId, assigneeAgentId: mainId, conversationState: "waiting", status: "in_review" });
+    for (const [row, code] of [[legacy, "delegate_wake_not_admitted"], [changed, "delegation_changed"]] as const)
+      await db.update(issueThreadInteractions).set({ delegation: { ...row.delegation!, deliveryError: code } })
+        .where(eq(issueThreadInteractions.id, row.id));
+    const wakeup = vi.fn(async (id: string, input: Parameters<Parameters<typeof delegatedDecisionDelivery>[1]["wakeup"]>[1] = {}) => {
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: id, source: "automation",
+        idempotencyKey: String(input.idempotencyKey), payload: input.payload as Record<string, unknown> }).returning();
+      return wake as never;
+    });
+    await delegatedDecisionDelivery(db, { wakeup }).sweep();
+    const requested = wakeup.mock.calls.map(call => (call[1]?.payload as { delegatedRequest?: { requestId?: string } })?.delegatedRequest?.requestId);
+    expect(requested).toContain(legacy.id);
+    expect(requested).not.toContain(changed.id);
+  });
   it("delivers a worker decision once to the lead main's conversation", async () => {
     const mainId = await addLeadMain();
     await activate();

@@ -26,8 +26,10 @@ The source-candidate clone applied those 67 migrations once (442 to 509),
 recognized all twelve fork hashes, and preserved the original data under the
 documented lifecycle-default transformation. The retained a614a7c5a-r1 passed
 isolated boot/health, project and session reads on the upgraded clone. Receipts
-and verifier corrections are in sync-decisions; the final sealed-release proof
-and deployment confirmation remain pending.
+and verifier corrections are in sync-decisions. Project main approved T4 deployment
+conditionally on 2026-11-19; final sealed-release proof and deployment gates remain
+pending. The follow-up merge includes main 2ced42e393 and preserves both manual
+context-compaction and trusted delegated-decision conversation wake causes.
 
 Integration follow-ups retain the selected project source when creating or
 reassigning a cooperative task, remove local Git-copy admission locks, break a
@@ -70,6 +72,21 @@ in sync-decisions; these fixes do not certify every historical test as passing.
 | `0443_square_doorman.sql` | `0510_square_doorman.sql` |
 
 ## Custom history
+
+- Agent TODO tab (`michael/todo-panel`, Owner 2026-11-19 「放這邊加一個 TODO」, 「最多 3 項，而且只顯示 6 小時內完成的」,
+  「可以在待辦那邊加上一個 cancel，s.t. 讓 main 去取消這個 task」, 「介面好看一點，不要只用 .md 渲染」): the task side panel's
+  launcher offers a `TODO` tab (always in an agent chat, on a task once it has one). It reads the conversation's
+  `todo` issue document, which the CC Pocket adapter stores as JSONL records (`ui/src/lib/todo-document.ts` has the
+  format), and shows the goal with progress, Owner matters, open items with the live status of their linked tasks,
+  and finished items (at most 3 from the last 6 hours; older ones collapsed). Cancel posts a comment asking the agent
+  to cancel that item; the UI never cancels a task. The `todo` document is hidden from the generic document lists.
+  Frontend only (`ui/src`); no server, schema or dependency change.
+
+- Delegated decision delivery and unchanged-model saves (`michael/delegated-wake-delivery`, Owner 2026-11-19
+  「好，一次發布」): the delegation sweep can wake an idle (waiting) main Chat; dropped deliveries retry with
+  liveness-first backoff instead of stopping at `delegate_wake_not_admitted`, so pending legacy failures are
+  redelivered once. Agent updates no longer re-validate an unchanged company-catalog model, so a host that stops
+  advertising it (Shopee `opus` → `opus[1m]`) does not block secret or permission edits. Server-only, no migration.
 
 - Main agents read Owner attention (`michael/main-attention-read`, Owner 2026-11-19 「1.」 approving agent reads of
   the pending list): an agent with an explicit `inbox:manage` grant may read `GET /attention`, `/attention/summary`

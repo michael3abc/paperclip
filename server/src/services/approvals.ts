@@ -137,6 +137,8 @@ export function approvalRecords(db: Db) {
             ...(reservedReasons.length ? { level: "human" as const, recipientAgentId: null } : {}) };
           delete delegation.notifiedRevision;
           delete delegation.deliveryError;
+          delete delegation.deliveryAttempts;
+          delete delegation.deliveryRetryAt;
         }
         return tx.update(approvals)
         .set({

@@ -9,6 +9,7 @@ import {
   taskPanelPropertiesTab,
   taskPanelSkillTab,
   taskPanelSubtasksTab,
+  taskPanelTodoTab,
   writeTaskSidePanelState,
   shouldSuppressTaskPanelUntilPlan,
   openSkillPanelState,
@@ -101,6 +102,19 @@ describe("task side-panel persistence", () => {
     const restored = readTaskSidePanelState("user-1", "company-1", "task-1", false);
     expect(restored?.state.tabs.map((tab) => tab.id)).toEqual(["properties", "document:plan"]);
     expect(restored?.state.activeTabId).toBe("properties");
+  });
+
+  it("round-trips the TODO tab", () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelTodoTab(), taskPanelPropertiesTab()], activeTabId: "todo" },
+      launcherOpen: false,
+      userInteracted: true,
+      autoPlanHandled: true,
+      updatedAt: 1,
+    });
+    const restored = readTaskSidePanelState("user-1", "company-1", "task-1", false);
+    expect(restored?.state.tabs.map((tab) => [tab.id, tab.payload.kind, tab.label])).toEqual([["todo", "todo", "TODO"], ["properties", "properties", "Properties"]]);
+    expect(restored?.state.activeTabId).toBe("todo");
   });
 
   it("round-trips the Streamlined UI subtasks tab", () => {

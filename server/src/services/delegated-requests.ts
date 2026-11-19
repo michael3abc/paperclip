@@ -75,6 +75,8 @@ export async function escalateDelegatedRequest(db: Db, actor: DelegatedRequestAc
     const context = nextDelegatedDecision(current.delegation, input.humanReason);
     delete context.notifiedRevision;
     delete context.deliveryError;
+    delete context.deliveryAttempts;
+    delete context.deliveryRetryAt;
     await notifyDelegatedDecision(tx, actor.companyId);
     if (input.kind === "interaction") {
       await tx.update(issueThreadInteractions).set({ delegation: context,
