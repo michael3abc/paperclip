@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   parseTodoDocument,
+  storedTodoDocument,
   todoCancelComment,
+  todoDocumentMarkdown,
   todoDisplayText,
   todoMarkdownText,
   todoOwnTask,
@@ -102,5 +104,28 @@ describe("todo document", () => {
     expect(todoCancelComment({ id: 3, text: "[HOM-389](/HOM/issues/HOM-389) 照分岔表執行", task: "HOM-389" }))
       .toBe("取消 TODO #3：「HOM-389 照分岔表執行」。請停掉這一項背後的 task 與 job，執行 `todo cancel 3`，然後繼續其他項目。");
     expect(todoCancelComment({ id: 4, text: "整併紀錄", task: null })).toContain("取消 TODO #4：「整併紀錄」。");
+  });
+
+  it("renders the stored records as a read-only checklist for the Documents list", () => {
+    const parsed = storedTodoDocument("todo", body([
+      { id: 3, text: "ablation (HOM-9)", status: "open" },
+      { id: 9, text: "confirm the venue", status: "open", owner: true },
+      { id: 2, text: "baseline", status: "done", note: "reproduced 66.2", closedAt: ago(30) },
+      { id: 5, text: "old idea", status: "cancelled", closedAt: ago(10) },
+    ]))!;
+    expect(todoDocumentMarkdown(parsed)).toBe([
+      "**Goal:** Reach 70 on test", "", "**Stop when:** Two flat rounds",
+      "", "**To do**", "", "- [ ] #3 ablation (HOM-9)",
+      "", "**Needs you**", "", "- [ ] #9 confirm the venue",
+      "", "**Finished**", "", "- [ ] #5 ~~old idea~~ (cancelled)", "- [x] #2 baseline — reproduced 66.2",
+    ].join("\n") + "\n");
+    expect(todoDocumentMarkdown({ goal: "", stop: "", created: 0, items: [] })).toBe("**Goal:** (not written yet)\n\nNothing in the list yet.\n");
+  });
+
+  it("treats only the todo key in the JSONL format as a stored TODO", () => {
+    expect(storedTodoDocument("todo", body([]))).not.toBeNull();
+    expect(storedTodoDocument("notes", body([]))).toBeNull();
+    expect(storedTodoDocument("todo", "# 目標\n- [ ] item")).toBeNull();
+    expect(storedTodoDocument(undefined, body([]))).toBeNull();
   });
 });

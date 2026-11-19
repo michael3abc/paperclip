@@ -16,6 +16,9 @@ The local release line is `michael/main`; previous releases and consolidation me
   format), and shows the goal with progress, Owner matters, open items with the live status of their linked tasks,
   and finished items (at most 3 from the last 6 hours; older ones collapsed). Cancel posts a comment asking the agent
   to cancel that item; the UI never cancels a task. The `todo` document is hidden from the generic document lists.
+  The task page's full Documents section (which also shows `plan`) renders a JSONL `todo` as a read-only checklist
+  and offers no markdown edit, because issue documents only have the `markdown` format and the adapter stores the
+  JSONL under it (Owner 2026-11-19 「為啥現在todo是jsonl然後用md存」, HOM-411). A markdown TODO stays editable.
   Frontend only (`ui/src`); no server, schema or dependency change.
 
 - Delegated decision delivery and unchanged-model saves (`michael/delegated-wake-delivery`, Owner 2026-11-19
