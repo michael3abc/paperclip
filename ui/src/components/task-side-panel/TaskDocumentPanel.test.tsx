@@ -20,10 +20,10 @@ vi.mock("@/components/DocumentMarkdownBody", () => ({ DocumentMarkdownBody: ({ c
 let root: Root | undefined;
 let container: HTMLDivElement;
 afterEach(async () => { if (root) await act(async () => root!.unmount()); container?.remove(); root = undefined; vi.clearAllMocks(); });
-async function render(issueId = "task") {
+async function render(issueId = "task", documentKey = "copy", revisionId: string | null = "old") {
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => { root!.render(<MemoryRouter><QueryClientProvider client={client}><TaskDocumentPanel issueId={issueId} documentKey="copy" revisionId="old" documentIssueId={issueId === "task-b" ? issueId : undefined} /></QueryClientProvider></MemoryRouter>); });
+  await act(async () => { root!.render(<MemoryRouter><QueryClientProvider client={client}><TaskDocumentPanel issueId={issueId} documentKey={documentKey} revisionId={revisionId ?? undefined} documentIssueId={issueId === "task-b" ? issueId : undefined} /></QueryClientProvider></MemoryRouter>); });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 describe("exact reviewed revision panel", () => {
@@ -56,5 +56,26 @@ describe("exact reviewed revision panel", () => {
     expect(mocks.revision).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Couldn't load the document");
     expect(container.querySelector("article")).toBeNull();
+  });
+  it("shows the agent TODO as a read-only checklist instead of its JSONL records", async () => {
+    const body = [
+      JSON.stringify({ type: "todo", v: 1, goal: "Ship the release", stop: "Live", nextId: 3 }),
+      JSON.stringify({ id: 1, text: "Merge branches", status: "done", owner: false, task: null, note: "merged", createdAt: "2026-11-19T10:00:00.000Z", closedAt: "2026-11-19T11:00:00.000Z" }),
+      JSON.stringify({ id: 2, text: "Cut over", status: "open", owner: false, task: null, note: null, createdAt: "2026-11-19T10:00:00.000Z", closedAt: null }),
+    ].join("\n");
+    mocks.get.mockResolvedValue({ id: "doc", key: "todo", title: null, body, format: "markdown", latestRevisionId: "r1", latestRevisionNumber: 1, updatedAt: new Date() });
+    await render("task", "todo", null);
+    const readonly = container.querySelector('[data-testid="todo-document-readonly"]');
+    expect(readonly).not.toBeNull();
+    expect(readonly?.textContent).toContain("Ship the release");
+    expect(readonly?.textContent).toContain("#2 Cut over");
+    expect(readonly?.textContent).toContain("#1 Merge branches");
+    expect(container.textContent).not.toContain('"type":"todo"');
+  });
+  it("keeps an older markdown TODO as an ordinary document", async () => {
+    mocks.get.mockResolvedValue({ id: "doc", key: "todo", title: null, body: "- [ ] plain markdown item", format: "markdown", latestRevisionNumber: 1, updatedAt: new Date() });
+    await render("task", "todo", null);
+    expect(container.querySelector('[data-testid="todo-document-readonly"]')).toBeNull();
+    expect(container.textContent).toContain("plain markdown item");
   });
 });

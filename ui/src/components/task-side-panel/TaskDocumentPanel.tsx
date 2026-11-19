@@ -6,9 +6,11 @@ import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { DocumentMarkdownBody } from "@/components/DocumentMarkdownBody";
+import { MarkdownBody } from "@/components/MarkdownBody";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
+import { storedTodoDocument, todoDocumentMarkdown } from "@/lib/todo-document";
 import { useLocation } from "@/lib/router";
 
 export function TaskDocumentPanel({
@@ -77,6 +79,8 @@ export function TaskDocumentPanel({
     );
   }
 
+  const storedTodo = storedTodoDocument(document.key, document.body);
+
   return (
     <article className="space-y-4">
       <header className="space-y-1">
@@ -93,7 +97,15 @@ export function TaskDocumentPanel({
           /> : <span>· Reviewed version</span>}
         </div>
       </header>
-      {document.body.trim() ? (
+      {storedTodo ? (
+        // The agent's TODO is JSONL kept by its helper: show its records as a read-only checklist, never raw lines.
+        <div data-testid="todo-document-readonly" className="space-y-2">
+          <MarkdownBody>{todoDocumentMarkdown(storedTodo)}</MarkdownBody>
+          <p className="text-xs text-muted-foreground">
+            Kept by the agent with its TODO helper. Open the TODO tab in the task side panel to follow it or cancel an item.
+          </p>
+        </div>
+      ) : document.body.trim() ? (
         <IssueDocumentAnnotations
           issueId={issueId}
           doc={document}
