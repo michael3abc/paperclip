@@ -7,12 +7,15 @@ import { eq, sql } from "drizzle-orm";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   approvals,
   assets,
+  authUsers,
   budgetIncidents,
   budgetPolicies,
   companies,
+  companyMemberships,
   createDb,
   decisionQueueItems,
   decisionQueues,
@@ -31,8 +34,10 @@ import {
   issueThreadInteractions,
   issues,
   joinRequests,
+  principalPermissionGrants,
   projects,
   projectWorkspaces,
+  userInboxAgentPolicies,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -41,6 +46,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { attentionHandledDetails } from "../services/attention-receipts.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { decisionHistoryService } from "../services/decision-history.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
@@ -2718,6 +2724,77 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?sort=oldest`)
       .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
+  });
+
+  it("lets a granted agent read only its responsible user's attention set", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATG");
+    const ownerId = `user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: ownerId, name: "Owner", email: `${ownerId}@example.com`, emailVerified: true, createdAt: now, updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: ownerId, status: "active", membershipRole: "owner",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId, principalType: "agent", principalId: workerId, permissionKey: "inbox:manage",
+      scope: { responsibleUserOnly: true },
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId, companyId, type: "hire_agent", status: "pending", payload: { title: "Hire Designer" },
+    });
+
+    function app(actor: Record<string, unknown>) {
+      const testApp = express();
+      testApp.use(express.json());
+      testApp.use((req, _res, next) => {
+        (req as any).actor = actor;
+        next();
+      });
+      testApp.use("/api", attentionRoutes(db));
+      testApp.use(errorHandler);
+      return testApp;
+    }
+    const agentActor = (agentId: string, onBehalfOfUserId: string | null = ownerId) => ({
+      type: "agent", source: "agent_jwt", companyId, agentId, runId: randomUUID(), onBehalfOfUserId,
+      onBehalfOfMemberships: onBehalfOfUserId ? [{ companyId, membershipRole: "owner", status: "active" }] : [],
+    });
+    const board = { type: "board", source: "local_implicit", userId: ownerId, companyIds: [companyId], isInstanceAdmin: false };
+    const base = `/api/companies/${companyId}/attention`;
+
+    const feed = await request(app(agentActor(workerId))).get(`${base}?all=true`).expect(200);
+    expect(feed.body.items.map((item: { subject: { id: string } }) => item.subject.id)).toContain(approvalId);
+    const boardSummary = await request(app(board)).get(`${base}/summary`).expect(200);
+    const agentSummary = await request(app(agentActor(workerId))).get(`${base}/summary`).expect(200);
+    expect(agentSummary.body.totalCount).toBe(boardSummary.body.totalCount);
+    expect(agentSummary.body.totalCount).toBeGreaterThan(0);
+    await request(app(agentActor(workerId))).get(`${base}/tasks`).expect(200);
+    const receiptIds: string[] = [];
+    for (const userId of [ownerId, "other-person"]) {
+      const [receipt] = await db.insert(activityLog).values({
+        companyId, actorType: "user", actorId: "handling-person",
+        action: "approval.cancelled", entityType: "approval", entityId: approvalId,
+        details: attentionHandledDetails({ userId, actorUserId: "handling-person",
+          sourceKind: "approval", sourceId: approvalId, issueId: null, title: "Handled approval" }, "withdrawn"),
+      }).returning({ id: activityLog.id });
+      receiptIds.push(receipt.id);
+    }
+    const mine = await request(app(agentActor(workerId))).get(`${base}?view=mine`).expect(200);
+    expect(mine.body.receipts.map((receipt: { id: string }) => receipt.id)).toEqual([receiptIds[0]]);
+    // History and every resolution route remain operator-only.
+    await request(app(agentActor(workerId))).get(`${base}/history`).expect(403);
+
+    for (const path of ["", "/summary", "/tasks"]) {
+      await request(app(agentActor(reviewerId))).get(`${base}${path}`)
+        .expect(403).expect(({ body }) => expect(body.code).toBe("inbox_agent_not_allowed"));
+      await request(app(agentActor(workerId, null))).get(`${base}${path}`)
+        .expect(403).expect(({ body }) => expect(body.code).toBe("inbox_target_user_unresolved"));
+    }
+
+    await db.insert(userInboxAgentPolicies).values({ companyId, userId: ownerId, mode: "disabled" });
+    await request(app(agentActor(workerId))).get(`${base}/summary`)
+      .expect(403).expect(({ body }) => expect(body.code).toBe("inbox_management_disabled"));
   });
 
   it("omits private issue review items for a non-member board user", async () => {

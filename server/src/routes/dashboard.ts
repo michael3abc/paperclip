@@ -26,8 +26,8 @@ export function dashboardRoutes(db: Db) {
   const router = Router();
   const svc = dashboardService(db);
   const recoveryObservability = recoveryObservabilityService(db);
-  const loginPath = "/companies/:companyId/dashboard/host-claude";
-  router.use(loginPath, async (req, res, next) => {
+  // Literal paths keep the mounted-route OpenAPI coverage scanner exact.
+  router.use("/companies/:companyId/dashboard/host-claude", async (req, res, next) => {
     assertInstanceAdmin(req);
     assertCompanyAccess(req, req.params.companyId as string);
     if (!await companyService(db).getById(req.params.companyId as string)) {
@@ -37,22 +37,23 @@ export function dashboardRoutes(db: Db) {
     res.set("Referrer-Policy", "no-referrer");
     next();
   });
-  router.get(loginPath, async (req, res) => {
+  router.get("/companies/:companyId/dashboard/host-claude", async (req, res) => {
     res.json(await listHostClaudeLogins(req.params.companyId as string));
   });
-  router.post(loginPath + "/:hostId/check", async (req, res) => {
+  router.post("/companies/:companyId/dashboard/host-claude/:hostId/check", async (req, res) => {
     res.json(await checkHostClaudeLogin(req.params.companyId as string, req.params.hostId as string));
   });
-  router.post(loginPath + "/:hostId/login", async (req, res) => {
+  router.post("/companies/:companyId/dashboard/host-claude/:hostId/login", async (req, res) => {
     res.json(await startHostClaudeLogin(req.params.companyId as string, req.actor.userId ?? "local", req.params.hostId as string));
   });
-  router.get(loginPath + "/sessions/:id", (req, res) => {
+  router.get("/companies/:companyId/dashboard/host-claude/sessions/:id", (req, res) => {
     res.json(hostClaudeSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string));
   });
-  router.post(loginPath + "/sessions/:id/:action", (req, res) => {
-    const action = req.params.action;
-    if (action !== "code" && action !== "cancel") { res.status(404).end(); return; }
-    res.json(hostClaudeSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string, action, req.body?.browserCode));
+  router.post("/companies/:companyId/dashboard/host-claude/sessions/:id/code", (req, res) => {
+    res.json(hostClaudeSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string, "code", req.body?.browserCode));
+  });
+  router.post("/companies/:companyId/dashboard/host-claude/sessions/:id/cancel", (req, res) => {
+    res.json(hostClaudeSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string, "cancel", req.body?.browserCode));
   });
 
   router.get("/companies/:companyId/dashboard/subscription-quotas", async (req, res) => {

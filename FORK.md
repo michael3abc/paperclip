@@ -52,6 +52,12 @@ CLI startup, monitor, workspace API and liveness-first retry contracts.
 
 ## Custom history
 
+- Main agents read Owner attention (`michael/main-attention-read`, Owner 2026-11-19 「1.」 approving agent reads of
+  the pending list): an agent with an explicit `inbox:manage` grant may read `GET /attention`, `/attention/summary`
+  and `/attention/tasks` for its run's responsible user only, if that user's inbox agent policy admits it. Results
+  keep the agent's task-read privacy; history and every decide/dismiss/triage route stay board-only.
+  Server-only, no migration.
+
 - Host Claude login (`michael/host-claude-login`): Dashboard administrators can
   sign into logged-out company hosts inside the Claude quota card, restoring
   normal quota content on success. Company-enrolled local/SSH hosts use native Claude

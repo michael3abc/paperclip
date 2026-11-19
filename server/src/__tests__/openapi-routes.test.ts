@@ -315,7 +315,6 @@ function loadActualRoutes() {
       }
     }
     const variablePaths = file === "dot-runner.ts" ? ["path", "invitePath"]
-      : file === "dashboard.ts" ? ["loginPath"]
       : file === "grok-bot.ts" ? ["path"]
       : file === "muse.ts" ? ["path", "invite"]
       : file === "muse-qualification.ts" ? ["path"] : [];
@@ -325,10 +324,7 @@ function loadActualRoutes() {
       const methods = new RegExp(`router\\.(get|post|put|delete)\\(\\s*${name}(?:\\s*\\+\\s*"([^"]+)")?\\s*,`, "g");
       for (const match of source.matchAll(methods)) {
         const routePath = basePath + (match[2] ?? "");
-        // The shared session handler admits exactly these two actions.
-        const paths = file === "dashboard.ts" && routePath.endsWith("/:action")
-          ? ["code", "cancel"].map(action => routePath.replace("/:action", `/${action}`)) : [routePath];
-        for (const route of paths) routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + route)}`);
+        routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + routePath)}`);
       }
     }
     if (file === "session-bridge.ts") {
@@ -467,11 +463,15 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/companies/{companyId}/mcp-skills/{skillId}/approve"].post["x-paperclip-authorization"]).toEqual({ actor: "board" });
   });
 
-  it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
+  it.each(["summary", "tasks"])("documents the compact attention %s contract for board users and granted agents", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
-    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
-    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.security).toEqual(spec.security);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    expect(operation.description).toContain("inbox:manage");
+    expect(operation.description).toContain("responsible user");
+    const history = spec.paths["/api/companies/{companyId}/attention/history"].get;
+    expect(history["x-paperclip-authorization"]).toEqual({ actor: "board" });
     expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
     const response = operation.responses["200"].content["application/json"].schema;
     expect(response.properties.totalCount).toMatchObject({ type: "integer", minimum: 0 });
