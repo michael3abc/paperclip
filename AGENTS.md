@@ -1,5 +1,10 @@
 # AGENTS.md
 
+Fork note: this is the `michael3abc/paperclip` fork. Paragraphs that cite the
+Owner, HOM issue keys or `/home/michael` paths are the maintainer's host rules and
+bind every agent on that host. On another machine, read
+`docs/fork/host-operations.md` to see which rules apply to you.
+
 Host Claude sign-in replaces the Claude quota card body only for hosts whose native
 status explicitly reports logged out; signed-in/unknown states keep quota content.
 Check company hosts while Dashboard is visible and refresh quota after sign-in.
@@ -299,6 +304,11 @@ company access and actor permissions, logs mutations to the activity log, and
 returns consistent HTTP errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
 ## 9. UI Expectations
+
+Artifacts PDF thumbnails reuse the validated PDF read, render only page one near
+the viewport, and retain the file icon on failure. Keep pdf.js lazy and bounded;
+the shared PDF preview dialog still uses the native viewer. See
+`docs/fork/artifacts-and-mobile.md`.
 
 ImageGalleryModal owns shared media navigation; ZoomableGalleryImage owns image-only
 zoom/pan gestures in both the gallery and ArtifactPreviewProvider. Give artifact images a bounded viewport. Reset its view on item changes and reopen, bound pan to the viewport,

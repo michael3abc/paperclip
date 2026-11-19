@@ -1,5 +1,30 @@
 # Paperclip fork
 
+`michael3abc/paperclip` is a personal fork of
+[paperclipai/paperclip](https://github.com/paperclipai/paperclip). It runs one
+maintainer's agent company. The release line is `michael/main`. If you only want
+Paperclip, use upstream; this fork is useful if you want the features below.
+Terms such as Owner, HOM-123, CC Pocket and `/home/michael` paths are explained
+in [docs/fork/host-operations.md](docs/fork/host-operations.md).
+
+## Feature overview
+
+| Area | What the fork adds | Read | Needs outside this repo |
+| --- | --- | --- | --- |
+| Native sessions | Agents run as resident Claude Code / Codex sessions; Chat input steers the live turn; native questions appear as Chat cards | `docs/agents/session-bridge.md`, `docs/fork/bridge-run-lifecycle.md` | CC Pocket Bridge and adapter |
+| Project main and PM agents | One main agent per project, zero-slot PMs, shared Claude/Codex workers with a per-project worker table, main continuation of worker tasks, delegated decisions, `@agent` mentions that create subtasks | `docs/agents/pm-agents.md`, `docs/agents/decisions-and-review.md`, `docs/fork/pm-and-main-agents.md` | CC Pocket for native mains and Bridge workers; mention subtasks and decision routing are server-only |
+| Liveness-first execution | One failure classifier, unlimited transient retry with backoff, 30-minute inactivity timeout, per-host circuit breaker, workspace = directory, `paperclip ops liveness-reset` | `docs/agents/execution-semantics.md`, `docs/agents/workspace-admission.md`, `docs/fork/retry-and-recovery.md` | None |
+| Worktree API | Main agents create, merge and retire Git worktrees from observed Git state | `docs/agents/worktree-observed-state.md` | CC Pocket adapter (shared `@paperclipai/adapter-utils` peer) |
+| Agent Chat and sidebar UI | TODO tab, project main status in the sidebar, live work and worker cards, chat pins, `/plan`, orange `pending` for Owner decisions, touch-keyboard Return | `docs/agents/ui-features.md`, `docs/fork/sidebar-and-live-panels.md` | TODO content comes from the CC Pocket adapter; the rest is UI-only |
+| Artifacts | Company Artifacts page, media sync from run workspaces, image zoom, mobile PDF return | `docs/fork/artifacts-and-mobile.md` | None |
+| Local voice | Voice calls into an agent Chat; small talk answered by Realtime, work forwarded to the main agent | `doc/connections/LOCAL-VOICE.md` | OpenAI or Gemini Realtime credentials; off by default |
+| Dashboard | Host Claude/Codex subscription quotas, host Claude sign-in, project usage, Compass rate card | `doc/DEVELOPING.md`, `doc/connections/AI-CONNECTIONS.md`, `docs/fork/session-bridge-and-dashboard.md` | CC Pocket host registry and SSH hosts; Compass gateway for its pricing |
+| Connections | Custom MCP browser sign-in, approval cards for Test-path calls, 60 s Test-path budget | `doc/connections/GENERIC-REMOTE-MCP.md` | A browser-login companion for the MCP server |
+| Antigravity CLI workers | `agy_local` adapter (upstream PR #21121) with subscription-only shared workers | `docs/adapters/agy-local.md` | Antigravity CLI subscription |
+
+The sections below are the maintainer's change log: upstream sync records, then
+one entry per custom branch with the Owner's decision.
+
 Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
@@ -98,6 +123,9 @@ in sync-decisions; these fixes do not certify every historical test as passing.
   format), and shows the goal with progress, Owner matters, open items with the live status of their linked tasks,
   and finished items (at most 3 from the last 6 hours; older ones collapsed). Cancel posts a comment asking the agent
   to cancel that item; the UI never cancels a task. The `todo` document is hidden from the generic document lists.
+  The task page's full Documents section (which also shows `plan`) renders a JSONL `todo` as a read-only checklist
+  and offers no markdown edit, because issue documents only have the `markdown` format and the adapter stores the
+  JSONL under it (Owner 2026-11-19 「為啥現在todo是jsonl然後用md存」, HOM-411). A markdown TODO stays editable.
   Frontend only (`ui/src`); no server, schema or dependency change.
 
 - Delegated decision delivery and unchanged-model saves (`michael/delegated-wake-delivery`, Owner 2026-11-19

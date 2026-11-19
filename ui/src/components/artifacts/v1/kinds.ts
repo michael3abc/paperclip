@@ -17,6 +17,8 @@ export interface ArtifactSubject {
   /** A picture, a video poster or a link preview. */
   thumbnailUrl?: string | null;
   videoUrl?: string | null;
+  /** The stored PDF, from which the single tile draws its first page. */
+  pdfUrl?: string | null;
   /** Width / height when known; otherwise read from the loaded picture. */
   aspect?: number | null;
   /** Whether a document's text is known (a preview sheet can be set from it). */
@@ -167,6 +169,7 @@ export function subjectFromCompanyArtifact(artifact: CompanyArtifact): ArtifactS
     // A video has no poster of its own in this payload; the print plays its stream instead.
     thumbnailUrl: kind === "image" ? artifact.contentPath : null,
     videoUrl: kind === "video" ? artifact.contentPath : null,
+    pdfUrl: kind === "pdf" ? artifact.contentPath : null,
     hasText: Boolean(artifact.previewText?.trim()),
     isTaskDocument,
     updatedAt: artifact.updatedAt,
