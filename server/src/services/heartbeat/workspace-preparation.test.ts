@@ -2180,7 +2180,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         let failedRunId = next!.id;
         for (let attempt = 1; attempt <= 3; attempt++) {
           const [scheduled] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.retryOfRunId, failedRunId), eq(heartbeatRuns.status, "scheduled_retry")));
-          expect(scheduled).toMatchObject({ scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: attempt });
+          expect(scheduled).toMatchObject({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt });
           if (attempt === 1) expect(await requestTaskRetry({ db, companyId: input.agent.companyId, issueId: issue.id, actorId: userId,
             actorSource: "local_implicit", observedRunId: failedRunId, idempotencyKey: randomUUID() })).toMatchObject({ requestId: null, stale: true, observedRunId: scheduled.id });
           // Promotion's durable event must occur after its due time. Passing a
@@ -2213,11 +2213,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         if (scenario === "canonical_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, failedRunId));
         if (scenario === "canonical_measurement") { const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId)); const measured = events.find(event => event.eventType === "lifecycle" && event.message === "task.run.measured")!; await db.update(heartbeatRunEvents).set({ payload: { ...measured.payload, durationMs: -1 } }).where(eq(heartbeatRunEvents.id, measured.id)); }
         if (scenario === "canonical_retry_metadata" || scenario === "canonical_retry_provider") {
-          const exhausted = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId)))
-            .find(event => event.message?.startsWith("No automatic retry:"))!;
+          // Ordinary setup failures use transient retries. Corrupt their actual
+          // host promotion receipt, not an interruption-only exhaustion event.
+          const promotion = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, failedRunId)))
+            .find(event => event.message === "Scheduled retry became due and was promoted to the queued run pool")!;
+          expect(promotion).toBeDefined();
           await db.update(heartbeatRunEvents).set(scenario === "canonical_retry_metadata"
-            ? { payload: { ...exhausted.payload, scheduledRetryAttempt: 2 } }
-            : { sourceEventId: randomUUID() }).where(eq(heartbeatRunEvents.id, exhausted.id));
+            ? { payload: { ...promotion.payload, scheduledRetryAttempt: 2 } }
+            : { sourceEventId: randomUUID() }).where(eq(heartbeatRunEvents.id, promotion.id));
         }
         if (scenario === "canonical_promotion_time") await db.update(heartbeatRunEvents)
           .set({ createdAt: new Date(failedPreparation.scheduledRetryAt!.getTime() - 1) })
