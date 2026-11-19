@@ -32,6 +32,14 @@ cache keys include company and source, without local fallback. See doc/DEVELOPIN
 Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (merged 2026-11-18; deployed 2026-11-19 as 279a18c3a-r1). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
+## 2026-11-19 upstream merge (HOM-415; not deployed)
+
+Upstream tip `1355f93546b44017bdf71212c437ae7a57f8b5e7`; 62 upstream commits
+since `8282d386`. Keep upstream wake-queue admission ownership while preserving
+fork liveness-first, Bridge steering, PM policy and saved-input receipts.
+Decisions and verification: [sync-decisions](/HOM/issues/HOM-415#document-sync-decisions).
+Thursday integration only; no deployment or restart.
+
 ## 2026-11-18 upstream merge (HOM-396; deployed 2026-11-19)
 
 Merge upstream tip 8282d386da5a36ae2c4d8846f227c3d26e2b4049 into the

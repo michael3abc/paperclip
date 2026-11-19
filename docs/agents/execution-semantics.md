@@ -95,6 +95,14 @@ cancels only the selected run.
 
 ## Input and comments
 
+Issue-bound wakes use `wakeQueue.admitIssueWake` to lock the company-scoped issue
+and persist admission plus saved-input receipts in one transaction. Heartbeat
+keeps workspace/main request validation in that callback; fresh runs use
+`admitFreshIssueRun`, including deferred durable Chat promotion and reassignment
+input ownership. Notifications and dispatch follow commit; authorization
+contention rolls back all writes and buffered effects. Native terminal failures
+retain the fork failure scheduler and never restore automatic blocked recovery.
+
 - New human or project-main input supersedes automatic retry of a failed
   predecessor. Fresh explicit comments keep their own input receipt and never merge
   into a retry/continuation envelope. Save comments and reopen under the issue lock.

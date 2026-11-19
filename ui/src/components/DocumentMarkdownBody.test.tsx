@@ -3,16 +3,24 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { DocumentMarkdownBody } from "./DocumentMarkdownBody";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 let container: HTMLDivElement;
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+});
 afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
+  vi.unstubAllGlobals();
 });
 
 const body = "![First](/first.png)\n\n![Second][shot]\n\n![Repeated](/first.png)\n\n[shot]: https://example.com/second.png";
@@ -48,6 +56,15 @@ async function key(key: string) {
 function dialog() { return document.querySelector('[role="dialog"]'); }
 
 describe("document image gallery", () => {
+  it("keeps fragment links scoped to the saved document's task after the URL changes", async () => {
+    await render("#document-local", "[Evidence](#document-evidence&thread=note)\n\n[Explicit](#document-brief&documentIssue=other)\n\n[Section](#section)", "old", "owner", "current");
+    expect([...container.querySelectorAll(".paperclip-markdown a")].map(link => link.getAttribute("href"))).toEqual([
+      "#document-evidence&thread=note&documentIssue=owner",
+      "#document-brief&documentIssue=other",
+      "#section",
+    ]);
+  });
+
   it("opens a clicked occurrence, navigates all rendered images, and updates the URL", async () => {
     await render("#document-report&viewer=full&thread=thread-1");
     await click('[aria-label="Open image: Repeated"]');

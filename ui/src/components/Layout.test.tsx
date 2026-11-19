@@ -8,6 +8,7 @@ import { Layout } from "./Layout";
 import { Layout as ProductionLayout } from "./Layout.production";
 import { existsSync, readFileSync } from "node:fs";
 import { act as reactAct } from "react";
+import type { ReactNode } from "react";
 
 const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
 vi.mock("./Sidebar.production", async () => await import("./Sidebar"));
@@ -54,6 +55,7 @@ const mockSidebarState = vi.hoisted(() => ({
   sidebarOpen: true,
   isMobile: false,
 }));
+const mockPanelState = vi.hoisted(() => ({ visible: false, showsArtifact: false, content: null as ReactNode, setVisible: vi.fn() }));
 let currentPathname = "/PAP/dashboard";
 
 vi.mock("@/lib/router", () => ({
@@ -96,19 +98,10 @@ vi.mock("./AppsSidebar", () => ({
   AppsMobileNav: () => <nav aria-label="Mobile connectors">Browse Review</nav>,
 }));
 
-vi.mock("./AgentConversationsSidebar", () => ({
-  AgentConversationsSidebar: () => <div>Chat contacts</div>,
-}));
 
 vi.mock("./AgentContextualSidebar", () => ({
   AgentContextualSidebar: ({ agentRef }: { agentRef: string }) => (
     <div>Agent sidebar {agentRef}</div>
-  ),
-}));
-
-vi.mock("./RoutineContextualSidebar", () => ({
-  RoutineContextualSidebar: ({ routineId }: { routineId: string }) => (
-    <div>Routine sidebar {routineId}</div>
   ),
 }));
 
@@ -131,7 +124,10 @@ vi.mock("./AppConnectionSidebar", () => ({
 }));
 
 vi.mock("./BreadcrumbBar", () => ({
-  BreadcrumbBar: () => <div>Breadcrumbs</div>,
+  BreadcrumbBar: ({ toolbarAction }: { toolbarAction?: ReactNode }) => <div>Breadcrumbs{toolbarAction}</div>,
+}));
+vi.mock("./AgentConversationsSidebar", () => ({
+  AgentConversationsSidebar: ({ compact }: { compact?: boolean }) => compact ? <button>Browse chats</button> : <aside aria-label="Chat contacts" />,
 }));
 
 vi.mock("./PropertiesPanel", () => ({
@@ -244,8 +240,11 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
+    panelVisible: mockPanelState.visible,
+    panelShowsArtifact: mockPanelState.showsArtifact,
+    panelContent: mockPanelState.content,
     togglePanelVisible: vi.fn(),
-    setPanelVisible: vi.fn(),
+    setPanelVisible: mockPanelState.setVisible,
   }),
 }));
 
@@ -415,6 +414,9 @@ describe("Layout", () => {
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
     mockSidebarState.isMobile = false;
+    mockPanelState.visible = false;
+    mockPanelState.showsArtifact = false;
+    mockPanelState.content = null;
   });
 
   afterEach(() => {
@@ -437,6 +439,67 @@ describe("Layout", () => {
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
+  it("collapses the Classic chat list only when an artifact crowds the conversation", async () => {
+    classicWorkspace.enabled = true;
+    currentPathname = "/PAP/chats/planner";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const style = document.createElement("style");
+    style.textContent = ":root { --sz-280px: 280px; --sz-420px: 420px; }";
+    document.head.append(style);
+    let readingWidth = 416;
+    let measure: ResizeObserverCallback | undefined;
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => readingWidth);
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { measure = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const render = () => reactAct(async () => renderLayoutView(root, queryClient));
+    try {
+      await render();
+      const list = container.querySelector('[aria-label="Chat contacts"]')?.closest("[data-secondary-sidebar]");
+      expect(list?.classList.contains("hidden")).toBe(false);
+      expect(container.textContent).not.toContain("Browse chats");
+
+      mockPanelState.visible = true;
+      mockPanelState.content = <div>Tasks</div>;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+
+      mockPanelState.showsArtifact = true;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(true);
+      expect(container.textContent).toContain("Browse chats");
+
+      mockPanelState.showsArtifact = false;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+      mockPanelState.showsArtifact = true;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(true);
+
+      readingWidth = 700;
+      await reactAct(async () => measure?.([], {} as ResizeObserver));
+      expect(list?.classList.contains("hidden")).toBe(false);
+
+      readingWidth = 699;
+      await reactAct(async () => measure?.([], {} as ResizeObserver));
+      expect(list?.classList.contains("hidden")).toBe(true);
+
+      mockPanelState.visible = false;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+      expect(container.textContent).not.toContain("Browse chats");
+    } finally {
+      await reactAct(async () => root.unmount());
+      queryClient.clear();
+      width.mockRestore();
+      vi.unstubAllGlobals();
+      style.remove();
+    }
+  });
+
   it("opens a Coordinator agent chat beside the primary sidebar without the contacts column", async () => {
     currentPathname = "/PAP/chats/michael";
     classicWorkspace.enabled = false;
@@ -446,12 +509,12 @@ describe("Layout", () => {
       await act(async () => renderLayoutView(root, queryClient));
       await flushReact();
       expect(container.textContent).toContain("Outlet content");
-      expect(container.textContent).not.toContain("Chat contacts");
+      expect(container.querySelector('[aria-label="Chat contacts"]')).toBeNull();
       expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
       classicWorkspace.enabled = true;
       await act(async () => renderLayoutView(root, queryClient));
       await flushReact();
-      expect(container.textContent).toContain("Chat contacts");
+      expect(container.querySelector('[aria-label="Chat contacts"]')).not.toBeNull();
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
@@ -907,7 +970,7 @@ describe("Layout", () => {
     });
   });
 
-  it("keeps global navigation beside Agent and Routine details", async () => {
+  it("keeps global navigation beside Agent details", async () => {
     async function renderAt(pathname: string) {
       currentPathname = pathname;
       const root = createRoot(container);
@@ -929,7 +992,6 @@ describe("Layout", () => {
         "/PAP/agents/briefing-analyst/runs/run-1",
         "Agent sidebar briefing-analyst",
       ],
-      ["/PAP/routines/routine-1/overview", "Routine sidebar routine-1"],
     ] as const) {
       const root = await renderAt(pathname);
       expect(container.textContent).toContain(sidebarText);
@@ -979,7 +1041,7 @@ describe("Layout", () => {
       expect(container.textContent).toContain("Main company nav");
       if (pathname.includes("/agents/")) expect(container.textContent).toContain("Agent sidebar");
       else expect(container.textContent).not.toContain("Agent sidebar");
-      expect(container.textContent).not.toContain("Routine sidebar");
+      if (pathname.includes("/routines/")) expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
 
       await act(async () => {
         root.unmount();
@@ -1049,7 +1111,7 @@ describe("Layout", () => {
 
       expect(container.textContent).toContain("Main company nav");
       expect(container.textContent).not.toContain("Agent sidebar");
-      expect(container.textContent).not.toContain("Routine sidebar");
+      if (pathname.includes("/routines/")) expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
 
       await act(async () => {
         root.unmount();
