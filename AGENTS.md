@@ -24,11 +24,15 @@ else a new one, prefixed 「上一次可能已部分執行，先檢查現況再�
 releases every gate; stop evidence is background best-effort. Failures are
 transient (30s×2ⁿ backoff capped at 30 min, unlimited, one notice at the 5th
 consecutive failure), deterministic (no auto retry, one notice per issue and code)
-or unknown (3 transient retries, then deterministic); see
+or unknown (3 transient retries, then deterministic). Shutdown/process-loss retries
+retain the durable backoff counter instead of opening a fresh restart window; see
 `server/src/services/recovery/failure-classification.ts`. Owner Stop/cancel and
 manual pause still apply and revoke automatic retry. New human or project-main
 input supersedes automatic retry of a failed predecessor and keeps its own input
 receipt. See `docs/agents/execution-semantics.md`.
+Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
+require system interruption, process loss or controller loss. Ordinary failures keep
+their failure counter and provider retry deadline.
 
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
 Cost reports expose ordinary input separately from cached input. Normalize inclusive Codex Bridge subscription counters when reading reports; preserve raw receipts and charged amounts. Dashboard subscription pies show API-equivalent USD estimates, separate from subscription fees. See `doc/connections/AI-CONNECTIONS.md`.
@@ -49,47 +53,46 @@ New agent_chat voice sessions pin main_answer_v1 in providerSessionId; substanti
 ## 1. Purpose
 
 Paperclip is a control plane for AI-agent companies.
-The current implementation target is V1 and is defined in `doc/SPEC-implementation.md`.
+The code and its tests are the source of truth for current behavior.
+The focused docs under `doc/` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
 
 ## 2. Read This First
 
-Before making changes, read in this order:
+Read the doc that matches your change before you start:
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
-
-`doc/SPEC.md` is long-horizon product context.
-`doc/SPEC-implementation.md` is the concrete V1 build contract.
-
-When adding or changing an Apps catalog connection, also follow
-`doc/connections/CONNECTOR-PLAYBOOK.md`. It is the canonical connection
-authoring runbook for provider research, supported transport/auth patterns,
-credential handling, branding, implementation, testing, live proof, and PR
-submission.
+| Your change touches | Read |
+| --- | --- |
+| Product behavior or scope | `doc/GOAL.md`, `doc/PRODUCT.md` |
+| Setup, commands, testing, worktrees | `doc/DEVELOPING.md` |
+| Schema, migrations, DB clients | `doc/DATABASE.md` |
+| An Apps catalog connection | `doc/connections/CONNECTOR-PLAYBOOK.md` (the canonical connection authoring runbook) |
+| Anything under `ui/` | `DESIGN.md` |
 
 ### Scoped repository rules
 
-Before editing or reviewing files, read the matching rules in `rules/*.mdc`.
-Each rule has Markdown content and YAML frontmatter: `globs` contains
-comma-separated, repository-relative file patterns, and `alwaysApply: true`
-means the rule applies throughout the repository. Read all rules whose scope
-matches the affected files. These rules supplement this file and any applicable
-nested `AGENTS.md` instructions.
+`rules/*.mdc` holds the architecture rules that reviewers apply to a pull
+request. Each file starts with a short header: `description` is a one-sentence
+summary of the rule, `globs` lists the files it covers, and `alwaysApply: true`
+means it covers the whole repository.
 
-For `server/src/services/chat-channels.ts` and everything under
-`server/src/services/chat-channels/`, read
-[`rules/chat-channel-platform-boundaries.mdc`](rules/chat-channel-platform-boundaries.mdc).
-For `server/src/services/heartbeat.ts`, `server/src/services/heartbeat/`,
-heartbeat-prefixed sibling services, and heartbeat regression tests, read
-[`rules/heartbeat-execution-boundaries.mdc`](rules/heartbeat-execution-boundaries.mdc).
-For ACPX provider profiles, their release attestations and pins, the provider-pack
-contract registry, and ACPX driver and provider code under
-`packages/paperclip-runner/`, read
-[`rules/acpx-profile-identity.mdc`](rules/acpx-profile-identity.mdc).
-See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
+You do not need to read the rule bodies before every change. List the headers to
+see which rules exist and what each one asks for:
+
+```sh
+grep -E '^(description|globs|alwaysApply):' rules/*.mdc
+```
+
+Write the change so that it satisfies the descriptions of the rules that cover
+your files. Read the full body of a rule only in these cases:
+
+- You are making a design decision in the area the rule covers, such as adding a
+  module, a background worker, or persisted state.
+- The description does not tell you whether your change complies.
+- A reviewer cites the rule.
+
+These rules supplement this file and any applicable nested `AGENTS.md`
+instructions. See [`rules/README.md`](rules/README.md) for rule authoring and
+Greptile setup.
 
 ## 3. Repo Map
 
@@ -105,34 +108,19 @@ See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
 - `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
 - `skills/`: Paperclip runtime/operational skills (not part of the app catalog)
 - `doc/`: operational and product docs
+- `doc/plans/`: dated repo plan docs, named `YYYY-MM-DD-slug.md`. A plan for a Paperclip issue goes in the issue's `plan` document instead.
+- `rules/`: scoped repository rules (see section 2)
 
-## 4. Dev Setup (Auto DB)
-
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
-
-```sh
-pnpm install
-pnpm dev
-```
-
-This starts:
-
-- API: `http://localhost:3100`
-- UI: `http://localhost:3100` (served by API server in dev middleware mode)
-
-Quick checks:
+## 4. Dev Setup
 
 ```sh
-curl http://localhost:3100/api/health
-curl http://localhost:3100/api/companies
+node scripts/agent-preflight.mjs   # prepare a new or updated worktree
+pnpm dev                           # API and UI at http://localhost:3100
 ```
 
-Reset local dev DB:
-
-```sh
-rm -rf data/pglite
-pnpm dev
-```
+Leave `DATABASE_URL` unset to use the embedded database. See "Agent worktree
+preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
+`doc/DEVELOPING.md`.
 
 ## 5. Core Engineering Rules
 
@@ -200,6 +188,12 @@ Apply a review level that matches the path:
 
 ## 6. Database Change Workflow
 
+Fork migration compatibility checks compare SQL blobs at ancestor merge bases of
+`origin/michael/main` and `upstream/master`; published byte-preserving renumbers
+are inherited history. This guard never substitutes for pending-migration review,
+production backup/history reconciliation, or the isolated clone upgrade. Keep
+published SQL bytes unchanged. See `doc/DATABASE.md`.
+
 When changing data model:
 
 1. Edit `packages/db/src/schema/*.ts`
@@ -224,18 +218,49 @@ Notes:
 
 Default local/agent test path:
 
-```sh
-pnpm test
-```
-
-This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+Keep behavior with its owning module; shared contracts stay narrow and normalized.
+See `rules/module-boundaries.mdc`. Instance-wide exceptions are catalogued in
+`rules/company-scope-exceptions.mdc`.
 
 ```sh
-pnpm test:e2e
-pnpm test:release-smoke
+pnpm verify
 ```
 
-Run the browser suites only when your change touches them or when you are explicitly verifying CI/release flows.
+This selects affected Vitest files with the same conservative dependency policy
+as CI. It includes committed, staged, unstaged, and untracked changes against the
+merge base with local `origin/master` (or `master`), and it reuses passing checks
+whose inputs are unchanged. Use `--base <ref>` for another base, `--explain` to
+inspect the selection, and `--no-cache` for fresh execution. See "Incremental
+local verification" in `doc/DEVELOPING.md` for how reuse and invalidation work.
+
+Follow these rules:
+
+- **Exit 2 means the change needs broader verification.** Run focused checks and
+  let required CI supply that coverage, or explicitly use `pnpm verify --full`
+  for the full local Vitest suite. Do not automatically follow exit 2 with a full
+  local run.
+- **Do not default to repo-wide checks.** Do not run repo-wide typecheck, build,
+  or test on every heartbeat when a narrower check is enough to prove the change.
+  Use the broad checks below only when they resolve an actual remaining gap, such
+  as a local platform fault or explicit full-suite qualification.
+- **Browser suites stay opt-in.** Run `pnpm test:e2e` and
+  `pnpm test:release-smoke` only when your change touches them or when you are
+  explicitly verifying CI/release flows.
+- **CI covers the final revision.** For a PR-ready handoff, run the relevant local
+  checks and require the applicable CI typecheck, build, and test checks to pass
+  for the final tested revision. Record their scope, revision, environment, and
+  result links. Fresh CI can supply broad coverage; do not duplicate a full local
+  run merely to prepare a PR, resume a chat, or repeat unchanged passing
+  verification. A selected local pass does not replace required CI, release
+  qualification, browser acceptance, or a local/platform-specific regression.
+- **Evidence expires.** After edits or a rebase, rerun affected checks and
+  invalidate evidence whose inputs or required coverage changed. Failed or
+  interrupted attempts are never passes.
+- **Report gaps.** If anything cannot be run, explicitly report what was not run
+  and why.
+- **Attach deliverables.** When you work a Paperclip issue and produce a file for
+  the user to inspect, attach it as the `paperclip` skill and
+  `doc/AGENT-ARTIFACTS.md` describe. A local filesystem path is not enough.
 
 For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
 
@@ -247,23 +272,31 @@ essentially the whole suite, narrow it and record the file-level rationale befor
 execution. Keep build integrity, database backup/history and service readiness
 checks. See `/home/michael/services/README.md` for the deployment contract.
 
-If memory is limited, use `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
+`pnpm test` and `pnpm test:run` run the full suite. If memory is limited, use
+`node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See
+"Typecheck memory" in `doc/test-infrastructure.md`.
 
-If anything cannot be run, explicitly report what was not run and why.
+### Maps and Storybook
 
-## 8. API and Auth Expectations
+The [feature map](maps/feature-map/README.md) and the sibling
+[agent access map](maps/agent-access-map/README.md) are optional references for
+user entry points, agent entry points, permission boundaries, verification
+recipes, and coverage gaps. They record coverage scope, not proof that a live
+journey passed. Routine fixes, polish, refactors, and test changes do not require
+map updates. When you do edit a map, follow
+[the feature-map scope rule](rules/feature-map-scope.mdc) and
+[the map contract](maps/README.md), then run `node scripts/check-maps.mjs`.
 
-- Base path: `/api`
-- Board access is treated as full-control operator context
-- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
-- Agent keys must not access other companies
+After story or recipe changes, update the affected source annotations or recipe
+and run `node scripts/storybook-catalog.mjs`. Indexes are generated and ignored;
+never commit them. See the [Storybook feature catalog](maps/storybook-map/README.md)
+for the full workflow. Structural checks are not production acceptance.
 
-When adding endpoints:
+## 8. API and Auth
 
-- apply company access checks
-- enforce actor permissions (board vs agent)
-- write activity log entries for mutations
-- return consistent HTTP errors (`400/401/403/404/409/422/500`)
+Every route under `server/src/routes/` that reads or writes company data checks
+company access and actor permissions, logs mutations to the activity log, and
+returns consistent HTTP errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
 ## 9. UI Expectations
 
@@ -275,27 +308,30 @@ and preserve video controls, download, Escape and focus restoration. See
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
-- Form and wizard footers: keep Save & exit (or Cancel/Back) left and the primary action right in the same vertically aligned row. Each step owns the entire footer; never append Save & exit as a separate row. See `DESIGN.md`.
+- Follow `DESIGN.md` for every UI design decision, including the token-only rule and form footers.
 
-## 10. Pull Request Requirements
+## 10. Fixing a Bug
 
-When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+When you are asked to fix a bug, attempt to use test-driven development and prove the fix red-green:
 
-- **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
-- **What Changed** — bullet list of concrete changes
-- **Verification** — how a reviewer can confirm it works
-- **Risks** — what could go wrong
-- **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
-- **Checklist** — all items checked
+1. Reproduce the error yourself.
+2. Write a test that fails because of the bug.
+3. Write the fix.
+4. Run the test and confirm that it passes.
+5. Verify that the fix worked: repeat the reproduction from step 1 and confirm that the error is gone.
 
-## 11. Definition of Done
+## 11. Pull Requests
+
+Fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), however you create the pull request. Do not write an ad-hoc body. See "PR Requirements" in `CONTRIBUTING.md` for the details and thinking-path examples.
+
+## 12. Definition of Done
 
 A change is done when all are true:
 
-1. Behavior matches `doc/SPEC-implementation.md`
-2. Typecheck, tests, and build pass
+1. Behavior matches what the task asked for and preserves the invariants in section 5
+2. Relevant local verification and required CI typecheck, test, and build checks pass for the final revision, with any acceptance or platform-specific gaps resolved (section 7)
 3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
+4. Docs updated when behavior or commands change. `doc/DEVELOPING.md` holds setup, commands, and everyday workflow only, and `doc/DATABASE.md` holds database setup and the rules for every schema change. Put a note about how a subsystem behaves in that subsystem's doc (see "More documentation" in `doc/DEVELOPING.md`), or leave it in the PR description when the code and tests already say it.
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
 ## Design system
@@ -332,6 +368,15 @@ See `docs/agents/session-bridge.md` for queue and unavailable-turn semantics.
 Chat presentation uses the shared IssueComment origin type so native inbox and
 mirrored messages retain their provenance through the UI adapter.
 
+Human Chat wake requesters must be the conversation owner before queue admission;
+an owner-authored saved message never grants another requester's authority. See
+docs/agents/session-bridge.md.
+
+Saved input behind a terminal native run must not wait for finalization to become
+committed; retain the original evidence. See docs/agents/execution-semantics.md.
+Preparation Retry fixtures must promote an actually due durable retry. Preserve
+saved directory identity and content; do not assert placement from adapter config.
+
 Skill heading changes must synchronize both Runner capability inventories
 (`generated/capability` and `spec/capability`), their generated contracts/docs and
 baseline-count tests. Verify both check:capability-contract and check:capability-inventory.
@@ -341,7 +386,12 @@ keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate th
 Runner capability source anchors when legacy definitions move, and verify both
 catalog surfaces without granting session-only tools to heartbeat clients.
 
+Runner replay must keep authenticated lease renewals and order-independent command
+results responsive during slow event commits; bound the queue without pausing TCP ingress.
 
+
+Local preparation never acquires Git source-copy locks; remote materialization
+keeps source-copy coordination inside its own preparation path.
 Workspace = directory. The run cwd is the run-requested cwd, else the agent's fixed
 cwd, else the project default cwd, else `~/.paperclip/instances/default/workspaces/<agentId>`;
 it is created with `mkdir -p` (over ssh on remote hosts). Admission, registration,

@@ -214,11 +214,12 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
       ? (bindFromEnvRaw as BindMode)
       : null;
   const configuredHost = process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1";
-  const tailnetBindHost = detectTailnetBindHost();
-  const bind =
-    bindFromEnv ??
-    fileConfig?.server.bind ??
-    inferBindModeFromHost(configuredHost, { tailnetBindHost });
+  const configuredBind = bindFromEnv ?? fileConfig?.server.bind;
+  const bindReadsTailnetAddress = configuredBind
+    ? configuredBind === "tailnet"
+    : inferBindModeFromHost(configuredHost) === "custom";
+  const tailnetBindHost = bindReadsTailnetAddress ? detectTailnetBindHost() : undefined;
+  const bind = configuredBind ?? inferBindModeFromHost(configuredHost, { tailnetBindHost });
   const customBindHost = process.env.PAPERCLIP_BIND_HOST ?? fileConfig?.server.customBindHost;
   const authBaseUrlModeFromEnvRaw = process.env.PAPERCLIP_AUTH_BASE_URL_MODE;
   const authBaseUrlModeFromEnv =

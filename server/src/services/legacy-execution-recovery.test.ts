@@ -14,7 +14,7 @@ const stopped = {
   },
 };
 
-it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "remote_workspace_prepare_timeout", "setup_failed"])(
+it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "remote_workspace_prepare_timeout", "reusable_sandbox_resume_failed", "remote_workspace_restore_failed", "plugin_worker_unavailable", "runner_revision_mismatch", "setup_failed"])(
   "never holds a %s failure for operator reconciliation, with or without bootstrap evidence",
   (errorCode) => {
     const run = { runtimeMode: "legacy", status: "failed", errorCode, scheduledRetryAttempt: 2,

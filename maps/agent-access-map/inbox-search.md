@@ -119,9 +119,10 @@ API: `present` — representative operation IDs:
   task-read privacy limits the result. Decide, dismiss and triage routes stay
   board-only.
 - `GET /api/companies/{companyId}/attention/history` — read-only canonical
-  interaction/Decisions-v1 projection with cursor, search, outcome, agent, project,
-  date, and chronological sort filters. Each source and v1 target must pass task
-  privacy checks. Bounded to 100 records per page; no second decision write store.
+  interaction/Decisions-v1/approval projection with cursor, search, outcome, agent,
+  project, date, and chronological sort filters. Each source and v1 target must pass
+  task privacy checks; an approval linked to a task needs that task to be readable.
+  Bounded to 100 records per page; no second decision write store.
 
 The history route is **operator-only**: a board user with company access is
 required. It does not grant an agent resolver authority. Existing task interaction

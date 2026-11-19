@@ -163,6 +163,7 @@ function createServerEnv(
   env.SERVE_UI = "false";
   env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
   env.PAPERCLIP_DECISION_SIGNING_SECRET = "company-import-export-decision-signing-secret";
+  env.PAPERCLIP_AGENT_JWT_SECRET = "company-import-export-e2e-fixture-jwt-secret";
   env.HEARTBEAT_SCHEDULER_ENABLED = "false";
   env.PAPERCLIP_MIGRATION_AUTO_APPLY = "true";
   env.PAPERCLIP_UI_DEV_MIDDLEWARE = "false";
@@ -253,6 +254,16 @@ async function runCliJson<T>(
   return JSON.parse(stdout.slice(jsonStart)) as T;
 }
 
+// `paperclipai run` loads the CLI and the whole server graph from source
+// through tsx. The test runner gives every run a fresh TMPDIR, so tsx's
+// transform cache is always cold: startup then costs about twice a warm start
+// (11.5 s against 5.2 s from "Starting Paperclip server..." to the first server
+// log on an idle 16-core machine). On contended 4-vCPU CI runners the hooks of
+// passing runs took 15-25 s, and the old 30 s budget failed in the tail. This budget
+// matches the 90 s test-body timeout; a child that exits early still fails at
+// once.
+const SERVER_STARTUP_TIMEOUT_MS = 90_000;
+
 async function waitForServer(
   instanceId: string,
   runtimeInfoPath: string,
@@ -260,7 +271,7 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < SERVER_START_TIMEOUT_MS) {
+  while (Date.now() - startedAt < SERVER_STARTUP_TIMEOUT_MS) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
@@ -315,6 +326,10 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     requestedPortReservation = await reserveRequestedPort();
     const { port } = requestedPortReservation;
     writeTestConfig(configPath, tempRoot, port, tempDb.connectionString);
+    // This lane validates company transfers. The doctor now rejects an occupied
+    // configured port, so release the allocation before starting the server.
+    await requestedPortReservation.release();
+    requestedPortReservation = null;
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
@@ -345,8 +360,9 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       child,
       output,
     );
-    expect(new URL(apiBase).port).not.toBe(String(port));
-  }, SERVER_START_TIMEOUT_MS + 60_000);
+    expect(new URL(apiBase).port).toBe(String(port));
+    // Room for the embedded database start on top of the server budget.
+  }, SERVER_STARTUP_TIMEOUT_MS + 30_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);

@@ -350,7 +350,7 @@ export async function prepareIsolatedCodexHome(input: {
   await writeIsolatedCodexAuth(input, providerConfig);
 }
 
-async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }, providerConfig: string): Promise<void> {
+async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: string): Promise<void> {
   const configPath = join(input.codexHome, "config.toml");
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   await chmod(input.codexHome, 0o700);
@@ -387,11 +387,12 @@ async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: Na
 type CodexAuthInput = {
   codexHome: string;
   sourceCodexHome?: string | null;
+  nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
   observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
 };
 
-export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }): Promise<void> {
+export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput): Promise<void> {
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);

@@ -12,6 +12,12 @@ export function startingQueuedCommentIds(
   queue: IssueQueuedCommentQueue | null | undefined,
   runs: readonly RunForIssue[],
 ): ReadonlySet<string> {
+  // The user's Interrupt is delivering this queue. Every page load, not only
+  // the tab that clicked, shows its messages as sent.
+  if (queue?.queueId && isQueuedInterruptHandoff(queue)) {
+    return new Set(queue.entries.flatMap(entry =>
+      !entry.source && !entry.comment.authorAgentId && !entry.comment.deletedAt ? [entry.comment.id] : []));
+  }
   if (!queue?.queueId || queue.state !== "queued" || queue.targetRunId) return new Set();
   const owners = runs.filter(run => run.contextIssueId === queue.issueId &&
     run.wakeupRequestId === queue.queueId && run.status === "queued" &&
@@ -115,6 +121,9 @@ export function normalizeIssueQueuedCommentQueue(
       : null,
     preemptibleRunId:
       typeof source?.preemptibleRunId === "string" ? source.preemptibleRunId : null,
+    ...(Array.isArray(source?.firstTurnCommentIds) ? {
+      firstTurnCommentIds: source.firstTurnCommentIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+    } : {}),
   };
 }
 
@@ -195,5 +204,14 @@ export function mergePendingIssueQueuedComments(params: {
         : "unsupported"),
     entries,
     executionWait: params.authoritativeQueue?.executionWait ?? null,
+    ...(params.authoritativeQueue?.firstTurnCommentIds ? { firstTurnCommentIds: params.authoritativeQueue.firstTurnCommentIds } : {}),
   };
+}
+
+/**
+ * The user's Interrupt is delivering this deferred queue while the turn it
+ * stopped settles. Its messages count as sent, not as waiting.
+ */
+export function isQueuedInterruptHandoff(queue: Pick<IssueQueuedCommentQueue, "state" | "executionWait"> | null | undefined) {
+  return queue?.state === "deferred" && queue.executionWait?.reason === "interrupt_handoff";
 }

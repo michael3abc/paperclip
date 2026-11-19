@@ -1,3 +1,4 @@
+import { InlineBanner } from "./InlineBanner";
 import { RunCancelButton } from "./RunCancelButton";
 import { Clock, RotateCcw, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -8,7 +9,7 @@ import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
 import { Badge } from "@/components/ui/badge";
-import { InlineBanner } from "@/components/InlineBanner";
+import { describeError } from "@/api/errors";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
 
@@ -44,6 +45,7 @@ export function IssueScheduledRetryCard({
       </InlineBanner>
     );
   }
+  if (scheduledRetry.scheduledRetryReason === "environment_provider_wait") return null;
 
   const continuation = isContinuationReason(scheduledRetry.scheduledRetryReason);
   const dueAtIso = scheduledRetry.scheduledRetryAt
@@ -122,7 +124,8 @@ export function IssueScheduledRetryCard({
               Last attempt failed: {scheduledRetry.error}{/[.!?]$/.test(scheduledRetry.error.trim()) ? "" : "."} Paperclip will retry automatically.
             </div>
           ) : null}
-          {isError ? (
+          {isError ? ( // query-error-ok: mutation result
+
             <RetryErrorBand
               error={retryNow.lastError}
               onRetry={() => {
@@ -167,7 +170,8 @@ export function IssueScheduledRetryCard({
                 ? retryNow.data?.outcome === "already_promoted"
                   ? "Already promoted — run starting"
                   : "Promoted — run starting"
-                : retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId
+                : (retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId)
+                    || retryNow.data?.outcome === "no_scheduled_retry"
                   ? retryNow.data.message
                   : helperIdle}
           </span>
@@ -197,7 +201,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <div className="font-medium">Couldn't retry now</div>
-        <div className="mt-0.5 text-muted-foreground">{error.message}</div>
+        <div className="mt-0.5 text-muted-foreground">{describeError({ status: error.status, body: { message: error.message } }).body}</div>
       </div>
       <button
         type="button"

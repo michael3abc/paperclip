@@ -341,7 +341,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -360,7 +360,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -515,6 +515,35 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(raw.receiptHash).toBe(bridge.receiptHash);
     expect((await costs.createEvent(companyId, bridgeInput)).id).toBe(bridge.id);
     expect(await costs.summary(companyId)).toMatchObject({ eventCount: 3, spendCents: 0 });
+  });
+
+  it("marks metered usage with no known price as unpriced in the agent, model and project reports", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Morgan", role: "engineer", status: "active",
+      adapterType: "opencode_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Launch" });
+    const base = { agentId, projectId, provider: "deepseek", biller: "openrouter", billingType: "metered_api" as const,
+      inputTokens: 100, cachedInputTokens: 0, outputTokens: 10, occurredAt: new Date() };
+    await costs.createEvent(companyId, { ...base, model: "priced-model", costStatus: "reported", costCents: 137 });
+    await costs.createEvent(companyId, { ...base, model: "unpriced-model", costStatus: "unpriced", costCents: 0 });
+
+    const [byAgentRow] = await costs.byAgent(companyId);
+    expect(byAgentRow).toMatchObject({ agentId, costCents: 137, eventCount: 2, unpricedEventCount: 1 });
+    const modelRows = await costs.byAgentModel(companyId);
+    expect(modelRows.find(row => row.model === "unpriced-model")).toMatchObject({ costCents: 0, unpricedEventCount: 1 });
+    expect(modelRows.find(row => row.model === "priced-model")).toMatchObject({ costCents: 137, unpricedEventCount: 0 });
+    const [byProjectRow] = await costs.byProject(companyId);
+    expect(byProjectRow).toMatchObject({ projectId, costCents: 137, eventCount: 2, unpricedEventCount: 1 });
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {

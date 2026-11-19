@@ -9,6 +9,7 @@ import { buildTranscript, getUIAdapter, type RunLogChunk } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useCompanyLiveEvent, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
+import { retryTransientOnly } from "@/lib/query-client";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,

@@ -22,6 +22,8 @@ worktree creation or retirement.
   the resolved cwd.
 - Paths, aliases and parent/child overlaps never serialize runs. The per-issue
   execution lock remains and keeps one run per issue.
+  Local preparation does not acquire Git source-copy locks or require Git
+  source proof. Remote materialization retains its own source-copy coordination.
 - Configuration changes (model, provider, cwd, PM settings) start a new session for
   the next run instead of failing; they never reinterpret an in-flight run.
 - Bridge main-agent configuration records the same session cwd in adapter settings

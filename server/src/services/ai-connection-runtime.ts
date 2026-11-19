@@ -1,5 +1,7 @@
+import { managedAiHomeEnvironment } from "@paperclipai/adapter-utils/managed-ai-runtime-env";
+export { managedAiSessionFingerprintConfig } from "@paperclipai/adapter-utils/managed-ai-runtime-env";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
-import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
+import type { ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
@@ -35,6 +37,19 @@ import { preserveAgyConversationState, restoreAgyConversationState } from "@pape
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
     (error.details as { code?: unknown } | undefined)?.code === "ai_connection_busy";
+}
+
+/** A real conflict between the agent's AI connection and its project or arguments. */
+export function isAiConnectionIncompatible(error: unknown): error is HttpError {
+  return error instanceof HttpError && error.status === 422 &&
+    (error.details as { code?: unknown } | undefined)?.code === "ai_connection_incompatible";
+}
+
+function projectAuthConflict(files: string[]) {
+  return unprocessable(
+    `This agent's managed AI connection conflicts with project authentication settings in ${files.join(" or ")}. Remove the API key, token or apiKeyHelper settings from that project file, or choose a different AI connection for this agent.`,
+    { code: "ai_connection_incompatible" },
+  );
 }
 
 // Blank values intentionally override inherited credentials in CLI child environments.
@@ -98,6 +113,7 @@ export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],
   target?: AdapterExecutionTarget | null,
+  options: { deferRunnerTaskCapabilityCheck?: boolean } = {},
 ) {
   const extraArgs = [
     ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
@@ -126,6 +142,7 @@ export async function assertManagedAiProjectAuth(
   const pattern =
     "apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|model_provider[[:space:]]*=|env_key[[:space:]]*=|experimental_bearer_token|cli_auth_credentials_store";
   if (target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && files.length) {
+    if (options.deferRunnerTaskCapabilityCheck) return;
     const description = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "describe" }));
     if (description.kind !== "description" || description.projectAuthCheckVersion !== 1) {
       throw unprocessable("The plugin environment cannot validate managed project authentication", { code: "ai_connection_incompatible" });
@@ -172,10 +189,11 @@ done`,
         onLog: async () => {},
       },
     );
+    if (result.exitCode === 42) throw projectAuthConflict(files);
+    // The check fails closed, but an unfinished check is not a found conflict.
     if (result.exitCode !== 0)
-      throw unprocessable(
-        "The environment's project authentication settings must be checked before using this AI connection",
-        { code: "ai_connection_incompatible" },
+      throw new Error(
+        `Paperclip could not check the environment's project authentication settings (${result.timedOut ? "timed out" : `exit ${result.exitCode ?? result.signal ?? "unknown"}`}). The run did not start; it can be retried.`,
       );
     return;
   }
@@ -191,10 +209,7 @@ done`,
             content,
           )
         ) {
-          throw unprocessable(
-            "Project authentication settings conflict with the selected AI connection",
-            { code: "ai_connection_incompatible" },
-          );
+          throw projectAuthConflict([relative]);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -204,43 +219,6 @@ done`,
     if (parent === directory) break;
     directory = parent;
   }
-}
-
-function managedAiHomeEnvironment(home: string): Record<string, string> {
-  const providerHome = path.join(home, "provider");
-  const agyCliHome = path.join(home, ".gemini", "antigravity-cli");
-  return {
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    CODEX_HOME: providerHome,
-    GROK_HOME: providerHome,
-    CLAUDE_CONFIG_DIR: providerHome,
-    ANTIGRAVITY_CLI_HOME: agyCliHome,
-    GEMINI_CLI_HOME: agyCliHome,
-    HERMES_HOME: providerHome,
-  };
-}
-
-/** Only the server-created credential home is volatile; retain all other config. */
-export function managedAiSessionFingerprintConfig(
-  config: Record<string, unknown>,
-  managedHome: string | undefined,
-): Record<string, unknown> {
-  if (!managedHome) return config;
-  const env = { ...(config.env as Record<string, unknown> | undefined) };
-  const stable = managedAiHomeEnvironment("<managed-ai-home>");
-  for (const [key, value] of Object.entries(managedAiHomeEnvironment(managedHome))) {
-    if (env[key] === value) env[key] = stable[key];
-  }
-  if (env.GEMINI_HOME === path.join(managedHome, "provider")) env.GEMINI_HOME = path.join("<managed-ai-home>", "provider");
-  const managed = config.managedAiConnection as Record<string, unknown> | undefined;
-  if (managed?.sessionIdentity) {
-    for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT"]) {
-      if (env[key]) env[key] = "<managed-ai-credential>";
-    }
-  }
-  return { ...config, env, ...(managed?.sessionIdentity ? { managedAiConnection: { ...managed, identity: managed.sessionIdentity } } : {}) };
 }
 
 export async function prepareManagedAiRuntime(
@@ -317,8 +295,11 @@ export async function prepareManagedAiRuntime(
         .from(connectionGrants).where(and(eq(connectionGrants.companyId, input.companyId), eq(connectionGrants.id, selection.grant.id)));
       const currentRef = currentGrant?.refs.find(ref => ref.configPath === "ai.credential");
       if (currentGrant?.status !== "active" || currentRef?.secretId !== credentialRef.secretId || currentRef.versionSelector !== credentialRef.versionSelector) return undefined;
+      // The share lock waits behind a rotating writer, so the read after
+      // resolution sees a concurrent rotation instead of the pre-rotation
+      // version. A lock takes no new row version and aborts no admission.
       return (await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
-        .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).limit(1))[0];
+        .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).for("share"))[0];
     };
     const { value, freshness } = await (async () => {
       if (noAuth) return { value: "", freshness: undefined };
@@ -644,9 +625,9 @@ export async function prepareManagedAiRuntime(
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
-      ...(subscriptionFile && input.binding.provider === "openai" && credentialRef && freshness ? {
+      ...(subscriptionFile && (input.binding.provider === "openai" || input.binding.provider === "xai") && credentialRef && freshness ? {
         credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
-          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies PluginTaskCredentialWritebackBinding,
+          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
       config: {
         ...input.config,

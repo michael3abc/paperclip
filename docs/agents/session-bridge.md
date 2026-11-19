@@ -34,6 +34,11 @@ the nested duplicate card and generic Retry banner.
 
 ## Codex steering
 
+Human Chat wakes must name the conversation owner as requester before queue
+admission. An owner-authored saved comment, including `/new`, does not authorize
+another human to enqueue a turn. Reject before persisting a run or wake receipt;
+system and agent delivery keep their existing authority checks.
+
 Codex main-agent Chats using ccpocket_bridge supplement the exact active turn
 through adapter chatSteering and Bridge paperclip_codex_steer_v1. Persist the
 effective dispatch's role/provider/model before adapter I/O, without prompts or

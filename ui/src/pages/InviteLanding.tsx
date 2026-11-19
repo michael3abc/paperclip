@@ -7,13 +7,15 @@ import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
+import { describeError } from "../api/errors";
 import { AuthApiError, authApi, authErrorServerMessage } from "../api/auth";
 import { fetchCompanyListForCurrentAccount, useCompanyListQuery } from "../api/companies-query";
 import { healthApi } from "../api/health";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { clearPendingInviteToken, rememberPendingInviteToken } from "../lib/invite-memory";
 import { queryKeys } from "../lib/queryKeys";
-import { formatDate } from "../lib/utils";
+import { cn, formatDate } from "../lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 type AuthMode = "sign_in" | "sign_up";
 type AuthFeedback = { tone: "error" | "info"; message: string };
@@ -197,13 +199,13 @@ function AwaitingJoinApprovalPanel({
         {claimSecret && claimApiKeyPath ? (
           <div className="mt-4 space-y-1 border border-zinc-800 p-3 text-xs text-zinc-400">
             <div className="text-zinc-200">Claim secret</div>
-            <div className="font-mono break-all">{claimSecret}</div>
+            <div className={cn("font-mono break-all", ANALYTICS_NO_CAPTURE_CLASS)}>{claimSecret}</div>
             <div className="font-mono break-all">POST {claimApiKeyPath}</div>
           </div>
         ) : null}
         {onboardingTextUrl ? (
           <div className="mt-4 text-xs text-zinc-400">
-            Onboarding: <span className="font-mono break-all">{onboardingTextUrl}</span>
+            Onboarding: <span className={cn("font-mono break-all", ANALYTICS_NO_CAPTURE_CLASS)}>{onboardingTextUrl}</span>
           </div>
         ) : null}
       </div>
@@ -233,18 +235,15 @@ export function InviteLandingPage() {
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
   });
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const inviteQuery = useQuery({
     queryKey: queryKeys.access.invite(token),
     queryFn: () => accessApi.getInvite(token),
     enabled: token.length > 0,
-    retry: false,
   });
 
   // Whose list this is, is no longer this page's problem: the entry is keyed by
@@ -366,7 +365,7 @@ export function InviteLandingPage() {
       }
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to accept invite");
+      setError(describeError(err).body);
     },
   });
 

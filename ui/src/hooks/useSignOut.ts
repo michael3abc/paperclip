@@ -4,6 +4,8 @@ import { authApi } from "@/api/auth";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { queryKeys } from "@/lib/queryKeys";
 import { invalidateAccountScope } from "@/lib/account-scope";
+import { clearPersistedQueryCache } from "@/lib/persisted-query-cache";
+import { resetProductAnalyticsIdentity } from "@/lib/analytics/product-analytics";
 import { useCloudInstance } from "./useCloudInstance";
 
 const CLOUD_SIGN_OUT_PATH = "/cloud/logout";
@@ -48,8 +50,12 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
 
   return useMutation({
     mutationFn: async () => {
+      // Before anything leaves the page: Cloud sign-out navigates away with the
+      // session query still populated, so the analytics identity must go now.
+      resetProductAnalyticsIdentity();
       await disableWebPush();
       if (cloud) {
+        clearPersistedQueryCache(queryClient);
         invalidateAccountScope(queryClient);
         onSignedOut?.();
         navigateTopLevel(CLOUD_SIGN_OUT_PATH);
@@ -62,6 +68,7 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
     onSuccess: async (target) => {
       if (target === "cloud") return;
 
+      clearPersistedQueryCache(queryClient);
       invalidateAccountScope(queryClient);
       onSignedOut?.();
 

@@ -18,7 +18,7 @@ Read `currentExecutionWorkspace`:
 - `status` / `closedAt` — whether the workspace is usable
 - `runtimeServices[]` — current services, including `serviceName`, `status`, `healthStatus`, `url`, `port`, and `runtimeServiceId`
 
-If `currentExecutionWorkspace` is `null`, the issue has no registered execution directory. For code work, select an open registered directory or the project's current default. A parent relationship alone is not workspace selection or execution authority.
+If `currentExecutionWorkspace` is `null`, no execution workspace record has been realized. The run still uses its requested cwd, the agent's fixed cwd, the project default cwd, or the per-agent default directory, in that order. Dispatch creates the directory on the selected host. Workspace registration and ancestry do not gate dispatch; explicit managed Git worktrees remain available.
 
 ## Choose Files and Repositories
 

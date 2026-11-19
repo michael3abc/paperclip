@@ -4,8 +4,72 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded merge base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (2026-11-18 merge candidate; deployment pending). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
+
+## 2026-11-18 upstream merge (HOM-396; candidate)
+
+Merge upstream tip 8282d386da5a36ae2c4d8846f227c3d26e2b4049 into the
+92b9f2a7cf980cacd38bf18f1989b83eb4cd450e fork history, retaining custom
+behavior and the original commit graph. Initial conflicts: 233 files. Decisions
+and measured checks: [sync-decisions](/HOM/issues/HOM-396#document-sync-decisions).
+This entry records the merge candidate, not a production release. The live
+baseline at the start was a614a7c5a-r1; deployment needs the task's separate
+confirmation, DB clone upgrade, candidate smoke and T4 cutover gates.
+
+Upstream 0432–0498 stays unchanged. Fork migration SQL bytes and hashes stay
+unchanged, so the published hash-only migration history recognizes them after
+renumbering. The merged journal has 509 entries; a reconciled baseline has
+442 applied entries, leaving 67 upstream migrations. Both SQL histories must
+be reviewed and proved on an isolated production DB clone.
+The source-candidate clone applied those 67 migrations once (442 to 509),
+recognized all twelve fork hashes, and preserved the original data under the
+documented lifecycle-default transformation. The retained a614a7c5a-r1 passed
+isolated boot/health, project and session reads on the upgraded clone. Receipts
+and verifier corrections are in sync-decisions. Project main approved T4 deployment
+conditionally on 2026-11-19; final sealed-release proof and deployment gates remain
+pending. The follow-up merge includes main 2ced42e393 and preserves both manual
+context-compaction and trusted delegated-decision conversation wake causes.
+
+Integration follow-ups retain the selected project source when creating or
+reassigning a cooperative task, remove local Git-copy admission locks, break a
+dispatch/recovery initialization cycle, and keep PRP control replies responsive
+during replay while retaining hard queue bounds. Test fixtures track the actual
+CLI startup, monitor, workspace API and liveness-first retry contracts.
+The subsequent main-line merge b71e7abf13 includes d29db6287a and retains
+attention-read authorization and privacy boundaries. Restart recovery keeps
+the durable transient backoff counter; a persisted bootstrap certificate keeps
+preparation retries separate after terminal settlement clears execution stage.
+Only interruption/process-loss/controller-loss certificates select that lane;
+ordinary bootstrap failures retain charged transient retries and provider deadlines.
+Terminal queue regressions preserve original cleanup/recovery/input evidence while
+allowing new input; stranded review recovery hands the participant run to the
+durable retry scheduler. Tests retain the operator Stop and authority boundaries.
+Historical provider evidence does not hold a distinct authorized human input.
+Human Chat wakes also validate the requester against the conversation owner
+before persisting a run or wake; saved owner messages cannot lend authority.
+Stranded-message recovery releases terminal native sources without waiting for
+committed finalization; original failed/unfinished records remain unchanged.
+Preparation-only workspace reuse recognizes the host retry-exhaustion event
+with matching failure classification and durable accounting; provider evidence
+and invalid promotion timing still reject that certificate.
+Failed validation receipts and baseline-comparison limitations remain recorded
+in sync-decisions; these fixes do not certify every historical test as passing.
+
+| Published fork file | Merged file |
+| --- | --- |
+| `0432_productive_changeling.sql` | `0499_productive_changeling.sql` |
+| `0433_ambitious_the_order.sql` | `0500_ambitious_the_order.sql` |
+| `0434_sturdy_maestro.sql` | `0501_sturdy_maestro.sql` |
+| `0435_giant_thunderbird.sql` | `0502_giant_thunderbird.sql` |
+| `0436_woozy_blizzard.sql` | `0503_woozy_blizzard.sql` |
+| `0437_sparkling_puma.sql` | `0504_sparkling_puma.sql` |
+| `0438_curved_luckman.sql` | `0505_curved_luckman.sql` |
+| `0439_cloudy_dark_phoenix.sql` | `0506_cloudy_dark_phoenix.sql` |
+| `0440_fine_leper_queen.sql` | `0507_fine_leper_queen.sql` |
+| `0441_robust_ironclad.sql` | `0508_robust_ironclad.sql` |
+| `0442_loose_masque.sql` | `0509_loose_masque.sql` |
+| `0443_square_doorman.sql` | `0510_square_doorman.sql` |
 
 ## Custom history
 
