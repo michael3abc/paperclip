@@ -846,10 +846,14 @@ import {
       })).toBeNull();
     });
     it("wakes an idle (waiting) chat for a server-delegated decision but not for a spoofed one", async () => {
-      const chat = await create();
+      // A dedicated main keeps this wake's run out of the shared agent's run counts.
+      const mainId = randomUUID();
+      await db.insert(agents).values({ id: mainId, companyId, name: "Delegated Main", role: "engineer", status: "idle", adapterType: "process" });
+      const chat = await issueService(db).create(companyId, { title: "Main Chat", conversationAgentId: mainId,
+        conversationUserId: randomUUID(), assigneeAgentId: mainId, status: "in_review", conversationState: "waiting" });
       const heartbeat = heartbeatService(db);
       const requestId = randomUUID();
-      const wake = (actorId: string) => heartbeat.wakeup(agentId, {
+      const wake = (actorId: string) => heartbeat.wakeup(mainId, {
         source: "automation", triggerDetail: "system", reason: "delegated_decision_pending",
         idempotencyKey: `delegated-decision:interaction:${requestId}:${actorId}`,
         requestedByActorType: "system", requestedByActorId: actorId,

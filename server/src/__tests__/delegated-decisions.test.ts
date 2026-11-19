@@ -464,21 +464,24 @@ describe("Owner-issued layered decision authority", () => {
     const retryAt = Date.parse(failed.delegation!.deliveryRetryAt!);
     expect(retryAt - Date.now()).toBeGreaterThan(20_000);
     expect(retryAt - Date.now()).toBeLessThanOrEqual(30_000);
-    expect(await delivery.nextDue()).toBe(retryAt);
+    // Other companies' rows may be due sooner; this row is never due later than its retry time.
+    expect(await delivery.nextDue()).toBeLessThanOrEqual(retryAt);
+    const mine = () => wakeup.mock.calls.filter(call => (call[1]?.payload as { delegatedRequest?: { requestId?: string } })?.delegatedRequest?.requestId === request.id);
     await delivery.sweep(); // not due yet
-    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(mine()).toHaveLength(1);
     await db.update(issueThreadInteractions).set({ delegation: { ...failed.delegation!, deliveryRetryAt: new Date(0).toISOString() } })
       .where(eq(issueThreadInteractions.id, request.id));
     admit = true;
     await delivery.sweep();
-    expect(wakeup).toHaveBeenCalledTimes(2);
-    expect(wakeup.mock.calls[1]?.[1]?.idempotencyKey).toMatch(/:retry-1$/);
+    expect(mine()).toHaveLength(2);
+    expect(mine()[1]?.[1]?.idempotencyKey).toMatch(/:retry-1$/);
     const delivered = await load();
     expect(delivered.delegation?.notifiedRevision).toBe(delivered.delegation?.revision);
     expect(delivered.delegation).not.toHaveProperty("deliveryError");
     expect(delivered.delegation).not.toHaveProperty("deliveryAttempts");
     expect(delivered.delegation).not.toHaveProperty("deliveryRetryAt");
-    expect(await delivery.nextDue()).toBeNull();
+    await delivery.sweep();
+    expect(mine()).toHaveLength(2);
   });
   it("redelivers a legacy permanent failure once but keeps a changed delegation stopped", async () => {
     const mainId = await addLeadMain();
@@ -495,8 +498,9 @@ describe("Owner-issued layered decision authority", () => {
       return wake as never;
     });
     await delegatedDecisionDelivery(db, { wakeup }).sweep();
-    expect(wakeup).toHaveBeenCalledTimes(1);
-    expect(wakeup.mock.calls[0]?.[1]?.payload).toMatchObject({ delegatedRequest: { requestId: legacy.id } });
+    const requested = wakeup.mock.calls.map(call => (call[1]?.payload as { delegatedRequest?: { requestId?: string } })?.delegatedRequest?.requestId);
+    expect(requested).toContain(legacy.id);
+    expect(requested).not.toContain(changed.id);
   });
   it("delivers a worker decision once to the lead main's conversation", async () => {
     const mainId = await addLeadMain();
