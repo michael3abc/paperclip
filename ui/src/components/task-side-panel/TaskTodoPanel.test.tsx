@@ -70,6 +70,15 @@ describe("TaskTodoPanel", () => {
     expect(text('[data-testid="todo-open-3"]')).toContain("in progress");
     expect(container.querySelector('[data-testid="todo-open-3"] a')?.getAttribute("href")).toBe("/issues/HOM-389");
     expect(text('[data-testid="todo-open-4"]')).toContain("Next");
+    // Markers are the task-list status glyphs: the linked task's own status, a plain to-do without one.
+    const glyph = (testId: string) => container.querySelector(`[data-testid="${testId}"] svg[role="img"]`)?.getAttribute("aria-label");
+    expect(glyph("todo-open-3")).toBe("In Progress");
+    expect(glyph("todo-open-4")).toBe("Todo");
+    // Its task is done, but the item itself is still open: a plain to-do, with the task's status on the chip.
+    expect(glyph("todo-open-6")).toBe("Todo");
+    expect(text('[data-testid="todo-open-6"]')).toContain("done");
+    expect(glyph("todo-finished-2")).toBe("Done");
+    expect(glyph("todo-finished-5")).toBe("Cancelled");
     // Finished: the two within six hours are shown, the eight-hour-old one is behind the fold.
     expect(Array.from(container.querySelectorAll('[data-testid="todo-recent"] li')).map((node) => node.getAttribute("data-testid")))
       .toEqual(["todo-finished-2", "todo-finished-5"]);

@@ -1,10 +1,11 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
-import { Ban, CheckCircle2, Circle, CircleDot, Clock3, Hand, Target } from "lucide-react";
+import { Hand, Target } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { StatusBadge } from "@/components/StatusBadge";
+import { StatusIcon } from "@/components/StatusIcon";
 import { Button } from "@/components/ui/button";
 import { useIssueTodoDocument } from "@/hooks/useIssueTodoDocument";
 import { queryKeys } from "@/lib/queryKeys";
@@ -27,7 +28,7 @@ import { cn, relativeTime } from "@/lib/utils";
 
 const LINKED_TASK_LIMIT = 12;
 const SETTLED_TASK_STATUSES = new Set(["done", "cancelled"]);
-type LinkedTask = Pick<Issue, "id" | "identifier" | "title" | "status">;
+type LinkedTask = Pick<Issue, "id" | "identifier" | "title" | "status"> & Partial<Pick<Issue, "displayStatus" | "blockerAttention">>;
 type OpenState = "next" | "waiting" | "queued";
 
 function SectionTitle({ children, count, className }: { children: ReactNode; count?: number; className?: string }) {
@@ -69,19 +70,21 @@ function TaskChip({ reference, task }: { reference: string; task: LinkedTask | u
   );
 }
 
-function OpenGlyph({ state }: { state: OpenState }) {
-  if (state === "next") return <CircleDot className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" aria-label="Next" />;
-  if (state === "waiting") return <Clock3 className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-label="Waiting on its task" />;
-  return <Circle className="h-4 w-4 shrink-0 text-muted-foreground/60" aria-label="Queued" />;
+/**
+ * The same status glyph the task lists use. An item whose linked task is still active shows that task's status; any
+ * other open item is a plain to-do (a finished task does not make the item itself done).
+ */
+function OpenGlyph({ task }: { task: LinkedTask | undefined }) {
+  return task && !SETTLED_TASK_STATUSES.has(task.status)
+    ? <StatusIcon status={task.status} displayStatus={task.displayStatus} blockerAttention={task.blockerAttention} className="mt-0.5 shrink-0" />
+    : <StatusIcon status="todo" className="mt-0.5 shrink-0" />;
 }
 
 function FinishedRow({ item }: { item: TodoItem }) {
   const cancelled = item.status === "cancelled";
   return (
     <li className="flex items-start gap-2.5 px-3 py-2" data-testid={`todo-finished-${item.id}`}>
-      {cancelled
-        ? <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/70" aria-label="Cancelled" />
-        : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-label="Done" />}
+      <StatusIcon status={cancelled ? "cancelled" : "done"} className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <ItemText value={item.text} className={cn("text-muted-foreground", cancelled && "line-through decoration-muted-foreground/50")} />
         {item.note && <p className="mt-0.5 text-xs text-muted-foreground [overflow-wrap:anywhere]">{todoDisplayText(item.note)}</p>}
@@ -218,7 +221,7 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
             {visibleOpen.map(({ item, state }) => (
               <li key={item.id} className="px-3 py-2.5" data-testid={`todo-open-${item.id}`} data-state={state}>
                 <div className="flex items-start gap-2.5">
-                  <span className="pt-0.5"><OpenGlyph state={state} /></span>
+                  <OpenGlyph task={linkedTask(item) ? tasks.get(item.task!) : undefined} />
                   <div className="min-w-0 flex-1">
                     <ItemText value={item.text} className={cn(state === "next" && "font-medium")} />
                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
