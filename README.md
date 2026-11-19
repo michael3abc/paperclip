@@ -1,3 +1,24 @@
+> **This is the `michael3abc/paperclip` fork, not the official Paperclip.**
+> It is a personal fork that runs one maintainer's agent company. The release
+> line is `michael/main`. It adds native Claude Code / Codex sessions through
+> CC Pocket, project main agents with shared workers, liveness-first retries,
+> local voice calls and more; see the feature table in [FORK.md](FORK.md).
+>
+> - **Install:** `npx paperclipai` below installs upstream, not this fork. To run
+>   the fork, clone this repository, check out `michael/main`, then run
+>   `pnpm install` and `pnpm dev` (see [doc/DEVELOPING.md](doc/DEVELOPING.md)).
+> - **Outside dependencies:** many fork features need CC Pocket Bridge and its
+>   `ccpocket_bridge` adapter, which live in a separate repository. Without them
+>   the built-in adapters work as upstream and those features stay unused. See
+>   [docs/fork/host-operations.md](docs/fork/host-operations.md).
+> - **Host rules:** `AGENTS.md` and the docs contain rules for the maintainer's
+>   host (`/home/michael` paths, "Owner" policies, HOM issue keys). The same page
+>   explains which ones apply to you.
+> - **Support:** the Discord, docs and website links below belong to upstream and
+>   do not cover this fork.
+>
+> The upstream README follows unchanged.
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>

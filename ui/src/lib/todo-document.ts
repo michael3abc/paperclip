@@ -155,3 +155,38 @@ export function todoCancelComment(item: Pick<TodoItem, "id" | "text" | "task">):
   return `取消 TODO #${item.id}：「${subject}」${item.task && !subject.includes(item.task) ? `（${item.task}）` : ""}。`
     + `請停掉這一項背後的 task 與 job，執行 \`todo cancel ${item.id}\`，然後繼續其他項目。`;
 }
+
+/**
+ * The stored TODO, or null when this document is not one. Only the `todo` key in the JSONL format counts; an older
+ * markdown TODO, or a document under another key, stays an ordinary markdown document.
+ */
+export function storedTodoDocument(key: string | null | undefined, body: string | null | undefined): TodoDocument | null {
+  return key === TODO_DOCUMENT_KEY ? parseTodoDocument(body) : null;
+}
+
+/**
+ * Read-only markdown for the generic Documents list. Issue documents only have the `markdown` format, so the adapter
+ * stores the JSONL under it; showing that body as markdown would run the records together, and editing it there could
+ * break the helper's store. This renders the same records as a checklist instead (ids kept, so "#3" matches
+ * `todo check 3`), in the order of the TODO tab.
+ */
+export function todoDocumentMarkdown(document: TodoDocument): string {
+  const view = todoView(document, Number.POSITIVE_INFINITY);
+  const entry = (item: TodoItem) => {
+    const mark = item.status === "done" ? "x" : " ";
+    const label = `#${item.id} ${item.status === "cancelled" ? `~~${item.text}~~ (cancelled)` : item.text}`;
+    return `- [${mark}] ${label}${item.note ? ` — ${item.note}` : ""}`;
+  };
+  const lines: string[] = [];
+  lines.push(`**Goal:** ${document.goal || "(not written yet)"}`);
+  if (document.stop) lines.push("", `**Stop when:** ${document.stop}`);
+  const section = (title: string, items: TodoItem[]) => {
+    if (items.length === 0) return;
+    lines.push("", `**${title}**`, "", ...items.map(entry));
+  };
+  section("To do", view.open);
+  section("Needs you", view.owner);
+  section("Finished", view.earlier);
+  if (view.open.length === 0 && view.owner.length === 0 && view.earlier.length === 0) lines.push("", "Nothing in the list yet.");
+  return `${lines.join("\n")}\n`;
+}

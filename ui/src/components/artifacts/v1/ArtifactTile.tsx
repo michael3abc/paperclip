@@ -3,7 +3,7 @@ import type { To } from "react-router-dom";
 import { Link } from "@/lib/router";
 import type { ArtifactFileLink } from "@/lib/artifact-file-link";
 import { useArtifactPreviewClick } from "../ArtifactPreviewProvider";
-import { ArtifactFront } from "./ArtifactFront";
+import { ArtifactFront, PdfFront } from "./ArtifactFront";
 import { ArtifactStack } from "./ArtifactStack";
 import type { ArtifactSubject } from "./kinds";
 import { countLabel, updatedLabel } from "./when";
@@ -116,7 +116,7 @@ export function ArtifactSingleTile({ subject, to, file, onClick, now }: { subjec
   const name = subject.filename ?? subject.title;
   return (
     <ArtifactTile label={`Open ${name}`} to={to} file={file} onClick={onClick} testId="artifact-v1-single-tile" caption={<ArtifactCaption title={name} identifier={subject.taskIdentifier} facts={subject.updatedAt ? [`Updated ${updatedLabel(subject.updatedAt, now)}`] : []} />}>
-      <ArtifactFront subject={subject} />
+      {subject.kind === "pdf" && subject.pdfUrl ? <PdfFront subject={subject} /> : <ArtifactFront subject={subject} />}
     </ArtifactTile>
   );
 }
