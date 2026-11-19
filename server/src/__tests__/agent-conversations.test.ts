@@ -111,7 +111,7 @@ import {
       await db?.$client.end({ timeout: 0 });
       await database?.cleanup();
     });
-    const create = (user = randomUUID()) =>
+    const create = (user: string = randomUUID()) =>
       issueService(db).create(companyId, {
         title: "Conversation",
         conversationAgentId: agentId,
