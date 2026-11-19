@@ -1,4 +1,6 @@
 import { RunCancelButton, RunStopSettlementStatus } from "@/components/RunCancelButton";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
@@ -24,7 +26,6 @@ import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
-import { projectsApi } from "../api/projects";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -129,6 +130,7 @@ export {
   heartbeatProgressLogLineKey,
   RunInvocationCard,
 } from "../components/run-log/RunDetails";
+import { ANALYTICS_NO_CAPTURE_CLASS, ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -1650,8 +1652,7 @@ export function ConfigurationTab({
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
 
   const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
-    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
-    queryFn: () => projectsApi.list(companyId!),
+    ...companyProjectsQuery(companyId ?? ""),
     enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
   });
 
@@ -3086,12 +3087,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 {claudeLoginResult && (
                   <>
                     {!!claudeLoginResult.stdout && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">
+                      <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
                         {claudeLoginResult.stdout}
                       </pre>
                     )}
                     {!!claudeLoginResult.stderr && (
-                      <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                      <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
                         {claudeLoginResult.stderr}
                       </pre>
                     )}
@@ -3245,7 +3246,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {run.stderrExcerpt && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-red-600 dark:text-red-400">stderr</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">{run.stderrExcerpt}</pre>
+          <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>{run.stderrExcerpt}</pre>
         </div>
       )}
 
@@ -3253,7 +3254,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {run.stdoutExcerpt && !run.logRef && (
         <div className="space-y-1">
           <span className="text-xs font-medium text-muted-foreground">stdout</span>
-          <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap">{run.stdoutExcerpt}</pre>
+          <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-3 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>{run.stdoutExcerpt}</pre>
         </div>
       )}
 
@@ -3327,7 +3328,7 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             API key created — copy it now, it will not be shown again.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate">
+            <code className={cn("flex-1 bg-neutral-100 dark:bg-neutral-950 rounded px-3 py-1.5 text-xs font-mono text-green-700 dark:text-green-300 truncate", ANALYTICS_NO_CAPTURE_CLASS)}>
               {tokenVisible ? newToken : newToken.replace(/./g, "•")}
             </code>
             <Button

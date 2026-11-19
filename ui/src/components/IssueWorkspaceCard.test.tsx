@@ -213,7 +213,6 @@ describe("IssueWorkspaceCard", () => {
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "isolated_workspace",
-              environmentId: "env-project",
             },
           }}
           onUpdate={onUpdate}
@@ -297,7 +296,6 @@ describe("IssueWorkspaceCard", () => {
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "isolated_workspace",
-              environmentId: "env-project",
             },
           }}
           onUpdate={vi.fn()}

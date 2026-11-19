@@ -16,6 +16,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import {
+  ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX,
   attachmentArtifactWorkProductMetadataSchema,
   COMPANY_ARTIFACTS_MAX_LIMIT,
   COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID,
@@ -306,7 +307,7 @@ function pageByCursor<T extends { id: string; updatedAt: string }>(
   return { page, nextCursor };
 }
 
-async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: Iterable<string>) {
+async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: Iterable<string>, readCondition?: SQL) {
   const rowsById = new Map<string, IssueGroupingRow>();
   let pending = [...new Set(seedIssueIds)];
 
@@ -320,7 +321,7 @@ async function loadIssueGroupingRows(db: Db, companyId: string, seedIssueIds: It
         updatedAt: issues.updatedAt,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending)));
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, pending), readCondition));
 
     const nextPending = new Set<string>();
     for (const row of rows) {
@@ -497,7 +498,14 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
     list: async (
       companyId: string,
       rawQuery: Partial<CompanyArtifactsQuery> = {},
-      options: { issueConditions?: SQL[]; userId?: string } = {},
+      /** `readCondition` limits artifacts and group tasks to tasks the caller can read. */
+      options: {
+        issueConditions?: SQL[];
+        readCondition?: SQL;
+        userId?: string;
+        /** Leave out the `artifact-review-*` documents materialized to review a work product (the work product is listed). */
+        excludeArtifactReviewDocuments?: boolean;
+      } = {},
     ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
@@ -522,6 +530,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         // A subquery (not projects.archivedAt) because the work-product dedupe query does not join projects.
         sql`not exists (select 1 from ${projects} where ${projects.id} = ${artifactProjectId} and ${projects.archivedAt} is not null)`,
         ...(options.issueConditions ?? []),
+        ...(options.readCondition ? [options.readCondition] : []),
       ];
       const projectScope = (projectKey: string): SQL =>
         projectKey === COMPANY_ARTIFACTS_NO_PROJECT_GROUP_ID
@@ -581,6 +590,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
               or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
               notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
             ]),
+          ...(options.excludeArtifactReviewDocuments
+            ? [sql`${issueDocuments.key} not like ${`${ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX}%`}`]
+            : []),
         ];
         const documentSortDate = query.starred
           ? sql<Date>`${documentMemberships.starredAt}`
@@ -1029,7 +1041,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       const { artifacts: sorted } = await collectArtifacts(taskScope, false);
       const issueSeedIds = new Set(sorted.map((artifact) => artifact.issue.id));
       if (query.groupIssueId) issueSeedIds.add(query.groupIssueId);
-      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds);
+      const issueRows = await loadIssueGroupingRows(db, companyId, issueSeedIds, options.readCondition);
       const groups = buildArtifactGroups({
         artifacts: sorted,
         companyPrefix: company.issuePrefix,

@@ -6,7 +6,133 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
  import { agent as acpAgent, CreateElicitationResponse, methods, ndJsonStream, RequestError, } from "@agentclientprotocol/sdk";
  import { deleteSession, getSessionMessages, listSessions, query, } from "@anthropic-ai/claude-agent-sdk";
  import { GOAL_ACTIONS, GOAL_CONTROL_METHOD, GOAL_EXTENSION_VERSION, goalUpdateFromPrompt, parseGoalRequest, toGoalSnapshot, } from "./goal-extension.js";
-@@ -2922,9 +2923,19 @@
+@@ -2490,11 +2491,88 @@
+                                 break;
+                             }
+                             case "hook_started":
++                            case "hook_response": {
++                                // Paperclip patch: forward hook lifecycle so automatic hook
++                                // decisions stay auditable. ACP has no hook update, so it rides
++                                // on session_info_update `_meta` (no title/updatedAt change).
++                                // Output is bounded; the runner derives the outcome.
++                                const bounded = (value) => typeof value === "string" ? value.slice(0, 4000) : undefined;
++                                // Read the hook's JSON decision from the full stdout before the
++                                // display text is bounded, so a long reason cannot hide a block.
++                                const hookDecision = (stdout) => {
++                                    if (typeof stdout !== "string" || !stdout.trim().startsWith("{")) return undefined;
++                                    let parsed;
++                                    try { parsed = JSON.parse(stdout); } catch { return undefined; }
++                                    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
++                                    const specific = parsed.hookSpecificOutput && typeof parsed.hookSpecificOutput === "object" ? parsed.hookSpecificOutput : {};
++                                    const decision = {
++                                        ...(typeof parsed.continue === "boolean" ? { continue: parsed.continue } : {}),
++                                        ...(typeof parsed.stopReason === "string" ? { stopReason: bounded(parsed.stopReason) } : {}),
++                                        ...(typeof parsed.decision === "string" ? { decision: bounded(parsed.decision) } : {}),
++                                        ...(typeof parsed.reason === "string" ? { reason: bounded(parsed.reason) } : {}),
++                                        ...(typeof parsed.systemMessage === "string" ? { systemMessage: bounded(parsed.systemMessage) } : {}),
++                                        ...(typeof specific.permissionDecision === "string" ? { permissionDecision: bounded(specific.permissionDecision) } : {}),
++                                        ...(typeof specific.permissionDecisionReason === "string" ? { permissionDecisionReason: bounded(specific.permissionDecisionReason) } : {}),
++                                        ...(typeof specific.additionalContext === "string" ? { additionalContext: bounded(specific.additionalContext) } : {}),
++                                    };
++                                    return Object.keys(decision).length > 0 ? decision : undefined;
++                                };
++                                await sendUpdate({
++                                    sessionId: message.session_id,
++                                    update: {
++                                        sessionUpdate: "session_info_update",
++                                        _meta: {
++                                            claudeCode: {
++                                                hook: {
++                                                    phase: message.subtype === "hook_started" ? "started" : "completed",
++                                                    hookId: message.hook_id,
++                                                    hookName: message.hook_name,
++                                                    hookEvent: message.hook_event,
++                                                    ...(message.subtype === "hook_response" ? {
++                                                        outcome: message.outcome,
++                                                        ...(typeof message.exit_code === "number" ? { exitCode: message.exit_code } : {}),
++                                                        output: bounded(message.output),
++                                                        stdout: bounded(message.stdout),
++                                                        stderr: bounded(message.stderr),
++                                                        decision: hookDecision(message.stdout),
++                                                    } : {}),
++                                                },
++                                            },
++                                        },
++                                    },
++                                });
++                                break;
++                            }
+                             case "hook_progress":
+-                            case "hook_response":
+                             case "files_persisted":
+                                 break;
+-                            case "task_progress":
++                            case "task_progress": {
++                                // Paperclip: a subagent's progress summary (SDK option
++                                // agentProgressSummaries) has no ACP home while native
++                                // subagent sessions are off. Attach it to the spawning
++                                // Agent/Task tool call so the client can show it there.
++                                const progressTask = session.liveBackgroundTasks.get(message.task_id);
++                                if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" &&
++                                    progressTask?.isSubagent &&
++                                    progressTask.parentToolUseId &&
++                                    (message.summary || message.description)) {
++                                    await sendUpdate({
++                                        sessionId: message.session_id,
++                                        update: {
++                                            sessionUpdate: "tool_call_update",
++                                            toolCallId: progressTask.parentToolUseId,
++                                            _meta: {
++                                                claudeCode: {
++                                                    subagentProgress: {
++                                                        ...(message.summary ? { summary: String(message.summary).slice(0, 2000) } : {}),
++                                                        ...(message.description ? { description: String(message.description).slice(0, 2000) } : {}),
++                                                        ...(message.last_tool_name ? { lastToolName: String(message.last_tool_name).slice(0, 160) } : {}),
++                                                    },
++                                                },
++                                            },
++                                        },
++                                    });
++                                }
+                                 await asyncTasks.taskProgress({
+                                     task_id: message.task_id,
+                                     description: message.description,
+@@ -2503,6 +2581,7 @@
+                                     usage: message.usage,
+                                 });
+                                 break;
++                            }
+                             case "task_started":
+                                 // For subagent tasks `task_id` is the subagent's agent id (the
+                                 // SDK keys its task registry by agent id) and `tool_use_id` is
+@@ -2550,6 +2629,7 @@
+                             case "task_notification":
+                                 // The task settled — no further tool calls can originate
+                                 // from it, so its registry entry can be dropped.
++                                await this.paperclipForwardSubagentState(session, message.session_id, message.task_id, message.tool_use_id ?? null, message.status, message.summary, sendUpdate);
+                                 await subagents.finishTask(message.task_id, message.status, sendUpdate, message.tool_use_id);
+                                 await asyncTasks.taskNotification({
+                                     task_id: message.task_id,
+@@ -2571,6 +2651,7 @@
+                                 if (message.patch.status === "completed" ||
+                                     message.patch.status === "failed" ||
+                                     message.patch.status === "killed") {
++                                    await this.paperclipForwardSubagentState(session, message.session_id, message.task_id, undefined, message.patch.status, undefined, sendUpdate);
+                                     await subagents.finishTask(message.task_id, message.patch.status, sendUpdate);
+                                     session.liveBackgroundTasks.delete(message.task_id);
+                                 }
+@@ -2794,7 +2875,9 @@
+                                     session.pendingGoalUpdate = undefined;
+                                     const goalCommandFailed = message.is_error ||
+                                         message.stop_reason === "refusal" ||
+-                                        ("result" in message && message.result.includes("Please run /login"));
++                                        ("result" in message &&
++                                            message.is_error &&
++                                            message.result.includes("Please run /login"));
+                                     if (goalCommandFailed) {
+                                         await this.publishGoal(params.sessionId, pendingGoalUpdate.previous ?? null);
+                                     }
+@@ -2922,9 +3005,19 @@
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -29,7 +155,65 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                                      },
                                  });
                              }
-@@ -5231,6 +5242,7 @@
+@@ -3081,7 +3174,7 @@
+                             }
+                             switch (message.subtype) {
+                                 case "success": {
+-                                    if (message.result.includes("Please run /login")) {
++                                    if (message.is_error && message.result.includes("Please run /login")) {
+                                         await failActiveWithSessionFailure("auth_required", RequestError.authRequired(), message.result);
+                                         break;
+                                     }
+@@ -4506,6 +4599,48 @@
+      *  `$/cancel_request`, and our local abort race settles even if the client
+      *  ignores it. A `cancelled` outcome, request rejection, and local abort all
+      *  surface the same "Tool use aborted" the callers already expect. */
++    /**
++     * Paperclip: an async subagent's Agent/Task tool call completes as soon as
++     * the subagent launches. With native subagent sessions off, report the
++     * subagent's own terminal state and summary on that tool call so the
++     * client can settle its subagent card. Sent once per task.
++     */
++    async paperclipForwardSubagentState(session, sessionId, taskId, toolUseId, status, summary, sendUpdate) {
++        if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1")
++            return;
++        // The terminal task_updated branch drops the live registry entry
++        // before task_notification arrives, so remember subagent parents here.
++        const parents = (session.paperclipSubagentParents ??= new Map());
++        const task = session.liveBackgroundTasks.get(taskId);
++        if (task?.isSubagent && task.parentToolUseId)
++            parents.set(taskId, task.parentToolUseId);
++        const parentToolUseId = parents.get(taskId) ?? (task?.isSubagent ? toolUseId : undefined);
++        if (!parentToolUseId)
++            return;
++        // The terminal task_updated patch can precede task_notification, which
++        // alone carries the summary; dedupe only the notification.
++        const forwarded = (session.paperclipForwardedSubagentStates ??= new Set());
++        if (forwarded.has(taskId))
++            return;
++        if (toolUseId !== undefined || summary)
++            forwarded.add(taskId);
++        await sendUpdate({
++            sessionId,
++            update: {
++                sessionUpdate: "tool_call_update",
++                toolCallId: parentToolUseId,
++                _meta: {
++                    claudeCode: {
++                        subagentState: {
++                            status: String(status ?? "completed").slice(0, 40),
++                            // One character past the display bound lets the client mark a cut.
++                            ...(summary ? { summary: String(summary).slice(0, 4001) } : {}),
++                        },
++                    },
++                },
++            },
++        });
++    }
+     async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
+         if (signal.aborted)
+             throw new Error("Tool use aborted");
+@@ -5231,6 +5366,7 @@
          // backward compatibility but callers should prefer the tools array.
          const tools = userProvidedOptions?.tools ??
              (params._meta?.disableBuiltInTools === true ? [] : { type: "preset", preset: "claude_code" });
@@ -37,7 +221,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
          const abortController = userProvidedOptions?.abortController || new AbortController();
          // Per-session task state. Created here (rather than in the session record
          // below) so the TaskCreated/TaskCompleted hook callbacks can close over
-@@ -5311,14 +5323,21 @@
+@@ -5311,14 +5447,25 @@
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -45,12 +229,16 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
 +            // user root contains only assigned skills; project/local settings
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
 +            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
++            // Subagent progress summaries (~30s) feed the task chat's subagent card.
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { agentProgressSummaries: true }),
              ...(settings && { settings }),
 +            ...(pmPolicy ? { settingSources: [], settings: {} } : {}),
              env,
              // Override certain fields that must be controlled by ACP
              cwd: params.cwd,
              includePartialMessages: true,
++            // Paperclip patch: emit hook_started/hook_response for every hook event.
++            includeHookEvents: true,
              forwardSubagentText,
 -            mcpServers: {
 -                ...(userProvidedOptions?.mcpServers || {}),
@@ -61,7 +249,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5348,16 @@
+@@ -5329,6 +5476,16 @@
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
@@ -78,7 +266,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              // Forward MCP elicitation requests onto ACP elicitation. Only attached
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
-@@ -5354,7 +5383,7 @@
+@@ -5354,7 +5511,7 @@
                  "replay-user-messages": "",
              },
              disallowedTools: [...(userProvidedOptions?.disallowedTools || []), ...disallowedTools],
@@ -87,7 +275,7 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
              hooks: {
                  ...userProvidedOptions?.hooks,
                  ...(fileChangeAuditSupport
-@@ -5365,6 +5394,7 @@
+@@ -5365,6 +5522,7 @@
                          ],
                      }
                      : {}),
@@ -95,22 +283,6 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                  PostToolUse: [
                      ...(userProvidedOptions?.hooks?.PostToolUse || []),
                      {
-diff --git a/dist/settings.js b/dist/settings.js
---- a/dist/settings.js
-+++ b/dist/settings.js
-@@ -88,6 +88,12 @@
-     async loadAllSettings() {
-         try {
-             const resolved = await resolveSettings({ cwd: this.cwd });
-+            const userPath = resolved.sources.find((entry) => entry.source === "user")?.path;
-+            for (const entry of resolved.sources) {
-+                if (userPath && entry.source === "project" && entry.path === userPath) {
-+                    entry.source = "user";
-+                }
-+            }
-             this.effective = filterEscalatingDefaultMode(resolved);
-         }
-         catch (error) {
 diff --git a/dist/paperclip-pm-policy.js b/dist/paperclip-pm-policy.js
 new file mode 100644
 --- /dev/null
@@ -155,3 +327,19 @@ new file mode 100644
 +        return deny();
 +    } };
 +}
+diff --git a/dist/settings.js b/dist/settings.js
+--- a/dist/settings.js
++++ b/dist/settings.js
+@@ -88,6 +88,12 @@
+     async loadAllSettings() {
+         try {
+             const resolved = await resolveSettings({ cwd: this.cwd });
++            const userPath = resolved.sources.find((entry) => entry.source === "user")?.path;
++            for (const entry of resolved.sources) {
++                if (userPath && entry.source === "project" && entry.path === userPath) {
++                    entry.source = "user";
++                }
++            }
+             this.effective = filterEscalatingDefaultMode(resolved);
+         }
+         catch (error) {

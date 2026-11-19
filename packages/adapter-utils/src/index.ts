@@ -129,6 +129,7 @@ export {
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerModel,
   paperclipRunnerTransitionConfig,
+  paperclipRunnerFollowsLifecycleDefault,
   normalizeLegacyRunnerProvider,
   resolvePaperclipRunnerPermissionMode,
   resolvePaperclipRunnerCursorMode,

@@ -267,7 +267,6 @@ export function IssueWorkspaceCard({
     ? (
         (currentSelection === "reuse_existing" && currentReusableEnvironmentId)
         ?? workspace?.config?.environmentId
-        ?? projectEnvironmentId
       )
     : null;
   const currentEnvironment =
@@ -455,8 +454,6 @@ export function IssueWorkspaceCard({
               Environment: <span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>
               {currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
                 ? " · reused workspace"
-                : !issue.executionWorkspaceSettings?.environmentId && projectEnvironmentId === currentEnvironmentId
-                ? " · project default"
                 : null}
             </div>
           )}

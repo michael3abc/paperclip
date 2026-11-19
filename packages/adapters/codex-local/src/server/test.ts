@@ -18,6 +18,7 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   prepareAdapterExecutionTargetRuntime,
+  managedRemoteHomeEnvironment,
 } from "@paperclipai/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -95,18 +96,25 @@ async function prepareCodexHelloProbe(input: {
   env: Record<string, string>;
   cleanup: () => Promise<void>;
 }> {
+  if (input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === true) {
+    return { command: input.command, args: input.args, env: { ...input.env }, cleanup: async () => {} };
+  }
   let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
-    if (input.target?.workspaceRealization?.mode === "in_place") await preparedRuntime?.restoreWorkspace();
-    else await preparedRuntime?.restoreWorkspace().catch(() => { });
-    if (preparedRuntimeWorkspaceLocalDir) {
-      await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
-    }
-    if (probeHomeLocalDir) {
-      await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+    try {
+      await preparedRuntime?.restoreWorkspace();
+    } catch (error) {
+      if (input.managedAiConnection || input.target?.workspaceRealization?.mode === "in_place") throw error;
+    } finally {
+      if (preparedRuntimeWorkspaceLocalDir) {
+        await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
+      if (probeHomeLocalDir) {
+        await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   };
     if (input.target?.workspaceRealization?.mode === "in_place" && input.probeApiKey) throw new Error("SSH in_place probe requires managed subscription authentication");
@@ -160,7 +168,6 @@ async function prepareCodexHelloProbe(input: {
       path.join(os.tmpdir(), `paperclip-codex-probe-home-${input.runId}-`),
     );
     let seededAuth = false;
-    let seededConfig = false;
     for (const file of ["auth.json", "config.toml"]) {
       // `fs.readFile` follows the home's `auth.json` symlink into the host's
       // `~/.codex`, so we copy the resolved bytes as a plain file.
@@ -168,7 +175,6 @@ async function prepareCodexHelloProbe(input: {
       if (contents) {
         await fs.writeFile(path.join(probeHomeLocalDir, file), contents);
         if (file === "auth.json") seededAuth = true;
-        if (file === "config.toml") seededConfig = true;
       }
     }
 
@@ -177,7 +183,7 @@ async function prepareCodexHelloProbe(input: {
     // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
     // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
         if (!seededAuth && input.target?.workspaceRealization?.mode === "in_place") throw new Error("SSH in_place probe requires host managed authentication");
-    if (!seededAuth && !(input.managedAiConnection && seededConfig)) {
+    if (!seededAuth && !input.managedAiConnection) {
       return {
         command: input.command,
         args: input.args,
@@ -190,6 +196,7 @@ async function prepareCodexHelloProbe(input: {
       path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
     );
     preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+      privateRuntime: Boolean(input.managedAiConnection),
       runId: input.runId,
       target: input.target,
       adapterKey: "codex",
@@ -210,11 +217,15 @@ async function prepareCodexHelloProbe(input: {
           key: "home",
           localDir: probeHomeLocalDir,
           followSymlinks: true,
-                    restore: input.target?.workspaceRealization?.mode === "in_place" ? async ({ assetDir, readFile }) => void (await copyBackCodexAuth({
-                        readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                        hostAuthPath: path.join(effectiveHome, "auth.json"),
-                        log: async () => {},
-                    })) : undefined,
+          restore: input.managedAiConnection || input.target?.workspaceRealization?.mode === "in_place"
+            ? async ({ assetDir, readFile }) => {
+              await copyBackCodexAuth({
+                readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                hostAuthPath: path.join(effectiveHome, "auth.json"),
+                log: async () => {},
+              });
+            }
+            : undefined,
         },
       ],
     });
@@ -223,7 +234,10 @@ async function prepareCodexHelloProbe(input: {
       command: input.command,
       args: input.args,
       env: preparedRuntime.assetDirs.home
-        ? { ...input.env, CODEX_HOME: preparedRuntime.assetDirs.home }
+        ? { ...input.env,
+          ...(input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === false && input.managedAiConnection && preparedRuntime.runtimeRootDir
+            ? managedRemoteHomeEnvironment(preparedRuntime.runtimeRootDir) : {}),
+          CODEX_HOME: preparedRuntime.assetDirs.home }
         : { ...input.env },
       cleanup,
     };

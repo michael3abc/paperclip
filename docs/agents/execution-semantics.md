@@ -32,6 +32,15 @@ once: workspace, holders, slots, retirement and the next run. Native-stop
 verification, stop evidence and cleanup receipts are collected best-effort in the
 background and never block admission, dispatch, retirement or another run.
 Owner Recheck may still inspect a cancelled run; it is diagnostic only.
+Saved-message recovery follows the same rule: a terminal native source does not
+need a committed finalization record. Preserve missing or failed finalization
+evidence while the next authorized input passes normal admission.
+Preparation-only Retry can retain its saved directory after automatic retries
+are exhausted. The host exhaustion event must match the run's failure class and
+durable retry accounting; promotion must occur after the recorded due time.
+Provider events, changed retry metadata and execution evidence still invalidate
+that preparation-only certificate. Requested adapter strategy is distinct from
+the realized directory; verify placement and preserved files.
 
 ## Failure classes
 
@@ -47,6 +56,13 @@ recovery, stranded-issue reconciliation).
 - Deterministic: bad configuration a retry cannot fix. No automatic retry; one
   notice per (issue, code). Notices never block dispatch.
 - Unknown codes: retry 3 times as transient, then treat as deterministic.
+
+Shutdown and process-loss recovery keep the chain's persisted failure counter and
+backoff; they do not implicitly open a separate upstream server-restart window.
+Preparations interrupted by shutdown, process loss or controller loss before
+provider work retain their own durable counter without a retry limit. An ordinary
+bootstrap failure keeps its failure counter and provider retry deadline; proof
+that provider work did not start does not turn a failure into an interruption.
 
 Immediate release recovery obeys the same backoff. A per-host in-memory circuit
 breaker (`server/src/services/host-circuit-breaker.ts`) defers wakes for an

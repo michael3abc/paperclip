@@ -3,6 +3,7 @@ import { readProcessStartedAt } from "./hot-restart.js";
 import { claimedAdapterType, runUsedConversationAdapter } from "./conversation-continuation.js";
 import { and, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { readLeaseReleaseDeferral } from "./environment-lease-release-deferral.js";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
@@ -51,22 +52,28 @@ async function isHistoricalProjectPmRejection(db: Db, run: typeof heartbeatRuns.
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], scope?: { runIds: string[] }) {
-  if (!agentIds.length) return true;
+  return (await agentExecutionStopBlocker(db, agentIds, scope)) === null;
+}
+
+export async function agentExecutionStopBlocker(db: Db, agentIds: string[], scope?: { runIds: string[] }): Promise<string | null> {
+  if (!agentIds.length) return null;
   const predicate = and(inArray(heartbeatRuns.agentId, agentIds), scope ? inArray(heartbeatRuns.id, scope.runIds) : undefined);
   const runs = await db.select().from(heartbeatRuns).where(predicate);
-  if (scope && runs.length !== new Set(scope.runIds).size) return false;
+  if (scope && runs.length !== new Set(scope.runIds).size) return "run_scope_incomplete";
   const runIds = db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(predicate);
   const leases = await db.select().from(environmentLeases).where(or(
     inArray(environmentLeases.heartbeatRunId, runIds),
     scope ? undefined : inArray(sql`${environmentLeases.metadata}->>'agentId'`, agentIds),
   ));
-  if (leases.some(lease => (!lease.releasedAt && !(lease.status === "retained" && lease.cleanupStatus === "success")) || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return false;
+  const deferred = leases.find(lease => lease.status === "active" && readLeaseReleaseDeferral(lease.metadata));
+  if (deferred) return `environment_lease_release_deferred:${readLeaseReleaseDeferral(deferred.metadata)!.reason}`;
+  if (leases.some(lease => (!lease.releasedAt && !(lease.status === "retained" && lease.cleanupStatus === "success")) || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return "environment_lease_unreleased";
   const coordinators = await db.select().from(nativeRunFinalizations)
     .where(inArray(nativeRunFinalizations.runId, runIds));
   const now = new Date();
   const abandoned = coordinators.filter(row => row.leaseOwner);
   if (abandoned.some(row => !row.leaseExpiresAt || row.leaseExpiresAt > now || row.resultId ||
-      runs.find(run => run.id === row.runId)?.status !== "cancelled")) return false;
+      runs.find(run => run.id === row.runId)?.status !== "cancelled")) return "native_finalization_owned";
   const absent = (pid: number) => {
     try { process.kill(pid, 0); return false; }
     catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -75,11 +82,11 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], sco
     if (!coordinator.controllerPid || absent(coordinator.controllerPid)) continue;
     const observed = await readProcessStartedAt(coordinator.controllerPid).catch(() => null);
     if (!observed || !coordinator.controllerProcessStartedAt ||
-        new Date(observed).getTime() === coordinator.controllerProcessStartedAt.getTime()) return false;
+        new Date(observed).getTime() === coordinator.controllerProcessStartedAt.getTime()) return "native_controller_alive";
   }
   for (const run of runs) {
-    if (!["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(run.status)) return false;
-    if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+    if (!["succeeded", "failed", "cancelled", "timed_out", "interrupted"].includes(run.status)) return "run_not_terminal";
+    if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return "run_controller_lease_held";
     const runLeases = leases.filter(lease => lease.heartbeatRunId === run.id);
         if (!runLeases.length && !coordinators.some(row => row.runId === run.id) && isUndispatchedCredentialWait(run)) {
             const [dispatch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
@@ -92,7 +99,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], sco
             if (!dispatch) continue;
         }
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
-      if ((scope || run.status === "cancelled") && !runLeases.every(hasRemoteTerminationReceipt)) return false;
+      if ((scope || run.status === "cancelled") && !runLeases.every(hasRemoteTerminationReceipt)) return "remote_stop_unconfirmed";
       continue;
     }
     let processAlive = Boolean(run.processPid && !absent(run.processPid));
@@ -104,20 +111,20 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], sco
         if (run.processGroupId === run.processPid) groupAlive = false;
       }
     }
-    if (processAlive || groupAlive) return false;
+    if (processAlive || groupAlive) return "run_process_alive";
     if (scope && run.runtimeMode === "native" && run.startedAt && !run.processPid && !run.processGroupId &&
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
-        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
+        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return "native_stop_unproven";
     if (run.status !== "cancelled" || !run.startedAt) continue;
     if (run.runtimeMode === "native" && !run.processPid && !run.processGroupId &&
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
-        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
+        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return "native_stop_unproven";
     if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId &&
         (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged" &&
         !(run.executionStage === "settled" && !await runUsedConversationAdapter(db, run)) &&
         !(!runLeases.length && !coordinators.some(row => row.runId === run.id)
           && await isHistoricalProjectPmRejection(db, run)) &&
-        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
+        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return "legacy_stop_unproven";
   }
   // Release an expired owner only after its cancelled execution has stop proof.
   for (const coordinator of abandoned) {
@@ -128,7 +135,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], sco
         eq(nativeRunFinalizations.controllerGeneration, coordinator.controllerGeneration),
         eq(nativeRunFinalizations.phase, coordinator.phase), isNull(nativeRunFinalizations.resultId)))
       .returning({ runId: nativeRunFinalizations.runId });
-    if (!cleared) return false;
+    if (!cleared) return "native_finalization_release_raced";
   }
-  return true;
+  return null;
 }
