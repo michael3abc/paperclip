@@ -30,7 +30,7 @@ import { cn, relativeTime } from "@/lib/utils";
 
 const LINKED_TASK_LIMIT = 12;
 const SETTLED_TASK_STATUSES = new Set(["done", "cancelled"]);
-type LinkedTask = Pick<Issue, "id" | "identifier" | "title" | "status"> & Partial<Pick<Issue, "displayStatus" | "blockerAttention">>;
+type LinkedTask = Pick<Issue, "id" | "identifier" | "title" | "status"> & Partial<Pick<Issue, "blockerAttention">>;
 type OpenState = "next" | "waiting" | "queued";
 
 function SectionTitle({ children, count, className }: { children: ReactNode; count?: number; className?: string }) {
@@ -86,11 +86,13 @@ function TaskChip({ reference, task }: { reference: string; task: LinkedTask | u
 
 /**
  * The same status glyph the task lists use. An item whose linked task is still active shows that task's status; any
- * other open item is a plain to-do (a finished task does not make the item itself done).
+ * other open item is a plain to-do (a finished task does not make the item itself done). A task in progress always
+ * shows the in-progress ring here, also while its worker waits for a scheduled re-check (Owner 2026-11-19): the
+ * Tasks list shows a clock for that, which read as a stale marker in this list.
  */
 function OpenGlyph({ task }: { task: LinkedTask | undefined }) {
   return task && !SETTLED_TASK_STATUSES.has(task.status)
-    ? <StatusIcon status={task.status} displayStatus={task.displayStatus} blockerAttention={task.blockerAttention} className="mt-0.5 shrink-0" />
+    ? <StatusIcon status={task.status} blockerAttention={task.blockerAttention} className="mt-0.5 shrink-0" />
     : <StatusIcon status="todo" className="mt-0.5 shrink-0" />;
 }
 

@@ -154,6 +154,15 @@ describe("TaskTodoPanel", () => {
     expect(container.querySelector('[data-testid="todo-open-8"] svg[role="img"]')?.getAttribute("aria-label")).toBe("Todo");
   });
 
+  it("shows a task in progress with the in-progress ring, also while its worker waits for a re-check", async () => {
+    mocks.get.mockResolvedValue({ id: "task-389", identifier: "HOM-389", title: "RL and aux", status: "in_progress", displayStatus: "monitoring" });
+    mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", updatedAt: ago(1),
+      body: todoBody([{ id: 7, text: "HOM-389：DPO 結果出來後判定", status: "open", task: "HOM-389" }]) });
+    await render();
+    expect(container.querySelector('[data-testid="todo-open-7"]')?.getAttribute("data-state")).toBe("waiting");
+    expect(container.querySelector('[data-testid="todo-open-7"] svg[role="img"]')?.getAttribute("aria-label")).toBe("In Progress");
+  });
+
   it("folds a long list and has plain empty states", async () => {
     const many = Array.from({ length: 10 }, (_, index) => ({ id: index + 1, text: `step ${index + 1}`, status: "open" }));
     mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", body: todoBody(many), updatedAt: ago(1) });
