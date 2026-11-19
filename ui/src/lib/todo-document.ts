@@ -119,6 +119,19 @@ export function todoDisplayText(value: string): string {
     .trim();
 }
 
+/**
+ * The task an item is about, or null. The stored `task` is taken from the first identifier in the text, so an item
+ * that only mentions a task in passing ("rerun only if HOM-388 passes") carries it too. That is not the item's own
+ * task: the row must not borrow its status. The item owns the task when its text starts with the identifier, or
+ * when the text does not mention it at all (it was given explicitly).
+ */
+export function todoOwnTask(item: Pick<TodoItem, "text" | "task">): string | null {
+  if (!item.task) return null;
+  const display = todoDisplayText(item.text);
+  if (!display.includes(item.task)) return item.task;
+  return display.startsWith(item.task) ? item.task : null;
+}
+
 // A bare URL runs to the next ASCII space in GFM, so "http://host:8931/（235 筆）" would take the full-width bracket
 // and what follows into the link. Mark where the address really ends before the markdown renderer sees it.
 const BARE_URL = /(^|[^\w(<\[`"'=])(https?:\/\/[\x21-\x7e]+)/g;

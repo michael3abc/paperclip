@@ -15,6 +15,7 @@ import {
   todoCancelComment,
   todoDisplayText,
   todoMarkdownText,
+  todoOwnTask,
   todoView,
   TODO_OPEN_VISIBLE,
   type TodoItem,
@@ -121,8 +122,12 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
   const [confirming, setConfirming] = useState<number | null>(null);
   const [requested, setRequested] = useState<ReadonlySet<number>>(() => new Set());
 
-  // An item that names this conversation itself ("attach it to HOM-265") is not waiting on another task.
-  const linkedTask = (item: TodoItem) => (item.task && item.task !== issue.identifier ? item.task : null);
+  // The task a row is about. Not a task the text only mentions in passing, and not this conversation itself
+  // ("attach it to HOM-265"): neither is something the item is waiting on.
+  const linkedTask = (item: TodoItem) => {
+    const own = todoOwnTask(item);
+    return own && own !== issue.identifier ? own : null;
+  };
   // The text usually names the task, and that mention is already a link; the chip is for a task it does not name.
   const chipFor = (item: TodoItem) => {
     const reference = linkedTask(item);
@@ -130,7 +135,7 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
   };
   const references = useMemo(() => {
     const all = [...(view?.open ?? []), ...(view?.owner ?? [])]
-      .map((item) => (item.task && item.task !== issue.identifier ? item.task : null))
+      .map((item) => { const own = todoOwnTask(item); return own && own !== issue.identifier ? own : null; })
       .filter((task): task is string => Boolean(task));
     return [...new Set(all)].slice(0, LINKED_TASK_LIMIT);
   }, [view, issue.identifier]);

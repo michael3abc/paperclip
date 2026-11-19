@@ -4,6 +4,7 @@ import {
   todoCancelComment,
   todoDisplayText,
   todoMarkdownText,
+  todoOwnTask,
   todoView,
   TODO_RECENT_LIMIT,
   TODO_RECENT_WINDOW_MS,
@@ -74,6 +75,16 @@ describe("todo document", () => {
 
   it("renders item text as plain words", () => {
     expect(todoDisplayText("[HOM-389](/HOM/issues/HOM-389) aux 出來後跑 `tolerant_em.py`，**重要**")).toBe("HOM-389 aux 出來後跑 tolerant_em.py，重要");
+  });
+
+  it("links a row to a task only when the item is about that task, not when it mentions one in passing", () => {
+    expect(todoOwnTask({ text: "[HOM-388](/HOM/issues/HOM-388) DPO 結果出來後判定", task: "HOM-388" })).toBe("HOM-388");
+    expect(todoOwnTask({ text: "SHO-93：Rule 2 VLM 審核", task: "SHO-93" })).toBe("SHO-93");
+    // Given explicitly (the text does not name it).
+    expect(todoOwnTask({ text: "等 GKE 配額後重跑 canary", task: "SHO-95" })).toBe("SHO-95");
+    // Mentioned in passing: the row does not borrow that task's status.
+    expect(todoOwnTask({ text: "SAM-on/off：只有 HOM-388 DPO 過關時才重跑（併入 HOM-407）", task: "HOM-388" })).toBeNull();
+    expect(todoOwnTask({ text: "沒有關聯", task: null })).toBeNull();
   });
 
   it("ends a bare address where it really ends, so CJK text after it is not taken into the link", () => {

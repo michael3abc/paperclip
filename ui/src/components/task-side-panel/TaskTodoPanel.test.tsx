@@ -145,6 +145,15 @@ describe("TaskTodoPanel", () => {
     expect(container.querySelector('[data-testid="todo-open-14"] a')).toBeNull();
   });
 
+  it("does not borrow the status of a task an item only mentions in passing", async () => {
+    mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", updatedAt: ago(1),
+      body: todoBody([{ id: 8, text: "SAM-on/off：只有 HOM-389 過關時才重跑", status: "open", task: "HOM-389" }, { id: 9, text: "下一步", status: "open" }]) });
+    await render();
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="todo-open-8"]')?.getAttribute("data-state")).toBe("next");
+    expect(container.querySelector('[data-testid="todo-open-8"] svg[role="img"]')?.getAttribute("aria-label")).toBe("Todo");
+  });
+
   it("folds a long list and has plain empty states", async () => {
     const many = Array.from({ length: 10 }, (_, index) => ({ id: index + 1, text: `step ${index + 1}`, status: "open" }));
     mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", body: todoBody(many), updatedAt: ago(1) });
