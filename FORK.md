@@ -32,6 +32,33 @@ cache keys include company and source, without local fallback. See doc/DEVELOPIN
 Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (merged 2026-11-18; deployed 2026-11-19 as 279a18c3a-r1). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
+## 2026-11-20 upstream merge (HOM-421; not deployed)
+
+Upstream tip `806440d12cf3cc5b6e28f546a5e0f4fb625df48c`; 16 upstream commits
+since `1355f935`. Preserve upstream admission hooks with fork liveness-first,
+conversation ownership, workspace/main validation and durable handoffs. Upstream
+`0499_numerous_whizzer.sql` stays byte-identical; twelve fork SQL files move
+0499–0510 to 0500–0511 with unchanged SHA-256 and journal timestamps.
+The merged journal has 510 entries. Decisions and verification:
+[sync-decisions](/HOM/issues/HOM-421#document-sync-decisions).
+Friday integration only; no deployment, release ID or restart. Production clone
+upgrade and release-tool reconciliation remain part of the Sunday deployment.
+
+| Published fork file | Merged file |
+| --- | --- |
+| `0499_productive_changeling.sql` | `0500_productive_changeling.sql` |
+| `0500_ambitious_the_order.sql` | `0501_ambitious_the_order.sql` |
+| `0501_sturdy_maestro.sql` | `0502_sturdy_maestro.sql` |
+| `0502_giant_thunderbird.sql` | `0503_giant_thunderbird.sql` |
+| `0503_woozy_blizzard.sql` | `0504_woozy_blizzard.sql` |
+| `0504_sparkling_puma.sql` | `0505_sparkling_puma.sql` |
+| `0505_curved_luckman.sql` | `0506_curved_luckman.sql` |
+| `0506_cloudy_dark_phoenix.sql` | `0507_cloudy_dark_phoenix.sql` |
+| `0507_fine_leper_queen.sql` | `0508_fine_leper_queen.sql` |
+| `0508_robust_ironclad.sql` | `0509_robust_ironclad.sql` |
+| `0509_loose_masque.sql` | `0510_loose_masque.sql` |
+| `0510_square_doorman.sql` | `0511_square_doorman.sql` |
+
 ## 2026-11-19 upstream merge (HOM-415; not deployed)
 
 Upstream tip `1355f93546b44017bdf71212c437ae7a57f8b5e7`; 62 upstream commits

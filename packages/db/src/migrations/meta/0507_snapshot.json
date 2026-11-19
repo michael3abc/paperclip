@@ -6,9 +6,9 @@
   },
   "dialect": "postgresql",
   "enums": {},
-  "id": "b5de0ae1-8d13-4192-baab-6211f6fbfedf",
+  "id": "9b329d4f-32fa-462e-a55b-90bb704e51ab",
   "policies": {},
-  "prevId": "9b329d4f-32fa-462e-a55b-90bb704e51ab",
+  "prevId": "9375a894-a109-4982-a2d5-8062c25fb8dc",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -21552,13 +21552,6 @@
         },
         "project_order": {
           "name": "project_order",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "excluded_pm_status_agent_ids": {
-          "name": "excluded_pm_status_agent_ids",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,

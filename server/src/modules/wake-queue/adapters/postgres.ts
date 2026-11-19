@@ -4,6 +4,9 @@ import { notifyDeferredExecutionWork } from "../../../services/deferred-executio
 import { notifyRunDispatch, notifyQueuedRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { accountingForScheduledRetry, executionFailureRetryCount } from "../../../services/execution-recovery-attempt.js";
 import { runFailureBackoffMs } from "../../../services/recovery/failure-classification.js";
+import { writeDeferredExecutionWait } from "../../../services/deferred-execution-wait.js";
+import { recordExecutionWait } from "../../../services/execution-wait.js";
+import type { ActivityPublication } from "../../../services/activity-log.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -16,8 +19,11 @@ import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
-import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
-import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { currentConversationCommentCondition, isConversation, isConversationReset } from "../../../services/agent-conversations.js";
+import { getExecutionBlocker, getExecutionOwnershipBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
+import { preserveTaskRemoteWorkspaceWriter } from "../../../services/native-runtime/native-failed-workspace-recovery.js";
+import type { WakeRecoveryAdmissionStore } from "../application/recovery-admission.js";
+import { createWakeRecoveryDeferral } from "../application/recovery-deferral.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
 import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
@@ -35,6 +41,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
@@ -56,7 +63,7 @@ import { classifyContinuationFailure } from "../../../services/recovery/service.
 import { executionRetryAccounting } from "../../../services/execution-recovery-attempt.js";
 import { issueService } from "../../../services/issues.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
-import { undeliveredLegacyUserCommentIds } from "../../../services/explicit-native-continuation.js";
+import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "../../../services/explicit-native-continuation.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
@@ -1213,6 +1220,19 @@ export function createWakeAdmissionWriter(rawTx: IssueAdmissionDbTransaction, ad
   };
 }
 
+export function createIssueWakePreflightReader(db: Db) {
+  return async (companyId: string, issueId: string) => {
+    const [issue] = await db.select({
+      conversationAgentId: issues.conversationAgentId,
+      conversationUserId: issues.conversationUserId,
+      conversationState: issues.conversationState,
+      status: issues.status,
+      originKind: issues.originKind,
+    }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+    return issue ?? null;
+  };
+}
+
 const issueAdmissionFields = {
   id: issues.id,
   companyId: issues.companyId,
@@ -1235,10 +1255,17 @@ const issueAdmissionFields = {
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
   executionAgentNameKey: issues.executionAgentNameKey,
+  responsibleUserId: issues.responsibleUserId,
+  parentId: issues.parentId,
+  originKind: issues.originKind,
+  originId: issues.originId,
+  originRunId: issues.originRunId,
   createdAt: issues.createdAt,
 };
 
 export type IssueAdmissionRow = Pick<IssueRow, keyof typeof issueAdmissionFields>;
+export type IssueWakeContinuationInput = Omit<Parameters<typeof admitExplicitNativeContinuation>[0], "db" | "companyId" | "issueId" | "dryRun" | "onBlocked">;
+export type IssueWakeContinuationResult = NonNullable<Awaited<ReturnType<typeof admitExplicitNativeContinuation>>>;
 
 export function createPostgresIssueWakeAdmission(db: Db) {
   return async function withIssueAdmission(
@@ -1246,6 +1273,8 @@ export function createPostgresIssueWakeAdmission(db: Db) {
     evaluate: (tx: IssueAdmissionDbTransaction, stores: {
       lockedIssue: IssueAdmissionRow | null;
       lockIssue: () => Promise<IssueAdmissionRow | null>;
+      recovery: WakeRecoveryAdmissionStore<IssueWakeContinuationInput, IssueWakeContinuationResult>;
+      deferBlockedWake: ReturnType<typeof createWakeRecoveryDeferral<ActivityPublication>>;
       reader: WakeAdmissionReader;
       writer: WakeAdmissionWriter;
       fresh: FreshIssueRunStore<HeartbeatRunRow>;
@@ -1254,15 +1283,70 @@ export function createPostgresIssueWakeAdmission(db: Db) {
     try {
       return await db.transaction(withDurableChatAdmission(durableChatRequest, async (tx) => {
         // Mentions may target another agent, but every admission must share the issue lock.
+        let lockedIssue: IssueAdmissionRow | null = null;
         const lockIssue = async () => {
           const [issue] = await tx.select(issueAdmissionFields).from(issues)
             .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("update");
-          return issue ?? null;
+          lockedIssue = issue ?? null;
+          return lockedIssue;
         };
-        const lockedIssue = await lockIssue();
+        await lockIssue();
+        const deferBlockedWake = createWakeRecoveryDeferral<ActivityPublication>(issueId, Boolean(durableChatRequest), {
+          updateWait({ requestId, agentId, condition, publications }) {
+            return writeDeferredExecutionWait(tx as unknown as Db, {
+              companyId, issueId, agentId, requestId,
+            }, condition, { replace: true, publications });
+          },
+          async insertDeferred(request) {
+            await notifyDeferredExecutionWork(tx, { companyId });
+            await tx.insert(agentWakeupRequests).values({ ...request, companyId, status: DEFERRED_WAKE_STATUS });
+          },
+          async recordWait({ request, condition, nextAction, coalesce }) {
+            await recordExecutionWait(tx as unknown as Db, {
+              issueId, condition, coalesce,
+              request: { ...request, companyId, reason: "execution_reconciliation_required", error: nextAction },
+            });
+          },
+        });
         return evaluate(tx, {
           lockedIssue,
           lockIssue,
+          recovery: {
+            async readBlocker({ commentId, requestedByActorType, requestedByActorId }) {
+              const issue = lockedIssue;
+              const userComment = requestedByActorType === "user" ? commentId : null;
+              const [resetComment] = isConversation(issue) && userComment && requestedByActorId
+                ? await tx.select({ body: issueComments.body }).from(issueComments).where(and(
+                    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+                    eq(issueComments.id, userComment), eq(issueComments.authorUserId, requestedByActorId),
+                    eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+                  )).limit(1)
+                : [];
+              const verifiedReset = Boolean(resetComment && isConversationReset(resetComment.body));
+              const preserveWorkspace = userComment && issue?.executionWorkspaceId;
+              if (preserveWorkspace) await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, companyId, issueId);
+              if (!preserveWorkspace && issue?.conversationAgentId === null) {
+                const [recovery] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+                  .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId))).limit(1);
+                if (!recovery) return {
+                  blocker: await getExecutionOwnershipBlocker(tx as unknown as Db, companyId, issueId),
+                  verifiedReset,
+                };
+              }
+              const blocker = await getExecutionBlocker(tx as unknown as Db, companyId, issueId, {
+                conversationResetCommentId: verifiedReset ? userComment : null,
+                lockedIssue: preserveWorkspace ? undefined : issue ?? undefined,
+              });
+              return { blocker, verifiedReset };
+            },
+            admitExplicit(input, dryRun, onBlocked) {
+              return admitExplicitNativeContinuation({ ...input, db: tx as unknown as Db, companyId, issueId, dryRun, onBlocked });
+            },
+          },
+          deferBlockedWake: async input => {
+            if (!lockedIssue) throw new Error("wake-queue: recovery deferral requires a locked issue");
+            return deferBlockedWake(input);
+          },
           reader: createWakeAdmissionReader(tx, companyId),
           writer: createWakeAdmissionWriter(tx, companyId),
           fresh: createFreshIssueRunStore(tx, companyId),

@@ -356,6 +356,9 @@ issue row lock and durable receipt writes in one transaction, run fork workspace
 policy in its callback, and dispatch only after commit. Do not restore automatic
 blocked recovery or transaction-scope compatibility shims. See
 docs/agents/execution-semantics.md.
+Lightweight preflight preserves conversation-requester ownership; prepareRecovery
+checks saved Retry and queued-comment ownership before busy/fresh admission. Keep
+one-shot execution review/approval/changes handoffs durable in recovery deferral.
 
 ## Native session bridge
 

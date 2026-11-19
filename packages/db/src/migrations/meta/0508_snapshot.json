@@ -6,9 +6,9 @@
   },
   "dialect": "postgresql",
   "enums": {},
-  "id": "81e8d5e1-2895-4e0e-a027-a5e027a9d173",
+  "id": "b5de0ae1-8d13-4192-baab-6211f6fbfedf",
   "policies": {},
-  "prevId": "b5de0ae1-8d13-4192-baab-6211f6fbfedf",
+  "prevId": "9b329d4f-32fa-462e-a55b-90bb704e51ab",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -3856,7 +3856,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -4329,7 +4329,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         }
       },
       "isRLSEnabled": false

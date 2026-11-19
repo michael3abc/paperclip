@@ -690,6 +690,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             if (issueId) await recordChatInputDispatch(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id, issueId }, context);
             return executePaperclipNativeSession({
               casesEnabled: context.paperclipCasesEnabled === true,
+              responsibilitiesEnabled: context.paperclipResponsibilitiesEnabled === true,
               db,
               execution: nativeExecution,
               observability,

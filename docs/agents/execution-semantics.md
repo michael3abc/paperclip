@@ -97,9 +97,13 @@ cancels only the selected run.
 
 Issue-bound wakes use `wakeQueue.admitIssueWake` to lock the company-scoped issue
 and persist admission plus saved-input receipts in one transaction. Heartbeat
-keeps workspace/main request validation in that callback; fresh runs use
-`admitFreshIssueRun`, including deferred durable Chat promotion and reassignment
-input ownership. Notifications and dispatch follow commit; authorization
+keeps workspace/main request validation in that callback; `prepareRecovery`
+provides busy/fresh admission after checking continuation ownership, including
+saved Retry and queued-comment requests. The lightweight preflight preserves
+conversation-requester ownership; a saved owner message does not authorize another
+requester. Recovery deferral retains one-shot review, approval and changes handoffs
+as durable receipts. Fresh admission preserves deferred durable Chat promotion
+and reassignment input ownership. Notifications and dispatch follow commit; authorization
 contention rolls back all writes and buffered effects. Native terminal failures
 retain the fork failure scheduler and never restore automatic blocked recovery.
 

@@ -6,9 +6,9 @@
   },
   "dialect": "postgresql",
   "enums": {},
-  "id": "aff41516-af56-4b68-b47e-a355888b3424",
+  "id": "81e8d5e1-2895-4e0e-a027-a5e027a9d173",
   "policies": {},
-  "prevId": "81e8d5e1-2895-4e0e-a027-a5e027a9d173",
+  "prevId": "b5de0ae1-8d13-4192-baab-6211f6fbfedf",
   "roles": {},
   "schemas": {},
   "sequences": {
@@ -15514,7 +15514,7 @@
           "name": "conversation_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "issue_id": {
           "name": "issue_id",
@@ -15876,11 +15876,7 @@
         },
         "chat_voice_sessions_binding_mode_check": {
           "name": "chat_voice_sessions_binding_mode_check",
-          "value": "\"chat_voice_sessions\".\"binding_mode\" is null or \"chat_voice_sessions\".\"binding_mode\" in ('voice_task', 'agent_chat')"
-        },
-        "chat_voice_sessions_conversation_check": {
-          "name": "chat_voice_sessions_conversation_check",
-          "value": "\"chat_voice_sessions\".\"conversation_id\" is not null or \"chat_voice_sessions\".\"binding_mode\" = 'agent_chat'"
+          "value": "\"chat_voice_sessions\".\"binding_mode\" is null or \"chat_voice_sessions\".\"binding_mode\" = 'voice_task'"
         }
       },
       "isRLSEnabled": false
