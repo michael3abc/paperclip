@@ -130,7 +130,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   const desktopAgentChat = !isMobile && isAgentChatRoute;
-  const measureChatSpace = desktopAgentChat && panelVisible && panelContent != null && panelShowsArtifact;
+  const measureChatSpace = desktopAgentChat && !coordinatorWorkspaceEnabled && panelVisible && panelContent != null && panelShowsArtifact;
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const [chatListTooWide, setChatListTooWide] = useState(false);
   const chatListCollapsed = measureChatSpace && chatListTooWide;
@@ -234,7 +234,9 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       />
     )
   ) : null;
-  const secondarySidebar = isAgentChatRoute ? <AgentConversationsSidebar /> : shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  // Fork (HOM-411): Coordinator already lists agents in its primary sidebar, so an
+  // open agent chat sits directly beside it without the duplicate contacts column.
+  const secondarySidebar = isAgentChatRoute ? (coordinatorWorkspaceEnabled ? null : <AgentConversationsSidebar />) : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : sharedSecondarySidebar;
   const hasSecondarySidebar = secondarySidebar != null;
@@ -607,7 +609,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               ref={desktopAgentChat ? chatAreaRef : undefined}
               className={cn(desktopAgentChat ? "flex min-w-0 flex-1" : !isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}
             >
-              {desktopAgentChat ? (
+              {desktopAgentChat && hasSecondarySidebar ? (
                 <SecondarySidebar className={cn("w-(--sz-280px) shrink-0 bg-background", chatListCollapsed && "hidden")}>
                   {secondarySidebar}
                 </SecondarySidebar>

@@ -98,6 +98,7 @@ vi.mock("./AppsSidebar", () => ({
   AppsMobileNav: () => <nav aria-label="Mobile connectors">Browse Review</nav>,
 }));
 
+
 vi.mock("./AgentContextualSidebar", () => ({
   AgentContextualSidebar: ({ agentRef }: { agentRef: string }) => (
     <div>Agent sidebar {agentRef}</div>
@@ -438,8 +439,8 @@ describe("Layout", () => {
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
-  it("collapses the mounted chat list only when an artifact crowds the conversation", async () => {
-    classicWorkspace.enabled = false;
+  it("collapses the Classic chat list only when an artifact crowds the conversation", async () => {
+    classicWorkspace.enabled = true;
     currentPathname = "/PAP/chats/planner";
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -497,6 +498,24 @@ describe("Layout", () => {
       vi.unstubAllGlobals();
       style.remove();
     }
+  });
+
+  it("opens a Coordinator agent chat beside the primary sidebar without the contacts column", async () => {
+    currentPathname = "/PAP/chats/michael";
+    classicWorkspace.enabled = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => renderLayoutView(root, queryClient));
+      await flushReact();
+      expect(container.textContent).toContain("Outlet content");
+      expect(container.querySelector('[aria-label="Chat contacts"]')).toBeNull();
+      expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
+      classicWorkspace.enabled = true;
+      await act(async () => renderLayoutView(root, queryClient));
+      await flushReact();
+      expect(container.querySelector('[aria-label="Chat contacts"]')).not.toBeNull();
+    } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
   it("does not render the deployment explainer in the shared layout", async () => {
