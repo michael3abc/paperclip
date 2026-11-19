@@ -96,6 +96,10 @@ vi.mock("./AppsSidebar", () => ({
   AppsMobileNav: () => <nav aria-label="Mobile connectors">Browse Review</nav>,
 }));
 
+vi.mock("./AgentConversationsSidebar", () => ({
+  AgentConversationsSidebar: () => <div>Chat contacts</div>,
+}));
+
 vi.mock("./AgentContextualSidebar", () => ({
   AgentContextualSidebar: ({ agentRef }: { agentRef: string }) => (
     <div>Agent sidebar {agentRef}</div>
@@ -430,6 +434,24 @@ describe("Layout", () => {
       classicWorkspace.enabled = true;
       await act(async () => renderLayoutView(root, queryClient));
       expect(container.querySelector(".coordinator-workspace")).toBeNull();
+    } finally { await act(async () => root.unmount()); queryClient.clear(); }
+  });
+
+  it("opens a Coordinator agent chat beside the primary sidebar without the contacts column", async () => {
+    currentPathname = "/PAP/chats/michael";
+    classicWorkspace.enabled = false;
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => renderLayoutView(root, queryClient));
+      await flushReact();
+      expect(container.textContent).toContain("Outlet content");
+      expect(container.textContent).not.toContain("Chat contacts");
+      expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
+      classicWorkspace.enabled = true;
+      await act(async () => renderLayoutView(root, queryClient));
+      await flushReact();
+      expect(container.textContent).toContain("Chat contacts");
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 

@@ -219,7 +219,9 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       />
     )
   ) : null;
-  const secondarySidebar = isAgentChatRoute ? <AgentConversationsSidebar /> : shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  // Fork (HOM-411): Coordinator already lists agents in its primary sidebar, so an
+  // open agent chat sits directly beside it without the duplicate contacts column.
+  const secondarySidebar = isAgentChatRoute ? (coordinatorWorkspaceEnabled ? null : <AgentConversationsSidebar />) : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
@@ -586,7 +588,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             isMobile ? "block" : "flex flex-1 min-h-0",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
-            {!isMobile && (keepsPrimarySidebar || isAgentChatRoute) ? (
+            {!isMobile && hasSecondarySidebar && (keepsPrimarySidebar || isAgentChatRoute) ? (
               <SecondarySidebar className={cn(isAgentChatRoute ? "w-70" : "w-60", "shrink-0 bg-background")}>
                 {secondarySidebar}
               </SecondarySidebar>
