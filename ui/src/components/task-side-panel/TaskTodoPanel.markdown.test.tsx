@@ -40,7 +40,7 @@ describe("TaskTodoPanel item text", () => {
     // name SHO-93 themselves, so that mention is the only link to it (no separate chip).
     expect(hrefs.filter((href) => href === "/issues/SHO-93")).toHaveLength(2);
     expect(html).not.toContain('target="_blank" rel="noreferrer"');
-    expect(hrefs).toContain("/issues/SHO-91");
+    expect(hrefs).toContain("/SHO/issues/SHO-91");
     expect(hrefs.some((href) => href.includes("%EF%BC%88"))).toBe(false);
     expect(hrefs).toContain("/issues/SHO-92");
     expect(html).toContain("<code");

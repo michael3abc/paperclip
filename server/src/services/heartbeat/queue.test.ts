@@ -677,16 +677,14 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
-  it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
+  it("admits an automatic continuation while terminal predecessor cleanup remains recorded", async () => {
     const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
-    expect(await queue.claimQueuedRun(successor)).toBeNull();
-    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id)))[0].status).toBe("queued");
+    expect(await queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.source.id)))[0])
+      .toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0]).toEqual(lease);
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(successor.id);
     expect(deps.executeRun).not.toHaveBeenCalled();
-
-    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
-      .where(eq(environmentLeases.id, lease.id));
-    expect(await queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
     expect(await queue.claimQueuedRun(successor)).toBeNull();
   });
 
@@ -710,15 +708,15 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, previousAgent, previous, next, deps, queue: createHeartbeatQueue(db, deps) };
   }
 
-  it("keeps the new owner's run queued while the reassigned owner's stopped run still settles", async () => {
+  it("admits the new owner while the reassigned owner's terminal run still settles", async () => {
     const f = await reassignedPredecessorFixture();
-    expect(await f.queue.claimQueuedRun(f.next)).toBeNull();
-    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.next.id)))[0])
-      .toMatchObject({ status: "queued", startedAt: null });
-    expect(f.deps.executeRun).not.toHaveBeenCalled();
-
-    f.deps.activeRunExecutions.delete(f.previous.id);
     expect(await f.queue.claimQueuedRun(f.next)).toMatchObject({ id: f.next.id, status: "running" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.next.id)))[0])
+      .toMatchObject({ status: "running", startedAt: expect.any(Date) });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.previous.id)))[0]).toEqual(f.previous);
+    expect(f.deps.activeRunExecutions.has(f.previous.id)).toBe(true);
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+    expect(await f.queue.claimQueuedRun(f.next)).toBeNull();
   });
 
   it("does not hold a run behind another agent's live run on the same task", async () => {
@@ -740,16 +738,16 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }
   });
 
-  it("keeps a retry queued after failed cleanup and until its local executor releases", async () => {
+  it("admits a retry despite failed terminal cleanup and a retained local executor", async () => {
     const f = await pendingPredecessorFixture();
     await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "failed" })
       .where(eq(environmentLeases.id, f.lease.id));
-    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
-    await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, f.lease.id));
     f.deps.liveRunExecutions.has.mockImplementation(id => id === f.source.id);
-    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
-    f.deps.liveRunExecutions.has.mockReturnValue(false);
     expect(await f.queue.claimQueuedRun(f.successor)).toMatchObject({ id: f.successor.id, status: "running" });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])
+      .toMatchObject({ status: "released", cleanupStatus: "failed" });
+    expect(f.deps.liveRunExecutions.has(f.source.id)).toBe(true);
+    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
   });
 
   it.each(["missing", "foreign company", "other task", "other agent", "native task overrides context"] as const)(
@@ -787,15 +785,16 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     },
   );
 
-  it("retains the current execution owner's hold when retry provenance is unrelated", async () => {
+  it("releases a terminal execution owner regardless of unrelated retry provenance", async () => {
     const f = await pendingPredecessorFixture();
     const [unrelated] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
       status: "succeeded", finishedAt: new Date() }).returning();
     const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: unrelated.id })
       .where(eq(heartbeatRuns.id, f.successor.id)).returning();
     await db.update(issues).set({ executionRunId: f.source.id }).where(eq(issues.id, f.issue.id));
-    expect(await f.queue.claimQueuedRun(successor)).toBeNull();
-    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.source.id);
+    expect(await f.queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running", retryOfRunId: unrelated.id });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(successor.id);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.source.id)))[0]).toEqual(f.source);
   });
 
   it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author", "retry-envelope", "disposition-envelope", "cancelled-envelope"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
@@ -1234,7 +1233,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(current.executionRunId).toBe(newOwner.id);
   });
 
-  it.each(["running", "failed"])("resumes the %s native owner before promoting its queued waiter", async status => {
+  it.each(["running", "failed"])("admits a waiter according to its native owner's live or terminal status (%s)", async status => {
     const { run, issue, agent, company } = await fixture(status);
     await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue.id, runnerProfileJson: {
       nativeExecutionInput: { binding: { runId: run.id } },
@@ -1249,6 +1248,16 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     deps.getAgent.mockResolvedValue(agent);
     deps.instanceSettings.getExperimental.mockResolvedValue({ enableNativeRunner: true } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
     const queue = createHeartbeatQueue(db, deps);
+    if (status === "failed") {
+      expect(await queue.claimQueuedRun(waiter)).toMatchObject({ id: waiter.id, status: "running" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0])
+        .toMatchObject({ status: "failed", runnerProfileJson: { sessionCheckpoint: { providerSessionId: "original-session" } } });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
+        .toMatchObject({ phase: "retryable_failure", attempt: 1 });
+      expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].executionRunId).toBe(waiter.id);
+      expect(await queue.claimQueuedRun(waiter)).toBeNull();
+      return;
+    }
     expect(await queue.claimQueuedRun(waiter)).toBeNull();
     const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "owner", runIds: [run.id] });
     expect(claims.map(claim => claim.runId)).toEqual([run.id]);
