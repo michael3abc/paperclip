@@ -1,13 +1,15 @@
 import type { IssueAttachment, IssueDocumentSummary, IssueWorkProduct } from "@paperclipai/shared";
 import { getAttachmentArtifactWorkProductMetadata, isArtifactReviewDocumentKey, isSystemIssueDocumentKey } from "@paperclipai/shared";
+import { TODO_DOCUMENT_KEY } from "@/lib/todo-document";
 
 /**
- * Documents authored here; Plans and file reviews retain their own workflows.
- * A cached row without a string key cannot be authored, so it is never general.
+ * Documents authored here; Plans and file reviews retain their own workflows, and the agent's TODO (records, not
+ * prose) has its own tab. A cached row without a string key cannot be authored, so it is never general.
  */
 export function isGeneralTaskDocumentKey(key: string | null | undefined): boolean {
   if (typeof key !== "string") return false;
-  return key.trim().toLowerCase() !== "plan" && !isArtifactReviewDocumentKey(key) && !isSystemIssueDocumentKey(key);
+  const normalized = key.trim().toLowerCase();
+  return normalized !== "plan" && normalized !== TODO_DOCUMENT_KEY && !isArtifactReviewDocumentKey(key) && !isSystemIssueDocumentKey(key);
 }
 
 /**

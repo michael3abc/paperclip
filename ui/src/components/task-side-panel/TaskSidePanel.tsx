@@ -30,6 +30,7 @@ import {
   FolderOpen,
   Lightbulb,
   ListChecks,
+  ListTodo,
   ListTree,
   Plus,
   SlidersHorizontal,
@@ -76,6 +77,7 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import type { IssueExternalObjectGroup } from "@/hooks/useIssueExternalObjects";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
+import { TODO_DOCUMENT_KEY } from "@/lib/todo-document";
 import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
@@ -90,6 +92,7 @@ import {
   taskPanelPropertiesTab,
   taskPanelSkillTab,
   taskPanelSubtasksTab,
+  taskPanelTodoTab,
   taskPanelWorkspaceFileTab,
   writeTaskSidePanelState,
   type TaskSidePanelTabPayload,
@@ -99,6 +102,7 @@ import { TaskDocumentPanel } from "./TaskDocumentPanel";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { TaskWorkspaceFilePanel } from "./TaskWorkspaceFilePanel";
 import { TaskSkillPanel } from "./TaskSkillPanel";
+import { TaskTodoPanel } from "./TaskTodoPanel";
 
 export interface TaskSidePanelProps {
   issue: Issue;
@@ -151,6 +155,7 @@ function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
     case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
     case "agent-tasks": return <ListChecks />;
+    case "todo": return <ListTodo />;
     case "attachment": return <FileText />;
     case "files-browser": return <FolderOpen />;
     case "workspace-file": return <FileCode2 />;
@@ -644,12 +649,16 @@ function TaskSidePanelForScope({
   }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab, browsersQuery.data, issue.id]);
 
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
+    const todoLauncherItem: SidePanelLauncherItem = { id: "todo", label: "TODO", description: "This agent's goal and checklist", icon: <ListTodo />, alreadyOpen: controller.tabs.some((tab) => tab.id === "todo") };
     const primary: SidePanelLauncherItem[] = conversationAgentId ? [
       { id: "agent-tasks", label: "Tasks", description: "Tasks this agent worked on", icon: <ListChecks />, alreadyOpen: controller.tabs.some((tab) => tab.id === "agent-tasks") },
+      todoLauncherItem,
       { id: "artifacts", label: "Artifacts", description: "Files this agent produced", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
       { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
     ] : [
       { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
+      // A task shows the TODO entry once its agent has written one; a chat always offers it.
+      ...(documents.some((document) => document.key === TODO_DOCUMENT_KEY) ? [todoLauncherItem] : []),
       ...(subtasksAvailable ? [{ id: "subtasks", label: taskLabel, description: tasksTab?.hasError ? "Could not load all tasks" : `${taskCount} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
       { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
@@ -669,7 +678,7 @@ function TaskSidePanelForScope({
         alreadyOpen: controller.tabs.some((tab) => tab.id === "document:plan"),
       }] : []),
       ...documents
-        .filter((document) => document.key !== "plan" && !isArtifactReviewDocumentKey(document.key))
+        .filter((document) => document.key !== "plan" && document.key !== TODO_DOCUMENT_KEY && !isArtifactReviewDocumentKey(document.key))
         .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
         .map((document) => ({
           id: `document:${document.key}`,
@@ -726,6 +735,7 @@ function TaskSidePanelForScope({
     }
     else if (item.id === "artifacts") controller.openTab(taskPanelArtifactsTab());
     else if (item.id === "agent-tasks") controller.openTab(taskPanelAgentTasksTab());
+    else if (item.id === "todo") controller.openTab(taskPanelTodoTab());
     else if (item.id === "files") {
       controller.openTab(taskPanelFilesTab());
       viewer.openBrowse();
@@ -834,6 +844,8 @@ function TaskSidePanelForScope({
         issueLinkState={issueLinkState}
       />
     );
+  } else if (activeTab.payload.kind === "todo") {
+    content = <TaskTodoPanel issue={issue} />;
   } else if (activeTab.payload.kind === "agent-tasks") {
     content = conversationAgentId ? (
       <div className="space-y-4">

@@ -9,6 +9,15 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Agent TODO tab (`michael/todo-panel`, Owner 2026-11-19 「放這邊加一個 TODO」, 「最多 3 項，而且只顯示 6 小時內完成的」,
+  「可以在待辦那邊加上一個 cancel，s.t. 讓 main 去取消這個 task」, 「介面好看一點，不要只用 .md 渲染」): the task side panel's
+  launcher offers a `TODO` tab (always in an agent chat, on a task once it has one). It reads the conversation's
+  `todo` issue document, which the CC Pocket adapter stores as JSONL records (`ui/src/lib/todo-document.ts` has the
+  format), and shows the goal with progress, Owner matters, open items with the live status of their linked tasks,
+  and finished items (at most 3 from the last 6 hours; older ones collapsed). Cancel posts a comment asking the agent
+  to cancel that item; the UI never cancels a task. The `todo` document is hidden from the generic document lists.
+  Frontend only (`ui/src`); no server, schema or dependency change.
+
 - Delegated decision delivery and unchanged-model saves (`michael/delegated-wake-delivery`, Owner 2026-11-19
   「好，一次發布」): the delegation sweep can wake an idle (waiting) main Chat; dropped deliveries retry with
   liveness-first backoff instead of stopping at `delegate_wake_not_admitted`, so pending legacy failures are

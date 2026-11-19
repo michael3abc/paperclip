@@ -115,6 +115,7 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
 }));
 
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
+vi.mock("./TaskTodoPanel", () => ({ TaskTodoPanel: ({ issue }: { issue: { id: string } }) => <div>TODO content {issue.id}</div> }));
 
 vi.mock("./TaskDocumentPanel", () => ({
   TaskDocumentPanel: ({ documentKey, issueId, revisionId, documentIssueId, currentIssueId, initialDocument }: { documentKey: string; issueId: string; revisionId?: string; documentIssueId?: string; currentIssueId?: string; initialDocument?: IssueDocument }) => <div data-document-owner={issueId} data-gallery-owner={documentIssueId} data-current-task={currentIssueId} data-revision-id={revisionId} data-initial-document={initialDocument?.id}>{`Document ${documentKey}`}</div>,
@@ -508,6 +509,30 @@ describe("TaskSidePanel", () => {
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("artifacts");
     expect(container.textContent).toContain("Agent artifacts agent-1");
     expect(container.textContent).not.toContain("Artifacts content");
+  });
+
+  it("offers the agent's TODO from the + launcher in an agent chat and keeps its document out of the document list", async () => {
+    fixture.documents = [
+      { id: "doc-todo", key: "todo", title: "TODO", latestRevisionNumber: 4, updatedAt: new Date("2026-11-19T08:00:00Z") },
+      { id: "doc-notes", key: "notes", title: "Notes", latestRevisionNumber: 1, updatedAt: new Date("2026-11-19T07:00:00Z") },
+    ] as never;
+    await render(panel({ issue: issue({ conversationAgentId: "agent-1" }), streamlinedTabs: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const options = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
+    const labels = options.map((item) => item.textContent ?? "");
+    // TODO sits right after Tasks; the todo document is not offered as a plain document.
+    expect(labels.findIndex((label) => label.startsWith("TODO"))).toBe(labels.findIndex((label) => label.startsWith("Tasks")) + 1);
+    expect(labels.filter((label) => label.includes("TODO"))).toHaveLength(1);
+    expect(labels.some((label) => label.includes("Notes"))).toBe(true);
+    await act(async () => options.find((item) => item.textContent?.startsWith("TODO"))?.click());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("todo");
+    expect(container.textContent).toContain("TODO content task-1");
+  });
+
+  it("offers the TODO on a task only once its agent has written one", async () => {
+    await render(panel({ streamlinedTabs: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    expect(Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).some((item) => item.textContent?.startsWith("TODO"))).toBe(false);
   });
 
   it.each([
