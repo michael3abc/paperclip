@@ -17755,10 +17755,6 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const pending = issue.conversationAgentId ? await findQueuedCommentWake(db, issue) : null;
-    if (pending?.wake && bridgeSteeringAttempt(pending.wake.payload)) {
-      await bridgeChatSteeringService(db).reconcile(issue.companyId, issue.id, pending.wake.id, pending.wake.payload);
-    }
     const actor = getActorInfo(req);
     let queue = await queuedCommentQueue.readBoardQueue({
       executor: db,
@@ -17921,8 +17917,8 @@ export function issueRoutes(
     }
     const preemption = await db.transaction(async (tx) => {
       const lockInput = { tx, issue, actor, queueId };
-      const locked = await lockQueuedCommentState(lockInput);
-      assertQueueMutationTarget({ queue: locked.queue, queueId, revision: req.body.revision });
+      const locked = await queuedCommentQueue.lockBoardQueue(lockInput);
+      requireQueuedCommentMutationTarget(locked.queue, queueId, req.body.revision);
       if (locked.state !== "queued" || !locked.queueRun || locked.wake.agentId !== agentId ||
           lockInput.issue.assigneeAgentId !== agentId ||
           !locked.queue.entries.some(entry => entry.comment.authorUserId === req.actor.userId)) {

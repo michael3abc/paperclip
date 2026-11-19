@@ -30,7 +30,7 @@ vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: fixtur
 vi.mock("@/api/agents", () => ({ agentsApi: { listPmWorkspaces: fixture.pmWorkspaces } }));
 vi.mock("@/api/sidebarPreferences", () => ({ sidebarPreferencesApi: { getProjectOrder: fixture.preferences } }));
 vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: fixture.pushToast }) }));
-vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.openWork } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { list: fixture.projectTasks, listCompact: fixture.openWork } }));
 vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: ({ pinnedTaskIds }: { pinnedTaskIds: string[] }) => ({ entries: fixture.recentTasks, pinnedTasks: fixture.taskSummaries.filter(task => pinnedTaskIds.includes(String(task.id))) }) }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 const taskPrefetch = vi.hoisted(() => vi.fn(() => Promise.resolve()));

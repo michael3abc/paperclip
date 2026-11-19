@@ -2084,17 +2084,17 @@ describe("IssueDetail", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    expect(breadcrumbs).toEqual([{ label: "Chat" }]);
+    expect(breadcrumbs).toEqual([expect.objectContaining({ label: agent.name })]);
     const updatedAgent = { ...agent, name: "Updated agent" };
     await act(async () => {
       renderIssueView(<TaskDetailSurface conversation={{ agent: updatedAgent, issue: canonical, ensureIssue: async () => canonical }} />);
     });
     await flushReact();
-    expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([{ label: "Chat" }]);
+    expect(mockSetBreadcrumbs.mock.calls.at(-1)![0]).toEqual([expect.objectContaining({ label: updatedAgent.name })]);
 
   });
 
-  it("uses task breadcrumbs for a conversation's unnumbered backing task", async () => {
+  it("keeps the agent breadcrumb for a conversation's unnumbered backing task", async () => {
     coordinatorPreference.enabled = true;
     const agent = createAgent();
     const task = createIssue({
@@ -2116,11 +2116,10 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
-      { label: "Tasks", href: "/issues" },
       expect.objectContaining({
-        label: task.title,
-        identifier: "12345678",
-        leading: expect.objectContaining({ props: expect.objectContaining({ status: "in_review" }) }),
+        label: agent.name,
+        controlKey: expect.stringContaining(`switch:${agent.id}:`),
+        actionsKey: `voice:${agent.companyId}:${agent.id}:${agent.name}`,
       }),
     ]);
   });

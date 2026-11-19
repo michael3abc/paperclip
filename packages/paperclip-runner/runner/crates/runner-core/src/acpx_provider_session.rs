@@ -1215,7 +1215,6 @@ impl AcpxProviderSession {
                     .take(2_000)
                     .collect()
             } else if is_reserved_terminal_operation(&result.operation_id) {
-
                 reserved_terminal_feedback(&result.result)
             } else {
                 semantic_failure_feedback(&result.result)

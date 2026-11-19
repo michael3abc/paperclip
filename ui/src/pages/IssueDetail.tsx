@@ -6174,6 +6174,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     ]);
   }, [
     isAgentChatRoute,
+    conversationAgent,
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,

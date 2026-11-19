@@ -998,14 +998,14 @@ describe("admitWakeBehindIssueExecution", () => {
       commentId: "new-comment", wakeCommentId: "new-comment", wakeCommentIds: ["new-comment"] };
     const staleContext = { issueId: "issue-1", retryOfRunId: "cancelled-disposition-run",
       executionContinuation: { trigger: { reason: "issue_disposition_repair" }, messages: [{ body: "old input" }] } };
-    const result = await createAdmitWakeBehindIssueExecution({ reader, writer, helpers })(SCOPE, admissionInput({
+    const result = await createAdmitWakeBehindIssueExecution({ reader, writer, helpers })(admissionInput({
       requestedByActorType: "user", requestedByActorId: "owner", wakeCommentId: "new-comment", contextSnapshot,
       payload: { issueId: "issue-1", commentId: "new-comment" },
       activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status, contextSnapshot: staleContext },
     }));
     expect(result).toEqual({ kind: "deferred" });
     expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
-    expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(SCOPE, expect.objectContaining({
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       requestedByActorType: "user", requestedByActorId: "owner",
       payload: expect.objectContaining({ commentId: "new-comment", _paperclipWakeContext: contextSnapshot }),
     }));

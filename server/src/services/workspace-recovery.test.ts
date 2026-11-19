@@ -3162,7 +3162,7 @@ describe("automatic retained workspace recovery", () => {
     const current = await run(admitted!.id);
     const [claimedWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, current.wakeupRequestId!));
     expect(current.contextSnapshot?.wakeCommentIds).toEqual(ids);
-    expect(queueDeps.wakeQueue.admitWakeBehindIssueExecution.mock.calls.every(([, input]) => input.durableReceipt === undefined)).toBe(true);
+    expect(queueDeps.wakeQueue.admitIssueWake.mock.calls.every(([target]) => target.durableChatRequest === undefined)).toBe(true);
     expect(queueDeps.executeRun).not.toHaveBeenCalled();
     return { ...t, queued: current, wake: claimedWake, followup, expectedIds: ids, latestAuthor: kind === "deferred-different" ? "third-user" : kind === "active" ? "second-user" : "operator" };
   }

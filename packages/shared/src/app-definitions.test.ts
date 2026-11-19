@@ -906,7 +906,9 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(90);
+    // The fork retains its Antigravity account entry alongside upstream providers.
+    expect(APP_STORE_DEFINITIONS).toHaveLength(91);
+    expect(APP_STORE_DEFINITIONS.filter((app) => app.slug === "antigravity")).toHaveLength(1);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );

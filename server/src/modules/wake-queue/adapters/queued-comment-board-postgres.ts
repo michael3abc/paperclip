@@ -176,10 +176,17 @@ export async function readBoardQueuedComments(input: {
   queueState?: IssueQueueState | null;
   steeringDisposition?: IssueQueuedCommentQueue["steeringDisposition"];
 }): Promise<IssueQueuedCommentQueue> {
-  const queueState =
+  let queueState =
     input.queueState === undefined
       ? await findQueuedCommentWake(input.executor, input.issue)
       : input.queueState;
+  if (input.queueState === undefined && input.issue.conversationAgentId && queueState &&
+      bridgeSteeringAttempt(queueState.wake.payload)) {
+    await bridgeChatSteeringService(input.executor as Db).reconcile(
+      input.issue.companyId, input.issue.id, queueState.wake.id, queueState.wake.payload,
+    );
+    queueState = await findQueuedCommentWake(input.executor, input.issue);
+  }
   const wake = queueState?.wake ?? null;
   // Read an interaction receipt once per snapshot.
   const response = wake && queuedInteractionId(wake.payload)
