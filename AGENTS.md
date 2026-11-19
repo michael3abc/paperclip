@@ -341,6 +341,12 @@ A change is done when all are true:
 Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
 and task APIs for legacy adapters. Never require a native-only tool in a legacy run.
 
+Issue wake admission belongs to wake-queue.admitIssueWake: retain the company-scoped
+issue row lock and durable receipt writes in one transaction, run fork workspace/main
+policy in its callback, and dispatch only after commit. Do not restore automatic
+blocked recovery or transaction-scope compatibility shims. See
+docs/agents/execution-semantics.md.
+
 ## Native session bridge
 
 Explicit task cancellation by an authorized reviewer, project lead or board actor

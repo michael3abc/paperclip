@@ -336,7 +336,8 @@ export function agentFileStore(db: Db) {
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
         if (input.ownWorkflow && currentHash !== input.baseHash) throw conflict("This file changed since it was read. Reload before saving.", { code: "AGENT_FILE_CONFLICT", path: relative, currentHash });
         if (currentHash === incomingHash) {
-          if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+          // Bytes already on disk are adopted, not written, by this caller.
+          if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, source: "adopted" });
           return { contentHash: currentHash, changed: false };
         }
         if (input.bytes && input.bytes.length <= MAX_INSTRUCTION_BYTES) {
@@ -356,7 +357,8 @@ export function agentFileStore(db: Db) {
         }
         if (input.bytes === null) await fs.unlink(await assertInstructionPathSafe(root, relative));
         else await materializeInstructionBytes(root, relative, input.bytes);
-        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, created: previous === null && input.bytes !== null, ...(input.changeReason ? { changeReason: input.changeReason } : {}) });
+        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, created: previous === null && input.bytes !== null, ...(input.changeReason ? { changeReason: input.changeReason } : {}), ...(input.bytes ? { byteLength: input.bytes.length } : {}) });
+
         return { contentHash: incomingHash, changed: true };
       }, input.bytes && input.bytes.length <= MAX_INSTRUCTION_BYTES ? [input.bytes.toString("utf8")] : []),
     apply: async (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) => {
@@ -436,9 +438,17 @@ export function agentFileStore(db: Db) {
           total += size;
         }
         assertDirectorySize(total, finalEntries.size);
+        const entryBefore = changed.includes(entryPath) ? await readInstructionBytes(root, entryPath) : null;
         await mergeDirectoryWithBaseline({ ...input, targetDir: root, conflictPolicy: "reject", rescueOnFailure: true,
           snapshots: { source: incoming, current } });
-        await audit(tx, agent, bound, { sourceRunId: currentPluginInteractionOrigin()?.runId ?? actor.runId, contract: AGENT_FILES_CONTRACT });
+        // A run that changed the saved instruction entry saved it: name the entry
+        // and its resulting bytes so instruction history can show this save.
+        // Bytes another writer already saved stay credited to that writer.
+        const entryAfter = changed.includes(entryPath) ? await readInstructionBytes(root, entryPath) : null;
+        const entry = entryAfter && !(entryBefore && entryBefore.equals(entryAfter)) ? entryAfter : null;
+        await audit(tx, agent, bound, { sourceRunId: currentPluginInteractionOrigin()?.runId ?? actor.runId, contract: AGENT_FILES_CONTRACT,
+          ...(entry ? { path: entryPath, contentHash: fileHash(entry), byteLength: entry.length } : {}) });
+
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
       }, [...changedMentions.values()].map(value => value.text), prepared);
     },

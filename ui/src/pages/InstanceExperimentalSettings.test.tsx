@@ -98,6 +98,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableLocalVoice: false,
     enableMemoryConnectors: false,
     enableGoogleWorkspaceConnector: false,
+    enableAwsConnector: false,
     enablePaperclipNotebook: false,
     enableCases: false,
     enableAgentChat: false,
