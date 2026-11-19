@@ -4,31 +4,41 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (2026-11-18 merge candidate; deployment pending). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (merged 2026-11-18; deployed 2026-11-19 as 279a18c3a-r1). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
-## 2026-11-18 upstream merge (HOM-396; candidate)
+## 2026-11-18 upstream merge (HOM-396; deployed 2026-11-19)
 
 Merge upstream tip 8282d386da5a36ae2c4d8846f227c3d26e2b4049 into the
 92b9f2a7cf980cacd38bf18f1989b83eb4cd450e fork history, retaining custom
 behavior and the original commit graph. Initial conflicts: 233 files. Decisions
 and measured checks: [sync-decisions](/HOM/issues/HOM-396#document-sync-decisions).
-This entry records the merge candidate, not a production release. The live
-baseline at the start was a614a7c5a-r1; deployment needs the task's separate
-confirmation, DB clone upgrade, candidate smoke and T4 cutover gates.
+Deployed from michael/main commit 279a18c3a45825480669f0df04c1af51512b7fda
+as 279a18c3a-r1 on 2026-11-19 at 13:01 UTC, replacing 3f6eed15d-r1.
+The retained baseline remains the release-only rollback target; no DB restore
+is required. Deployment preimages and receipts remain in the HOM-396 artifacts.
 
 Upstream 0432–0498 stays unchanged. Fork migration SQL bytes and hashes stay
 unchanged, so the published hash-only migration history recognizes them after
 renumbering. The merged journal has 509 entries; a reconciled baseline has
-442 applied entries, leaving 67 upstream migrations. Both SQL histories must
-be reviewed and proved on an isolated production DB clone.
+442 applied entries, leaving 67 upstream migrations. Both histories were reviewed
+and proved on an isolated production DB clone before the production upgrade.
 The source-candidate clone applied those 67 migrations once (442 to 509),
 recognized all twelve fork hashes, and preserved the original data under the
 documented lifecycle-default transformation. The retained a614a7c5a-r1 passed
 isolated boot/health, project and session reads on the upgraded clone. Receipts
 and verifier corrections are in sync-decisions. Project main approved T4 deployment
-conditionally on 2026-11-19; final sealed-release proof and deployment gates remain
-pending. The follow-up merge includes main 2ced42e393 and preserves both manual
+conditionally on 2026-11-19; the Owner then moved deployment to immediate execution.
+The fresh sealed clone and production both upgraded 442 to 509 with the twelve
+fork hashes retained. Main-only low-memory typecheck/build, closure verification,
+13 candidate smoke checks, service health and startupRecovery readiness passed.
+The two preempted tasks resumed with observed successors and no unresolved entries.
+Deployment config and the active adapter-utils peer point to 279a18c3a-r1.
+Related-test results remain attributed to their original commits and targeted
+fix-forward runs (including MCP 18 and Runner 250); no full suite or post-deploy
+rerun was performed. RELEASE.json retains pending-related-tests preparation
+metadata rather than claiming a fresh final-tree suite pass.
+The follow-up merge includes main 2ced42e393 and preserves both manual
 context-compaction and trusted delegated-decision conversation wake causes.
 
 Integration follow-ups retain the selected project source when creating or
