@@ -9,6 +9,12 @@ The local release line is `michael/main`; previous releases and consolidation me
 
 ## Custom history
 
+- Delegated decision delivery and unchanged-model saves (`michael/delegated-wake-delivery`, Owner 2026-11-19
+  「好，一次發布」): the delegation sweep can wake an idle (waiting) main Chat; dropped deliveries retry with
+  liveness-first backoff instead of stopping at `delegate_wake_not_admitted`, so pending legacy failures are
+  redelivered once. Agent updates no longer re-validate an unchanged company-catalog model, so a host that stops
+  advertising it (Shopee `opus` → `opus[1m]`) does not block secret or permission edits. Server-only, no migration.
+
 - Main agents read Owner attention (`michael/main-attention-read`, Owner 2026-11-19 「1.」 approving agent reads of
   the pending list): an agent with an explicit `inbox:manage` grant may read `GET /attention`, `/attention/summary`
   and `/attention/tasks` for its run's responsible user only, if that user's inbox agent policy admits it. Results

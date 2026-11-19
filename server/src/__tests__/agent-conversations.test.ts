@@ -845,6 +845,21 @@ import {
         eventType: "session.capabilities.updated", sourceRunId: run.id, sourceSeq: 500, payload: {},
       })).toBeNull();
     });
+    it("wakes an idle (waiting) chat for a server-delegated decision but not for a spoofed one", async () => {
+      const chat = await create();
+      const heartbeat = heartbeatService(db);
+      const requestId = randomUUID();
+      const wake = (actorId: string) => heartbeat.wakeup(agentId, {
+        source: "automation", triggerDetail: "system", reason: "delegated_decision_pending",
+        idempotencyKey: `delegated-decision:interaction:${requestId}:${actorId}`,
+        requestedByActorType: "system", requestedByActorId: actorId,
+        payload: { issueId: chat.id, delegatedRequest: { kind: "interaction", requestId, revision: randomUUID() } },
+        contextSnapshot: { issueId: chat.id, taskId: chat.id, wakeReason: "delegated_decision_pending",
+          delegatedRequest: { kind: "interaction", requestId, revision: randomUUID() } },
+      });
+      expect(await wake("someone-else")).toBeNull();
+      expect(await wake("decision-delegation")).not.toBeNull();
+    });
     it("ignores execution dependency wakes during active and idle chat turns", async () => {
       const chat = await create();
       const heartbeat = heartbeatService(db);

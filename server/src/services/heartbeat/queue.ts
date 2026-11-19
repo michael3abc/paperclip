@@ -2214,7 +2214,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
-      reason === CHAT_COMPLETION_WAKE_REASON,
+      reason === CHAT_COMPLETION_WAKE_REASON ||
+      // A decision delegated to this main is its own cause: an idle (waiting)
+      // main Chat must receive it. Only the server's delegation sweep qualifies.
+      (reason === "delegated_decision_pending" && opts.requestedByActorType === "system"
+        && opts.requestedByActorId === "decision-delegation"
+        && typeof (enrichedContextSnapshot.delegatedRequest as { requestId?: unknown } | undefined)?.requestId === "string"),
     );
     // Keep each request's own server-derived origin, including coalesced wakes.
     // A run's merged context cannot establish which caller authored one receipt.
