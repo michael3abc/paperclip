@@ -59,8 +59,10 @@ recovery, stranded-issue reconciliation).
 
 Shutdown and process-loss recovery keep the chain's persisted failure counter and
 backoff; they do not implicitly open a separate upstream server-restart window.
-Preparations proved to have started no provider work retain their own durable
-counter without a retry limit.
+Preparations interrupted by shutdown, process loss or controller loss before
+provider work retain their own durable counter without a retry limit. An ordinary
+bootstrap failure keeps its failure counter and provider retry deadline; proof
+that provider work did not start does not turn a failure into an interruption.
 
 Immediate release recovery obeys the same backoff. A per-host in-memory circuit
 breaker (`server/src/services/host-circuit-breaker.ts`) defers wakes for an

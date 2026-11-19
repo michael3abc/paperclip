@@ -619,14 +619,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(laterWakes[0]).toMatchObject({ runId: null, payload: { issueId, commentId: laterComment!.id } });
   });
 
-  it("bounds interrupted conversations across restarts and concurrent scheduling", async () => {
+  it("preserves transient backoff for interrupted conversations across restarts and concurrent scheduling", async () => {
     const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
     const resultJson = { conversationContinuation: "continue_conversation_v1" };
     await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", resultJson })
       .where(eq(heartbeatRuns.id, runId));
     let predecessor = runId;
-    // A restart is not a failure: these continue in the server-restart lane
-    // until its window bound, never through the failure budget.
+    // System shutdown retains the durable transient counter across service instances.
     for (let attempt = 1; attempt <= SERVER_RESTART_RETRY_MAX_ATTEMPTS; attempt += 1) {
       const restarted = heartbeatService(db);
       const outcomes = await Promise.all([
@@ -636,8 +635,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       expect(outcomes.every(outcome => outcome.outcome === "scheduled")).toBe(true);
       const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor));
       expect(children).toHaveLength(1);
-      expect(children[0]).toMatchObject({ scheduledRetryAttempt: attempt, scheduledRetryReason: "server_restart" });
-      expect(children[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, serverRestarts: attempt });
+      expect(children[0]).toMatchObject({ scheduledRetryAttempt: attempt, scheduledRetryReason: "transient_failure" });
+      expect(children[0]!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: attempt });
       predecessor = children[0]!.id;
       await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", finishedAt: now, resultJson })
         .where(eq(heartbeatRuns.id, predecessor));

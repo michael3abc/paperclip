@@ -1150,8 +1150,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   it("still recovers system-cancelled runs with no operator attribution", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+      id: runId,
       companyId,
       agentId: coderId,
       invocationSource: "manual",
@@ -1163,16 +1164,16 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       contextSnapshot: { issueId: sourceIssueId },
     });
     const enqueueWakeup = vi.fn(async () => null);
-    const recovery = recoveryService(db, { enqueueWakeup });
+    const scheduleRecoveryRetry = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry });
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
     expect(result.operatorCancelExempted).toBe(0);
-    expect(result.escalated).toBe(1);
+    expect(result).toMatchObject({ continuationRequeued: 1, escalated: 0 });
+    expect(scheduleRecoveryRetry).toHaveBeenCalledExactlyOnceWith(runId, {});
     expect(enqueueWakeup).not.toHaveBeenCalled();
-    expect(await db.select().from(issueRecoveryActions)).toEqual([expect.objectContaining({
-      cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: coderId,
-    })]);
+    expect(await db.select().from(issueRecoveryActions)).toEqual([]);
   });
 
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
@@ -1538,11 +1539,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       contextSnapshot: { issueId: sourceIssueId },
     }]);
     const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
-    const recovery = recoveryService(db, { enqueueWakeup });
+    const scheduleRecoveryRetry = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry });
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
-    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 0, escalated: 1 });
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 1, escalated: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "in_review",
@@ -1552,10 +1554,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [assigneeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, assigneeRunId));
     expect(assigneeRun?.errorCode).toBe("adapter_failed");
     expect(enqueueWakeup).not.toHaveBeenCalled();
-    expect(await db.select().from(issueRecoveryActions)).toEqual([expect.objectContaining({
-      cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: coderId,
-      evidence: expect.objectContaining({ runId: participantRunId }),
-    })]);
+    expect(scheduleRecoveryRetry).toHaveBeenCalledExactlyOnceWith(participantRunId, {});
+    expect(await db.select().from(issueRecoveryActions)).toEqual([]);
   });
 
   it("blocks a cross-agent review participant with incomplete configuration", async () => {

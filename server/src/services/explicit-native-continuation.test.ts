@@ -1761,7 +1761,18 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
       resultJson: { startupCancellation: { beforeNativeSelection: true }, startupPreparationSettledAt: new Date().toISOString() },
     }).where(eq(heartbeatRuns.id, f.sourceRunId));
-    expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
+    const diagnostic = await readAdmission(f, false);
+    expect(diagnostic.blocked).toEqual([]);
+    // With terminal gates released, the special reconciliation helper has
+    // nothing to adopt. The ordinary public wake still admits this new input.
+    expect(diagnostic.result).toBeNull();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const successor = await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_commented", requestedByActorType: "user", requestedByActorId: f.actorId,
+      payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId, wakeCommentIds: [f.commentId] } });
+    expect(successor).toMatchObject({ status: "queued", contextSnapshot: { wakeCommentId: f.commentId } });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0].status).toBe("cancelled");
   });
 
   async function seedHistoricalCancelledPreparation(retainedReceipt = false) {
@@ -2722,7 +2733,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       }).where(eq(heartbeatRuns.id, f.sourceRunId));
     }
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
-    expect(blocker).toMatchObject({ runId: f.sourceRunId, canRetry: true });
+    expect(blocker).toBeNull(); // Terminal cleanup never blocks a new explicit Retry.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const service = heartbeatService(db);
     const successor = await service.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run",

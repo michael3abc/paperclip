@@ -3431,9 +3431,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(issue.executionWorkspaceSettings).toEqual({
-      mode: "shared_workspace",
-    });
+    expect(issue.executionWorkspaceSettings).toEqual({});
   });
 
   it("ignores legacy project environment selection when creating new issues", async () => {
@@ -3507,7 +3505,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
+    expect(issue.executionWorkspaceSettings).toEqual({});
   });
 
   it("does not rewrite execution workspace settings on reassignment", async () => {
@@ -3595,18 +3593,14 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(created.executionWorkspaceSettings).toEqual({
-      mode: "shared_workspace",
-    });
+    expect(created.executionWorkspaceSettings).toEqual({});
 
     const reassigned = await svc.update(created.id, {
       assigneeAgentId: secondAgentId,
     });
 
     expect(reassigned).not.toBeNull();
-    expect(reassigned!.executionWorkspaceSettings).toEqual({
-      mode: "shared_workspace",
-    });
+    expect(reassigned!.executionWorkspaceSettings).toEqual({});
   });
 
   it("strips legacy environmentId values from execution workspace settings updates", async () => {
@@ -3767,6 +3761,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.executionWorkspacePreference).toBe("reuse_existing");
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
+      sessionOnly: false,
     });
   });
 
@@ -5195,6 +5190,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(issue.executionWorkspaceSettings).toEqual({
       mode: "inherit",
+      sessionOnly: true,
       workspaceStrategy: { type: "git_worktree" },
     });
   });

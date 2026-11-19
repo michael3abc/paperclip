@@ -38,6 +38,11 @@ The subsequent main-line merge b71e7abf13 includes d29db6287a and retains
 attention-read authorization and privacy boundaries. Restart recovery keeps
 the durable transient backoff counter; a persisted bootstrap certificate keeps
 preparation retries separate after terminal settlement clears execution stage.
+Only interruption/process-loss/controller-loss certificates select that lane;
+ordinary bootstrap failures retain charged transient retries and provider deadlines.
+Terminal queue regressions preserve original cleanup/recovery/input evidence while
+allowing new input; stranded review recovery hands the participant run to the
+durable retry scheduler. Tests retain the operator Stop and authority boundaries.
 Historical provider evidence does not hold a distinct authorized human input.
 Human Chat wakes also validate the requester against the conversation owner
 before persisting a run or wake; saved owner messages cannot lend authority.

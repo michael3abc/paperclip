@@ -566,11 +566,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
     // Shutdown can replace the bootstrap result marker. The persisted stage
     // and existing preparation lane still retain that lane's retry accounting.
-    // Terminal settlement can also clear executionStage. Its durable bootstrap
-    // certificate chooses accounting only; dispatch still checks authority.
+    // Terminal settlement can also clear executionStage. A bootstrap certificate
+    // selects this lane only for interruption, process loss or controller loss;
+    // ordinary setup/provider failures still spend their transient counter.
     const interruptedPreparation = (run.status === "interrupted" && run.executionStage === "preparing"
       && run.scheduledRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
-      || (["interrupted", "failed"].includes(run.status)
+      || ((run.status === "interrupted" || run.status === "failed"
+          && ["process_lost", CONTROLLER_LEASE_LOST_FAILURE_CODE].includes(run.errorCode ?? ""))
         && preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false);
     // Liveness-first: shutdown/process loss uses the same durable backoff as
     // other transient failures. Switching implicitly to server_restart would

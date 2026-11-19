@@ -30,6 +30,9 @@ retain the durable backoff counter instead of opening a fresh restart window; se
 manual pause still apply and revoke automatic retry. New human or project-main
 input supersedes automatic retry of a failed predecessor and keeps its own input
 receipt. See `docs/agents/execution-semantics.md`.
+Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
+require system interruption, process loss or controller loss. Ordinary failures keep
+their failure counter and provider retry deadline.
 
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
 Cost reports expose ordinary input separately from cached input. Normalize inclusive Codex Bridge subscription counters when reading reports; preserve raw receipts and charged amounts. Dashboard subscription pies show API-equivalent USD estimates, separate from subscription fees. See `doc/connections/AI-CONNECTIONS.md`.
