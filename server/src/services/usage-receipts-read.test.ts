@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -5,7 +8,7 @@ import { agents, companies, createDb, heartbeatRuns, runUsageReceipts, type Db }
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
+import { createRunUsageRecorder, persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("usage receipt PostgreSQL reads", () => {
@@ -31,6 +34,54 @@ describe.skipIf(!support.supported)("usage receipt PostgreSQL reads", () => {
       receipt: { complete: false, usageBasis: "per_run", costUsd: sequence / 100, billingType: "metered_api" } });
     return { companyId, agentId, runId, evidence, receipt };
   }
+
+  it.each([
+    ["split", [100000, 200000], 300000, "5.450000000"],
+    ["unknown", [undefined, undefined], undefined, "8.000000000"],
+    ["mixed", [0, undefined], 1000000, "6.500000000"],
+  ] as const)("preserves and sums %s TTL evidence through the recorder and immutable journal", async (_label, subsets, total, cost) => {
+    const f = await fixture();
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ttl-receipts-"));
+    try {
+      const recorder = await createRunUsageRecorder(db, { companyId: f.companyId, runId: f.runId, adapterType: "ccpocket" }, directory);
+      let captured;
+      for (const oneHour of subsets) captured = await recorder.capture({ attemptId: randomUUID(), complete: true,
+        usageBasis: "per_run", provider: "claude", biller: "compass", billingType: "metered_api", model: "compass-sonnet5.5",
+        usage: { inputTokens: 1000000, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 1000000,
+          ...(oneHour === undefined ? {} : { cacheWrite1hTokens: oneHour }) } });
+      expect(captured?.usage?.cacheWriteTokens).toBe(2000000);
+      expect(captured?.usage?.cacheWrite1hTokens).toBe(total);
+      expect(captured?.costUsdExact).toBe(cost);
+      const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(stored.usageJson?.cacheWrite1hTokens).toBe(total ?? null);
+      const [journal] = await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.id, stored.usageJson!.accountingReceiptId as string));
+      expect((journal.receiptJson as UsageReceiptEnvelope).receipt.usage?.cacheWrite1hTokens).toBe(total);
+    } finally { await fs.rm(directory, { recursive: true }); }
+  });
+
+  it("clears old TTL evidence when a newer receipt no longer reports a split", async () => {
+    const f = await fixture();
+    const first = f.receipt(1);
+    first.receipt.usage = { inputTokens: 10, outputTokens: 0, cacheWriteTokens: 10, cacheWrite1hTokens: 0 };
+    await persistUsageReceipt(db, first);
+    const next = f.receipt(2);
+    next.receipt.usage = { inputTokens: 20, outputTokens: 0, cacheWriteTokens: 20 };
+    await persistUsageReceipt(db, next);
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(stored.usageJson?.cacheWrite1hTokens).toBeNull();
+  });
+
+  it.each([10, undefined])("retains an impossible TTL subset with total %s as incomplete", async total => {
+    const f = await fixture();
+    const envelope = f.receipt(1);
+    envelope.receipt = { complete: true, usageBasis: "per_run", biller: "compass", model: "compass-sonnet5.5",
+      usage: { inputTokens: 10, outputTokens: 1, cacheWriteTokens: total, cacheWrite1hTokens: 11 } };
+    await persistUsageReceipt(db, envelope);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(saved.usageJson).toMatchObject({ cacheWrite1hTokens: 11, accountingReceiptReady: false });
+    const [journal] = await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.id, envelope.id));
+    expect((journal.receiptJson as UsageReceiptEnvelope).receipt.complete).toBe(false);
+  });
 
   it("updates live usage with a small locked read and preserves all execution evidence", async () => {
     const f = await fixture(), reads: unknown[][] = [];

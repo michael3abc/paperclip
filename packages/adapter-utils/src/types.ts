@@ -37,6 +37,8 @@ export interface UsageSummary {
   cachedInputTokens?: number;
   /** Subset of inputTokens, not an additional token count. */
   cacheWriteTokens?: number;
+  /** One-hour subset of cacheWriteTokens; absent means unknown TTL. */
+  cacheWrite1hTokens?: number;
 }
 
 /** Accounting-only snapshot. Never include prompt, response, or credentials. */

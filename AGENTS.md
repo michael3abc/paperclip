@@ -40,6 +40,12 @@ require system interruption, process loss or controller loss. Ordinary failures 
 their failure counter and provider retry deadline.
 
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
+Compass receipts optionally carry usage.cacheWrite1hTokens as a subset of cacheWriteTokens.
+Price the remainder at 5m and unknown TTL at 1h with the versioned Compass card;
+never reprice existing charges or backfill history. Invalid subsets stay incomplete.
+Observed Compass usage without a final receipt can settle as an explicit lower bound;
+missing counters stay unpriced. See docs/guides/board-operator/costs-and-budgets.md.
+
 Cost reports expose ordinary input separately from cached input. Normalize inclusive Codex Bridge subscription counters when reading reports; preserve raw receipts and charged amounts. Dashboard subscription pies show API-equivalent USD estimates, separate from subscription fees. See `doc/connections/AI-CONNECTIONS.md`.
 Dashboard project usage shares the model charts' period and company scope; sum ordinary input, cache reads and output once, retain Unattributed, and keep recorded spend separate from subscription estimates/fees.
 Codex Business/Enterprise monthly credit quotas come from RPC individualLimit; preserve its remaining percentage and reset. Metadata-only credits are not reported quota, and RPC credit amounts are not dollars.

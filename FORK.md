@@ -460,3 +460,9 @@ Liveness-first (`/home/michael/services/docs/agents/liveness-first.md`) supersed
   all CLI invocations disable paid extra credits. Additive provider constraints.
 - Branch: michael/agy-cli-integration. Release only from michael/main through the
   managed workflow after merge. No production rollout is part of this PR.
+
+- HOM-454: optional Compass one-hour cache-write subset; card
+  compass-official-2026-11-20-ttl prices the remainder at five-minute rates,
+  preserves unknown-TTL one-hour estimates and historical prices. Lost final
+  receipts can price saved Compass counters as a lower bound. Source-only;
+  deployment and the external usage-ledger card update remain separate.

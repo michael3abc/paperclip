@@ -17,6 +17,7 @@ import { OWN_PROCESS_START_EVENT_TYPES } from "./native-process-start-events.js"
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
+import { priceCompassReceipt } from "./compass-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
@@ -231,19 +232,21 @@ function estimateLostReceipt(usage: Record<string, unknown>) {
   const count = (key: string) => amount(usage[key]);
   const inputTokens = count("inputTokens") ?? 0, outputTokens = count("outputTokens") ?? 0;
   const cachedInputTokens = count("cachedInputTokens"), cacheWriteTokens = count("cacheWriteTokens");
+  const cacheWrite1hTokens = count("cacheWrite1hTokens");
   if (inputTokens + outputTokens + (cachedInputTokens ?? 0) <= 0) return null;
   if ((usage.usageSource ?? "per_run") !== "per_run") return null;
   // Aggregate totals across several models cannot take one model's rate.
   if (Array.isArray(usage.usageByModel) && usage.usageByModel.length > 0) return null;
   const billingType = text(usage.billingType);
-  const priced = priceAnthropicReceipt(priceCodexReceipt({
+  const priced = priceCompassReceipt(priceAnthropicReceipt(priceCodexReceipt({
     complete: true, usageBasis: "per_run", provider: text(usage.provider) ?? undefined,
     biller: text(usage.biller) ?? undefined, model: text(usage.model) ?? undefined,
     billingType: billingType === "metered_api" ? "api" : billingType ?? undefined,
     usage: { inputTokens, outputTokens,
       ...(cachedInputTokens !== null ? { cachedInputTokens } : {}),
-      ...(cacheWriteTokens !== null ? { cacheWriteTokens } : {}) },
-  } as AdapterUsageCheckpoint));
+      ...(cacheWriteTokens !== null ? { cacheWriteTokens } : {}),
+      ...(cacheWrite1hTokens !== null ? { cacheWrite1hTokens } : {}) },
+  } as AdapterUsageCheckpoint)));
   const exact = text(priced.costUsdExact);
   if (exact === null || !priced.pricingProvenance) return null;
   const evidence = text(priced.pricingProvenance.evidence);

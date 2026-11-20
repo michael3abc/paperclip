@@ -27,7 +27,7 @@ import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
-const usage = z.object({ inputTokens: token, outputTokens: token, cachedInputTokens: token.optional(), cacheWriteTokens: token.optional() });
+const usage = z.object({ inputTokens: token, outputTokens: token, cachedInputTokens: token.optional(), cacheWriteTokens: token.optional(), cacheWrite1hTokens: token.optional() });
 const checkpointSchema = z.object({
   attemptId: z.string().uuid().optional(), usage: usage.optional(),
   usageByModel: z.array(z.object({ model: z.string().min(1).max(250), usage, costUsd: z.number().finite().nonnegative() })).max(500).optional(),
@@ -40,6 +40,11 @@ const checkpointSchema = z.object({
   pricingProvenance: pricingProvenanceSchema.optional(),
   costUsdExact: z.string().max(160).refine(value => { try { return !value.startsWith("-") && usdToUnits(value) >= 0n; } catch { return false; } }, "Invalid exact USD amount").nullable().optional(),
   providerRequestId: z.string().max(250).nullable().optional(), complete: z.boolean(),
+}).transform(receipt => {
+  const oneHour = receipt.usage?.cacheWrite1hTokens;
+  if (oneHour !== undefined && (receipt.usage?.cacheWriteTokens === undefined || oneHour > receipt.usage.cacheWriteTokens))
+    return { ...receipt, complete: false };
+  return receipt;
 });
 const envelopeSchema = z.object({
   schema: z.literal("paperclip/accounting-receipt/v1"), id: z.string().uuid(), companyId: z.string().uuid(),
@@ -216,6 +221,7 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
     costAccountingPending: true,
     accountingLastError: previous.accountingCaptureFailed === true ? "usage_capture_failed" : null,
     usageJson: { ...previous, ...receipt.usage,
+      cacheWrite1hTokens: receipt.usage?.cacheWrite1hTokens ?? null,
       provider: receipt.provider ?? "unknown", biller: receipt.biller ?? receipt.provider ?? "unknown", model: receipt.model ?? "unknown", billingType,
       costUsd: receipt.costUsd ?? null, costUsdExact: receipt.costUsdExact ?? null, cacheAdjustedCostUsd: receipt.cacheAdjustedCostUsd ?? null,
       usageByModel: receipt.usageByModel ?? null, usageSource: receipt.usageBasis ?? "per_run", providerRequestId: receipt.providerRequestId ?? null,
@@ -670,6 +676,9 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       inputTokens: parts.reduce((sum, item) => sum + (item.usage?.inputTokens ?? 0), 0),
       cachedInputTokens: parts.reduce((sum, item) => sum + (item.usage?.cachedInputTokens ?? 0), 0),
       ...(parts.some(item => item.usage?.cacheWriteTokens !== undefined) ? { cacheWriteTokens: parts.reduce((sum, item) => sum + (item.usage?.cacheWriteTokens ?? 0), 0) } : {}),
+      // Unknown TTL segments retain the all-one-hour assumption when mixed with split segments.
+      ...(parts.some(item => item.usage?.cacheWrite1hTokens !== undefined) ? { cacheWrite1hTokens: parts.reduce((sum, item) =>
+        sum + (item.usage?.cacheWrite1hTokens ?? item.usage?.cacheWriteTokens ?? 0), 0) } : {}),
       outputTokens: parts.reduce((sum, item) => sum + (item.usage?.outputTokens ?? 0), 0),
     } };
     if (parts.length > 1) {
@@ -729,7 +738,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // full stream. Keep that stronger evidence, but never hide additional
       // usage/charges or certify a snapshot inherited from a replaced recorder.
       if (sequence > 0 && previous?.complete && result.usageComplete === false) {
-        const moreTokens = (["inputTokens", "cachedInputTokens", "cacheWriteTokens", "outputTokens"] as const)
+        const moreTokens = (["inputTokens", "cachedInputTokens", "cacheWriteTokens", "cacheWrite1hTokens", "outputTokens"] as const)
           .some(key => (final.usage?.[key] ?? 0) > (previous.usage?.[key] ?? 0));
         const finalPrice = final.cacheAdjustedCostUsd ?? final.costUsdExact ?? final.costUsd;
         const previousPrice = previous.cacheAdjustedCostUsd ?? previous.costUsdExact ?? previous.costUsd;
@@ -761,7 +770,7 @@ const producerAccountingProjectionFields = [
   "accountingSourceReceiptPending", "accountingLateReceiptPending", "accountingLateReceiptId",
   "accountingLateReceiptAttemptedId", "accountingReconciledReceiptId", "accountingLateReceiptDebts", "accountingLateDeltas",
   "accountingReconciledReceiptSourceId", "accountingReconciledReceiptSequence",
-  "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
+  "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "cacheWrite1hTokens",
   "provider", "biller", "model", "billingType", "usageSource", "providerRequestId", "usageByModel",
   "costUsd", "costUsdExact", "cacheAdjustedCostUsd", "costStatus", "pricingProvenance", "budgetExposure",
 ];

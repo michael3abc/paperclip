@@ -7,21 +7,21 @@ import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 // receipts already priced keep the rates they were issued with.
 // OpenAI:    https://developers.openai.com/api/docs/pricing (retrieved 2026-11-16)
 // Anthropic: https://platform.claude.com/docs/en/about-claude/pricing (retrieved 2026-11-16)
-const VERSION = "compass-official-2026-11-16";
+const VERSION = "compass-official-2026-11-20-ttl";
 
 type Vendor = "openai" | "anthropic";
 /** USD per million tokens: [input, cache read, cache write, output]. */
 type Rates = readonly [string, string, string, string];
 
-const MODELS: Record<string, { vendor: Vendor; upstream: string; rates: Rates }> = {
+const MODELS: Record<string, { vendor: Vendor; upstream: string; rates: Rates; cacheWrite5m?: string }> = {
   // These Anthropic models bill the full 1M window at standard pricing (no
-  // long-context tier). Cache write is the one-hour rate: Claude Code through
-  // Compass was observed writing only one-hour entries.
-  "compass-opus5.5": { vendor: "anthropic", upstream: "Claude Opus 5.5", rates: ["4", "0.2", "8", "20"] },
-  "compass-sonnet5.5": { vendor: "anthropic", upstream: "Claude Sonnet 5.5", rates: ["2", "0.1", "4", "10"] },
-  "compass-fable5.2": { vendor: "anthropic", upstream: "Claude Fable 5.2", rates: ["8", "0.2", "16", "40"] },
-  "compass-fable5": { vendor: "anthropic", upstream: "Claude Fable 5", rates: ["10", "1", "20", "50"] },
-  "compass-opus5": { vendor: "anthropic", upstream: "Claude Opus 5", rates: ["5", "0.5", "10", "25"] },
+  // long-context tier). The main tuple retains the conservative one-hour rate;
+  // the five-minute rate applies only with a reported one-hour subset.
+  "compass-opus5.5": { vendor: "anthropic", upstream: "Claude Opus 5.5", cacheWrite5m: "5", rates: ["4", "0.2", "8", "20"] },
+  "compass-sonnet5.5": { vendor: "anthropic", upstream: "Claude Sonnet 5.5", cacheWrite5m: "2.5", rates: ["2", "0.1", "4", "10"] },
+  "compass-fable5.2": { vendor: "anthropic", upstream: "Claude Fable 5.2", cacheWrite5m: "10", rates: ["8", "0.2", "16", "40"] },
+  "compass-fable5": { vendor: "anthropic", upstream: "Claude Fable 5", cacheWrite5m: "12.5", rates: ["10", "1", "20", "50"] },
+  "compass-opus5": { vendor: "anthropic", upstream: "Claude Opus 5", cacheWrite5m: "6.25", rates: ["5", "0.5", "10", "25"] },
   // OpenAI cache write is the 30-minute write rate (short context).
   "compass-6.1-sol": { vendor: "openai", upstream: "gpt-6.1-sol", rates: ["2", "0.1", "2.5", "10"] },
   "compass-6-astra": { vendor: "openai", upstream: "gpt-6-astra", rates: ["10", "1", "12.5", "50"] },
@@ -81,6 +81,11 @@ export function priceCompassReceipt(
     (usage.cacheWriteTokens === undefined || usage.cachedInputTokens === undefined)
   )
     return receipt;
+  const oneHour = usage.cacheWrite1hTokens;
+  if (oneHour !== undefined && (!Number.isSafeInteger(oneHour) || oneHour < 0
+    || usage.cacheWriteTokens === undefined || oneHour > usage.cacheWriteTokens)) return receipt;
+  const split = card.vendor === "anthropic" && oneHour !== undefined;
+  const fiveMinute = split ? usage.cacheWriteTokens! - oneHour : 0;
   const counts = [
     usage.inputTokens - (usage.cacheWriteTokens ?? 0),
     usage.cachedInputTokens ?? 0,
@@ -90,10 +95,12 @@ export function priceCompassReceipt(
   if (counts.some((n) => !Number.isSafeInteger(n) || n < 0)) return receipt;
   const long = context?.contextTier === "long";
   // OpenAI long context (>272K input tokens): 2x input/cache, 1.5x output.
-  const units = counts.reduce((total, count, index) => {
+  let units = counts.reduce((total, count, index) => {
     const numerator = long ? (index === 3 ? 3n : 4n) : 2n;
     return total + BigInt(count) * usdToUnits(card.rates[index]) * numerator;
   }, 0n);
+  // Replace the five-minute subset's conservative one-hour charge exactly.
+  if (split) units -= BigInt(fiveMinute) * (usdToUnits(card.rates[2]) - usdToUnits(card.cacheWrite5m!)) * 2n;
   const divisor = 2_000_000n;
   const costCents = unitsToCents((units + divisor / 2n) / divisor);
   const assumptions = [
@@ -102,7 +109,9 @@ export function priceCompassReceipt(
     "standard processing assumed",
     long ? "long per-request context" : "short per-request context assumed",
     card.vendor === "anthropic"
-      ? "cache writes priced at the one-hour rate"
+      ? split
+        ? "cache writes: " + oneHour + " at one-hour rate, " + fiveMinute + " at five-minute rate (USD " + card.cacheWrite5m + "/M)"
+        : "cache-write TTL unreported; all cache writes assumed at the one-hour rate"
       : usage.cacheWriteTokens === undefined
         ? "cache writes not separately reported"
         : "cache writes reported",

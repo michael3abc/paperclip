@@ -27,6 +27,31 @@ from the canonical checkout. Before changing that source, run
 The ledger's vendor list-price estimate is separate from an actual Compass
 invoice; its rate card and the Paperclip source must agree.
 
+Card version compass-official-2026-11-20-ttl uses the optional
+usage.cacheWrite1hTokens subset of cacheWriteTokens: one-hour writes keep
+input ×2 pricing, and the remaining writes use five-minute input ×1.25 pricing.
+An explicit zero subset means all writes are five-minute. Without the subset,
+all writes retain the conservative one-hour assumption. Input still includes
+cache writes and excludes cache reads; the new counter adds no tokens.
+Invalid subsets cannot close a receipt. Multiple attempts sum the subsets,
+counting an unknown-TTL attempt's writes as one-hour when mixed with known TTLs.
+Pricing evidence states the TTL assumption. Previously priced receipts and
+historical charges remain unchanged; no backfill is performed.
+
+Failed/cancelled status does not exclude a run from accounting. If a final
+receipt is lost but counters and Compass identity were saved, settlement can
+price that observed usage as an estimate explicitly marked as a lower bound.
+This does not recover counters that the adapter never sent: the legacy CC Pocket
+adapter returns usage only from a native result, and its cancellation/error
+paths do not stream usage checkpoints. The HOM-453 frozen sample's 70 cancelled
+and seven failed zero-cost runs all have zero counters, unknown model/biller,
+and no usage receipt ID. The server cannot reconstruct paid requests from that
+empty evidence. A full fix needs request/turn-scoped incremental usage from
+Bridge through adapter onUsage, including cancellation and child-call identity;
+never bill a cumulative session snapshot or replay paid work to recover usage.
+Coordinate the external usage-ledger card version with this version at deployment;
+the source-only change does not update that managed service or its live card.
+
 ## Setting Budgets
 
 ### Company Budget

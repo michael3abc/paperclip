@@ -4,7 +4,7 @@ import { claimNativeSessionResumptions } from "../native-runtime/native-finaliza
 import type { Db } from "@paperclipai/db";
 import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, routines, routineRuns } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createFreshIssueRunStore, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
@@ -655,7 +655,10 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       .toHaveLength(1);
   });
 
+  afterEach(() => { vi.unstubAllEnvs(); });
   it("delivers a real task completion to its waiting conversation", async () => {
+    // The default settle window defers a conversation's first completion; this test checks immediate dispatch.
+    vi.stubEnv("PAPERCLIP_CHAT_COMPLETION_SETTLE_MS", "0");
     const f = await waitingConversationFixture();
     const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
       status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId: f.issue.id, conversationSessionGeneration: 0 } }).returning();
