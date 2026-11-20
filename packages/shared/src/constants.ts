@@ -1014,6 +1014,11 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
+/** cost_events.billing_code of self-reported external API spend. That spend is
+ * reported separately and never counts toward any project (usage reports or
+ * project budgets); company and agent totals still include it. */
+export const EXTERNAL_API_BILLING_CODE = "external_api";
+
 export const COST_STATUSES = ["reported", "estimated", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 

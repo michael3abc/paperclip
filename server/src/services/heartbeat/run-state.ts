@@ -36,6 +36,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { notFound } from "../../errors.js";
+import { chatLeadProjectIdSql } from "../project-attribution.js";
 import { logger } from "../../middleware/logger.js";
 import { getServerAdapter } from "../../adapters/index.js";
 import type {
@@ -603,6 +604,9 @@ export async function resolveLedgerScopeForRun(
       id: issues.id,
       projectId: issues.projectId,
       billingCode: issues.billingCode,
+      // A project main's Chat conversation has no project of its own; its
+      // spend, reservation and admission follow the project that agent leads.
+      chatProjectId: chatLeadProjectIdSql(issues.companyId, issues.id),
     })
     .from(issues)
     .where(and(eq(issues.id, contextIssueId), eq(issues.companyId, companyId)))
@@ -610,7 +614,7 @@ export async function resolveLedgerScopeForRun(
 
   return {
     issueId: issue?.id ?? null,
-    projectId: issue?.projectId ?? contextProjectId,
+    projectId: issue?.projectId ?? contextProjectId ?? issue?.chatProjectId ?? null,
     billingCode: issue?.billingCode ?? null,
   };
 }

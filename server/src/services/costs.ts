@@ -10,6 +10,7 @@ import { logActivity, type LogActivityInput, type ActivityPublication } from "./
 import { withAccountingReadSnapshot, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { effectiveCostEventProjectIdSql, resolveCostEventProjectId } from "./project-attribution.js";
 
 import { resolveCostDateRange, type CostDateRange } from "./cost-date-range.js";
 export type { CostDateRange } from "./cost-date-range.js";
@@ -134,7 +135,8 @@ export async function createCostEventInTransaction(db: Db, companyId: string, da
     return { ...winner, costCentsExact: normalizeCents(exact.costCents) };
   }
   const event = inserted;
-  if (!options.deferBudgetEvaluation) await queueBudgetEvaluation(db, { companyId, agentId: event.agentId, projectId: event.projectId });
+  if (!options.deferBudgetEvaluation) await queueBudgetEvaluation(db, { companyId, agentId: event.agentId,
+    projectId: await resolveCostEventProjectId(db, event) });
   await logActivity(db, {
     companyId, actorType: actor?.actorType ?? "system", actorId: actor?.actorId ?? "cost_accounting", agentId: actor?.agentId ?? event.agentId,
     ...((event.usageKind === "decision" || event.usageKind === "fast_response" || event.usageKind === "prompt_injection" || event.usageKind === "responsibility_summary") ? { responsibleUserIdOverride: event.responsibleUserId } : {}),
@@ -662,7 +664,9 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         .having(sql`count(distinct ${issues.projectId}) = 1`)
         .as("run_project_links");
 
-      const effectiveProjectId = sql<string | null>`coalesce(${costEvents.projectId}, case when ${costEvents.receiptHash} is null then ${runProjectLinks.projectId} end)`;
+      // Shared attribution rule (project-attribution.ts); the legacy run link
+      // applies only to receipts written before receipt hashing.
+      const effectiveProjectId = effectiveCostEventProjectIdSql(sql`case when ${costEvents.receiptHash} is null then ${runProjectLinks.projectId} end`);
       range = resolveCostDateRange(range);
       const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));

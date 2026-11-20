@@ -47,6 +47,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { listPendingBudgetCancellationScopes } from "./heartbeat/budget-cancellation.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { resolveChatLeadProjectId, resolveCostEventProjectId } from "./project-attribution.js";
 export { computeObservedSpend, computeObservedSpends } from "./budget-exposure.js";
 export type { BudgetExposure } from "./budget-exposure.js";
 
@@ -222,14 +223,17 @@ type AdmissionContext = { issueId?: string | null; projectId?: string | null; ru
   admittedRecovery?: boolean };
 
 async function readAdmissionScopes(db: Db, companyId: string, agentId: string | null, context?: AdmissionContext) {
+  // A project main's Chat conversation issue has no project; it is admitted
+  // under the project that agent solely leads (project-attribution.ts).
+  const projectId = context?.projectId ?? await resolveChatLeadProjectId(db, companyId, context?.issueId);
   const scopes: Array<{ scopeType: BudgetScopeType; scopeId: string }> = [
     { scopeType: "company", scopeId: companyId }, ...(agentId ? [{ scopeType: "agent" as const, scopeId: agentId }] : []),
-    ...(context?.projectId ? [{ scopeType: "project" as const, scopeId: context.projectId }] : []),
+    ...(projectId ? [{ scopeType: "project" as const, scopeId: projectId }] : []),
   ];
   const records = await Promise.all(scopes.map(scope => resolveScopeRecord(db, scope.scopeType, scope.scopeId)));
   if (records.some(scope => scope.companyId !== companyId)) throw notFound("Budget scope not found");
   const policies = await db.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, companyId),
-    budgetPoliciesForRun(companyId, agentId, context?.projectId ?? null)));
+    budgetPoliciesForRun(companyId, agentId, projectId)));
   return { scopes, records, policies };
 }
 
@@ -1024,9 +1028,12 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     evaluateAffectedScopes: options.evaluate ? evaluateAffectedScopes
       : (companyId: string, agentId: string | null, projectId: string | null) => queueBudgetEvaluation(db, { companyId, agentId, projectId }),
-    evaluateCostEvent: (event: typeof costEvents.$inferSelect) => options.evaluate
-      ? evaluateAffectedScopes(event.companyId, event.agentId, event.projectId)
-      : queueBudgetEvaluation(db, { companyId: event.companyId, agentId: event.agentId, projectId: event.projectId }),
+    evaluateCostEvent: async (event: typeof costEvents.$inferSelect) => {
+      const projectId = await resolveCostEventProjectId(db, event);
+      return options.evaluate
+        ? evaluateAffectedScopes(event.companyId, event.agentId, projectId)
+        : queueBudgetEvaluation(db, { companyId: event.companyId, agentId: event.agentId, projectId });
+    },
 
     evaluateAdmission,
     getInvocationBlock: async (companyId: string, agentId: string | null, context?: AdmissionContext) =>
@@ -1415,7 +1422,7 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
     reconcilePolicies: () => reconcileDueBudgetPolicies(db, { startup: true }),
     upsertPolicy: (companyId: string, input: BudgetPolicyUpsertInput, actorUserId: string | null) =>
       mutate(companyId, service => service.upsertPolicy(companyId, input, actorUserId), input),
-    evaluateCostEvent: (event: typeof costEvents.$inferSelect) => withOperationAccountingTransaction(db, event.companyId, tx => queueBudgetEvaluation(tx, { companyId: event.companyId, agentId: event.agentId, projectId: event.projectId })),
+    evaluateCostEvent: (event: typeof costEvents.$inferSelect) => withOperationAccountingTransaction(db, event.companyId, async tx => queueBudgetEvaluation(tx, { companyId: event.companyId, agentId: event.agentId, projectId: await resolveCostEventProjectId(tx, event) })),
     getInvocationBlock: (companyId: string, agentId: string | null, context?: AdmissionContext) =>
       withBudgetSpan("budget.admission.inspect", () => withAccountingReadSnapshot(db, companyId,
         tx => budgetServiceInTransaction(tx).getInvocationBlock(companyId, agentId, context))),
