@@ -135,7 +135,9 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
   const useStreamlinedTaskDetailShell = streamlinedUiEnabled && (isTaskDetailRoute || isAgentChatRoute);
-  const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && !isAgentChatRoute;
+  // Classic chat shows the full-width header above its contacts column (#19685). Coordinator chat has no contacts
+  // column, so it keeps the inset header beside the side panel, as before the upstream sync (HOM-411).
+  const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && (!isAgentChatRoute || coordinatorWorkspaceEnabled);
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
