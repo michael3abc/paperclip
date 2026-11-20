@@ -214,8 +214,11 @@ export async function materializeNativeInteractionResponses(input: {
       if (!request.decidedByUserId || request.decidedByUserId !== interaction.resolvedByUserId || !["executed", "failed", "rejected"].includes(request.status) || (request.status === "rejected" ? interaction.status !== "rejected" : interaction.status !== "accepted")) {
         throw new NativeInteractionBridgeError("native_interaction_governed_request_unresolved", "Tool review must have a human decision and an authoritative terminal execution outcome");
       }
-      const expectedInvocationStatus = request.status === "executed" ? "succeeded" : request.status === "rejected" ? "denied" : "failed";
-      if (invocation.status !== expectedInvocationStatus || (request.status !== "rejected" && interaction.result?.toolAction?.status !== request.status)) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review outcome does not match its invocation");
+      const expectedInvocationStatuses = request.status === "executed" ? ["succeeded"] : request.status === "rejected" ? ["denied"] : ["failed", "timed_out"];
+      // A failure whose outcome is unknown (HOM-411) is projected as "unknown".
+      const expectedProjection = request.status === "failed" && ["tool_timeout_unknown_outcome", "tool_execution_outcome_unknown"].includes(invocation.errorCode ?? "")
+        ? "unknown" : request.status;
+      if (!expectedInvocationStatuses.includes(invocation.status) || (request.status !== "rejected" && interaction.result?.toolAction?.status !== expectedProjection)) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review outcome does not match its invocation");
     }
     const interactionResult = record(interaction.result);
     if (interaction.kind === "connection_intent" && interaction.status === "expired"

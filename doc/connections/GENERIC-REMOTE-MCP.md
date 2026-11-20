@@ -307,6 +307,32 @@ The bespoke [PostHog connection](./POSTHOG.md) is the worked example: it is the
 polished route for most users, and PostHog is also connectable generically
 through this page with either a key or browser sign-in.
 
+## Slow tools: call deadlines and approvals
+
+Some tools, such as browser automation, take longer than the built-in call
+deadlines (10 s for an interactive call, 30 s for an approved or Test call).
+A connection can raise them in its `config`:
+
+- `callTimeoutMs` applies to every tool of the connection.
+- `callTimeoutMsByTool` maps a tool name to its own deadline and wins over
+  `callTimeoutMs`.
+
+Both accept 1 000 to 180 000 ms; a save outside that range returns 422. The
+value replaces the built-in deadline on every path: approved execution, Test
+calls and agent calls. Removing it restores the built-in behavior. Raise it
+per connection only; there is no global switch.
+
+Accepting a tool approval card records the decision and answers at once. The
+approved call then runs in the background, the card shows it running, and the
+assignee is woken once with the result after the call settles.
+
+A timeout of a tool that is not read-only (risk write or destructive, or any
+approved call) is recorded with reason `tool_timeout_unknown_outcome` and the
+card shows **Outcome unknown**: the change may already have been made, so check
+before trying again. A read-only timeout stays an ordinary failure. Paperclip
+never resends such a call. After a server restart, an approved call that was
+still running is settled the same way at once and is not run again.
+
 ## Verifying
 
 Deterministic coverage lives in

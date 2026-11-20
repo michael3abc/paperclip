@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, lte } from "drizzle-orm";
+import { and, asc, eq, gt, lt, lte, or } from "drizzle-orm";
 import { toolActionRequests, toolInvocations, type Db } from "@paperclipai/db";
 import { writeToolReviewChange } from "./tool-review-work-notifications.js";
 
@@ -11,20 +11,28 @@ export function toolReviewInterruptionService(db: Db, onSettled: (input: {
   errorCode: string | null;
   errorMessage: string | null;
   resultSummary?: string;
-}) => Promise<void>) {
+}) => Promise<void>, processStartedAt: Date | null = null) {
+  // An execution claimed before this server process started has no caller left
+  // (HOM-411): the process that ran it is gone, so its outcome is unknown now
+  // rather than after the stale window. It is never run again.
+  const orphanedAt = (row: { at: Date }) => processStartedAt && row.at < processStartedAt;
   return {
     async next(): Promise<number | null> {
       const [row] = await db.select({ at: toolActionRequests.updatedAt }).from(toolActionRequests)
         .where(eq(toolActionRequests.status, "executing")).orderBy(asc(toolActionRequests.updatedAt)).limit(1);
-      return row ? row.at.getTime() + STALE_EXECUTION_MS : null;
+      if (!row) return null;
+      return orphanedAt(row) ? Date.now() : row.at.getTime() + STALE_EXECUTION_MS;
     },
     async sweep(now = new Date()) {
       const staleAt = new Date(now.getTime() - STALE_EXECUTION_MS);
+      const settledBefore = processStartedAt
+        ? or(lte(toolActionRequests.updatedAt, staleAt), lt(toolActionRequests.updatedAt, processStartedAt))
+        : lte(toolActionRequests.updatedAt, staleAt);
       let cursor: string | undefined;
       let scanned = 0;
       for (;;) {
         const rows = await db.select().from(toolActionRequests).where(and(
-          eq(toolActionRequests.status, "executing"), lte(toolActionRequests.updatedAt, staleAt),
+          eq(toolActionRequests.status, "executing"), settledBefore,
           cursor ? gt(toolActionRequests.id, cursor) : undefined,
         )).orderBy(asc(toolActionRequests.id)).limit(100);
         for (const row of rows) {

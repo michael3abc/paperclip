@@ -1,5 +1,5 @@
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
-import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl, toolCallTimeoutConfigIssues } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { loadPluginAppCatalog } from "../services/plugin-app-catalog.js";
 import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema } from "@paperclipai/shared";
@@ -178,6 +178,12 @@ function classifyConnectionUpdate(
     events.push({ lifecycle: "allowlist_changed", details: { added, removed, total: afterIds.length } });
   }
   return events;
+}
+
+/** A connection's call deadlines must stay within 1 s to 180 s (HOM-411). */
+function assertToolCallTimeoutConfig(config: unknown) {
+  const issues = toolCallTimeoutConfigIssues(config);
+  if (issues.length > 0) throw unprocessable(issues.join(" "), { issues });
 }
 
 export function filterVisibleToolConnections<T extends {
@@ -1849,6 +1855,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.post("/companies/:companyId/tools/connections", managementGuard("connections:configure", "POST /companies/:companyId/tools/connections", { personal: true }), validate(createToolConnectionSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
+    assertToolCallTimeoutConfig(req.body.config);
     try {
       const connection = await svc.createConnection(companyId, req.body, connectionRequestActor(req));
       await logActivity(db, {
@@ -2361,6 +2368,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Update this connection pool through its pool settings.");
+    assertToolCallTimeoutConfig(req.body.config);
     const connection = await svc.updateConnection(existing.id, req.body, connectionRequestContext(req));
     const lifecycleChanges = classifyConnectionUpdate(
       { enabled: existing.enabled, config: existing.config },

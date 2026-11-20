@@ -1933,7 +1933,7 @@ export const requestConfirmationResumeFailureSchema = z.object({
 export const requestConfirmationToolActionResultSchema = z.object({
   version: z.literal(1),
   rememberedAction: z.boolean().optional(),
-  status: z.enum(["approved", "executing", "executed", "failed", "expired"]),
+  status: z.enum(["approved", "executing", "executed", "failed", "unknown", "expired"]),
   errorCode: z.string().trim().min(1).max(120).nullable().optional(),
   errorMessage: z.string().trim().min(1).max(4000).nullable().optional(),
   // Populated on `executed` so the card can report the outcome (e.g. "Row 42
