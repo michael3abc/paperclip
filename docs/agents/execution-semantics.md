@@ -117,3 +117,16 @@ retain the fork failure scheduler and never restore automatic blocked recovery.
   retry or active recovery displays waiting.
 - Notification hints project only company/run identifiers; never serialize caller
   DB handles or private payloads.
+
+## Answer to an agent's own blocking question (HOM-424)
+
+- An answered `wake_assignee` question continues the task its asking agent
+  blocked to wait for it. Native agents prove the wait through the status
+  decision's `awaitingInteractionIds`. Legacy adapters (ccpocket_bridge) prove it
+  when the current blocked state, pinned by `statusVersion`, was set through the
+  issue API by one of that agent's own runs after it asked the question.
+- A person, or a main agent deciding on the person's behalf, may answer; the
+  asking agent answering itself proves nothing.
+- A later block by anyone else changes `statusVersion`; the answer then cancels
+  as `issue_not_in_progress`, and checkout re-checks the same version.
+  Implementation: `server/src/services/blocked-question-answer.ts`.
