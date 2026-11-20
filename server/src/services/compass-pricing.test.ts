@@ -15,11 +15,35 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
     // 12*2 + 208218*0.1 + 22450*4 + 2450*10 per million tokens
     expect(priced.costUsdExact).toBe("0.135145800");
     expect(priced.costStatus).toBe("estimated");
-    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card", version: "compass-official-2026-11-16",
+    expect(priced.pricingProvenance).toMatchObject({ source: "rate_card", version: "compass-official-2026-11-20-ttl",
       serviceTier: "standard", contextTier: "short" });
     expect(priced.pricingProvenance?.evidence).toContain("one-hour rate");
     expect(priced.usage).toBe(claude.usage);
     expect(claude.costStatus).toBe("unpriced");
+  });
+  it.each([
+    ["compass-opus5.5", "6.500000000"], ["compass-sonnet5.5", "3.250000000"],
+    ["compass-fable5.2", "13.000000000"], ["compass-fable5", "16.250000000"],
+    ["compass-opus5", "8.125000000"],
+  ])("prices mixed 5m/1h writes for %s", (model, cost) => {
+    const result = priceCompassReceipt({ ...claude, model, usage: { inputTokens: 1000000, cachedInputTokens: 0,
+      cacheWriteTokens: 1000000, cacheWrite1hTokens: 500000, outputTokens: 0 } });
+    expect(result.costUsdExact).toBe(cost);
+    expect(result.pricingProvenance?.evidence).toContain("500000 at one-hour");
+    expect(result.pricingProvenance?.evidence).toContain("500000 at five-minute");
+  });
+  it.each([[0, "2.500000000"], [1000000, "4.000000000"]])("prices an explicit 1h subset of %s", (oneHour, cost) => {
+    expect(priceCompassReceipt({ ...claude, usage: { inputTokens: 1000000, outputTokens: 0,
+      cachedInputTokens: 0, cacheWriteTokens: 1000000, cacheWrite1hTokens: oneHour } }).costUsdExact).toBe(cost);
+  });
+  it.each([-1, 22451, 0.5, NaN, Infinity])("does not price invalid 1h subsets: %s", oneHour => {
+    const receipt = { ...claude, usage: { ...claude.usage!, cacheWrite1hTokens: oneHour } };
+    expect(priceCompassReceipt(receipt)).toBe(receipt);
+  });
+  it("keeps a previously priced receipt immutable even with new TTL evidence", () => {
+    const previous = { ...claude, costUsdExact: "0.135145800", pricingProvenance: { source: "rate_card" as const,
+      version: "compass-official-2026-11-16" }, usage: { ...claude.usage!, cacheWrite1hTokens: 0 } };
+    expect(priceCompassReceipt(previous)).toBe(previous);
   });
   it("uses the Opus 5.5 rates for compass-opus5.5", () => {
     expect(priceCompassReceipt({ ...claude, model: "compass-opus5.5" }).costUsdExact).toBe("0.270291600");

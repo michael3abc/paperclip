@@ -146,6 +146,18 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.block()).toBeNull();
   });
 
+  it.each(["failed", "cancelled"] as const)("prices observed Compass usage for a %s run without a final receipt", async status => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.run.id));
+    await lostUsage(f, { provider: "claude", biller: "compass", model: "compass-sonnet5.5", billingType: "metered_api",
+      inputTokens: 1000000, cachedInputTokens: 0, cacheWriteTokens: 1000000, cacheWrite1hTokens: 0, outputTokens: 0 });
+    expect(await accountRunCost(db, f.run.id)).toBe(true);
+    expect(await f.charges()).toMatchObject([{ costStatus: "estimated", costCents: 250,
+      pricingProvenance: { evidence: expect.stringContaining("observed usage is a lower bound") } }]);
+    expect(await accountRunCost(db, f.run.id)).toBe(false);
+    expect(await f.charges()).toHaveLength(1);
+  });
+
   it("leaves a lost multi-model receipt unpriced instead of applying one model's rate", async () => {
     const f = await fixture({ unpricedUsagePolicy: "block" });
     await lostUsage(f, { provider: "openai", biller: "openai", model: "gpt-6.1-sol", billingType: "metered_api",
