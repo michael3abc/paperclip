@@ -2,6 +2,7 @@ import { addCents, normalizeCents, usdToUnits, unitsToCents } from "@paperclipai
 import { and, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle-orm";
 import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
+import { costEventCountsTowardProjectSql } from "./project-attribution.js";
 
 export interface BudgetExposure {
   ledgerCents: string;
@@ -81,7 +82,9 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const { start, end } = windows[index];
     const ledger = and(eq(costEvents.companyId, policy.companyId),
       policy.scopeType === "agent" ? eq(costEvents.agentId, policy.scopeId) : undefined,
-      policy.scopeType === "project" ? eq(costEvents.projectId, policy.scopeId) : undefined,
+      // Shared attribution rule: a main's Chat spend counts toward its project;
+      // external API spend never counts toward any project.
+      policy.scopeType === "project" ? costEventCountsTowardProjectSql(policy.companyId, policy.scopeId) : undefined,
       policy.windowKind === "calendar_month_utc" ? and(gte(costEvents.occurredAt, start), lt(costEvents.occurredAt, end)) : undefined)!;
     const held = and(eq(budgetReservations.companyId, policy.companyId), eq(budgetReservations.state, "held"),
       policy.scopeType === "agent" ? eq(budgetReservations.agentId, policy.scopeId) : undefined,
