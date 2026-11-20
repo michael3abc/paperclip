@@ -157,6 +157,20 @@ export function todoCancelComment(item: Pick<TodoItem, "id" | "text" | "task">):
 }
 
 /**
+ * The Owner's answer to a "Needs you" item, posted as a comment in the conversation: either an approval (or "I did
+ * it") or a free-text reply. The agent acts on it and closes the item; this UI never edits the TODO itself.
+ */
+export function todoApproveComment(item: Pick<TodoItem, "id" | "text">): string {
+  return `TODO #${item.id}（Needs you）：同意／已完成。「${todoDisplayText(item.text)}」。`
+    + `請確認現況後照這項繼續，完成後執行 \`todo check ${item.id} --note …\`，不必再問我。`;
+}
+
+export function todoReplyComment(item: Pick<TodoItem, "id" | "text">, message: string): string {
+  return `回覆 TODO #${item.id}（Needs you）「${todoDisplayText(item.text)}」：\n\n${message.trim()}\n\n`
+    + `請依此處理這一項，處理完執行 \`todo check ${item.id} --note …\`。`;
+}
+
+/**
  * The stored TODO, or null when this document is not one. Only the `todo` key in the JSONL format counts; an older
  * markdown TODO, or a document under another key, stays an ordinary markdown document.
  */
