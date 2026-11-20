@@ -224,3 +224,24 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+/** Spend agents self-report for paid external APIs (cost events whose billing
+ * code is EXTERNAL_API_BILLING_CODE), grouped by provider, model and agent.
+ * This spend has no project; it is reported separately from project usage. */
+export interface ExternalApiCostRow {
+  provider: string;
+  model: string;
+  agentId: string | null;
+  agentName: string | null;
+  costCents: number;
+  costCentsExact: string;
+  /** Self-reported events in this group and selected date range. */
+  eventCount: number;
+  estimatedEventCount: number;
+  /** Events reported without a known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** ISO timestamp of the latest event in the group. */
+  lastOccurredAt: string;
+}

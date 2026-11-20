@@ -6486,6 +6486,7 @@ const costSummaryPaths = [
   "by-provider",
   "by-biller",
   "by-project",
+  "external-api",
   "finance-summary",
   "finance-by-biller",
   "finance-by-kind",

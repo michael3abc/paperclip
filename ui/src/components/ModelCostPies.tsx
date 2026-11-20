@@ -6,6 +6,7 @@ import { costsApi } from "../api/costs";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, formatTokens } from "../lib/utils";
 import { ProjectUsageTable } from "./ProjectUsageTable";
+import { ExternalApiUsageTable } from "./ExternalApiUsageTable";
 import {
   isModelCostPeriod,
   MODEL_COST_PERIODS,
@@ -205,6 +206,7 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
       </section>
       </>}
       <ProjectUsageTable companyId={companyId} from={from} />
+      <ExternalApiUsageTable companyId={companyId} from={from} />
       <Link to="/costs" className="text-(length:--text-nano) text-muted-foreground underline underline-offset-2 md:col-span-2">
         Costs details
       </Link>
