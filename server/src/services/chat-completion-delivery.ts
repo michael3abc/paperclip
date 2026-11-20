@@ -12,6 +12,17 @@ export const CHAT_COMPLETION_WAKE_REASON = "chat_task_completed";
 /** Run event: the conversation agent read its handed-off task after it was done. */
 export const COMPLETED_HANDOFF_READ_EVENT = "chat_handoff.completed_read";
 const MAX_ATTEMPTS = 5;
+/** Default settle window: completions of one conversation that land this close together share one wake. */
+export const DEFAULT_CHAT_COMPLETION_SETTLE_MS = 3 * 60_000;
+/** PAPERCLIP_CHAT_COMPLETION_SETTLE_MS, read at call time so tests can change it. 0 disables the window
+ * (immediate delivery); unset or invalid values use the default; capped at one hour. */
+export function chatCompletionSettleMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS?.trim();
+  if (!raw) return DEFAULT_CHAT_COMPLETION_SETTLE_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_CHAT_COMPLETION_SETTLE_MS;
+  return Math.min(Math.floor(value), 60 * 60_000);
+}
 const LEASE_MS = 60_000;
 type Issue = typeof issues.$inferSelect;
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -76,7 +87,23 @@ export async function recordChatCompletion(tx: Connection, before: Issue, after:
   const [handoff] = await tx.select().from(handoffs).where(and(eq(handoffs.taskId, after.id), eq(handoffs.companyId, after.companyId)));
   if (!handoff) return false;
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatCompletion);
-  await tx.insert(deliveries).values({ companyId: after.companyId, taskId: after.id, statusVersion: after.statusVersion }).onConflictDoNothing();
+  // Settle window: the first completion of a conversation waits so that completions arriving
+  // shortly after share its wake (prepareChatCompletionTurn absorbs every pending delivery of
+  // the conversation regardless of nextAttemptAt). A completion that finds an undispatched
+  // pending delivery of the same conversation joins that head's deadline instead of extending it.
+  // The delivery worker keeps sweeping while any pending row exists, so the deadline always fires.
+  const settleMs = chatCompletionSettleMs();
+  let nextAttemptAt = new Date();
+  if (settleMs > 0) {
+    const [head] = await tx.select({ nextAttemptAt: deliveries.nextAttemptAt }).from(deliveries)
+      .innerJoin(handoffs, and(eq(handoffs.taskId, deliveries.taskId), eq(handoffs.companyId, deliveries.companyId)))
+      .where(and(eq(deliveries.companyId, after.companyId), eq(handoffs.conversationId, handoff.conversationId),
+        eq(handoffs.sessionGeneration, handoff.sessionGeneration), eq(handoffs.agentId, handoff.agentId),
+        inArray(deliveries.status, [...pending]), isNull(deliveries.targetRunId)))
+      .orderBy(asc(deliveries.createdAt), asc(deliveries.id)).limit(1);
+    nextAttemptAt = head?.nextAttemptAt ?? new Date(Date.now() + settleMs);
+  }
+  await tx.insert(deliveries).values({ companyId: after.companyId, taskId: after.id, statusVersion: after.statusVersion, nextAttemptAt }).onConflictDoNothing();
   return true;
 }
 
