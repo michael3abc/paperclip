@@ -112,7 +112,9 @@ describe("TaskTodoPanel", () => {
     await act(async () => button("Cancel item", row)!.click());
     await settle();
     expect(mocks.addComment).toHaveBeenCalledTimes(1);
-    expect(mocks.addComment).toHaveBeenCalledWith("chat-1", "取消 TODO #3：「HOM-389 aux 出來後照分岔表執行」。請停掉這一項背後的 task 與 job，執行 `todo cancel 3`，然後繼續其他項目。");
+    // A Chat conversation accepts a message only with a clientRequestId (HTTP 422 otherwise).
+    expect(mocks.addComment).toHaveBeenCalledWith("chat-1", "取消 TODO #3：「HOM-389 aux 出來後照分岔表執行」。請停掉這一項背後的 task 與 job，執行 `todo cancel 3`，然後繼續其他項目。",
+      undefined, undefined, undefined, expect.stringMatching(/^[0-9a-f-]{36}$/));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["issues", "comments", "chat-1"] });
     expect(row.textContent).toContain("Cancel requested");
     expect(button("Cancel", row)).toBeUndefined();
@@ -130,6 +132,14 @@ describe("TaskTodoPanel", () => {
     await settle();
     expect(row.textContent).toContain("Could not send the request");
     expect(row.textContent).not.toContain("Cancel requested");
+    // A retry reuses the same request id, so a request that did arrive is not posted twice.
+    mocks.addComment.mockResolvedValue({ id: "comment-2" });
+    await act(async () => button("Cancel item", row)!.click());
+    await settle();
+    expect(mocks.addComment).toHaveBeenCalledTimes(2);
+    expect(mocks.addComment.mock.calls[1]![5]).toBe(mocks.addComment.mock.calls[0]![5]);
+    expect(mocks.addComment.mock.calls[0]![5]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(row.textContent).toContain("Cancel requested");
   });
 
   it("does not treat an item that names this conversation itself as waiting on a task", async () => {
