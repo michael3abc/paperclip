@@ -3,7 +3,6 @@ import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPr
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
 import { AgentRosterFilters, useAgentRosterFilters } from "@/components/agents/AgentRosterFilters";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
@@ -193,7 +192,6 @@ export function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds:
 export type AgentsView = "list" | "org";
 
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
-  const agentChatPins = useAgentChatPins();
   const [query, setQuery] = useState("");
   const chartActionsRef = useRef<OrgChartActions | null>(null);
   const chartActions = useMemo<OrgChartActions>(() => ({
@@ -401,16 +399,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       </>
     ) : null;
     return (
-      <div key={agent.id} className="agent-pin-row agent-roster-pin-row group/agent-pin relative">
       <EntityRow
+        key={agent.id}
         title={agent.name}
         titleAccessory={<PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} />}
-        titleClassName="agent-pin-text flex-1"
+        titleClassName="flex-1"
         titleTextClassName="truncate"
         subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className="agent-roster-identity group py-3 group-hover/agent-pin:bg-accent/50 group-focus-within/agent-pin:bg-accent/50"
+        className="agent-roster-identity group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
@@ -426,10 +424,10 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
             {agent.lastHeartbeatAt && <span className="text-xs text-muted-foreground" title="Last heartbeat">{relativeTime(agent.lastHeartbeatAt)}</span>}
           </div>
         )}
+        // Roster rows carry only the fork's personal chat-pin preference; the
+        // upstream navigation pin stays in the chat contacts sidebar.
         trailing={<AgentChatPinButton agent={agent} />}
       />
-      <AgentChatPin agent={agent} pins={agentChatPins} />
-      </div>
     );
   };
 

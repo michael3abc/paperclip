@@ -612,6 +612,19 @@ describe("Agents", () => {
     expect(heartbeatCell?.textContent).not.toContain("\n");
   });
 
+  it("offers one chat pin per roster row: the personal chat-pin preference only", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      renderAgentsView(root, queryClient);
+    });
+    await flushReact();
+    await flushReact();
+
+    const pins = [...container.querySelectorAll("button")].filter((button) => /^(Pin|Unpin) Alpha\b/.test(button.getAttribute("aria-label") ?? ""));
+    expect(pins.map((button) => button.getAttribute("aria-label"))).toEqual(["Pin Alpha chat"]);
+    expect(container.querySelector(".agent-chat-pin")).toBeNull();
+  });
+
   it("switches between the preserved list and the interactive org chart with icon buttons", async () => {
     root = createRoot(container);
     await act(async () => {
