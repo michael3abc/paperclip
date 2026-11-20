@@ -177,7 +177,9 @@ import type {
 } from "@paperclipai/shared";
 import {
   checkOAuthEndpointUrl,
+  configuredToolCallTimeoutMs,
   getConnectableAppDefinition,
+  TOOL_CALL_TIMEOUT_MAX_MS,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   type GitHubConnectorProfileId,
@@ -346,7 +348,8 @@ const ACTION_REQUEST_PREPARATION_WAIT_MS = 2 * 60 * 1000;
 // Concurrent consumers must wait at least as long as the provider execution
 // they are joining. The extra grace lets the owner persist the terminal request
 // state after the provider timeout/result settles.
-const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
+// A connection may allow its calls up to TOOL_CALL_TIMEOUT_MAX_MS (HOM-411).
+const ACTION_REQUEST_EXECUTION_WAIT_MS = Math.max(APPROVED_EXECUTION_TIMEOUT_MS, TOOL_CALL_TIMEOUT_MAX_MS) + 5_000;
 // The gateway creates an ask-first request in two steps: it inserts the row
 // with a null signature, then it signs the row and sets the expiry. A concurrent
 // matching call can observe the row in this window. A null signature alone does
@@ -1027,6 +1030,45 @@ function gatewaySessionFromRow(
   };
 }
 
+/** Reason code of a timed-out call whose change may already have happened (HOM-411). */
+export const TOOL_TIMEOUT_UNKNOWN_OUTCOME = "tool_timeout_unknown_outcome";
+export const TOOL_TIMEOUT_UNKNOWN_OUTCOME_MESSAGE =
+  "The action timed out. The change may already have been made; check before trying again.";
+
+/**
+ * A timed-out call to anything but a read-only tool has an unknown outcome:
+ * the provider may have finished the change after Paperclip stopped waiting.
+ * Approved calls count as writes because a policy asked a person first.
+ */
+function toolTimeoutOutcomeUnknown(tool: Pick<ToolGatewayDescriptor, "risk">, approvedExecution: boolean) {
+  return approvedExecution || tool.risk !== "read";
+}
+
+function toolTimeoutError(input: { mayHaveChanged: boolean; readOnlyMessage: string; details?: Record<string, unknown> }) {
+  return input.mayHaveChanged
+    ? new ToolGatewayHttpError(504, TOOL_TIMEOUT_UNKNOWN_OUTCOME_MESSAGE, TOOL_TIMEOUT_UNKNOWN_OUTCOME, { ...input.details, outcomeUnknown: true })
+    : new ToolGatewayHttpError(504, input.readOnlyMessage, "tool_timeout", input.details);
+}
+
+/** Reclassify a plain timeout from a non-read tool as an unknown outcome. */
+function classifyToolTimeout(error: unknown, tool: Pick<ToolGatewayDescriptor, "risk">, approvedExecution: boolean): unknown {
+  if (!(error instanceof ToolGatewayHttpError) || error.reasonCode !== "tool_timeout") return error;
+  if (!toolTimeoutOutcomeUnknown(tool, approvedExecution)) return error;
+  return toolTimeoutError({ mayHaveChanged: true, readOnlyMessage: error.message, details: error.details });
+}
+
+/** Failures whose external effect is unknown: the card says so instead of "failed". */
+const TOOL_OUTCOME_UNKNOWN_ERROR_CODES = new Set([TOOL_TIMEOUT_UNKNOWN_OUTCOME, "tool_execution_outcome_unknown"]);
+
+export function toolActionProjectionStatus(
+  status: "approved" | "executing" | "executed" | "failed" | "expired" | "cancelled",
+  errorCode?: string | null,
+) {
+  if (status === "cancelled") return "expired" as const;
+  if (status === "failed" && errorCode && TOOL_OUTCOME_UNKNOWN_ERROR_CODES.has(errorCode)) return "unknown" as const;
+  return status;
+}
+
 function timeoutMs(value: number | undefined, tool?: ToolGatewayDescriptor) {
   if (!Number.isFinite(value)) return tool?.providerType === "paperclip_github_chat"
     ? GITHUB_BOT_TOOL_TIMEOUT_MS
@@ -1395,6 +1437,12 @@ export function createToolGatewayService(
     runtimeSupervisor?: ToolRuntimeSupervisorOptions;
     toolActionSigningSecret?: string;
     onToolActionSettled?: (actionRequestId: string) => Promise<unknown>;
+    /**
+     * "background" (HOM-411): approving a tool action records the decision and
+     * returns at once; the approved call runs afterwards and its outcome reaches
+     * the card and the assignee wake when it settles. "inline" (default) waits.
+     */
+    approvedExecutionMode?: "inline" | "background";
     /** Test seam for deterministic remote MCP protocol fixtures. */
     remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
     /** Test seam for refreshing personal Gmail grants. */
@@ -2724,6 +2772,28 @@ export function createToolGatewayService(
     }));
   }
 
+  // Approved executions running after their approval returned (HOM-411). One
+  // per action request: a repeated approval never starts a second call, and a
+  // restart leaves the request executing for the interruption sweep.
+  const backgroundApprovedExecutions = new Map<string, Promise<void>>();
+  const gatewayStartedAt = new Date();
+
+  async function runApprovedExecution(actionRequestId: string, run: () => Promise<unknown>): Promise<void> {
+    if (options.approvedExecutionMode !== "background") {
+      await run();
+      return;
+    }
+    if (backgroundApprovedExecutions.has(actionRequestId)) return;
+    const execution = Promise.resolve()
+      .then(run)
+      .then(() => undefined, (error: unknown) => {
+        // The outcome is already persisted by the execution path.
+        logger.debug({ err: error, actionRequestId }, "Approved tool action finished with an error");
+      })
+      .finally(() => backgroundApprovedExecutions.delete(actionRequestId));
+    backgroundApprovedExecutions.set(actionRequestId, execution);
+  }
+
   async function reflectToolActionInteractionLifecycle(input: {
     actionRequestId: string;
     status:
@@ -2790,7 +2860,8 @@ export function createToolGatewayService(
                 : null;
       if (!outcome) return;
       const projection = asRecord(currentResult?.toolAction);
-      if (projection?.status === (input.status === "cancelled" ? "expired" : input.status)
+      const projectedStatus = toolActionProjectionStatus(input.status, input.errorCode);
+      if (projection?.status === projectedStatus
         && projection.errorCode === (input.errorCode ?? null)
         && projection.errorMessage === (input.errorMessage ?? null)
         && projection.resultSummary === (input.resultSummary ?? null)) return false;
@@ -2811,7 +2882,7 @@ export function createToolGatewayService(
             toolAction: {
               ...asRecord(currentResult?.toolAction),
               version: 1,
-              status: input.status === "cancelled" ? "expired" : input.status,
+              status: projectedStatus,
               errorCode: input.errorCode ?? null,
               errorMessage: input.errorMessage ?? null,
               resultSummary: input.resultSummary ?? null,
@@ -2836,7 +2907,7 @@ export function createToolGatewayService(
       details: {
         interactionId: linked.interactionId,
         actionRequestId: input.actionRequestId,
-        executionStatus: input.status,
+        executionStatus: toolActionProjectionStatus(input.status, input.errorCode),
       },
     });
     if (["executed", "failed", "expired", "cancelled"].includes(input.status))
@@ -8111,10 +8182,15 @@ export function createToolGatewayService(
     if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
       ms = railwayCommandBudgetMs(parameters);
     }
+    // A connection's own deadline (HOM-411) replaces the built-in one on every
+    // path: approved execution, Test calls and agent calls.
+    const configuredMs = configuredToolCallTimeoutMs(connection.config, entry.toolName);
+    if (configuredMs !== null) ms = configuredMs;
+    const approvedExecution = Boolean(session.approvedInvocationId);
     const grant = await resolveConnectionGrant(session, connection);
     const restConnector = restConnectorFor(connection);
     if (restConnector) {
-      const budgetMs = Math.min(ms, 30_000);
+      const budgetMs = configuredMs ?? Math.min(ms, 30_000);
       const deadlineAt = Date.now() + budgetMs;
       const signal = AbortSignal.timeout(budgetMs);
       const client = restConnector.client(connection, await resolveCredentialHeaders(session, connection, grant),
@@ -8125,7 +8201,7 @@ export function createToolGatewayService(
     }
     const nativeProvider = nativeProviderCatalogFor(connection);
     if (nativeProvider) {
-      const budgetMs = Math.min(ms, 30_000);
+      const budgetMs = configuredMs ?? Math.min(ms, 30_000);
       const deadlineAt = Date.now() + budgetMs;
       const signal = AbortSignal.timeout(budgetMs);
       const data = await nativeProvider.execute({ binding: session, connection,
@@ -8902,11 +8978,10 @@ export function createToolGatewayService(
       if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         if (mcpSession) forgetMcpHttpSession(mcpSession);
         execution.failureKind = "invocation_timeout";
-        const timeoutMessage = workspaceTarget?.write
-          ? "The Google action timed out. The change may or may not have been made; check before trying again."
-          : "Remote MCP tool call timed out";
-        throw new ToolGatewayHttpError(504, timeoutMessage, "tool_timeout", {
-          connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout",
+        throw toolTimeoutError({
+          mayHaveChanged: Boolean(workspaceTarget?.write) || toolTimeoutOutcomeUnknown(tool, approvedExecution),
+          readOnlyMessage: "Remote MCP tool call timed out",
+          details: { connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout" },
         });
       }
       if (error instanceof McpHttpResponseError) {
@@ -8987,6 +9062,11 @@ export function createToolGatewayService(
       session,
       tool,
     );
+    const configuredMs = configuredToolCallTimeoutMs(connection.config, entry.toolName);
+    if (configuredMs !== null) {
+      ms = configuredMs;
+      useProviderDefaultTimeout = false;
+    }
     const grant = await resolveConnectionGrant(session, connection);
     const template = await resolveLocalStdioRuntimeTemplate(connection);
     const env = await localStdioEnvironment(
@@ -8998,6 +9078,7 @@ export function createToolGatewayService(
     const progressReporter = template.templateId === "paperclip.cognee-cloud" ? null : toolCallProgressReporterFor(session, tool, invocationId);
     const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters, progressReporter,
       timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms })
+      .catch((error: unknown) => { throw classifyToolTimeout(error, tool, Boolean(session.approvedInvocationId)); })
       .finally(() => progressReporter?.finish());
     // Cognee is a bundled HTTP client. Provider failures are tool failures, not
     // crashed local processes, and must never consume slots or restart budgets.
@@ -10079,7 +10160,9 @@ export function createToolGatewayService(
           toolResultErrorMessage(providerResult, connectedMcpExecution.failureInstructions),
           providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error", { execution: connectedMcpExecution.execution });
       }
-    } catch (err) {
+    } catch (caught) {
+      // An approved call is a write by policy: its timeout has an unknown outcome.
+      const err = classifyToolTimeout(caught, args.tool, Boolean(args.approvedClaim));
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
       const reasonCode =
         err instanceof ToolContentValidationError
@@ -10944,7 +11027,7 @@ export function createToolGatewayService(
           ? await runWithTimeout(
               executeBuiltinTool(session, tool, parameters, invocation.id),
               executionTimeoutMs,
-            )
+            ).catch((error: unknown) => { throw classifyToolTimeout(error, tool, true); })
           : (() => {
               throw new ToolGatewayHttpError(
                 409,
@@ -11367,7 +11450,7 @@ export function createToolGatewayService(
   const reviewInterruption = toolReviewInterruptionService(db, async settled => {
     void emitConnectionInvoked(db, settled.invocationId);
     await reflectToolActionInteractionLifecycle(settled);
-  });
+  }, options.approvedExecutionMode === "background" ? gatewayStartedAt : null);
 
   const reviewExpiry = toolReviewExpiryService(db, async expired => {
     void emitConnectionInvoked(db, expired.invocationId);
@@ -11375,6 +11458,10 @@ export function createToolGatewayService(
   });
 
   return {
+    /** Wait for approved calls still running after their approval returned. */
+    async settleBackgroundApprovedExecutions() {
+      await Promise.all([...backgroundApprovedExecutions.values()]);
+    },
     async recordRuntimeMcpDeliveryDiagnostic(input: {
       companyId: string;
       agentId: string;
@@ -12905,17 +12992,14 @@ export function createToolGatewayService(
           status: "approved",
         });
         if (isTestOriginInvocation(invocation)) {
-          await runApprovedTestInvocation(invocation, signedPayload, actionRequest.id);
+          await runApprovedExecution(actionRequest.id, () => runApprovedTestInvocation(invocation, signedPayload, actionRequest.id));
           const [settled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, actionRequest.id));
           return actionRequestResolution(settled ?? actionRequest);
         }
         if (signedPayload.executionOnApprove === true) {
-          try {
-            await executeApprovedAgentInvocation({ actionRequest, invocation });
-          } catch {
-            // The execution outcome is persisted on the invocation/request and
-            // reflected onto the accepted interaction for the continuation wake.
-          }
+          // The execution outcome is persisted on the invocation/request and
+          // reflected onto the accepted interaction for the continuation wake.
+          await runApprovedExecution(actionRequest.id, () => executeApprovedAgentInvocation({ actionRequest, invocation }).catch(() => undefined));
           const [settled] = await db
             .select()
             .from(toolActionRequests)
@@ -13019,21 +13103,18 @@ export function createToolGatewayService(
       // call, so approving it is what runs it. Execute against the signed
       // arguments and record the result on the invocation for the live panel.
       if (isTestOriginInvocation(invocation)) {
-        await runApprovedTestInvocation(
+        await runApprovedExecution(updated.id, () => runApprovedTestInvocation(
           { ...invocation, approvalState: "approved" },
           signedPayload,
           updated.id,
-        );
+        ));
       } else if (signedPayload.executionOnApprove === true) {
-        try {
-          await executeApprovedAgentInvocation({
-            actionRequest: updated,
-            invocation,
-          });
-        } catch {
-          // Persisted failure is the approval result; accepting the card itself
-          // remains successful and the agent wake receives the failure context.
-        }
+        // Persisted failure is the approval result; accepting the card itself
+        // remains successful and the agent wake receives the failure context.
+        await runApprovedExecution(updated.id, () => executeApprovedAgentInvocation({
+          actionRequest: updated,
+          invocation,
+        }).catch(() => undefined));
       }
       const [settled] = await db
         .select()

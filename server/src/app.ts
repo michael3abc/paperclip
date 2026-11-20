@@ -987,6 +987,8 @@ export async function createApp(
   const toolGateway = createToolGatewayService(db, {
     budgetHooks: { cancelWorkForScope: heartbeatService(db, { pluginWorkerManager: workerManager }).cancelBudgetScopeWork },
     onToolActionSettled: (id) => toolActionDeliveries.deliver(id),
+    // Accepting a tool approval answers at once; the call runs afterwards (HOM-411).
+    approvedExecutionMode: "background",
     pluginToolDispatcher: toolDispatcher,
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,

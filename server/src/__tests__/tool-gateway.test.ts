@@ -4952,7 +4952,8 @@ rl.on("line", (line) => {
           expect(event.metadata).toMatchObject({ execution: { stream: { eventsReceived: 2, matchedResponse: true, ended: false } } });
         } else {
           const timeout = scenario === "default deadline" || scenario === "explicit deadline";
-          expectGatewayError(result.error, timeout ? 504 : 502, timeout ? "tool_timeout" : "mcp_remote_fetch_failed");
+          // The fixture tool is a write: its timeout has an unknown outcome (HOM-411).
+          expectGatewayError(result.error, timeout ? 504 : 502, timeout ? "tool_timeout_unknown_outcome" : "mcp_remote_fetch_failed");
           expect(stored.healthStatus).toBe("ok");
           expect(event.metadata).toMatchObject({ execution: {
             failureKind: timeout ? "invocation_timeout" : "transport_failure",
@@ -5075,7 +5076,8 @@ rl.on("line", (line) => {
     },
     {
       name: "timeout abort",
-      reasonCode: "tool_timeout",
+      // Write fixture tool: a timeout leaves the outcome unknown (HOM-411).
+      reasonCode: "tool_timeout_unknown_outcome",
       status: 504,
       timeoutMs: 10,
       response: () => ({ delayMs: 75, body: { jsonrpc: "2.0", id: "slow", result: { content: [{ type: "text", text: "late" }] } } }),
@@ -5160,14 +5162,14 @@ rl.on("line", (line) => {
   const perCallResponseFailures = [
     {
       name: "a tool call timeout",
-      reasonCode: "tool_timeout",
+      reasonCode: "tool_timeout_unknown_outcome",
       status: 504,
       timeoutMs: 300,
       response: () => ({ delayMs: 1_000, body: {} }),
     },
     {
       name: "a response body timeout",
-      reasonCode: "tool_timeout",
+      reasonCode: "tool_timeout_unknown_outcome",
       status: 504,
       timeoutMs: 300,
       response: () => ({ bodyDelayMs: 1_000, body: {} }),

@@ -37,6 +37,9 @@ const terminalStatuses: Array<typeof toolActionRequests.$inferSelect.status> = [
 ];
 
 /** Durable, content-free receipts. Batch ready outcomes so wake coalescing cannot lose a review. */
+/** Failures whose external effect is unknown (HOM-411); see toolActionProjectionStatus. */
+const OUTCOME_UNKNOWN_ERROR_CODES = new Set(["tool_timeout_unknown_outcome", "tool_execution_outcome_unknown"]);
+
 export function toolActionDeliveryService(
   db: Db,
   heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">,
@@ -237,15 +240,19 @@ export function toolActionDeliveryService(
               reason?: string;
               toolAction?: { resultSummary?: string; errorMessage?: string; errorCode?: string | null };
             } | null;
+            const errorCode = result?.toolAction?.errorCode ?? invocation.errorCode;
+            const outcomeUnknown = request.status === "failed" && OUTCOME_UNKNOWN_ERROR_CODES.has(errorCode ?? "");
             const instructions =
-              request.status === "executed"
+              outcomeUnknown
+                ? "The approved action timed out or was interrupted, so its outcome is unknown: the change may already have been made. Paperclip does not resend it. Check the current state in the target system before calling it again."
+                : request.status === "executed"
                 ? "The approved action already ran. Do not call it again; continue with the recorded result. Process the result and answer the user in your own words. Do not paste the raw tool or transport JSON unless the user asks for it."
                 : request.status === "rejected"
                   ? "The human declined this action. Do not retry the same call on your own. Adjust your approach or explain what is blocked. If the person asks for the same action again in a later message, that is an explicit retry: make the call again so a fresh approval card is posted."
                   : request.status === "expired" ||
                       request.status === "cancelled"
                     ? "The review is no longer available. Do not execute the stored request. Explain the recorded outcome before requesting another review."
-                    : (result?.toolAction?.errorCode ?? invocation.errorCode) === "github_access_denied"
+                    : errorCode === "github_access_denied"
                       ? githubAccessDeniedInstructions(invocation.toolName, connectionMethodKey)
                       : "The approved action did not complete successfully. Do not automatically replay it; inspect the recorded outcome first.";
             return {
@@ -258,7 +265,7 @@ export function toolActionDeliveryService(
                   : request.decidedByUserId
                     ? "accepted"
                     : "none",
-              executionStatus: request.status,
+              executionStatus: outcomeUnknown ? "unknown" : request.status,
               resultSummary: (result?.toolAction?.resultSummary ?? invocation.resultSummary?.summary ?? "").slice(0, 1024),
               error: (result?.toolAction?.errorMessage ?? invocation.errorMessage)?.slice(0, 256),
               declineReason: result?.reason?.slice(0, 256),
