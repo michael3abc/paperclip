@@ -1,5 +1,9 @@
 # Paperclip fork
 
+HOM-458 (michael/main-context-compact): server-owned idle context-maintenance policy
+for ccpocket_bridge main Chats, default 150K / 0 off. Requires the paired CC Pocket
+adapter/Bridge commit. No migration, deployment or restart; see docs/agents/session-bridge.md.
+
 `michael3abc/paperclip` is a personal fork of
 [paperclipai/paperclip](https://github.com/paperclipai/paperclip). It runs one
 maintainer's agent company. The release line is `michael/main`. If you only want

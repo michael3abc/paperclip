@@ -359,6 +359,8 @@ and task APIs for legacy adapters. Never require a native-only tool in a legacy 
 
 ## Native session bridge
 
+HOM-458 main Chat compaction scope is rebuilt in task-context from the assigned ccpocket_bridge main. mainContextCompactThresholdTokens defaults to 150000, 0 disables. Keep maintenance at the adapter/Bridge idle boundary; never replay unknown maintenance or turn its failure into a user-input retry. Preserve canonical TODO/cards/decisions. See docs/agents/session-bridge.md.
+
 Explicit task cancellation by an authorized reviewer, project lead or board actor
 abandons execution review without a changes-requested decision or worker wake. AI
 connection requests expire only on task closure, ownership change or proven changes
