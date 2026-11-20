@@ -124,7 +124,7 @@ vi.mock("./AppConnectionSidebar", () => ({
 }));
 
 vi.mock("./BreadcrumbBar", () => ({
-  BreadcrumbBar: ({ toolbarAction }: { toolbarAction?: ReactNode }) => <div>Breadcrumbs{toolbarAction}</div>,
+  BreadcrumbBar: ({ taskDetailLayout = false, toolbarAction }: { taskDetailLayout?: boolean; toolbarAction?: ReactNode }) => <div data-breadcrumb={taskDetailLayout ? "inset" : "top"}>Breadcrumbs{toolbarAction}</div>,
 }));
 vi.mock("./AgentConversationsSidebar", () => ({
   AgentConversationsSidebar: ({ compact }: { compact?: boolean }) => compact ? <button>Browse chats</button> : <aside aria-label="Chat contacts" />,
@@ -511,10 +511,15 @@ describe("Layout", () => {
       expect(container.textContent).toContain("Outlet content");
       expect(container.querySelector('[aria-label="Chat contacts"]')).toBeNull();
       expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
+      // The header stays inset beside the side panel; the full-width top bar is hidden.
+      expect(container.querySelector('[data-breadcrumb="inset"]')).not.toBeNull();
+      expect(container.querySelector('[data-breadcrumb="top"]')?.closest(".app-breadcrumb")?.classList.contains("hidden")).toBe(true);
       classicWorkspace.enabled = true;
       await act(async () => renderLayoutView(root, queryClient));
       await flushReact();
       expect(container.querySelector('[aria-label="Chat contacts"]')).not.toBeNull();
+      expect(container.querySelector('[data-breadcrumb="inset"]')).toBeNull();
+      expect(container.querySelector('[data-breadcrumb="top"]')?.closest(".app-breadcrumb")?.classList.contains("hidden")).toBe(false);
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
