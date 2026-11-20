@@ -5,6 +5,7 @@ import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/
 import { AUTOMATION_CONVERSATION_ORIGIN_KIND, FAST_RESPONSE_AGENT_GUIDANCE, ONBOARDING_FIRST_TASK_ORIGIN_KIND, RESPONSIBILITY_BAR_ORIGIN_KIND, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND, fastResponseHistoryBody, isValidIanaTimeZone } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { parseObject } from "../../adapters/utils.js";
+import { mainContextCompactPolicy } from "./main-context-compact.js";
 import { isConversation } from "../agent-conversations.js";
 import { chatCompletionInstruction } from "../chat-completion-delivery.js";
 import { getConversationConfirmationContext } from "../conversation-confirmation-context.js";
@@ -63,6 +64,10 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   const { run, agent } = input;
   const { issueRef, issueContext, context, taskSession } = input.task;
   const { trustPreset, experimentalInstanceSettings } = input.policy;
+  // Rebuild from the assigned main and Chat; wake text cannot widen this scope.
+  const compactPolicy = mainContextCompactPolicy(agent, issueContext);
+  if (compactPolicy) context.paperclipMainContextCompact = compactPolicy;
+  else delete context.paperclipMainContextCompact;
   const { issuesSvc, getPinnedSkillTestContext } = input.services;
   const admittedScope = parseObject(context.paperclipAgentJwtScope);
   if (!input.policy.recovering || (admittedScope.kind !== "standard" && admittedScope.kind !== "skill_test")) {

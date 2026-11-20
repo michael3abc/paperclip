@@ -207,6 +207,27 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     expect(context.paperclipAgentJwtScope).toEqual({ kind: recovering ? "skill_test" : "standard", ...(recovering ? { issueId: f.issueId } : {}) });
   });
 
+  it("rebuilds main Chat compaction scope from the assigned agent rather than caller context", async () => {
+    const f = await seed();
+    const [savedAgent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const [issueRef] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", issueId: f.issueId }).returning();
+    const agent = { ...savedAgent!, adapterType: "ccpocket_bridge", adapterConfig: { role: "main", mainContextCompactThresholdTokens: 180000 } };
+    for (const conversationAgentId of [f.agentId, null]) {
+      const context: Record<string, unknown> = { issueId: f.issueId, paperclipMainContextCompact: { thresholdTokens: 1, agentId: "foreign" } };
+      await prepareHeartbeatTaskContext(db, {
+        run: run!, agent, task: { issueRef: issueRef!, context, taskSession: null,
+          issueContext: { ...issueRef, conversationAgentId } as never },
+        policy: { recovering: false, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
+        services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+      });
+      if (conversationAgentId) expect(context.paperclipMainContextCompact).toEqual({ version: 1,
+        issueId: f.issueId, agentId: f.agentId, thresholdTokens: 180000 });
+      else expect(context.paperclipMainContextCompact).toBeUndefined();
+    }
+  });
+
   it("delivers the chat owner's saved time zone to any adapter and keeps the admitted zone on recovery", async () => {
     const f = await seed();
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));

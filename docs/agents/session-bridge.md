@@ -1,5 +1,30 @@
 # session-bridge
 
+## Main Chat context maintenance (HOM-458)
+
+For ccpocket_bridge with adapterConfig.role=main, task-context preparation rebuilds
+paperclipMainContextCompact from the assigned agent and its own Chat; caller/wake
+context cannot widen the scope. adapterConfig.mainContextCompactThresholdTokens
+defaults to 150000; a nonnegative safe integer is required and 0 disables it.
+Tasks, workers, foreign Chats and other adapters do not receive this policy.
+Server preparation owns scope/configuration; the adapter owns idle maintenance;
+Bridge owns native readiness and compaction RPCs. No migration or timer is added.
+
+The paired CC Pocket implementation persists intent before maintenance, rechecks
+native identity/epoch/activity and idle state, and never retries unknown compaction
+or resends user input. Stop/hold and unanswered native prompts defer maintenance.
+The same native session remains. TODO, approvals and interaction cards remain
+canonical Paperclip data; compaction never grants approval. The adapter reloads
+TODO/rules on the next authorized turn even with autonomy off. Maintenance
+failure preserves the completed user result; missing maintenance usage stays
+explicitly incomplete.
+
+Requires Bridge idle_session_compact_v1 and the matching adapter. Main owns
+rollout; HOM-458 does not deploy or restart anything. Disable new attempts with
+threshold 0, or revert the paired commits through normal release procedures,
+preserving native sessions and operation receipts. See CC Pocket's existing
+docs/paperclip-main-agent.md for wire, accounting and re-arm semantics.
+
 Moved from `AGENTS.md` on 2026-11-13 and rewritten the same day for liveness-first.
 Binding source: `/home/michael/services/docs/agents/liveness-first.md`; it wins over
 any conflicting rule here. Native session bridge: startup recovery to main Chat,
