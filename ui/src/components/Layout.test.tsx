@@ -514,11 +514,18 @@ describe("Layout", () => {
       // The header stays inset beside the side panel; the full-width top bar is hidden.
       expect(container.querySelector('[data-breadcrumb="inset"]')).not.toBeNull();
       expect(container.querySelector('[data-breadcrumb="top"]')?.closest(".app-breadcrumb")?.classList.contains("hidden")).toBe(true);
+      // The chat row is horizontal, so the inset header must stack above the page in its own column
+      // instead of becoming a column beside it.
+      const insetColumn = container.querySelector("[data-chat-inset-column]");
+      expect(insetColumn?.classList.contains("flex-col")).toBe(true);
+      expect(insetColumn?.querySelector('[data-breadcrumb="inset"]')).not.toBeNull();
+      expect(insetColumn?.querySelector("#main-content")).not.toBeNull();
       classicWorkspace.enabled = true;
       await act(async () => renderLayoutView(root, queryClient));
       await flushReact();
       expect(container.querySelector('[aria-label="Chat contacts"]')).not.toBeNull();
       expect(container.querySelector('[data-breadcrumb="inset"]')).toBeNull();
+      expect(container.querySelector("[data-chat-inset-column]")).toBeNull();
       expect(container.querySelector('[data-breadcrumb="top"]')?.closest(".app-breadcrumb")?.classList.contains("hidden")).toBe(false);
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
