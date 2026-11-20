@@ -7,16 +7,19 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { useIssueTodoDocument } from "@/hooks/useIssueTodoDocument";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { createUuid } from "@/lib/uuid";
 import {
   parseTodoDocument,
+  todoApproveComment,
   todoCancelComment,
   todoDisplayText,
   todoMarkdownText,
   todoOwnTask,
+  todoReplyComment,
   todoView,
   TODO_OPEN_VISIBLE,
   type TodoItem,
@@ -25,14 +28,16 @@ import { cn, relativeTime } from "@/lib/utils";
 
 /**
  * The conversation's TODO as the Owner reads it: the goal, what needs the Owner, the open items in order with the
- * live status of their tasks, and what finished recently. The agent owns the list; the only action here is asking
- * the agent to cancel an item, which posts a comment in the conversation.
+ * live status of their tasks, and what finished recently. The agent owns the list; the actions here only post a
+ * comment in the conversation: asking the agent to cancel an item, or answering a "Needs you" item (approve or done,
+ * or a reply in words).
  */
 
 const LINKED_TASK_LIMIT = 12;
 const SETTLED_TASK_STATUSES = new Set(["done", "cancelled"]);
 type LinkedTask = Pick<Issue, "id" | "identifier" | "title" | "status"> & Partial<Pick<Issue, "blockerAttention">>;
 type OpenState = "next" | "waiting" | "queued";
+type OwnerAction = "approve" | "reply";
 
 function SectionTitle({ children, count, className }: { children: ReactNode; count?: number; className?: string }) {
   return (
@@ -156,25 +161,51 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
     if (task) tasks.set(reference, task);
   });
 
-  // A Chat conversation accepts a message only with a clientRequestId. Keep one id per item so a
-  // retry after a lost response is recognised by the server instead of posting the request twice.
-  const cancelRequestIds = useRef(new Map<number, string>());
+  // A Chat conversation accepts a message only with a clientRequestId. Keep one id per request (item and
+  // body) so a retry after a lost response is recognised by the server instead of posting it twice.
+  const requestIds = useRef(new Map<string, string>());
+  const requestIdFor = (key: string) => {
+    let clientRequestId = requestIds.current.get(key);
+    if (!clientRequestId) {
+      clientRequestId = createUuid();
+      requestIds.current.set(key, clientRequestId);
+    }
+    return clientRequestId;
+  };
+  const post = (key: string, body: string) => issuesApi.addComment(issue.id, body, undefined, undefined, undefined, requestIdFor(`${key}\n${body}`));
+  const posted = (key: string, body: string) => {
+    requestIds.current.delete(`${key}\n${body}`);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issue.id) });
+  };
   const cancel = useMutation({
-    mutationFn: (item: TodoItem) => {
-      let clientRequestId = cancelRequestIds.current.get(item.id);
-      if (!clientRequestId) {
-        clientRequestId = createUuid();
-        cancelRequestIds.current.set(item.id, clientRequestId);
-      }
-      return issuesApi.addComment(issue.id, todoCancelComment(item), undefined, undefined, undefined, clientRequestId);
-    },
+    mutationFn: (item: TodoItem) => post(`cancel:${item.id}`, todoCancelComment(item)),
     onSuccess: (_comment, item) => {
-      cancelRequestIds.current.delete(item.id);
+      posted(`cancel:${item.id}`, todoCancelComment(item));
       setRequested((current) => new Set(current).add(item.id));
       setConfirming(null);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issue.id) });
     },
   });
+
+  // "Needs you" items: the Owner approves (or says it is done) or replies in words, from the item itself.
+  const [ownerAction, setOwnerAction] = useState<{ id: number; kind: OwnerAction } | null>(null);
+  const [ownerSent, setOwnerSent] = useState<ReadonlyMap<number, OwnerAction>>(() => new Map());
+  const [reply, setReply] = useState("");
+  const ownerBody = (item: TodoItem, kind: OwnerAction, message: string) =>
+    kind === "approve" ? todoApproveComment(item) : todoReplyComment(item, message);
+  const answer = useMutation({
+    mutationFn: ({ item, kind, message }: { item: TodoItem; kind: OwnerAction; message: string }) =>
+      post(`${kind}:${item.id}`, ownerBody(item, kind, message)),
+    onSuccess: (_comment, { item, kind, message }) => {
+      posted(`${kind}:${item.id}`, ownerBody(item, kind, message));
+      setOwnerSent((current) => new Map(current).set(item.id, kind));
+      setOwnerAction(null);
+      setReply("");
+    },
+  });
+  const openOwnerAction = (id: number, kind: OwnerAction) => {
+    answer.reset();
+    setOwnerAction(ownerAction?.id === id && ownerAction.kind === kind ? null : { id, kind });
+  };
 
   if (todoQuery.isPending) return <p role="status" className="text-sm text-muted-foreground">Loading TODO…</p>;
   if (todoQuery.isError) return <p role="alert" className="text-sm text-destructive">Could not load the TODO.</p>;
@@ -240,18 +271,82 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
         <section aria-label="Needs you" className="rounded-xl border border-amber-500/40 bg-amber-500/[0.07] p-3" data-testid="todo-owner">
           <SectionTitle count={view.owner.length} className="text-amber-700 dark:text-amber-300"><Hand className="h-3.5 w-3.5" />Needs you</SectionTitle>
           <ul className="mt-2 space-y-2">
-            {view.owner.map((item) => (
-              <li key={item.id} className="flex items-start gap-2.5" data-testid={`todo-owner-${item.id}`}>
-                <OpenGlyph task={linkedTask(item) ? tasks.get(item.task!) : undefined} />
-                <div className="min-w-0 flex-1">
-                  <ItemText value={item.text} />
-                  <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className="font-mono">#{item.id}</span>
-                    {chipFor(item) && <TaskChip reference={item.task!} task={tasks.get(item.task!)} />}
+            {view.owner.map((item) => {
+              const sent = ownerSent.get(item.id);
+              const active = ownerAction?.id === item.id ? ownerAction.kind : null;
+              return (
+                <li key={item.id} data-testid={`todo-owner-${item.id}`}>
+                  <div className="flex items-start gap-2.5">
+                    <OpenGlyph task={linkedTask(item) ? tasks.get(item.task!) : undefined} />
+                    <div className="min-w-0 flex-1">
+                      <ItemText value={item.text} />
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        <span className="font-mono">#{item.id}</span>
+                        {chipFor(item) && <TaskChip reference={item.task!} task={tasks.get(item.task!)} />}
+                      </div>
+                    </div>
+                    {sent ? (
+                      <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">{sent === "approve" ? "Approved" : "Reply sent"}</span>
+                    ) : (
+                      <div className="flex shrink-0 gap-1">
+                        <Button type="button" variant="outline" size="xs" aria-expanded={active === "approve"} onClick={() => openOwnerAction(item.id, "approve")}>
+                          Approve
+                        </Button>
+                        <Button type="button" variant="ghost" size="xs" aria-expanded={active === "reply"} onClick={() => openOwnerAction(item.id, "reply")}>
+                          Reply
+                        </Button>
+                      </div>
+                    )}
                   </div>
-                </div>
-              </li>
-            ))}
+                  {active === "approve" && (
+                    <div className="ml-6.5 mt-2 rounded-lg border bg-background/60 p-2.5 text-xs" role="group" aria-label={`Approve item ${item.id}`}>
+                      <p className="text-muted-foreground">
+                        Tell the agent this is approved or already done? It carries on with this item and closes it.
+                      </p>
+                      {answer.isError && <p role="alert" className="mt-1 text-destructive">Could not send. Try again.</p>}
+                      <div className="mt-2 flex gap-2">
+                        <Button type="button" size="xs" disabled={answer.isPending} onClick={() => answer.mutate({ item, kind: "approve", message: "" })}>
+                          {answer.isPending ? "Sending…" : "Approve item"}
+                        </Button>
+                        <Button type="button" variant="outline" size="xs" disabled={answer.isPending} onClick={() => setOwnerAction(null)}>Back</Button>
+                      </div>
+                    </div>
+                  )}
+                  {active === "reply" && (
+                    <form
+                      className="ml-6.5 mt-2 space-y-2 text-xs"
+                      aria-label={`Reply to item ${item.id}`}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (reply.trim()) answer.mutate({ item, kind: "reply", message: reply });
+                      }}
+                    >
+                      <Textarea
+                        value={reply}
+                        onChange={(event) => setReply(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                            event.preventDefault();
+                            event.currentTarget.form?.requestSubmit();
+                          }
+                        }}
+                        placeholder="Your answer. The agent reads it in this conversation."
+                        aria-label={`Reply to item ${item.id}`}
+                        className="bg-background"
+                        autoFocus
+                      />
+                      {answer.isError && <p role="alert" className="text-destructive">Could not send. Try again.</p>}
+                      <div className="flex gap-2">
+                        <Button type="submit" size="xs" disabled={answer.isPending || !reply.trim()}>
+                          {answer.isPending ? "Sending…" : "Send reply"}
+                        </Button>
+                        <Button type="button" variant="outline" size="xs" disabled={answer.isPending} onClick={() => setOwnerAction(null)}>Back</Button>
+                      </div>
+                    </form>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
