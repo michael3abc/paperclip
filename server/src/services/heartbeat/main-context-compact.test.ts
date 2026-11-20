@@ -14,9 +14,9 @@ describe("main Chat compaction policy", () => {
     for (const value of [0, 250000]) expect(mainContextCompactPolicy({ ...agent,
       adapterConfig: { role: "main", mainContextCompactThresholdTokens: value } }, chat)?.thresholdTokens).toBe(value);
   });
-  it("rejects malformed settings instead of silently falling back", () => {
-    for (const value of [-1, 1.5, "150000", Infinity]) expect(() => mainContextCompactPolicy({ ...agent,
-      adapterConfig: { role: "main", mainContextCompactThresholdTokens: value } }, chat)).toThrow(/nonnegative safe integer/);
+  it("disables compaction for malformed settings without failing the run", () => {
+    for (const value of [-1, 1.5, "150000", Infinity]) expect(mainContextCompactPolicy({ ...agent,
+      adapterConfig: { role: "main", mainContextCompactThresholdTokens: value } }, chat)).toBeNull();
   });
 });
 
