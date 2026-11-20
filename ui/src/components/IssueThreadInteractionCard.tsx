@@ -1,7 +1,7 @@
 import { DelegatedDecisionStatus } from "./DelegatedDecisionStatus";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode, Children } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, Lock, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, CircleHelp, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, Lock, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { appTabHref } from "@/pages/apps/app-tabs";
 import { formatAssigneeUserLabel } from "../lib/assignees";
@@ -522,6 +522,7 @@ type ToolActionCardState =
   | "running"
   | "executed"
   | "failed"
+  | "unknown"
   | "cancelled"
   | "declined"
   | "expired";
@@ -546,6 +547,8 @@ function toolActionCardState(
   // status so a self-resolving "running…" advances to its real result.
   if (execStatus === "executed") return "executed";
   if (execStatus === "failed") return "failed";
+  // Timed out or interrupted: the change may have happened. Never shown as a failure.
+  if (execStatus === "unknown") return "unknown";
   if (execStatus === "expired") return "expired";
   if (interaction.status === "failed") return "failed";
   // accepted + approved/executing/unknown → the transient running state.
@@ -585,6 +588,13 @@ function toolActionStatusClasses(state: ToolActionCardState): {
         badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
         label: "Failed",
         Icon: XCircle,
+      };
+    case "unknown":
+      return {
+        shell: "border-2 border-border bg-transparent",
+        badge: "border-border bg-muted text-foreground",
+        label: "Outcome unknown",
+        Icon: CircleHelp,
       };
     case "declined":
       return {
@@ -1947,12 +1957,14 @@ function ToolActionResolution({
     running: "Approved · Running…",
     executed: "Succeeded",
     failed: "Execution failed",
+    unknown: "Outcome unknown · Check before retrying",
     declined: "Declined",
     expired: "Expired",
     cancelled: "Cancelled",
   };
-  const Icon = state === "running" ? Loader2 : state === "executed" ? CheckCircle2 : state === "failed" ? AlertTriangle : state === "expired" ? Clock : MinusCircle;
+  const Icon = state === "running" ? Loader2 : state === "executed" ? CheckCircle2 : state === "failed" ? AlertTriangle : state === "unknown" ? CircleHelp : state === "expired" ? Clock : MinusCircle;
   const detail = state === "failed" ? result?.errorMessage?.trim() || "The action could not complete."
+    : state === "unknown" ? result?.errorMessage?.trim() || "The action timed out. The change may already have been made; check before trying again."
     : state === "declined" ? interaction.result?.reason?.trim()
     : null;
   if (state === "waiting_connection") {

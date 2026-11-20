@@ -1501,6 +1501,22 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).not.toContain("Roadmap");
   });
 
+  it("shows a timed-out action as outcome unknown, not as a failure (HOM-411)", () => {
+    const interaction = structuredClone(failedToolActionInteraction);
+    interaction.result!.toolAction = {
+      ...interaction.result!.toolAction!,
+      status: "unknown",
+      errorCode: "tool_timeout_unknown_outcome",
+      errorMessage: "The action timed out. The change may already have been made; check before trying again.",
+    };
+    const host = renderCard({ interaction });
+    expect(host.textContent).toContain("Outcome unknown");
+    expect(host.textContent).toContain("may already have been made");
+    expect(host.textContent).not.toContain("Execution failed");
+    expect(host.textContent).not.toContain("Failed");
+    expect(host.querySelector(".text-destructive")).toBeNull();
+  });
+
   it("distinguishes failed (ran + connector error) from declined (did not run)", () => {
     const failed = renderCard({ interaction: failedToolActionInteraction });
     expect(failed.textContent).toContain("Execution failed");

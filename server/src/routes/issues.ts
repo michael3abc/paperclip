@@ -2383,6 +2383,7 @@ function readToolActionExecutionStatus(value: unknown) {
     value === "executing" ||
     value === "executed" ||
     value === "failed" ||
+    value === "unknown" ||
     value === "expired"
     ? value
     : null;
@@ -2453,6 +2454,17 @@ function readToolActionContinuationContext(interaction: {
       executionStatus,
       ...(error ? { error } : {}),
       instructions: `the approved action ran and failed with ${failureMessage}; adjust your approach — a fresh call will open a new approval.`,
+    };
+  }
+
+  if (executionStatus === "unknown") {
+    return {
+      toolName,
+      actionRequestId,
+      decision: "accepted",
+      executionStatus,
+      ...(error ? { error } : {}),
+      instructions: `the approved ${toolName} action timed out or was interrupted, so its outcome is unknown and the change may already have been made; check the current state before trying again — Paperclip never resends it.`,
     };
   }
 

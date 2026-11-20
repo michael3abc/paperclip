@@ -2446,12 +2446,13 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, pending.invocationId));
     await gateway.sweepActionReviews();
     const [result] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
-    expect(result).toMatchObject({ status: "accepted", result: { toolAction: { status: "failed", errorCode: "tool_execution_outcome_unknown" } } });
+    // An interrupted execution shows its unknown outcome, not a failure (HOM-411).
+    expect(result).toMatchObject({ status: "accepted", result: { toolAction: { status: "unknown", errorCode: "tool_execution_outcome_unknown" } } });
     // Simulate a crash before the feed projection was saved, then repair it.
     await db.update(issueThreadInteractions).set({ result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "executing", updatedAt: new Date().toISOString() } } }).where(eq(issueThreadInteractions.id, pending.interactionId!));
     await gateway.sweepActionReviews();
     const [reconciled] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
-    expect(reconciled.result).toMatchObject({ toolAction: { status: "failed", errorCode: "tool_execution_outcome_unknown" } });
+    expect(reconciled.result).toMatchObject({ toolAction: { status: "unknown", errorCode: "tool_execution_outcome_unknown" } });
     expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(0);
   });
 

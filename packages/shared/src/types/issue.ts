@@ -1605,7 +1605,8 @@ export interface RequestConfirmationSecretProposalPayload {
 export interface RequestConfirmationToolActionResult {
   version: 1;
   rememberedAction?: boolean;
-  status: "approved" | "executing" | "executed" | "failed" | "expired";
+  /** `unknown`: the call timed out or was interrupted and its change may already have happened (HOM-411). */
+  status: "approved" | "executing" | "executed" | "failed" | "unknown" | "expired";
   errorCode?: string | null;
   errorMessage?: string | null;
   resultSummary?: string | null;

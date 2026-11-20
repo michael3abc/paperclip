@@ -11,7 +11,8 @@ export function toolReviewProjectionService(db: Db, reflect: (input: {
 }) => Promise<void>) {
   const mismatch = or(and(
     inArray(toolActionRequests.status, ["executed", "failed", "expired", "cancelled"]),
-    sql`coalesce(${issueThreadInteractions.result}->'toolAction'->>'status', '') <> case when ${toolActionRequests.status} = 'cancelled' then 'expired' else ${toolActionRequests.status} end`,
+    // Keep in step with toolActionProjectionStatus: an unknown-outcome failure shows as "unknown".
+    sql`coalesce(${issueThreadInteractions.result}->'toolAction'->>'status', '') <> case when ${toolActionRequests.status} = 'cancelled' then 'expired' when ${toolActionRequests.status} = 'failed' and ${toolInvocations.errorCode} in ('tool_timeout_unknown_outcome', 'tool_execution_outcome_unknown') then 'unknown' else ${toolActionRequests.status} end`,
   ), and(eq(toolActionRequests.status, "approved"), eq(toolInvocations.errorCode, TOOL_APPROVAL_CONNECTION_REQUIRED),
     or(sql`coalesce(${issueThreadInteractions.result}->'toolAction'->>'status', '') <> 'approved'`,
       sql`coalesce(${issueThreadInteractions.result}->'toolAction'->>'errorCode', '') <> ${TOOL_APPROVAL_CONNECTION_REQUIRED}`)));
