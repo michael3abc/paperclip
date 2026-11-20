@@ -1251,6 +1251,27 @@ describe("AgentConfigForm environment selector", () => {
     expect(dirty).toHaveBeenLastCalledWith(false);
   });
 
+  it("edits a multi-host Bridge worker's per-host run limits instead of the ignored agent-wide limit", async () => {
+    const runtimeConfig = { heartbeat: { maxConcurrentRuns: 4 }, bridgeWorkerHostCapacity: { "shopee-d": 20, "shopee-e": 20 } };
+    const result = await renderForm([], { runtimeConfig });
+    roots.push(result.root);
+    await clickByText(result.container, "Advanced Run Policy");
+    expect(result.container.textContent).not.toMatch(/Max concurrent runs(?! on)/);
+    const shopeeD = result.container.querySelector<HTMLInputElement>('[aria-label="Max concurrent runs on shopee-d"]')!;
+    expect(shopeeD.value).toBe("20");
+    expect(result.container.querySelector('[aria-label="Max concurrent runs on shopee-e"]')).not.toBeNull();
+    await act(async () => setInputValue(shopeeD, "8"));
+    await flushReact();
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith({ runtimeConfig: { ...runtimeConfig, bridgeWorkerHostCapacity: { "shopee-d": 8, "shopee-e": 20 } } });
+
+    const single = await renderForm([], { runtimeConfig: { heartbeat: { maxConcurrentRuns: 4 } } });
+    roots.push(single.root);
+    await clickByText(single.container, "Advanced Run Policy");
+    expect(single.container.textContent).toContain("Max concurrent runs");
+    expect(single.container.querySelector('[aria-label^="Max concurrent runs on"]')).toBeNull();
+  });
+
   it("clears dirty state when the saved account binding is restored", async () => {
     const binding = { mode: "responsible_user" as const, provider: "openai" as const, method: "api_key" as const };
     const field = vi.spyOn(ConnectionField, "AiConnectionField").mockImplementation(({ onChange }) => <>
