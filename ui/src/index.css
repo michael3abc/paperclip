@@ -5649,7 +5649,6 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .agent-pin-row { --agent-pin-surface: var(--background); }
 .agent-contact-pin-row:is(:hover, :focus-within) { --agent-pin-surface: color-mix(in srgb, var(--accent) 60%, var(--background)); }
 .agent-contact-pin-row[data-selected="true"] { --agent-pin-surface: var(--accent); }
-.agent-roster-pin-row:is(:hover, :focus-within) { --agent-pin-surface: color-mix(in srgb, var(--accent) 50%, var(--background)); }
 .agent-chat-pin {
   background: var(--agent-pin-surface, transparent);
 }
