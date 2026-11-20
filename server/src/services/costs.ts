@@ -1,6 +1,6 @@
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, createServiceCostEventSchema, normalizeCents, isUuidLike, EXTERNAL_API_BILLING_CODE, type MoneyInput, type CostByUserReport, type ExternalApiCostRow } from "@paperclipai/shared";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, authUsers, companies, companyMemberships, costEvents, heartbeatRuns, issues, projects, goals, aiSubscriptions } from "@paperclipai/db";
@@ -10,7 +10,7 @@ import { logActivity, type LogActivityInput, type ActivityPublication } from "./
 import { withAccountingReadSnapshot, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { effectiveCostEventProjectIdSql, resolveCostEventProjectId } from "./project-attribution.js";
+import { costEventHasNoProjectSql, effectiveCostEventProjectIdSql, resolveCostEventProjectId } from "./project-attribution.js";
 
 import { resolveCostDateRange, type CostDateRange } from "./cost-date-range.js";
 export type { CostDateRange } from "./cost-date-range.js";
@@ -668,7 +668,9 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
       // applies only to receipts written before receipt hashing.
       const effectiveProjectId = effectiveCostEventProjectIdSql(sql`case when ${costEvents.receiptHash} is null then ${runProjectLinks.projectId} end`);
       range = resolveCostDateRange(range);
-      const conditions: ReturnType<typeof eq>[] = [eq(costEvents.companyId, companyId)];
+      // Self-reported external API spend has its own report (externalApi below);
+      // it is left out here so the Unattributed row does not show it twice.
+      const conditions: SQL[] = [eq(costEvents.companyId, companyId), sql`not ${costEventHasNoProjectSql}`];
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 

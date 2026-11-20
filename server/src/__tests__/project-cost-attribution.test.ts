@@ -137,7 +137,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await spend(companyId, main, 7, { issueId: chatId, projectId: explicit, billingCode: EXTERNAL_API_BILLING_CODE });
     await spend(companyId, main, 9, { issueId: chatId, billingCode: EXTERNAL_API_BILLING_CODE });
 
-    expect(await byProject(companyId)).toEqual({ [explicit]: 40, none: 16 });
+    // External API spend has its own report and never appears under Unattributed.
+    expect(await byProject(companyId)).toEqual({ [explicit]: 40 });
     expect(await computeObservedSpend(db, explicitPolicy)).toMatchObject({ ledgerCents: "40.0000000" });
     expect(await computeObservedSpend(db, ledPolicy)).toMatchObject({ ledgerCents: "0.0000000" });
     expect(await costService(db).summary(companyId)).toMatchObject({ spendCents: 56 });
