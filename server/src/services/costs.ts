@@ -1,5 +1,5 @@
 import { receiptFingerprint } from "./receipt-fingerprint.js";
-import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, createServiceCostEventSchema, normalizeCents, isUuidLike, type MoneyInput, type CostByUserReport } from "@paperclipai/shared";
+import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, createServiceCostEventSchema, normalizeCents, isUuidLike, EXTERNAL_API_BILLING_CODE, type MoneyInput, type CostByUserReport, type ExternalApiCostRow } from "@paperclipai/shared";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
@@ -693,6 +693,38 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions))
         .groupBy(projects.id, projects.name)
         .orderBy(desc(costCentsExpr));
+    },
+
+    /** Self-reported external API spend (billing code `external_api`), by
+     * provider, model and agent. This spend has no project (see
+     * project-attribution.ts), so it is reported here instead. */
+    externalApi: async (companyId: string, range?: CostDateRange): Promise<ExternalApiCostRow[]> => {
+      range = resolveCostDateRange(range);
+      const conditions = [eq(costEvents.companyId, companyId), eq(costEvents.billingCode, EXTERNAL_API_BILLING_CODE)];
+      if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
+      if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
+      const costCentsExpr = sumAsNumber(costEvents.costCents);
+      const rows = await db
+        .select({
+          provider: costEvents.provider,
+          model: costEvents.model,
+          agentId: costEvents.agentId,
+          agentName: agents.name,
+          eventCount: sql<number>`count(*)::int`,
+          estimatedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'estimated')::int`,
+          unpricedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'unpriced')::int`,
+          costCents: costCentsExpr,
+          costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
+          inputTokens: sumAsNumber(costEvents.inputTokens),
+          outputTokens: sumAsNumber(costEvents.outputTokens),
+          lastOccurredAt: sql<string>`to_char(max(${costEvents.occurredAt}) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`,
+        })
+        .from(costEvents)
+        .leftJoin(agents, and(eq(agents.id, costEvents.agentId), eq(agents.companyId, companyId)))
+        .where(and(...conditions))
+        .groupBy(costEvents.provider, costEvents.model, costEvents.agentId, agents.name)
+        .orderBy(costEvents.provider, costEvents.model, desc(costCentsExpr), costEvents.agentId);
+      return rows.map(row => ({ ...row, costCentsExact: normalizeCents(row.costCentsExact) }));
     },
   };
 }

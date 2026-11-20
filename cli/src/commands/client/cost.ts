@@ -30,6 +30,7 @@ export function registerCostCommands(program: Command): void {
     ["by-provider", "costs/by-provider"],
     ["by-biller", "costs/by-biller"],
     ["by-project", "costs/by-project"],
+    ["external-api", "costs/external-api"],
     ["window-spend", "costs/window-spend"],
     ["quota-windows", "costs/quota-windows"],
   ] as const) {

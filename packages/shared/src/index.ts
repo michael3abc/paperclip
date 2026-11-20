@@ -1423,6 +1423,7 @@ export type {
   CostByAgentModel,
   CostWindowSpendRow,
   CostByProject,
+  ExternalApiCostRow,
   FinanceEvent,
   FinanceSummary,
   FinanceByBiller,

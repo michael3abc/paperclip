@@ -86,6 +86,7 @@ const mockCostService = vi.hoisted(() => ({
   }),
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
+  externalApi: vi.fn().mockResolvedValue([]),
 }));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -259,6 +260,26 @@ describe("cost routes", () => {
       estimatedDebitCents: 0,
       eventCount: 0,
     });
+  });
+
+  it("serves the self-reported external API report for the requested company and range", async () => {
+    mockCostService.externalApi.mockResolvedValueOnce([{ provider: "serpapi", model: "search", costCents: 9 }]);
+    const res = await request(createApp())
+      .get("/api/companies/company-1/costs/external-api")
+      .query({ from: "2026-11-01T00:00:00.000Z", to: "2026-11-30T23:59:59.999Z" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ provider: "serpapi", model: "search", costCents: 9 }]);
+    expect(mockCostService.externalApi).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-11-01T00:00:00.000Z"), to: new Date("2026-11-30T23:59:59.999Z"),
+    });
+  });
+
+  it("rejects the external API report for board users outside the company", async () => {
+    const res = await request(createAppWithActor({
+      type: "board", userId: "board-user", source: "session", isInstanceAdmin: false, companyIds: ["company-2"],
+    })).get("/api/companies/company-1/costs/external-api");
+    expect(res.status).toBe(403);
+    expect(mockCostService.externalApi).not.toHaveBeenCalled();
   });
 
   it("returns issue subtree cost summaries for issue refs", async () => {
