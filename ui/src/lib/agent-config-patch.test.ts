@@ -121,6 +121,24 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("keeps heartbeat edits when the whole runtime config is edited in the same save", () => {
+    const capacity = { "shopee-d": 8, "shopee-e": 20 };
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        heartbeat: { cooldownSec: 30 },
+        runtime: { runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 }, bridgeWorkerHostCapacity: capacity } },
+      }),
+    );
+
+    expect(patch).toEqual({
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300, cooldownSec: 30 },
+        bridgeWorkerHostCapacity: capacity,
+      },
+    });
+  });
+
   it("preserves adapter-agnostic keys when changing adapter types", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),

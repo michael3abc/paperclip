@@ -77,6 +77,12 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   if (Object.keys(overlay.runtime).length > 0) {
     Object.assign(patch, overlay.runtime);
+    // A whole-runtimeConfig edit (workspace, per-host limits) must not drop heartbeat edits made in the same save.
+    const runtimeConfig = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
+    if (runtimeConfig && Object.keys(overlay.heartbeat).length > 0) {
+      const existingHb = (runtimeConfig.heartbeat ?? (agent.runtimeConfig as Record<string, unknown> | undefined)?.heartbeat ?? {}) as Record<string, unknown>;
+      patch.runtimeConfig = { ...runtimeConfig, heartbeat: { ...existingHb, ...overlay.heartbeat } };
+    }
   }
 
   return patch;

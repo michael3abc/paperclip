@@ -642,6 +642,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
   const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
   displayedOriginals.set("runtime.runtimeConfig", { ...runtimeConfig, aiConnection: runtimeConfig.aiConnection });
+  // Owner-configured per-host limits of a multi-host Bridge worker (runtimeConfig.bridgeWorkerHostCapacity).
+  const bridgeHostCapacity = (() => {
+    const value = asObject(asObject(overlay.runtime.runtimeConfig ?? runtimeConfig).bridgeWorkerHostCapacity);
+    const entries = Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number");
+    return entries.length ? Object.fromEntries(entries) : null;
+  })();
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -2403,18 +2409,36 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   className={inputClass}
                 />
               </Field>
-              <Field label="Max concurrent runs" hint={help.maxConcurrentRuns}>
-                <DraftNumberInput
-                  value={eff(
-                    "heartbeat",
-                    "maxConcurrentRuns",
-                    Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS),
-                  )}
-                  onCommit={(v) => mark("heartbeat", "maxConcurrentRuns", v)}
-                  immediate
-                  className={inputClass}
-                />
-              </Field>
+              {bridgeHostCapacity ? Object.entries(bridgeHostCapacity).map(([hostId, capacity]) => (
+                // A Bridge worker that serves several hosts runs up to its per-host limit on each host; the
+                // single agent-wide limit does not apply to it (heartbeat queue sums these limits).
+                <Field key={hostId} label={`Max concurrent runs on ${hostId}`} hint={help.bridgeWorkerHostCapacity}>
+                  <DraftNumberInput
+                    aria-label={`Max concurrent runs on ${hostId}`}
+                    value={capacity}
+                    onCommit={(v) => {
+                      const next = { ...runtimeConfig, ...(overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) };
+                      next.bridgeWorkerHostCapacity = { ...bridgeHostCapacity, [hostId]: Math.min(100, Math.max(1, Math.round(v))) };
+                      mark("runtime", "runtimeConfig", next);
+                    }}
+                    immediate
+                    className={inputClass}
+                  />
+                </Field>
+              )) : (
+                <Field label="Max concurrent runs" hint={help.maxConcurrentRuns}>
+                  <DraftNumberInput
+                    value={eff(
+                      "heartbeat",
+                      "maxConcurrentRuns",
+                      Number(heartbeat.maxConcurrentRuns ?? AGENT_DEFAULT_MAX_CONCURRENT_RUNS),
+                    )}
+                    onCommit={(v) => mark("heartbeat", "maxConcurrentRuns", v)}
+                    immediate
+                    className={inputClass}
+                  />
+                </Field>
+              )}
               <div className="rounded-md border border-border/70 px-3 py-2">
                 <ToggleField
                   label="Continue after max-turn stop"
