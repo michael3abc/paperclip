@@ -90,7 +90,11 @@ vi.mock("../components/ProjectProperties", () => ({
   ProjectProperties: ({ onFieldUpdate }: { onFieldUpdate: (field: string, data: Record<string, unknown>) => void }) => <div data-testid="project-properties"><input aria-label="Unsaved project field" /><button onClick={() => onFieldUpdate("visibility", { visibility: "open" })}>Open project through autosave</button></div>,
 }));
 vi.mock("../components/BudgetPolicyCard", () => ({
-  BudgetPolicyCard: () => <div data-testid="budget-policy-card" />,
+  BudgetPolicyCard: ({ summary, onSave }: { summary: { windowKind: string; amount: number }; onSave?: (amount: number) => void }) => (
+    <div data-testid="budget-policy-card" data-window={summary.windowKind} data-amount={summary.amount}>
+      <button onClick={() => onSave?.(5000)}>Save {summary.windowKind}</button>
+    </div>
+  ),
 }));
 vi.mock("../components/InlineEditor", () => ({
   InlineEditor: ({ value, placeholder }: { value?: string; placeholder?: string }) => (
@@ -326,6 +330,30 @@ describe("ProjectDetail", () => {
     expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
       projectId: "project-1",
       originKindPrefix: "plugin:paperclip.missions",
+    });
+  });
+
+  it("offers a monthly and a lifetime project budget and saves each with its own window", async () => {
+    mockLocation.pathname = "/projects/project-1/budget";
+    mockBudgetsApi.overview.mockResolvedValue({ policies: [
+      { policyId: "p-life", scopeType: "project", scopeId: "project-1", windowKind: "lifetime", amount: 12000 },
+      { policyId: "p-other", scopeType: "project", scopeId: "project-2", windowKind: "calendar_month_utc", amount: 999 },
+    ] });
+    mockBudgetsApi.upsertPolicy.mockResolvedValue({});
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<QueryClientProvider client={queryClient}><ProjectDetail /></QueryClientProvider>);
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const cards = Array.from(container.querySelectorAll('[data-testid="budget-policy-card"]'));
+    expect(cards.map((card) => [card.getAttribute("data-window"), card.getAttribute("data-amount")]))
+      .toEqual([["calendar_month_utc", "0"], ["lifetime", "12000"]]);
+    const save = Array.from(container.querySelectorAll("button")).find((node) => node.textContent === "Save calendar_month_utc")!;
+    await act(async () => { save.click(); });
+    expect(mockBudgetsApi.upsertPolicy).toHaveBeenCalledWith("company-1", {
+      scopeType: "project", scopeId: "project-1", amount: 5000, windowKind: "calendar_month_utc",
     });
   });
 
