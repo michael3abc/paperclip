@@ -616,6 +616,12 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                   {secondarySidebar}
                 </SecondarySidebar>
               ) : null}
+              {/* Desktop chat lays its row out horizontally (contacts column, then content), so the Coordinator's
+                  inset header and the page need their own column; elsewhere this wrapper is layout-transparent. */}
+              <div
+                data-chat-inset-column={desktopAgentChat && useInsetTaskDetailHeader ? "" : undefined}
+                className={desktopAgentChat && useInsetTaskDetailHeader ? "flex min-h-0 min-w-0 flex-1 flex-col" : "contents"}
+              >
               {!isMobile && useInsetTaskDetailHeader ? (
                 <>
                   <StandaloneBrowserControls mobile={false} />
@@ -675,6 +681,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                 </RouteErrorBoundary>
               )}
               </main>
+              </div>
             </div>
             <PropertiesPanel taskDetailLayout={!isMobile && (useStreamlinedTaskDetailShell || (coordinatorWorkspaceEnabled && companyPathSegments[0]?.toLowerCase() === "decisions"))} />
           </div>
