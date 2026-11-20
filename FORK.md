@@ -33,8 +33,17 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `8282d386da5a36ae2c4d8846f227c3d26e2b4049` (merged 2026-11-18; deployed 2026-11-19 as 279a18c3a-r1). Previous sync base: `0eaabe5c0b37c99d827f78a1a8598e7b3534078a`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651` (integrated for 2026-11-21; not deployed). Previous sync base: `806440d12cf3cc5b6e28f546a5e0f4fb625df48c`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
+
+## 2026-11-21 upstream merge (HOM-460; not deployed)
+
+Merge 52 upstream commits through `2898acee`; preserve fork failure classification,
+host circuit outcomes and workspace policy. Exclude the new Chat retry stop-wait
+poller under liveness-first; classify sandbox disk exhaustion as deterministic.
+No DB or migration changes. Decisions and checks:
+[sync-decisions](/HOM/issues/HOM-460#document-sync-decisions). Saturday integration
+only; no release build, deployment or restart.
 
 ## 2026-11-20 upstream merge (HOM-421; not deployed)
 

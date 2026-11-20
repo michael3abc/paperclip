@@ -18,6 +18,11 @@ Never persist authorization URLs, codes, CLI output or credentials in audit/logs
 
 Guidance for human and AI contributors working in this repository.
 
+The issue-list inboxArchive filter is board-user-only and cannot be combined
+with attention; preserve the viewer-scoped isArchivedForMe projection. See
+docs/api/issues.md. Upstream Chat retry stop-wait polling is intentionally
+excluded: terminal cleanup remains background work under liveness-first.
+
 Execution is liveness-first (Owner 2026-11-13). The binding source is
 `/home/michael/services/docs/agents/liveness-first.md`; it supersedes every
 fail-closed rule in this repository's docs (stop proof, settlement ladders,
