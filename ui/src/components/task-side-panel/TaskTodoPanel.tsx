@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { Hand, Target } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useIssueTodoDocument } from "@/hooks/useIssueTodoDocument";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
+import { createUuid } from "@/lib/uuid";
 import {
   parseTodoDocument,
   todoCancelComment,
@@ -155,9 +156,20 @@ export function TaskTodoPanel({ issue }: { issue: Pick<Issue, "id"> & Partial<Pi
     if (task) tasks.set(reference, task);
   });
 
+  // A Chat conversation accepts a message only with a clientRequestId. Keep one id per item so a
+  // retry after a lost response is recognised by the server instead of posting the request twice.
+  const cancelRequestIds = useRef(new Map<number, string>());
   const cancel = useMutation({
-    mutationFn: (item: TodoItem) => issuesApi.addComment(issue.id, todoCancelComment(item)),
+    mutationFn: (item: TodoItem) => {
+      let clientRequestId = cancelRequestIds.current.get(item.id);
+      if (!clientRequestId) {
+        clientRequestId = createUuid();
+        cancelRequestIds.current.set(item.id, clientRequestId);
+      }
+      return issuesApi.addComment(issue.id, todoCancelComment(item), undefined, undefined, undefined, clientRequestId);
+    },
     onSuccess: (_comment, item) => {
+      cancelRequestIds.current.delete(item.id);
       setRequested((current) => new Set(current).add(item.id));
       setConfirming(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issue.id) });
