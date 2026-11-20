@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
 import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
+import { MAX_CONCURRENT_RUN_LOG_READS, __runLogReadLimiterTestUtils } from "./run-log-read-limiter";
 
 const { useQueryMock, logMock, buildTranscriptMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
@@ -86,6 +87,7 @@ describe("useLiveRunTranscripts", () => {
     logMock.mockReset();
     logMock.mockImplementation(async (_id, offset) => ({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: offset }));
     buildTranscriptMock.mockClear();
+    __runLogReadLimiterTestUtils.reset();
     globalThis.WebSocket = class { constructor() { socketConstructed(); } } as unknown as typeof WebSocket;
   });
 
@@ -798,6 +800,105 @@ describe("useLiveRunTranscripts", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("does not re-request settled runs whose log was already read to the end", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const settled = [
+      { id: "run-a", status: "succeeded", adapterType: "codex_local", logBytes: 10 },
+      { id: "run-b", status: "failed", adapterType: "codex_local", logBytes: 20 },
+    ];
+    function Harness({ runs }: { runs: Array<{ id: string; status: string; adapterType: string; logBytes?: number }> }) {
+      useLiveRunTranscripts({ companyId: "company-1", runs, enableRealtimeUpdates: false });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Harness runs={settled} />));
+      expect(new Set(logMock.mock.calls.map(([id]) => id))).toEqual(new Set(["run-a", "run-b"]));
+      const hydrated = logMock.mock.calls.length;
+      // A runs-list refresh that adds a live run, and a hide/show cycle, only
+      // read the live run; the settled runs keep their hydrated transcript.
+      await act(async () => root.render(<Harness runs={[...settled, { id: "run-live", status: "running", adapterType: "codex_local" }]} />));
+      await act(async () => { visibility.mockReturnValue("hidden"); document.dispatchEvent(new Event("visibilitychange")); });
+      await act(async () => { visibility.mockReturnValue("visible"); document.dispatchEvent(new Event("visibilitychange")); });
+      expect(logMock.mock.calls.slice(hydrated).map(([id]) => id)).toEqual(["run-live", "run-live"]);
+      // New persisted output on a settled run is still read.
+      await act(async () => root.render(<Harness runs={[{ ...settled[0]!, logBytes: 99 }, settled[1]!]} />));
+      expect(logMock.mock.calls.at(-1)?.[0]).toBe("run-a");
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("never overlaps fallback polls for a run while its previous log read is in flight", async () => {
+    vi.useFakeTimers();
+    type Result = Awaited<ReturnType<typeof logMock>>;
+    const pending: Array<(value: Result) => void> = [];
+    logMock.mockImplementation(() => new Promise<Result>((resolve) => { pending.push(resolve); }));
+    function Harness() {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+        enableRealtimeUpdates: false,
+        logPollIntervalMs: 2_000,
+      });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Harness />));
+      expect(logMock).toHaveBeenCalledTimes(1);
+      // Five poll intervals pass while the first read is still outstanding.
+      await act(async () => vi.advanceTimersByTimeAsync(10_000));
+      expect(logMock).toHaveBeenCalledTimes(1);
+      await act(async () => pending[0]!({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 }));
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+      expect(logMock).toHaveBeenCalledTimes(2);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("caps concurrent run-log reads across every transcript on the page", async () => {
+    type Result = Awaited<ReturnType<typeof logMock>>;
+    const pending = new Map<string, (value: Result) => void>();
+    logMock.mockImplementation((id: string) => new Promise<Result>((resolve) => { pending.set(id, resolve); }));
+    const runs = Array.from({ length: 6 }, (_, index) => ({ id: `run-${index}`, status: "succeeded", adapterType: "codex_local" }));
+    function Harness() {
+      // Two independent consumers, as a chat thread and a live widget would be.
+      useLiveRunTranscripts({ companyId: "company-1", runs: runs.slice(0, 3), enableRealtimeUpdates: false });
+      useLiveRunTranscripts({ companyId: "company-1", runs: runs.slice(3), enableRealtimeUpdates: false });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Harness />));
+      expect(logMock).toHaveBeenCalledTimes(MAX_CONCURRENT_RUN_LOG_READS);
+      await act(async () => pending.get("run-0")!({ runId: "run-0", store: "memory", logRef: "log-1", content: "", nextOffset: 0 }));
+      expect(logMock).toHaveBeenCalledTimes(MAX_CONCURRENT_RUN_LOG_READS + 1);
+      for (const id of ["run-1", "run-2", "run-3", "run-4", "run-5"]) {
+        await act(async () => pending.get(id)?.({ runId: id, store: "memory", logRef: "log-1", content: "", nextOffset: 0 }));
+      }
+      expect(new Set(logMock.mock.calls.map(([id]) => id)).size).toBe(6);
+      expect(__runLogReadLimiterTestUtils.snapshot()).toEqual({ active: 0, waiting: 0 });
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("backs off repeated read failures instead of retrying every two seconds", async () => {
+    vi.useFakeTimers();
+    logMock.mockRejectedValue(new Error("Server busy"));
+    function Harness() {
+      useLiveRunTranscripts({ companyId: "company-1", runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }] });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Harness />));
+      await act(async () => negotiate());
+      const afterHealthy = logMock.mock.calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      // Fixed 2s retries would issue ~30 reads in a minute; backoff (2,4,8,16,30s) issues at most 5.
+      expect(logMock.mock.calls.length - afterHealthy).toBeLessThanOrEqual(5);
+      expect(logMock.mock.calls.length - afterHealthy).toBeGreaterThanOrEqual(3);
+    } finally { await act(async () => root.unmount()); }
   });
 
 });

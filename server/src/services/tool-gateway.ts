@@ -2794,6 +2794,28 @@ export function createToolGatewayService(
     backgroundApprovedExecutions.set(actionRequestId, execution);
   }
 
+  // Approved executions running after their approval returned (HOM-411). One
+  // per action request: a repeated approval never starts a second call, and a
+  // restart leaves the request executing for the interruption sweep.
+  const backgroundApprovedExecutions = new Map<string, Promise<void>>();
+  const gatewayStartedAt = new Date();
+
+  async function runApprovedExecution(actionRequestId: string, run: () => Promise<unknown>): Promise<void> {
+    if (options.approvedExecutionMode !== "background") {
+      await run();
+      return;
+    }
+    if (backgroundApprovedExecutions.has(actionRequestId)) return;
+    const execution = Promise.resolve()
+      .then(run)
+      .then(() => undefined, (error: unknown) => {
+        // The outcome is already persisted by the execution path.
+        logger.debug({ err: error, actionRequestId }, "Approved tool action finished with an error");
+      })
+      .finally(() => backgroundApprovedExecutions.delete(actionRequestId));
+    backgroundApprovedExecutions.set(actionRequestId, execution);
+  }
+
   async function reflectToolActionInteractionLifecycle(input: {
     actionRequestId: string;
     status:

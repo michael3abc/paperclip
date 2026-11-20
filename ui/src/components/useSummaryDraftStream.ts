@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent, SummarySlotIssueRef } from "@paperclipai/shared";
 
-import { readTranscriptRequest } from "./transcript/read-transcript-request";
+import { readRunLogRequest, runLogRetryDelayMs } from "./transcript/run-log-read-limiter";
 import { buildTranscript, getUIAdapter, type RunLogChunk } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useCompanyLiveEvent, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
@@ -204,12 +204,13 @@ export function useSummaryDraftStream(
     let cancelled = false;
     const controller = new AbortController();
     let timer: number | undefined;
+    let consecutiveFailures = 0;
     const read = async () => {
       let failed = false;
       try {
         for (;;) {
           const offset = logOffsetRef.current;
-          const result = await readTranscriptRequest(signal => heartbeatsApi.log(runId, offset, LOG_READ_LIMIT_BYTES, { signal }), controller.signal);
+          const result = await readRunLogRequest(signal => heartbeatsApi.log(runId, offset, LOG_READ_LIMIT_BYTES, { signal }), controller.signal);
           if (cancelled) return;
           const binding = bindLog(result.store, result.logRef);
           if (binding === "stale") { failed = true; break; }
@@ -226,7 +227,11 @@ export function useSummaryDraftStream(
       } catch {
         failed = true;
       }
-      if (!cancelled && (!stream.healthy || failed)) timer = window.setTimeout(() => void read(), LOG_POLL_INTERVAL_MS);
+      if (cancelled) return;
+      consecutiveFailures = failed ? consecutiveFailures + 1 : 0;
+      // Failed reads back off; healthy fallback polling keeps its cadence.
+      const delay = failed ? Math.max(LOG_POLL_INTERVAL_MS, runLogRetryDelayMs(consecutiveFailures)) : LOG_POLL_INTERVAL_MS;
+      if (!stream.healthy || failed) timer = window.setTimeout(() => void read(), delay);
     };
     void read();
     return () => {

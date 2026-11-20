@@ -4,6 +4,7 @@ import { isTransientError } from "@/api/errors";
 import { useConnectivityStore } from "@/lib/connectivity";
 import { TranscriptSequence } from "../../lib/transcript-sequence";
 import { readTranscriptRequest } from "../transcript/read-transcript-request";
+import { readRunLogRequest } from "../transcript/run-log-read-limiter";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
 import { liveRunEvent, mergeRunEvents } from "../../lib/live-run-event";
 import { mergeRunLogChunks, readChunkSeq } from "../../lib/run-log-chunks";
@@ -368,7 +369,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     fetcher: async (signal) => {
       const offset = logOffsetRef.current;
       try {
-        const result = await readTranscriptRequest(signal => heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES, { signal }), signal);
+        const result = await readRunLogRequest(signal => heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES, { signal }), signal);
         return { offset, result };
       } catch (error) {
         if (shouldPollShellLog && isRunLogUnavailable(error)) return { offset, result: null };

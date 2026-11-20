@@ -2,7 +2,7 @@ import { TranscriptSequence } from "../../lib/transcript-sequence";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
 import { usePageVisibility } from "../../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { readTranscriptRequest } from "./read-transcript-request";
+import { readRunLogRequest, runLogRetryDelayMs } from "./run-log-read-limiter";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
@@ -83,6 +83,11 @@ function runKnownLogBytes(run: RunTranscriptSource): number | null {
   return typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 ? bytes : null;
 }
 
+/** Identifies the persisted log a settled run was fully read from. */
+function terminalReadSignature(run: RunTranscriptSource, limitBytes: number): string {
+  return `${run.status}:${run.logBytes ?? ""}:${run.lastOutputBytes ?? ""}:${run.logRef ?? ""}:${limitBytes}`;
+}
+
 export function resolveInitialLogOffset(run: RunTranscriptSource, limitBytes: number): number {
   const knownBytes = runKnownLogBytes(run);
   if (knownBytes === null) return 0;
@@ -128,6 +133,8 @@ export function useLiveRunTranscripts({
   const [retryGeneration, setRetryGeneration] = useState(0);
   const retry = useCallback(() => {
     missingTerminalLogRunIdsRef.current.clear();
+    completedTerminalReadsRef.current.clear();
+    failureCountByRunRef.current.clear();
     setRetryGeneration((value) => value + 1);
   }, []);
   const seenChunkKeysRef = useRef(new Set<string>());
@@ -139,6 +146,11 @@ export function useLiveRunTranscripts({
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const logReadLimitByRunRef = useRef(new Map<string, number>());
   const logIdentityRef = useRef(new Map<string, string>());
+  // Settled runs whose persisted log was read to its end, keyed to the run state
+  // that read covered. Re-renders, runs-list refreshes and hide/show skip them
+  // instead of issuing one empty log request per settled run every time.
+  const completedTerminalReadsRef = useRef(new Map<string, string>());
+  const failureCountByRunRef = useRef(new Map<string, number>());
   const retiredLogIdentitiesRef = useRef(new Map<string, Set<string>>());
   const sequencesRef = useRef(new Map<string, TranscriptSequence>());
   const sequence = (id: string) => {
@@ -166,6 +178,7 @@ export function useLiveRunTranscripts({
     if (retired.size > 8) retired.delete(retired.values().next().value!);
     retiredLogIdentitiesRef.current.set(runId, retired);
     logOffsetByRunRef.current.set(runId, 0); logReadLimitByRunRef.current.delete(runId);
+    completedTerminalReadsRef.current.delete(runId);
     pendingLogRowsByRunRef.current.delete(runId); pendingLogRowsByRunRef.current.delete(`${runId}:records`);
     trimmedSeqFloorByRunRef.current.delete(runId); sequencesRef.current.delete(runId);
     for (const key of seenChunkKeysRef.current) if (key.includes(`:${runId}:`)) seenChunkKeysRef.current.delete(key);
@@ -203,6 +216,7 @@ export function useLiveRunTranscripts({
     pendingLogRowsByRunRef.current.clear(); logOffsetByRunRef.current.clear(); logReadLimitByRunRef.current.clear();
     logIdentityRef.current.clear(); retiredLogIdentitiesRef.current.clear(); sequencesRef.current.clear();
     gapPendingRef.current.clear(); missingTerminalLogRunIdsRef.current.clear();
+    completedTerminalReadsRef.current.clear(); failureCountByRunRef.current.clear();
     absenceDeadlineByRunRef.current.clear(); prevKnownRunIdsRef.current.clear(); transcriptCacheRef.current.clear();
   }, [companyId]);
 
@@ -335,7 +349,7 @@ export function useLiveRunTranscripts({
       }
     }
 
-    for (const map of [logIdentityRef.current, retiredLogIdentitiesRef.current, sequencesRef.current]) {
+    for (const map of [logIdentityRef.current, retiredLogIdentitiesRef.current, sequencesRef.current, completedTerminalReadsRef.current, failureCountByRunRef.current]) {
       for (const id of map.keys()) if (!retainedRunIds.has(id)) map.delete(id);
     }
     for (const id of gapPendingRef.current) if (!retainedRunIds.has(id)) gapPendingRef.current.delete(id);
@@ -445,7 +459,7 @@ export function useLiveRunTranscripts({
       let recordInitialWindow = previousReadLimit === undefined || rewinding;
       try {
         for (;;) {
-          const result = await readTranscriptRequest(
+          const result = await readRunLogRequest(
             (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
               signal,
               ...(alignStartToRecord && offset > 0 ? { alignStartToRecord: true } : {}),
@@ -510,11 +524,19 @@ export function useLiveRunTranscripts({
       } finally {
         inFlightRunIds.delete(run.id);
         if (!cancelled) {
+          if (failed) {
+            failureCountByRunRef.current.set(run.id, (failureCountByRunRef.current.get(run.id) ?? 0) + 1);
+            completedTerminalReadsRef.current.delete(run.id);
+          } else {
+            failureCountByRunRef.current.delete(run.id);
+            if (isTerminalStatus(run.status)) completedTerminalReadsRef.current.set(run.id, terminalReadSignature(run, logReadLimitBytes));
+          }
           if (pendingRefresh.has(run.id)) {
             missingTerminalLogRunIdsRef.current.delete(run.id);
             void readRunLog(run);
           } else if (failed && stream.healthy) {
-            const timer = window.setTimeout(() => { retryTimers.delete(run.id); void readRunLog(run); }, LOG_POLL_INTERVAL_MS);
+            const delay = runLogRetryDelayMs(failureCountByRunRef.current.get(run.id) ?? 1);
+            const timer = window.setTimeout(() => { retryTimers.delete(run.id); void readRunLog(run); }, delay);
             retryTimers.set(run.id, timer);
           }
           setHydratedRunIds((prev) => {
@@ -529,9 +551,16 @@ export function useLiveRunTranscripts({
 
     for (const run of readableRuns) {
       refreshByRunRef.current.set(run.id, (force = false) => {
+        completedTerminalReadsRef.current.delete(run.id);
         if (force) { pendingRefresh.add(run.id); missingTerminalLogRunIdsRef.current.delete(run.id); }
         void readRunLog(run);
       });
+      if (
+        isTerminalStatus(run.status) &&
+        completedTerminalReadsRef.current.get(run.id) === terminalReadSignature(run, logReadLimitBytes)
+      ) {
+        continue;
+      }
       void readRunLog(run);
     }
     const activeRuns = readableRuns.filter((run) => run.status === "running");

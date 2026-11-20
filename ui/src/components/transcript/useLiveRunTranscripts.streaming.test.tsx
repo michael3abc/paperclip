@@ -142,6 +142,12 @@ describe("useLiveRunTranscripts shared-stream recovery", () => {
     const slow: Array<{ resolve: (value: Result) => void; signal: AbortSignal }> = [];
     const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2026-10-24T00:00:00Z", stream: "stdout", chunk }) + "\n";
     let seq = 0;
+    // The settled sibling's first read fails, so it is still unread when the
+    // stream becomes healthy (a settled run read to its end is not re-requested).
+    logMock.mockImplementation(async (id, offset) => {
+      if (id === "slow") throw new Error("Temporary storage failure");
+      return { runId: id, store: "memory", logRef: "log-1", content: "", nextOffset: offset };
+    });
     try {
       await act(async () => root.render(<Harness />));
       logMock.mockImplementation(async (id, offset, _limit, { signal }) => {
