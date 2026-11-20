@@ -19,6 +19,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
+import { logActivity } from "../services/activity-log.js";
 import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
 import { arbitrateNativeStatus, NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "../services/native-runtime/status-arbiter.js";
 import { classifyNativeEvidence } from "../services/native-runtime/evidence-classifier.js";
@@ -249,6 +250,95 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     if (run) expect(run).toMatchObject({ status: "cancelled" });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  // HOM-424: a legacy (ccpocket_bridge) worker asks, then PATCHes its own task to
+  // blocked; the project main answers on the person's behalf.
+  async function legacyAgentBlocks(input: { companyId: string; agentId: string; issueId: string }) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId,
+      status: "succeeded", invocationSource: "assignment", triggerDetail: "system",
+      contextSnapshot: { issueId: input.issueId }, finishedAt: new Date() });
+    const [before] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    const [after] = await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date() })
+      .where(eq(issues.id, input.issueId)).returning();
+    await logActivity(db, { companyId: input.companyId, actorType: "agent", actorId: input.agentId,
+      agentId: input.agentId, runId, action: "issue.updated", entityType: "issue", entityId: input.issueId,
+      details: { source: "comment", status: "blocked", changes: {
+        status: { from: before!.status, to: "blocked" },
+        statusVersion: { from: Number(before!.statusVersion), to: Number(after!.statusVersion) } } } });
+  }
+
+  async function mainAnswers(question: typeof issueThreadInteractions.$inferSelect, companyId: string) {
+    const mainAgentId = randomUUID();
+    await db.insert(agents).values({ id: mainAgentId, companyId, name: `Main ${mainAgentId.slice(0, 4)}`, role: "pm",
+      status: "active", adapterType: "codex_local", adapterConfig: {}, permissions: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: false } } });
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedByAgentId: mainAgentId, resolvedAt: new Date(),
+      result: { version: 1, answers: [{ questionId: "codename", optionIds: ["bravo"] }] } })
+      .where(eq(issueThreadInteractions.id, question.id));
+  }
+
+  it("continues a legacy worker's task it blocked to wait for the main's delegated answer", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    await legacyAgentBlocks({ companyId, agentId, issueId });
+    await mainAnswers(question, companyId);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect({ status: run?.status, errorCode: run?.errorCode ?? null, error: run?.error ?? null })
+      .toEqual({ status: "succeeded", errorCode: null, error: null });
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ blockedTransitionAt: null });
+    expect(issue!.status).not.toBe("blocked");
+  }, 60_000);
+
+  it("continues a native agent's own block when the main answers on the person's behalf", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    await agentReportsBlocker({ companyId, agentId, issueId });
+    await mainAnswers(question, companyId);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });
+  }, 60_000);
+
+  it("keeps cancelling a legacy answer when a person blocked the task after the agent", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    await legacyAgentBlocks({ companyId, agentId, issueId });
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date() }).where(eq(issues.id, issueId));
+    await mainAnswers(question, companyId);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("keeps cancelling a legacy answer when the agent blocked before asking", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    await legacyAgentBlocks({ companyId, agentId, issueId });
+    await db.update(issueThreadInteractions).set({ createdAt: new Date(Date.now() + 60_000) })
+      .where(eq(issueThreadInteractions.id, question.id));
+    await mainAnswers(question, companyId);
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("keeps cancelling a legacy answer the asking agent gave itself", async () => {
+    mockAdapterExecute.mockClear();
+    const { agentId, issueId, question, companyId } = await seed();
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    await legacyAgentBlocks({ companyId, agentId, issueId });
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedByAgentId: agentId, resolvedAt: new Date(),
+      result: { version: 1, answers: [{ questionId: "codename", optionIds: ["bravo"] }] } })
+      .where(eq(issueThreadInteractions.id, question.id));
+    const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
   }, 60_000);
 
   it("does not check out a task whose verified block changed before checkout", async () => {
