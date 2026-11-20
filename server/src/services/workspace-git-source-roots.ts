@@ -48,6 +48,23 @@ function metadataPath(text: string): string {
   return value;
 }
 
+async function isEmptyDirectory(directory: string): Promise<boolean> {
+  const handle = await fs.opendir(directory);
+  try { return await handle.read() === null; } finally { await handle.close(); }
+}
+
+// A `.git` directory that is empty (a sandbox mount point) or holds only
+// `info/exclude` is not Git metadata: Git itself does not recognize either as a
+// repository, so neither proves nor blocks a workspace source (HOM-428).
+async function isGitPlaceholder(marker: string): Promise<boolean> {
+  if (await isEmptyDirectory(marker)) return true;
+  if (await entry(path.join(marker, "objects")) || !await onlyEntry(marker, "info")) return false;
+  const info = path.join(marker, "info"), infoEntry = await entry(info);
+  if (!infoEntry?.isDirectory() || infoEntry.isSymbolicLink() || !await onlyEntry(info, "exclude")) return false;
+  const exclude = await entry(path.join(info, "exclude"));
+  return Boolean(exclude?.isFile() && !exclude.isSymbolicLink() && exclude.nlink === 1n);
+}
+
 async function onlyEntry(directory: string, name: string): Promise<boolean> {
   let found = false;
   for await (const child of await fs.opendir(directory)) {
@@ -74,13 +91,7 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
   const metadata: Metadata[] = [];
   let gitDirectory: Identity;
   if (markerEntry.isDirectory() && !markerEntry.isSymbolicLink()) {
-    if (!await entry(path.join(marker, "objects")) && await onlyEntry(marker, "info")) {
-      const info = path.join(marker, "info"), infoEntry = await entry(info);
-      if (infoEntry?.isDirectory() && !infoEntry.isSymbolicLink() && await onlyEntry(info, "exclude")) {
-        const exclude = await entry(path.join(info, "exclude"));
-        if (exclude?.isFile() && !exclude.isSymbolicLink() && exclude.nlink === 1n) return null;
-      }
-    }
+    if (await isGitPlaceholder(marker)) return null;
     gitDirectory = await directoryIdentity(marker);
   }
   else {

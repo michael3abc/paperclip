@@ -38,6 +38,18 @@ describe("Git physical source roots", () => {
     await fs.mkdir(path.join(marker, "objects"));
     expect(await readWorkspaceGitSourceRoots(cwd)).toMatchObject({ objectDirectories: [{ path: path.join(marker, "objects") }] });
   });
+  it("treats an empty .git mount placeholder as an ordinary directory (HOM-428)", async () => {
+    const cwd = path.join(root, "career"), marker = path.join(cwd, ".git");
+    await fs.mkdir(marker, { recursive: true });
+    expect(await readWorkspaceGitSourceRoots(cwd)).toBeNull();
+    expect(await readWorkspaceGitSourceRoots(path.join(cwd, "notes"), { ancestors: true })).toBeNull();
+    expect(await workspaceSourceIdentities(randomUUID(), cwd)).toMatchObject({ git: null, unownedPaths: [cwd] });
+    await fs.writeFile(path.join(marker, "HEAD"), "ref: refs/heads/main\n");
+    await expect(readWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+    await fs.rm(path.join(marker, "HEAD"));
+    await fs.mkdir(path.join(marker, "objects"));
+    expect(await readWorkspaceGitSourceRoots(cwd)).toMatchObject({ objectDirectories: [{ path: path.join(marker, "objects") }] });
+  });
   it.each([
     { cwd: "/source/a", providerRef: null, paths: ["/source/a"] },
     { cwd: null, providerRef: "/source/a", paths: ["/source/a"] },
