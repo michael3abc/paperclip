@@ -4,7 +4,7 @@ import { configurationWarningMessages } from "../lib/configuration-warnings";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary, type BudgetWindowKind } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -54,6 +54,7 @@ import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /* ── Top-level tab types ── */
 
+const PROJECT_BUDGET_WINDOWS: readonly BudgetWindowKind[] = ["calendar_month_utc", "lifetime"];
 type ProjectBaseTab = "sessions" | "artifacts" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
@@ -619,9 +620,11 @@ export function ProjectDetail() {
     }
   }, [invalidateProject, lookupCompanyId, projectLookupRef, pushToast, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
-  const projectBudgetSummary = useMemo(() => {
+  // A project can hold a monthly (UTC calendar month) and a lifetime limit; each is its own policy and a zero
+  // amount leaves that one off. Spend counted toward either is the same project spend.
+  const projectBudgetSummaries = useMemo(() => PROJECT_BUDGET_WINDOWS.map((windowKind) => {
     const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef),
+      (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef) && policy.windowKind === windowKind,
     );
     if (matched) return matched;
     return {
@@ -631,7 +634,7 @@ export function ProjectDetail() {
       scopeId: project?.id ?? routeProjectRef,
       scopeName: project?.name ?? "Project",
       metric: "billed_cents",
-      windowKind: "lifetime",
+      windowKind,
       amount: 0,
       unpricedEventCount: 0, pendingRunCount: 0,
       unpricedUsagePolicy: "block",
@@ -648,15 +651,15 @@ export function ProjectDetail() {
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+  }), [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
 
   const budgetMutation = useMutation({
-    mutationFn: (amount: number) =>
+    mutationFn: ({ amount, windowKind }: { amount: number; windowKind: BudgetWindowKind }) =>
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "project",
         scopeId: project?.id ?? routeProjectRef,
         amount,
-        windowKind: "lifetime",
+        windowKind,
       }),
     onSuccess: () => {
       if (!resolvedCompanyId) return;
@@ -941,13 +944,16 @@ export function ProjectDetail() {
       )}
 
       {activeTab === "budget" && resolvedCompanyId ? (
-        <div className="max-w-3xl">
-          <BudgetPolicyCard
-            summary={projectBudgetSummary}
-            variant="plain"
-            isSaving={budgetMutation.isPending}
-            onSave={(amount) => budgetMutation.mutate(amount)}
-          />
+        <div className="max-w-3xl space-y-6">
+          {projectBudgetSummaries.map((summary) => (
+            <BudgetPolicyCard
+              key={summary.windowKind}
+              summary={summary}
+              variant="plain"
+              isSaving={budgetMutation.isPending && budgetMutation.variables?.windowKind === summary.windowKind}
+              onSave={(amount) => budgetMutation.mutate({ amount, windowKind: summary.windowKind })}
+            />
+          ))}
         </div>
       ) : null}
 
