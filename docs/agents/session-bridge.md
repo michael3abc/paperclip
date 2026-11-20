@@ -5,7 +5,7 @@
 For ccpocket_bridge with adapterConfig.role=main, task-context preparation rebuilds
 paperclipMainContextCompact from the assigned agent and its own Chat; caller/wake
 context cannot widen the scope. adapterConfig.mainContextCompactThresholdTokens
-defaults to 150000; a nonnegative safe integer is required and 0 disables it.
+defaults to 150000; 0 disables it, and a value that is not a nonnegative safe integer is logged and treated as off.
 Tasks, workers, foreign Chats and other adapters do not receive this policy.
 Server preparation owns scope/configuration; the adapter owns idle maintenance;
 Bridge owns native readiness and compaction RPCs. No migration or timer is added.

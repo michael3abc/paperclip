@@ -1,4 +1,5 @@
 import { parseObject } from "../../adapters/utils.js";
+import { logger } from "../../middleware/logger.js";
 
 /** Server-owned scope; the adapter performs maintenance only after its successful, idle native turn. */
 export function mainContextCompactPolicy(agent: {
@@ -9,8 +10,9 @@ export function mainContextCompactPolicy(agent: {
     || issue?.conversationAgentId !== agent.id) return null;
   const threshold = config.mainContextCompactThresholdTokens ?? 150_000;
   if (!Number.isSafeInteger(threshold) || (threshold as number) < 0) {
-    throw new Error("mainContextCompactThresholdTokens must be a nonnegative safe integer");
+    // Liveness-first: a malformed setting disables compaction; it never fails the run.
+    logger.warn({ agentId: agent.id }, "mainContextCompactThresholdTokens must be a nonnegative safe integer; compaction disabled");
+    return null;
   }
   return { version: 1, issueId: issue.id, agentId: agent.id, thresholdTokens: threshold as number };
 }
-
