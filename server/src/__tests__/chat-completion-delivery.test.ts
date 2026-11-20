@@ -13,7 +13,7 @@ import { executeIssuePostCommitActions, type IssuePostCommitAction, issueService
 import { buildLowTrustSourceTrust } from "../services/source-trust.js";
 import { documentService } from "../services/documents.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { chatCompletionDeliveryService, chatCompletionInstruction, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff, chatCompletionAlreadyReported, recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { chatCompletionDeliveryService, chatCompletionInstruction, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff, chatCompletionAlreadyReported, recordCompletedHandoffRead, chatCompletionSettleMs } from "../services/chat-completion-delivery.js";
 import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
@@ -29,6 +29,15 @@ import { ALREADY_REPORTED_WAKE_REASON, createPostgresWakeQueueAdapter } from "..
     await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
   }, 30_000);
   afterAll(async () => { await temporary?.cleanup(); });
+  // The default 3-minute settle window delays the first delivery of a conversation. The
+  // pre-existing tests assert immediate dispatch, so they run with the window disabled;
+  // the "settle window" tests below enable it explicitly.
+  const originalSettle = process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS;
+  beforeAll(() => { process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS = "0"; });
+  afterAll(() => {
+    if (originalSettle === undefined) delete process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS;
+    else process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS = originalSettle;
+  });
   beforeEach(async () => { await db.update(deliveries).set({ status: "exhausted" }); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), sourceId = randomUUID(), runId = randomUUID();
@@ -374,6 +383,68 @@ import { ALREADY_REPORTED_WAKE_REASON, createPostgresWakeQueueAdapter } from "..
     expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, run.id))).toEqual([]);
     await f.due(); await f.service.sweepPending();
     expect(await f.rows()).toMatchObject([{ status: "superseded" }]);
+  });
+  describe("settle window", () => {
+    const WINDOW_MS = 180_000;
+    beforeEach(() => { process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS = String(WINDOW_MS); });
+    afterAll(() => { process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS = "0"; });
+    it("defaults to three minutes and honors 0 and invalid values", () => {
+      expect(chatCompletionSettleMs({} as any)).toBe(180_000);
+      expect(chatCompletionSettleMs({ PAPERCLIP_CHAT_COMPLETION_SETTLE_MS: "0" } as any)).toBe(0);
+      expect(chatCompletionSettleMs({ PAPERCLIP_CHAT_COMPLETION_SETTLE_MS: "5000" } as any)).toBe(5000);
+      expect(chatCompletionSettleMs({ PAPERCLIP_CHAT_COMPLETION_SETTLE_MS: "nope" } as any)).toBe(180_000);
+      expect(chatCompletionSettleMs({ PAPERCLIP_CHAT_COMPLETION_SETTLE_MS: "-1" } as any)).toBe(180_000);
+    });
+    it("wakes once for two completions inside the window and reports both", async () => {
+      const f = await seed(); const second = await f.create();
+      const before = Date.now();
+      await f.finish(); await f.finish(second.id);
+      const rows = await f.rows();
+      expect(rows).toHaveLength(2);
+      // The first completion waits one window; the second joins it instead of starting its own.
+      expect(rows[0].nextAttemptAt.getTime()).toBeGreaterThanOrEqual(before + WINDOW_MS - 1000);
+      expect(rows[1].nextAttemptAt.getTime()).toBe(rows[0].nextAttemptAt.getTime());
+      await f.service.sweepPending();
+      expect(f.wakeup).not.toHaveBeenCalled();
+      await f.due(); await f.service.sweepPending();
+      expect(f.wakeup).toHaveBeenCalledTimes(1);
+      const [delivery] = await f.rows();
+      const [wakeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivery.targetRunId!));
+      const prepared = await prepareChatCompletionTurn(db, wakeRun);
+      expect(prepared.contextSnapshot?.chatCompletionDeliveryIds).toHaveLength(2);
+      expect(prepared.contextSnapshot?.chatCompletionUpdates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: f.task.id }), expect.objectContaining({ id: second.id })]));
+    });
+    it("wakes separately for a completion that arrives after the first turn was admitted", async () => {
+      const f = await seed(); await f.finish();
+      await f.due(); const first = await f.run();
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, first.id));
+      expect(f.wakeup).toHaveBeenCalledTimes(1);
+      const later = await f.create(); await f.finish(later.id);
+      const laterDelivery = (await f.rows()).find(d => d.taskId === later.id)!;
+      // The late completion gets its own window rather than joining the dispatched head.
+      expect(laterDelivery.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + WINDOW_MS - 5000);
+      await f.service.sweepPending();
+      expect(f.wakeup).toHaveBeenCalledTimes(1);
+      await f.due(); await f.service.sweepPending();
+      expect(f.wakeup).toHaveBeenCalledTimes(2);
+      expect(first.contextSnapshot?.chatCompletionDeliveryIds).toHaveLength(1);
+    });
+    it("always dispatches after the window expires through the delivery worker's periodic sweep", async () => {
+      process.env.PAPERCLIP_CHAT_COMPLETION_SETTLE_MS = "400";
+      const f = await seed();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = coordinator.register(DELIVERY_QUEUES.chatCompletion, { retryMs: 50,
+        run: () => f.service.sweepPending(), hasPending: f.service.hasPending });
+      try {
+        await worker.ready;
+        await f.finish(); // No due() and no manual sweep: only the worker can dispatch.
+        await new Promise(resolve => setTimeout(resolve, 150));
+        expect(f.wakeup).not.toHaveBeenCalled();
+        expect(await f.service.hasPending()).toBe(true);
+        await vi.waitFor(() => expect(f.wakeup).toHaveBeenCalledTimes(1), { timeout: 5000, interval: 50 });
+      } finally { await coordinator.stop(); }
+    });
   });
   it("recovers the wake receipt if the dispatcher crashes before saving the run pointer", async () => {
     const f = await seed(); await f.finish(); const [delivery] = await f.rows();
