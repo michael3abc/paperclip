@@ -1495,8 +1495,9 @@ function applyRunLifecycleToCompanyLiveRuns(
 /**
  * A run of a task a chat created changes that chat's `hasLiveChildTasks`
  * ("waiting for task") in the viewer's chat list. The chat's own runs do not
- * (live runs present those), and `running` keeps an already live run live, so
- * neither refetches the list. Runs start as queued or scheduled retries.
+ * (live runs present those) until one ends: that decides `hasRunningSubagents`,
+ * so a terminal status refetches the list. `running` keeps an already live run
+ * live, so it never refetches. Runs start as queued or scheduled retries.
  */
 function invalidateAgentChatTaskState(
   queryClient: QueryClient,
@@ -1510,7 +1511,10 @@ function invalidateAgentChatTaskState(
   const chats = queryClient.getQueryData<Issue[]>(chatListKey);
   if (!chats) return;
   const issueId = readString(payload.issueId);
-  if (issueId && chats.some(chat => chat.id === issueId)) return;
+  // The chat's own run does not change `hasLiveChildTasks` (live runs present it), but its end decides
+  // `hasRunningSubagents`: subagents it started keep the row working, or the next run ends them.
+  if (issueId && chats.some(chat => chat.id === issueId)
+    && !(eventType === "heartbeat.run.status" && TERMINAL_RUN_STATUSES.has(readString(payload.status) ?? ""))) return;
   void queryClient.invalidateQueries({ queryKey: chatListKey });
 }
 

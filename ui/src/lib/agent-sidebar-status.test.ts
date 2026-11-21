@@ -3,6 +3,7 @@ import {
   agentSidebarStatusAnnouncement,
   agentSidebarStatusLabel,
   agentSidebarStatusStyle,
+  deriveChatRunningSubagentAgentIds,
   deriveChatWaitingForTaskAgentIds,
   deriveProjectPmSidebarStatus,
   isOwnerInputRequest,
@@ -543,5 +544,36 @@ describe("Agent Chat Owner decisions", () => {
     const subject = { status: "pending", metadata: { createdByAgentId: "main" } };
     expect(derive([item({ subject, expiresAt: "2026-11-07T00:00:00Z" })])).toBe("working");
     expect(derive([item({ subject, resolverAudience: { addresseeAgentId: "delegate" } })])).toBe("working");
+  });
+});
+
+describe("deriveChatRunningSubagentAgentIds", () => {
+  const until = (ms: number) => new Date(NOW + ms).toISOString();
+  const chat = (conversationAgentId: string | null, hasRunningSubagents?: boolean, runningSubagentsUntil?: string | null) =>
+    ({ conversationAgentId, hasRunningSubagents, runningSubagentsUntil });
+  const derive = (chats: Parameters<typeof deriveChatRunningSubagentAgentIds>[0]["chats"], liveRuns: RunInput = []) =>
+    [...deriveChatRunningSubagentAgentIds({ chats, liveRuns, now: NOW })];
+
+  it("marks agents whose chat still has running native subagents", () => {
+    expect(derive([chat("main-a", true, until(60_000)), chat("main-b", false), chat("main-c"), chat(null, true, until(60_000))]))
+      .toEqual(["main-a"]);
+  });
+
+  it("stops trusting the flag once the server's bound has passed, without a refetch", () => {
+    expect(derive([chat("main-a", true, until(-1))])).toEqual([]);
+    expect(derive([chat("main-a", true, "not a date")])).toEqual([]);
+    // An older server without the bound still reports the flag.
+    expect(derive([chat("main-a", true)])).toEqual(["main-a"]);
+  });
+
+  it("leaves an agent that already works itself to its own working indicator", () => {
+    expect(derive([chat("main-a", true, until(60_000))], [run({ agentId: "main-a" })])).toEqual([]);
+    // A queued own run is not work: the subagents are still the reason to show working.
+    expect(derive([chat("main-a", true, until(60_000))], [run({ agentId: "main-a", status: "queued" })])).toEqual(["main-a"]);
+  });
+
+  it("tolerates missing chats and live runs", () => {
+    expect(derive(undefined, undefined)).toEqual([]);
+    expect(derive([chat("main-a", true, until(60_000))], null)).toEqual(["main-a"]);
   });
 });
