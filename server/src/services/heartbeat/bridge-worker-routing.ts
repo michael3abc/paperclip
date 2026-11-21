@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, projectWorkspaces, type agents, type Db } from "@paperclipai/db";
 import { readMainManagedWorktree } from "@paperclipai/shared";
 import { bridgeWorkerCapacities, bridgeWorkerCapacity, resolveBridgeWorkerRoute, type BridgeWorkerRoute } from "../bridge-worker-routing.js";
-import { projectSourceHost } from "../pm-worker-options.js";
+import { DEFAULT_BRIDGE_HOST, projectSourceHost } from "../pm-worker-options.js";
 import { unprocessable } from "../../errors.js";
 
 type Agent = typeof agents.$inferSelect;
@@ -40,7 +40,8 @@ export async function prepareBridgeWorkerRoute(db: Db, input: { agent: Agent; ru
     sourceId ? eq(projectWorkspaces.id, sourceId) : undefined)) : [];
   const source = sourceId ? sources[0] : sources.find(source => source.isPrimary) ?? (sources.length === 1 ? sources[0] : undefined);
   const managed = readMainManagedWorktree(input.workspace?.metadata);
-  if (!source || projectSourceHost(source) !== route.hostId || (managed && managed.hostId !== route.hostId)) {
+  // A main-managed worktree created on this server records hostId null; it lives on the default Bridge host.
+  if (!source || projectSourceHost(source) !== route.hostId || (managed && (managed.hostId ?? DEFAULT_BRIDGE_HOST) !== route.hostId)) {
     throw unprocessable("Shared worker host does not match the task's selected project source", { code: "PM_WORKER_HOST_MISMATCH" });
   }
   input.context.bridgeWorkerRoute = route;
