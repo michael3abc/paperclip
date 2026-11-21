@@ -6,11 +6,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PROJECT_COLORS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
 import { queryKeys } from "../lib/queryKeys";
 import { getLastProjectId } from "../lib/recent-projects";
 import { NewProjectForm } from "./NewProjectDialog";
 
-vi.mock("../api/projects", () => ({ projectsApi: { create: vi.fn(), environmentOptions: vi.fn() } }));
+vi.mock("../api/projects", () => ({ projectsApi: { create: vi.fn(), update: vi.fn(), environmentOptions: vi.fn() } }));
+vi.mock("../api/agents", () => ({ agentsApi: { list: vi.fn(), create: vi.fn() } }));
 vi.mock("./ProjectRepositoryInput", () => ({
   ProjectRepositoryInput: () => null,
   repositoryOptionsKey: (companyId: string) => ["repositories", companyId],
@@ -22,11 +24,17 @@ vi.mock("./ui/dialog", () => ({
   DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
 }));
 
+// Radix Checkbox measures its form-bubble input with ResizeObserver, which jsdom lacks.
+globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+
 let root: ReturnType<typeof createRoot>;
 let container: HTMLDivElement;
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(projectsApi.create).mockReset().mockResolvedValue({ id: "project-created" } as Awaited<ReturnType<typeof projectsApi.create>>);
+  vi.mocked(projectsApi.update).mockReset().mockResolvedValue({} as Awaited<ReturnType<typeof projectsApi.update>>);
+  vi.mocked(agentsApi.list).mockReset().mockResolvedValue([]);
+  vi.mocked(agentsApi.create).mockReset();
   vi.mocked(projectsApi.environmentOptions).mockReset().mockResolvedValue({ groups: [], defaultEnvironmentId: null, error: null });
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -198,5 +206,52 @@ describe("project environment selection", () => {
     const select = container.querySelector<HTMLSelectElement>("select")!;
     act(() => { select.value = "sandbox"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  });
+});
+
+describe("project main agent", () => {
+  const mainAgent = { id: "m1", name: "Other", status: "idle", adapterType: "ccpocket_bridge", reportsTo: "boss",
+    adapterConfig: { role: "main", hostId: "yoyo-server", provider: "claude", model: "yoyo-server/claude/family:opus-5.5", cwd: "/home/yoyo/projects/other" } };
+  const submit = async () => { act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))); await settle(); };
+
+  it("is not offered when no main agent exists yet", async () => {
+    await renderForm();
+    expect(container.querySelector("#main-agent-cwd")).toBeNull();
+    await submit();
+    expect(agentsApi.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the same-named agent bound to the new project, makes it the lead, and keeps the steps on retry", async () => {
+    vi.mocked(agentsApi.list).mockResolvedValue([mainAgent] as unknown as Awaited<ReturnType<typeof agentsApi.list>>);
+    vi.mocked(projectsApi.create).mockResolvedValue({ id: "project-1", name: "Environment project" } as Awaited<ReturnType<typeof projectsApi.create>>);
+    vi.mocked(agentsApi.create).mockResolvedValue({ id: "agent-1" } as Awaited<ReturnType<typeof agentsApi.create>>);
+    vi.mocked(projectsApi.update).mockRejectedValueOnce(new Error("lead save failed")).mockResolvedValue({} as Awaited<ReturnType<typeof projectsApi.update>>);
+    await renderForm();
+    await settle();
+    expect(container.querySelector<HTMLInputElement>("#main-agent-cwd")!.value).toBe("/home/yoyo/projects/environment-project");
+    await submit();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("The project was created, but its main agent was not");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("lead save failed");
+    await submit();
+    expect(projectsApi.create).toHaveBeenCalledTimes(1);
+    expect(agentsApi.create).toHaveBeenCalledTimes(1);
+    expect(agentsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ name: "Environment project",
+      adapterConfig: expect.objectContaining({ role: "main", projectId: "project-1", cwd: "/home/yoyo/projects/environment-project", hostId: "yoyo-server" }) }));
+    expect(projectsApi.update).toHaveBeenLastCalledWith("project-1", { leadAgentId: "agent-1" }, "company-1");
+    expect(projectsApi.update).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates only the project when the box is cleared, and blocks an invalid folder", async () => {
+    vi.mocked(agentsApi.list).mockResolvedValue([mainAgent] as unknown as Awaited<ReturnType<typeof agentsApi.list>>);
+    await renderForm();
+    await settle();
+    const cwd = container.querySelector<HTMLInputElement>("#main-agent-cwd")!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(cwd, "relative"); cwd.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
+    act(() => container.querySelector<HTMLElement>('[aria-label="Create a main agent"]')!.click());
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+    await submit();
+    expect(projectsApi.create).toHaveBeenCalledTimes(1);
+    expect(agentsApi.create).not.toHaveBeenCalled();
   });
 });
