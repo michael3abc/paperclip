@@ -6,14 +6,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { antigravityParSection, patchAntigravityServerBytes, replaceAntigravitySource } from "./patch-antigravity-runtime.mjs";
+import { ANTIGRAVITY_PATCH_SOURCES, antigravityParSection, patchAntigravityRuntime, patchAntigravityServerBytes, replaceAntigravitySource } from "./patch-antigravity-runtime.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const source = process.env.PAPERCLIP_ANTIGRAVITY_NATIVE_TEST_SOURCE;
+// The pinned vendor closures run natively only on their own platform.
+const nativeHost = (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
+// The linux closure's hermetic launcher otherwise looks up a "nobody" group.
+const nativeArguments = process.platform === "linux" ? ["--uid="] : [];
 
 function runNative(executable, home, requests) {
   return new Promise((resolve, reject) => {
-    const child = execFile(executable, [], {
+    const child = execFile(executable, nativeArguments, {
       cwd: dirname(executable),
       env: { PATH: process.env.PATH, HOME: home, GEMINI_HOME: join(home, ".gemini"), BROWSER: "/usr/bin/true", AGY_ACP_FORCE_FILE_STORAGE: "1", ANTIGRAVITY_HARNESS_PATH: join(executable, "..", "localharness_external") },
       timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
@@ -542,8 +546,54 @@ test("Mach-O section decoding rejects invalid architecture and out-of-bounds nat
   assert.throws(() => antigravityParSection(bytes), /archive bounds/);
 });
 
+/** Minimal ELF64 x86-64 image: header, section names, and one `.par_data` payload. */
+function elfFixture({ payload = Buffer.alloc(64, 7), name = ".par_data", type = 1, machine = 62, count = 1, declaredLength } = {}) {
+  const names = Buffer.from(`\0${name}\0.shstrtab\0`);
+  const dataStart = 64;
+  const namesStart = dataStart + payload.length;
+  const tableStart = namesStart + names.length;
+  const bytes = Buffer.alloc(tableStart + 64 * 3);
+  bytes.writeUInt32BE(0x7f454c46);
+  bytes[4] = 2; bytes[5] = 1; bytes[6] = 1;
+  bytes.writeUInt16LE(machine, 18);
+  bytes.writeBigUInt64LE(BigInt(tableStart), 40);
+  bytes.writeUInt16LE(64, 58); bytes.writeUInt16LE(3, 60); bytes.writeUInt16LE(2, 62);
+  payload.copy(bytes, dataStart);
+  names.copy(bytes, namesStart);
+  const section = (index, nameOffset, kind, start, length) => {
+    const offset = tableStart + index * 64;
+    bytes.writeUInt32LE(nameOffset, offset); bytes.writeUInt32LE(kind, offset + 4);
+    bytes.writeBigUInt64LE(BigInt(start), offset + 24); bytes.writeBigUInt64LE(BigInt(length), offset + 32);
+  };
+  section(1, 1, type, dataStart, declaredLength ?? payload.length);
+  section(2, 1 + name.length + 1, 3, namesStart, names.length);
+  if (count !== 1) section(0, 1, type, dataStart, payload.length);
+  return bytes;
+}
+
+test("ELF section decoding finds exactly one pinned embedded archive and rejects malformed images", () => {
+  const found = antigravityParSection(elfFixture());
+  assert.deepEqual(found, { start: 64, length: 64 });
+  assert.throws(() => antigravityParSection(elfFixture({ machine: 183 })), /x86-64 ELF/);
+  assert.throws(() => antigravityParSection(elfFixture({ name: ".other" })), /exactly one embedded Python archive/);
+  assert.throws(() => antigravityParSection(elfFixture({ count: 2 })), /exactly one embedded Python archive/);
+  assert.throws(() => antigravityParSection(elfFixture({ type: 8 })), /archive bounds/);
+  assert.throws(() => antigravityParSection(elfFixture({ declaredLength: 1 << 20 })), /archive bounds/);
+  const truncated = elfFixture();
+  assert.throws(() => antigravityParSection(truncated.subarray(0, truncated.length - 1)), /section table/);
+});
+
+test("the patch accepts only the two pinned official targets, with deterministic non-signed Linux output rules", async () => {
+  assert.deepEqual(Object.keys(ANTIGRAVITY_PATCH_SOURCES).sort(), ["darwin-arm64", "linux-x64"]);
+  for (const entry of Object.values(ANTIGRAVITY_PATCH_SOURCES)) assert.match(entry.serverSha256 + entry.harnessSha256, /^[a-f0-9]{128}$/);
+  assert.equal(ANTIGRAVITY_PATCH_SOURCES["linux-x64"].format, "elf");
+  await assert.rejects(patchAntigravityRuntime({ source: "/nonexistent", destination: "/nonexistent-out", platform: "linux", architecture: "arm64" }), /no pinned native runtime for linux-arm64/);
+  await assert.rejects(patchAntigravityRuntime({ source: "/nonexistent", destination: "/nonexistent-out", platform: "win32", architecture: "x64" }), /no pinned native runtime for win32-x64/);
+  assert.throws(() => patchAntigravityServerBytes(elfFixture(), Buffer.from("module")), /SHA-256 mismatch/);
+});
+
 test("pinned native closure reproducibly loads exact admission and rejects requests before authentication", {
-  skip: !source || process.platform !== "darwin" || process.arch !== "arm64",
+  skip: !source || !nativeHost,
   timeout: 180_000,
 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-native-patch-test-"));
@@ -571,6 +621,10 @@ test("pinned native closure reproducibly loads exact admission and rejects reque
   assert.equal(byId.get(6).error.code, -32602, "the native model request contract rejects extra fields");
   assert(!result.events.some(event => event.result?._meta?.paperclipAntigravityAdmission), "no native init means no fabricated receipt");
 
+  // The admission module's native session regressions locate the owned harness through
+  // libSystem and pin the macOS helper digest. The linux-x64 closure is admitted for
+  // sign-in and session-free catalog calls only; session execution stays closed.
+  if (process.platform !== "darwin") return;
   const fixtureScripts = join(root, "fixture-scripts");
   const { mkdir } = await import("node:fs/promises");
   await mkdir(fixtureScripts);
@@ -591,7 +645,7 @@ test("pinned native closure reproducibly loads exact admission and rejects reque
 
 
 test("native client file callbacks settle exact tool identity without broadcasting errors", {
-  skip: !source || process.platform !== "darwin" || process.arch !== "arm64",
+  skip: !source || !nativeHost,
   timeout: 90_000,
 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-tool-lifecycle-test-"));

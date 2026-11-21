@@ -10,7 +10,7 @@
       "agentServerVersion": "1.4.3",
       "agentRuntimePackage": "native:antigravity-localharness",
       "agentRuntimeVersion": "1.4.3",
-      "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+      "commandDigest": "sha256:abc30f42028398a7a27dc1706d2183dfc9356b3b7170ad499f2b417e3320b1e3",
       "requiresProviderPolicy": true,
       "qualificationStatus": "pending"
     },

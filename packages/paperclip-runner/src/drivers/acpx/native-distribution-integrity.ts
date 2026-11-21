@@ -25,8 +25,10 @@ export interface NativeAcpxDistributionSnapshot {
   bootstrap: Buffer;
 }
 
-const MAX_NATIVE_TREE_BYTES = 1024 * 1024 * 1024;
-const MAX_NATIVE_FILE_BYTES = 384 * 1024 * 1024;
+// Sizes are covered by the pinned closure digest. The bound admits the official
+// linux-x64 Antigravity closure (a ~928 MB server and a ~134 MB helper).
+const MAX_NATIVE_TREE_BYTES = 1280 * 1024 * 1024;
+const MAX_NATIVE_FILE_BYTES = 1024 * 1024 * 1024;
 const MAX_NATIVE_MANIFEST_BYTES = 4 * 1024 * 1024;
 // Bound both file descriptors and buffers. A single larger admitted file runs
 // alone and remains subject to MAX_NATIVE_FILE_BYTES.

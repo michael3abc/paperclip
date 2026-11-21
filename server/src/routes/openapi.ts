@@ -30,6 +30,7 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   browserCodeSchema,
+  localAiLoginRedirectSchema,
   emailEndpointSetupSchema,
   emailConnectionSchema,
   emailAddressCheckSchema,
@@ -14549,6 +14550,13 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code",
   tags: ["ai-connections"], summary: "Submit the browser code for an owned local Claude sign-in",
   body: z.object({ browserCode: browserCodeSchema }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/redirect",
+  tags: ["ai-connections"], summary: "Submit the pasted Google redirect address for an owned local Google sign-in (remote browser)",
+  body: localAiLoginRedirectSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 

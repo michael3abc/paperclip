@@ -89,6 +89,9 @@ const SENSITIVE_KEYS = new Set<string>([
   // sign-in code and `authorization_code` carries the OAuth code; neither may
   // reach a log line.
   "browsercode",
+  // Remote-browser Google sign-in: the pasted loopback address embeds the
+  // one-time authorization code and the PKCE state.
+  "redirecturl",
   "authorization_code",
   "code_verifier",
   "codeverifier",

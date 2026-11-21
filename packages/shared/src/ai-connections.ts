@@ -294,6 +294,12 @@ export const localAiConnectionSchema = aiConnectionLoginIntentSchema.extend({
   localSessionId: z.string().uuid().optional(),
 });
 export const localAiLoginStartSchema = aiConnectionLoginIntentSchema.extend({ restart: z.boolean().optional() });
+/** Maximum length of the address a remote browser stops on after Google approval. */
+export const LOCAL_LOGIN_REDIRECT_URL_MAX_LENGTH = 4096;
+/** Remote-browser Google sign-in: the full loopback address pasted from the address bar. */
+export const localAiLoginRedirectSchema = z.object({
+  redirectUrl: z.string().trim().min(1, "Paste the full address from the browser.").max(LOCAL_LOGIN_REDIRECT_URL_MAX_LENGTH, "The pasted address is too long."),
+}).strict();
 export interface LocalAiLoginStatus {
   status: "ready" | "sign_in_required" | "expired";
   authorizationUrl?: string;
