@@ -18,6 +18,11 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-paperclip-cloud-runtime-identity"]',
   'req.headers["x-paperclip-cloud-control"]',
   'req.headers["x-paperclip-cloud-inspection"]',
+  // Cloudflare Access signed assertions and service tokens grant app access
+  // until expiry. The authenticated user email stays visible for auditing.
+  'req.headers["cf-access-jwt-assertion"]',
+  'req.headers["cf-access-client-id"]',
+  'req.headers["cf-access-client-secret"]',
   // Runtime GitHub capabilities authorize credential acquisition for a live run.
   'req.headers["x-paperclip-github-capability"]',
   'req.headers["x-paperclip-runner-scope-token"]',
