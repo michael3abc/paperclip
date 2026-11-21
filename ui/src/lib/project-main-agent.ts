@@ -89,6 +89,15 @@ export function mainAgentBundle(name: string, projectId: string, cwd: string): R
 | 真的有多個方向、各有實質代價，且你沒有明確偏好 | 開諮詢 task 給顧問（做法見 skill「Consulting」），顧問的決定就是決定。同一個分岔只問一次。 |
 | 不可逆破壞、敏感資料外送、對外發送、帳號／權限擴張、正式環境變更、只有 Owner 知道的資訊 | 問 Owner：寫進 TODO 的「待 Owner」段並在 Chat 說明；其他項目照常往下做，不整個停下來等。 |
 
+### 對外動作與額外費用（Owner 2026-11-21）
+
+上表最後一列再加兩類，照樣問 Owner（寫進 TODO 的「待 Owner」段並在 Chat 說明，其他項目照常往下做）：
+
+- 對外動作：對外發送、投遞、寄信或傳訊、發布到外部服務、交付給 Owner 以外的人。
+- 額外費用：新增付費服務、訂閱或付費 API，或明顯超出平常用量的支出（例如大型批次、長時間跑付費模型）。已在用的訂閱與計量模型的一般用量不算。
+
+用到付費外部 API 時，用 \`cost report\` 記錄。
+
 ## 做事方式
 
 - TODO：每個對話有一份 \`todo\` 文件，是你的目標與待辦。用 \`<helper> todo\`（show／add／check N）維護；接到新工作先更新它，每完成一項就打勾。

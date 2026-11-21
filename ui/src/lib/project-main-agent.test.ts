@@ -44,6 +44,7 @@ describe("project main agent helpers", () => {
     });
     const files = (body.instructionsBundle as { files: Record<string, string> }).files;
     expect(files["AGENTS.md"]).toContain("# Demo 主 agent");
+    expect(files["AGENTS.md"]).toContain("### 對外動作與額外費用（Owner 2026-11-21）");
     expect(files["PROJECT.md"]).toContain("p-1");
     expect(files["PROJECT.md"]).toContain("/home/yoyo/projects/demo");
   });
