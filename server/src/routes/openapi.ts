@@ -1751,7 +1751,7 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
-  if (path.startsWith("/api/companies/{companyId}/dashboard/host-claude")) return "instance_admin";
+  if (path.startsWith("/api/companies/{companyId}/dashboard/host-claude") || path.startsWith("/api/companies/{companyId}/dashboard/host-codex")) return "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
       || key === "POST /api/mcp/requests/{id}/dot-pairing/preview"
@@ -6883,6 +6883,56 @@ registry.registerPath({
   method: "post", path: "/api/companies/{companyId}/dashboard/host-claude/sessions/{id}/cancel", tags: ["dashboard"],
   summary: "Cancel own host Claude sign-in",
   description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/dashboard/host-codex", tags: ["dashboard"],
+  summary: "List company host Codex login capabilities",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-codex/{hostId}/check", tags: ["dashboard"],
+  summary: "Check native host Codex ChatGPT login",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-codex/{hostId}/login", tags: ["dashboard"],
+  summary: "Start native host Codex device sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/dashboard/host-codex/sessions/{id}", tags: ["dashboard"],
+  summary: "Read own host Codex sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-codex/sessions/{id}/cancel", tags: ["dashboard"],
+  summary: "Cancel own host Codex sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
   "x-paperclip-authorization": { actor: "board", humanOnly: true },
   "x-paperclip-transport": "protocol",
   request: { params: z.object({ companyId: z.string(), id: z.string() }) },
