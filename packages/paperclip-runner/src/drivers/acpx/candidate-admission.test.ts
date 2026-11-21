@@ -40,6 +40,20 @@ describe("operator candidate execution admission", () => {
     expect(() => parseAcpxCandidateAdmission({ ...candidate(), ...change }, expected, now)).toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
   });
 
+  it("binds the exact linux-x64 closure for Antigravity and keeps each platform's closure separate", () => {
+    const linux = { ...candidate(), platform: "linux", architecture: "x64", nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256}` } as AcpxCandidateAdmission;
+    expect(parseAcpxCandidateAdmission(linux, expected, now)).toEqual(linux);
+    expect(ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256).not.toBe(ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256);
+    for (const change of [{ nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}` }, { platform: "darwin" }, { architecture: "arm64" }, { architecture: "arm64", platform: "linux" }]) {
+      expect(() => parseAcpxCandidateAdmission({ ...linux, ...change }, expected, now)).toThrow(expect.objectContaining({ code: "ACPX_CANDIDATE_ADMISSION_INVALID" }));
+    }
+    expect(() => parseAcpxCandidateAdmission({ ...candidate(), nativeClosureDigest: linux.nativeClosureDigest }, expected, now)).toThrow();
+    const profile = resolveQualifiedAcpxProfile("antigravity", expected.model);
+    const startup = bindAcpxCandidateAdmission({ ...linux, expiresAt: Date.now() + 60_000 }, { runId: "actual-run", normalizedSessionId: "actual-session" });
+    if (process.platform === "linux" && process.arch === "x64") expect(() => assertAcpxExecutionAdmission(profile, startup)).not.toThrow();
+    else expect(() => assertAcpxExecutionAdmission(profile, startup)).toThrow();
+  });
+
   it("binds actual startup run/session and refuses replay against another identity", () => {
     const current = { ...candidate(), expiresAt: Date.now() + 60_000 };
     const startup = bindAcpxCandidateAdmission(current, { runId: "actual-run", normalizedSessionId: "actual-session" });
@@ -66,18 +80,19 @@ describe("operator candidate execution admission", () => {
 
 describe("candidate installation remains cryptographically verified", () => {
   const profile = resolveQualifiedAcpxProfile("antigravity", "gemini-3.8-flash-low");
-  const admission = () => bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model: profile.qualificationModel,
-    profileDigest: profile.commandDigest, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
-    platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 }, { runId: "run-candidate", normalizedSessionId: "session-candidate" });
+  const admission = (target: "darwin-arm64" | "linux-x64" = "darwin-arm64") => bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model: profile.qualificationModel,
+    profileDigest: profile.commandDigest, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS[target].closureSha256}`,
+    platform: target === "linux-x64" ? "linux" : "darwin", architecture: target === "linux-x64" ? "x64" : "arm64", expiresAt: Date.now() + 60_000 }, { runId: "run-candidate", normalizedSessionId: "session-candidate" });
 
-  it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("delegates the admitted exception to the exact complete native closure verifier", async () => {
+  it.each([["darwin", "arm64", "darwin-arm64", []], ["linux", "x64", "linux-x64", ["--uid="]]] as const)("delegates the admitted exception on %s-%s to the exact complete native closure verifier", async (platform, arch, target, fixedArguments) => {
+    if (process.platform !== platform || process.arch !== arch) return;
     const native = { commandDigest: "native-closure-verifier-result" } as integrity.VerifiedAcpxInstallation;
     vi.mocked(integrity.verifyNativeAcpxInstallation).mockResolvedValue(native);
-    const result = await verifyAcpxProfileInstallation(profile, admission());
+    const result = await verifyAcpxProfileInstallation(profile, admission(target));
     expect(result.commandDigest).toBe(profile.commandDigest);
     expect(integrity.verifyNativeAcpxInstallation).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      expectedClosureSha256: ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256,
-      executable: "agy_acp_server.par", fixedArguments: [],
+      expectedClosureSha256: ANTIGRAVITY_DISTRIBUTION_PINS[target].closureSha256,
+      executable: "agy_acp_server.par", fixedArguments: [...fixedArguments],
     }));
   });
 

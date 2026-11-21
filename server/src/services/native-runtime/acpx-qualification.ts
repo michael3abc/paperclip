@@ -9,7 +9,7 @@ export function resolveAntigravityCandidateAdmission(
   hostEnvironment: NodeJS.ProcessEnv = process.env,
 ): AcpxCandidateAdmission | undefined {
   const encoded = hostEnvironment[ANTIGRAVITY_CANDIDATE_ADMISSION_ENV];
-  if (!encoded || !input.companyId || process.platform !== "darwin" || process.arch !== "arm64") return undefined;
+  if (!encoded || !input.companyId || !(process.platform === "darwin" && process.arch === "arm64" || process.platform === "linux" && process.arch === "x64")) return undefined;
   let value: unknown;
   try { value = JSON.parse(encoded); } catch { throw new Error("Invalid Antigravity candidate admission"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Antigravity candidate admission");

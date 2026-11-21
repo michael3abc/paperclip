@@ -2570,12 +2570,16 @@ a pinned native admission patch. `paperclipai runtime setup antigravity` install
 its verified assets on macOS ARM64 and Linux x64 as the OS user running Paperclip.
 The Linux x64 closure is the official `agy-acp-server-1.4.3-linux-x86_64.zip`
 from `dl.google.com/agy-extensions`; it is launched with `--uid=` because its
-hermetic launcher otherwise looks up a `nobody` group, and the same owned
-admission patch is applied to its ELF `.par_data` section. The Linux closure is
-admitted for Google sign-in and session-free catalog calls only: the admission
-module's native session path still resolves the harness through macOS `libSystem`
-and pins the macOS helper digest, so agent sessions stay closed on Linux until
-that module is made platform-aware (which changes the macOS pin). Setup does
+hermetic launcher otherwise looks up a `nobody` group. It receives the owned
+admission patch in its ELF `.par_data` section, from its own Linux admission source
+(`patch-antigravity-runtime.admission.linux.py`): the macOS source and its
+digest stay byte-identical, and the Linux twin differs only in locating the owned
+executable through `/proc/self/exe` (instead of `libSystem._NSGetExecutablePath`) and
+in pinning the Linux `localharness_external` digest. Admission stays fail-closed on
+both platforms: a sibling helper that is not the immutable, digest-pinned file refuses the
+session. A trusted-startup candidate (`PAPERCLIP_ACPX_CANDIDATE_ADMISSION`) can bind
+either `darwin-arm64` or `linux-x64`, each to its own pinned closure and exact host.
+Linux agent sessions therefore admit like macOS ones. Setup does
 not enable global execution: qualification remains pending and admission is
 closed by default. An isolated company can use a finite trusted server-startup
 candidate authorization bound to the exact model, local platform, profile and

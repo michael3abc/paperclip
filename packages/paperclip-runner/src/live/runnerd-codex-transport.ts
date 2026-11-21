@@ -4362,7 +4362,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const admitted = parseAcpxCandidateAdmission(candidate, { companyId: candidate.companyId, agent: options.acpxAgent ?? "", model: candidate.model });
       this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), ...(candidate.agent === "antigravity" ? { providerRecoveryPolicy: "same_session_only" as const } : {}) };
       if (candidate.agent === "antigravity") this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
-      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || process.platform !== "darwin" || process.arch !== "arm64"
+      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || !(process.platform === "darwin" && process.arch === "arm64" || process.platform === "linux" && process.arch === "x64")
         || options.runnerFilesystemRoot || options.prepareLaunch || options.runnerProcessLauncher
         || options.homeMode === "preconfigured" || options.lifecyclePolicy?.mode === "warm"
         || options.adoptExistingRunner || options.resumeActiveTurnId
