@@ -20,6 +20,23 @@ it.each([400, 500])("keeps host Claude login codes out of %i diagnostics", async
   await request(app).post("/api/companies/company/dashboard/host-claude/sessions/id/code").send({ browserCode: canary });
   expect(chunks.join("")).not.toContain(canary);
 });
+it.each([200, 400, 500])("keeps Codex device URL/code and diagnostics out of %i logs", async status => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.use(express.json());
+  const canary = "codex-private-device-canary";
+  app.use((_req, res, next) => {
+    res.setHeader("Location", "https://auth.openai.com/codex/device?" + canary);
+    if (status >= 400) { next(new HttpError(status, canary)); return; }
+    res.json({ verificationUrl: "https://auth.openai.com/codex/device?" + canary, userCode: canary });
+  });
+  app.use(errorHandler);
+  const response = await request(app).post("/api/companies/company/dashboard/host-codex/host/login?" + canary).send({ userCode: canary });
+  expect(response.status).toBe(status);
+  expect(chunks.join("")).not.toContain(canary);
+});
 import { errorHandler } from "../middleware/error-handler.js";
 import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
