@@ -34,7 +34,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["issues", "chat-handoffs"] });
     client.clear();
   });
-  it("refreshes the viewer's chat list when a chat task's run becomes live or ends", () => {
+  it("refreshes the viewer's chat list when a chat task's run becomes live or ends, and when the chat's own run ends", () => {
     const client = new QueryClient();
     const gate = { cooldownHits: new Map<string, number[]>(), suppressUntil: 0, observedRunOutcomes: new Set<string>() };
     const mine = queryKeys.agentChats.list("company-1", "viewer");
@@ -52,7 +52,12 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(client.getQueryState(theirs)?.isInvalidated).toBe(false);
     // Starting an already live run, the chat's own runs, logs and foreign companies do not refetch the list.
     expect(deliver("heartbeat.run.status", { issueId: "task-1", status: "running" })).toBe(false);
-    expect(deliver("heartbeat.run.status", { issueId: "chat-1", status: "succeeded" })).toBe(false);
+    expect(deliver("heartbeat.run.status", { issueId: "chat-1", status: "running" })).toBe(false);
+    expect(deliver("heartbeat.run.queued", { issueId: "chat-1" })).toBe(false);
+    // The chat's own run ending decides whether its native subagents still run (`hasRunningSubagents`).
+    for (const status of ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]) {
+      expect(deliver("heartbeat.run.status", { issueId: "chat-1", status }), status).toBe(true);
+    }
     expect(deliver("heartbeat.run.log", { issueId: "task-1" })).toBe(false);
     expect(deliver("heartbeat.run.status", { issueId: "task-1", status: "failed" }, "company-2")).toBe(false);
     client.clear();

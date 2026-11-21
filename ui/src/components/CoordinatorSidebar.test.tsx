@@ -15,7 +15,7 @@ import { PrimaryAgentPresentationProvider } from "./primary-agent/PrimaryAgentPr
 type FixtureAgent = { id: string; name: string; role: Agent["role"]; urlKey?: string; icon?: string | null; status: string; adapterType?: string };
 const fixture = vi.hoisted(() => { const openWork = vi.fn(); return ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), ensureChat: vi.fn(), listMemberships: vi.fn(), refetchAgents: vi.fn(), liveRuns: vi.fn(), openWork, projectTasks: openWork, pathname: "/COO/issues", collapsed: false, userId: "reviewer" as string | null, search: "", recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, enableCases: false, enableResponsibilities: false,
   pmWorkspaces: vi.fn(), preferences: vi.fn(), pushToast: vi.fn(),
-  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string; hasLiveChildTasks?: boolean }>,
+  chats: [] as Array<{ id?: string; isUnreadForMe: boolean; conversationAgentId?: string; conversationState?: "active" | "waiting" | null; updatedAt?: string; hasLiveChildTasks?: boolean; hasRunningSubagents?: boolean; runningSubagentsUntil?: string | null }>,
   primaryAgentId: null as string | null, primaryCompanyId: "company",
   agents: [] as FixtureAgent[], agentsState: {} as { isError?: boolean; isPending?: boolean; fetchStatus?: string } }); });
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
@@ -702,6 +702,27 @@ describe("Coordinator agents section", () => {
       await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.liveRuns("company") }); }); await settle();
       expect(byLabel("All-Set").getAttribute("data-agent-status")).toBe("waiting_for_task");
       expect(byLabel("All-Set").className).toContain("bg-(--sidebar-waiting-background)");
+    });
+
+    it("shows working while the chat's native subagents run after the main run ended, and clears with them", async () => {
+      fixture.liveRuns.mockResolvedValue([]);
+      const until = new Date(Date.now() + 30 * 60_000).toISOString();
+      // Both a running subagent and a live task: working outranks waiting for task.
+      fixture.chats = [{ id: "chat-main", isUnreadForMe: false, conversationAgentId: "a-main", hasLiveChildTasks: true, hasRunningSubagents: true, runningSubagentsUntil: until }];
+      await renderSidebar(); await settle();
+      const row = byLabel("All-Set");
+      expect(row.getAttribute("data-agent-status")).toBe("working");
+      expect(row.textContent).toContain("working");
+      expect(row.className).toContain("ring-blue-600/60");
+      expect(byLabel("momo").getAttribute("data-agent-status")).toBeNull();
+      // The server clears the flag once the subagents are done or proven gone.
+      fixture.chats = [{ id: "chat-main", isUnreadForMe: false, conversationAgentId: "a-main", hasRunningSubagents: false, runningSubagentsUntil: null }];
+      await renderSidebar(); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBeNull();
+      // A flag past its bound never stays blue, even if the list was not refetched.
+      fixture.chats = [{ id: "chat-main", isUnreadForMe: false, conversationAgentId: "a-main", hasRunningSubagents: true, runningSubagentsUntil: new Date(Date.now() - 1_000).toISOString() }];
+      await renderSidebar(); await settle();
+      expect(byLabel("All-Set").getAttribute("data-agent-status")).toBeNull();
     });
 
     it("clears when the main agent's run fails or waits for an answer", async () => {
