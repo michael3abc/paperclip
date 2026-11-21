@@ -116,6 +116,34 @@ process group on its host. Closing the page leaves at most the five-minute
 deadline; sign-in failures are explicit and never retried automatically.
 No inference, Bridge restart, new database table or new dependency is required.
 
+The Codex quota card follows the same logged-out-only replacement, company-host
+registry, human-only instance-admin access and visible once-per-minute status
+checks. Opt in with
+`codexLogin: { command: "/absolute/path/to/codex", codexHome?: "/absolute/path" }`
+in the host entry. The registered `sshAlias` selects the execution host; client
+commands, home paths and SSH targets are never used. Codex runs there as
+`codex login --device-auth`. Open the OpenAI device page and enter the displayed
+one-time code there; the Dashboard has no code input or submission endpoint.
+Its active session is polled every 1.5 seconds while visible, for at most ten
+minutes, stopping on terminal state, query error or unmount. A query error keeps
+the cancel action available. Expiry removes the code and URL from the view.
+After the CLI exits successfully, `codex login status` must report
+`Logged in using ChatGPT`; an API-key login does not qualify. Success restores
+quota content and refreshes quota data; Dashboard Refresh invalidates both
+providers' host lists and status queries.
+
+Human-only endpoints under `/api/companies/:companyId/dashboard/host-codex`:
+GET lists enrolled hosts; POST `/:hostId/check` reads native status; POST
+`/:hostId/login` starts device auth; GET `/sessions/:id` reads the initiating
+user's session; POST `/sessions/:id/cancel` stops it. Sessions bind company, user
+and host, with one active Codex login per host. Responses are no-store with
+no-referrer; device URLs, codes, CLI output and credentials never enter logs or
+audit storage. URL/code/session state is memory-only and credentials remain on
+the selected host. Inherited `OPENAI_*` and `CODEX_*` variables are removed before
+launch, except the registry's explicit `CODEX_HOME`. Cancellation, EOF and the
+ten-minute deadline kill the native process group; closing the page leaves only
+that bounded lifetime. No automatic login retries or host fallback occur.
+
 Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service
 to show Codex, Claude and Antigravity subscription cards on Dashboard. This is
 off by default. GET /api/companies/:companyId/dashboard/subscription-quotas

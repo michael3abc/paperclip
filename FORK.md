@@ -112,6 +112,15 @@ in sync-decisions; these fixes do not certify every historical test as passing.
 
 ## Custom history
 
+- Dashboard host Codex sign-in (`michael/host-codex-login`, HOM-471): the Codex
+  quota card offers human-only instance-admin device authorization for explicitly
+  logged-out company hosts. Registry `codexLogin` pins the native CLI and home;
+  users open OpenAI's device page and enter the displayed copyable code. A bounded
+  ten-minute session verifies native ChatGPT login before refreshing quotas.
+  Commands and credentials stay on the configured host; device URLs/codes and CLI
+  diagnostics are never persisted or logged. Includes service, route, redaction,
+  OpenAPI coverage and UI regressions; no schema or dependency change.
+
 - Agent TODO tab (`michael/todo-panel`, Owner 2026-11-19 「放這邊加一個 TODO」, 「最多 3 項，而且只顯示 6 小時內完成的」,
   「可以在待辦那邊加上一個 cancel，s.t. 讓 main 去取消這個 task」, 「介面好看一點，不要只用 .md 渲染」): the task side panel's
   launcher offers a `TODO` tab (always in an agent chat, on a task once it has one). It reads the conversation's

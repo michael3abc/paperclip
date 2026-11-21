@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { dashboardService } from "../services/dashboard.js";
 import { companyService } from "../services/companies.js";
@@ -28,7 +28,7 @@ export function dashboardRoutes(db: Db) {
   const svc = dashboardService(db);
   const recoveryObservability = recoveryObservabilityService(db);
   // Literal paths keep the mounted-route OpenAPI coverage scanner exact.
-  const hostLoginGuard: Parameters<typeof router.use>[1] = async (req, res, next) => {
+  const hostLoginGuard: RequestHandler = async (req, res, next) => {
     assertInstanceAdmin(req);
     assertCompanyAccess(req, req.params.companyId as string);
     if (!await companyService(db).getById(req.params.companyId as string)) {

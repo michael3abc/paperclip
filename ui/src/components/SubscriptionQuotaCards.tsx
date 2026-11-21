@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { QuotaBar } from "./QuotaBar";
 import { HostClaudeLogin } from "./HostClaudeLogin";
+import { HostCodexLogin } from "./HostCodexLogin";
 
 const PROVIDERS = [
   { id: "openai", title: "Codex" },
@@ -62,7 +63,9 @@ export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, faile
               <CardContent className="space-y-3">
                 {id === "anthropic" && companyId ? <HostClaudeLogin key={companyId} companyId={companyId}>
                   <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />
-                </HostClaudeLogin> : <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />}
+                </HostClaudeLogin> : id === "openai" && companyId ? <HostCodexLogin key={companyId} companyId={companyId}>
+                  <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />
+                </HostCodexLogin> : <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />}
               </CardContent>
             </Card>
           );
@@ -117,5 +120,7 @@ export function SubscriptionQuotaCards({ companyId }: { companyId: string }) {
       void quotas.refetch();
       void client.invalidateQueries({ queryKey: ["host-claude-logins", companyId] });
       void client.invalidateQueries({ queryKey: ["host-claude-status", companyId] });
+      void client.invalidateQueries({ queryKey: ["host-codex-logins", companyId] });
+      void client.invalidateQueries({ queryKey: ["host-codex-status", companyId] });
     }} />;
 }
