@@ -12,9 +12,10 @@ import {
   MODEL_COST_PERIODS,
   modelCostPeriodStartIso,
   splitModelCosts,
+  splitModelTokens,
   type ModelCostPeriod,
-  type ModelCostSlice,
   type ModelCostWhole,
+  type ModelTokenWhole,
 } from "../lib/model-cost-split";
 
 const SIZE = 120;
@@ -37,13 +38,22 @@ function arcPath(start: number, end: number): string {
   return `M ${CENTER} ${CENTER} L ${x1} ${y1} A ${RADIUS} ${RADIUS} 0 ${large} 1 ${x2} ${y2} Z`;
 }
 
-function sliceTitle(slice: ModelCostSlice, valueLabel: string): string {
-  return `${slice.label}: ${formatCents(slice.cents)} (${percent(slice.share)}) ${valueLabel}\n${slice.models.join(", ")}`;
+interface PieSlice {
+  key: string;
+  label: string;
+  share: number;
+  color: string;
+  models: string[];
+  amount: string;
 }
 
-export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCostWhole; valueLabel: string; ariaLabel: string }) {
-  if (whole.slices.length === 0) {
-    return <p className="text-xs text-muted-foreground">No priced usage in this period</p>;
+function sliceTitle(slice: PieSlice, valueLabel: string): string {
+  return `${slice.label}: ${slice.amount} (${percent(slice.share)}) ${valueLabel}\n${slice.models.join(", ")}`;
+}
+
+function SharePie({ slices, empty, valueLabel, ariaLabel }: { slices: PieSlice[]; empty: string; valueLabel: string; ariaLabel: string }) {
+  if (slices.length === 0) {
+    return <p className="text-xs text-muted-foreground">{empty}</p>;
   }
   let cursor = 0;
   return (
@@ -54,12 +64,12 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
         role="img"
         aria-label={ariaLabel}
       >
-        {whole.slices.length === 1 ? (
-          <circle cx={CENTER} cy={CENTER} r={RADIUS} fill={whole.slices[0]!.color}>
-            <title>{sliceTitle(whole.slices[0]!, valueLabel)}</title>
+        {slices.length === 1 ? (
+          <circle cx={CENTER} cy={CENTER} r={RADIUS} fill={slices[0]!.color}>
+            <title>{sliceTitle(slices[0]!, valueLabel)}</title>
           </circle>
         ) : (
-          whole.slices.map((slice) => {
+          slices.map((slice) => {
             const start = cursor;
             cursor += slice.share;
             return (
@@ -79,7 +89,7 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
         )}
       </svg>
       <ul className="min-w-0 flex-1 space-y-1">
-        {whole.slices.map((slice) => (
+        {slices.map((slice) => (
           <li
             key={slice.key}
             className="flex items-center gap-2 text-xs"
@@ -88,11 +98,33 @@ export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCos
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
             <span className="min-w-0 flex-1 truncate">{slice.label}</span>
             <span className="tabular-nums text-muted-foreground">{percent(slice.share)}</span>
-            <span className="tabular-nums">{formatCents(slice.cents)}</span>
+            <span className="tabular-nums">{slice.amount}</span>
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+export function ModelCostPie({ whole, valueLabel, ariaLabel }: { whole: ModelCostWhole; valueLabel: string; ariaLabel: string }) {
+  return (
+    <SharePie
+      slices={whole.slices.map((slice) => ({ ...slice, amount: formatCents(slice.cents) }))}
+      empty="No priced usage in this period"
+      valueLabel={valueLabel}
+      ariaLabel={ariaLabel}
+    />
+  );
+}
+
+export function ModelTokenPie({ whole, ariaLabel }: { whole: ModelTokenWhole; ariaLabel: string }) {
+  return (
+    <SharePie
+      slices={whole.slices.map((slice) => ({ ...slice, amount: formatTokens(slice.tokens) }))}
+      empty="No token usage in this period"
+      valueLabel="tokens"
+      ariaLabel={ariaLabel}
+    />
   );
 }
 
@@ -120,6 +152,40 @@ function readStoredPeriod(): ModelCostPeriod {
   } catch {
     return "month";
   }
+}
+
+export type ModelUsageMeasure = "cost" | "tokens";
+
+const MEASURE_STORAGE_KEY = "paperclip.dashboard.modelUsageMeasure";
+const MEASURES: ReadonlyArray<{ key: ModelUsageMeasure; label: string }> = [
+  { key: "cost", label: "Cost" },
+  { key: "tokens", label: "Tokens" },
+];
+
+function readStoredMeasure(): ModelUsageMeasure {
+  try {
+    return window.localStorage.getItem(MEASURE_STORAGE_KEY) === "tokens" ? "tokens" : "cost";
+  } catch {
+    return "cost";
+  }
+}
+
+export function MeasurePicker({ value, onChange }: { value: ModelUsageMeasure; onChange: (measure: ModelUsageMeasure) => void }) {
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label="Show cost or tokens">
+      {MEASURES.map((measure) => (
+        <Button
+          key={measure.key}
+          variant={value === measure.key ? "secondary" : "ghost"}
+          size="xs"
+          onClick={() => onChange(measure.key)}
+          aria-pressed={value === measure.key}
+        >
+          {measure.label}
+        </Button>
+      ))}
+    </div>
+  );
 }
 
 export function PeriodPicker({ value, onChange }: { value: ModelCostPeriod; onChange: (period: ModelCostPeriod) => void }) {
@@ -150,6 +216,15 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
       // Remembering the choice is a convenience only.
     }
   };
+  const [measure, setMeasureState] = useState<ModelUsageMeasure>(readStoredMeasure);
+  const setMeasure = (next: ModelUsageMeasure) => {
+    setMeasureState(next);
+    try {
+      window.localStorage.setItem(MEASURE_STORAGE_KEY, next);
+    } catch {
+      // Remembering the choice is a convenience only.
+    }
+  };
   const from = modelCostPeriodStartIso(period);
   const detail = MODEL_COST_PERIODS.find((entry) => entry.key === period)!.detail;
   const { data, error } = useQuery({
@@ -159,11 +234,15 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
     staleTime: 30_000,
   });
   const split = useMemo(() => splitModelCosts(data ?? []), [data]);
+  const tokens = useMemo(() => splitModelTokens(data ?? []), [data]);
 
   const header = (
     <div className="flex flex-wrap items-center justify-between gap-2 md:col-span-2">
       <span className="text-(length:--text-nano) text-muted-foreground">{detail}</span>
-      <PeriodPicker value={period} onChange={setPeriod} />
+      <div className="flex flex-wrap items-center gap-3">
+        <MeasurePicker value={measure} onChange={setMeasure} />
+        <PeriodPicker value={period} onChange={setPeriod} />
+      </div>
     </div>
   );
 
@@ -172,7 +251,26 @@ export function ModelCostPies({ companyId }: { companyId: string }) {
       {header}
       {error ? <p role="status" className="text-xs text-destructive md:col-span-2">Could not load model costs</p>
         : !data ? <p className="text-xs text-muted-foreground md:col-span-2">Loading…</p>
-        : <>
+        : measure === "tokens" ? <>
+      <section className="space-y-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <h4 className="text-xs font-medium">Compass</h4>
+          <span className="text-sm font-semibold tabular-nums">{formatTokens(tokens.compass.totalTokens)} tokens</span>
+        </div>
+        <p className="text-(length:--text-nano) text-muted-foreground">Recorded input, cache-read and output tokens</p>
+        <ModelTokenPie whole={tokens.compass} ariaLabel="Compass tokens by model" />
+      </section>
+      <section className="space-y-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <h4 className="text-xs font-medium">Subscription</h4>
+          <span className="text-sm font-semibold tabular-nums">{formatTokens(tokens.subscription.totalTokens)} tokens</span>
+        </div>
+        <p className="text-(length:--text-nano) text-muted-foreground">
+          Recorded input, cache-read and output tokens, including models without a price
+        </p>
+        <ModelTokenPie whole={tokens.subscription} ariaLabel="Subscription tokens by model" />
+      </section>
+      </> : <>
       <section className="space-y-2">
         <div className="flex items-baseline justify-between gap-2">
           <h4 className="text-xs font-medium">Compass</h4>

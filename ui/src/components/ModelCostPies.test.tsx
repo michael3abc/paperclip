@@ -160,4 +160,38 @@ describe("ModelCostPie", () => {
     flushSync(() => buttons[3]!.click());
     expect(picked).toEqual(["today"]);
   });
+
+  it("switches both pies to token usage, including subscription models without a price, and remembers the choice", () => {
+    const usage = (partial: Partial<CostByProviderModel>): CostByProviderModel => ({
+      provider: "claude", biller: "compass", billingType: "metered_api", model: "compass-opus5.5",
+      costCents: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+      apiRunCount: 1, subscriptionRunCount: 0, subscriptionInputTokens: 0,
+      subscriptionCachedInputTokens: 0, subscriptionOutputTokens: 0, ...partial,
+    });
+    query.data = [
+      usage({ model: "compass-opus5.5[1m]", costCents: 500, inputTokens: 1_000_000, cachedInputTokens: 2_000_000 }),
+      usage({ provider: "google", biller: "google", billingType: "subscription_included", model: "gemini-4-hydrogen-high", inputTokens: 3_000_000 }),
+      usage({ biller: "anthropic_subscription", billingType: "subscription_included", model: "claude-sonnet-5-5", outputTokens: 1_000_000 }),
+    ];
+    flushSync(() => root.render(<ModelCostPies companyId="test-company" />));
+    const tokensButton = [...container.querySelectorAll("button")].find((b) => b.textContent === "Tokens")!;
+    expect(tokensButton.getAttribute("aria-pressed")).toBe("false");
+    flushSync(() => tokensButton.click());
+    expect(window.localStorage.getItem("paperclip.dashboard.modelUsageMeasure")).toBe("tokens");
+
+    const section = (name: string) => [...container.querySelectorAll("section")].find((item) => item.querySelector("h4")?.textContent === name)!;
+    expect(section("Compass").querySelector("div span")?.textContent).toBe("3.0M tokens");
+    expect(section("Subscription").querySelector("div span")?.textContent).toBe("4.0M tokens");
+    expect(section("Subscription").querySelector("svg")?.getAttribute("aria-label")).toBe("Subscription tokens by model");
+    expect([...section("Subscription").querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+      "Gemini 4 Hydrogen75%3.0M",
+      "Sonnet 5.525%1.0M",
+    ]);
+    expect(section("Subscription").textContent).not.toContain("Unpriced");
+
+    flushSync(() => root.unmount());
+    root = createRoot(container);
+    flushSync(() => root.render(<ModelCostPies companyId="test-company" />));
+    expect([...container.querySelectorAll("button")].find((b) => b.textContent === "Tokens")!.getAttribute("aria-pressed")).toBe("true");
+  });
 });
