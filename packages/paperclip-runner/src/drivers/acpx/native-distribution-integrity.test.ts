@@ -211,6 +211,31 @@ describe("native ACPX execution closure", () => {
     expect(() => lease.spawn()).toThrow("closed");
     await lease.close();
   });
+  it("exports the frozen sibling helper path that a /proc/self/fd launch cannot derive", async () => {
+    const declaration = await fixture({ script: '#!/bin/sh\nprintf "%s|%s" "$0" "${ANTIGRAVITY_HARNESS_PATH:-none}"\n' });
+    const entries = await readNativeAcpxDistributionEntries(declaration);
+    const helper = "#!/bin/sh\nexit 0\n";
+    await writeFile(join(declaration.distributionRoot, "helper"), helper, { mode: 0o700 });
+    entries.push({ path: "helper", sha256: hash(helper), size: Buffer.byteLength(helper), executable: true });
+    entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    await writeFile(declaration.manifestPath, JSON.stringify({ entries }));
+    const pinned = { ...declaration, expectedClosureSha256: hash(JSON.stringify(entries)) };
+
+    const before = (await output((await (await verifyNativeAcpxInstallation(pinned)).openCommand()).spawn())).text.split("|");
+    expect(before[1]).toBe("none");
+    // The invocation path alone does not locate a sibling on Linux.
+    if (process.platform === "linux") expect(before[0]).toMatch(/^\/proc\/self\/fd\/\d+$/);
+
+    const install = await verifyNativeAcpxInstallation({ ...pinned, helperExecutableEnvironment: { name: "ANTIGRAVITY_HARNESS_PATH", path: "helper" } });
+    const [, exported] = (await output((await install.openCommand()).spawn([], { env: { ANTIGRAVITY_HARNESS_PATH: "/ambient/harness" } }))).text.split("|");
+    expect(exported).toMatch(/paperclip-acpx-native-.*\/distribution\/helper$/);
+    expect(exported).not.toContain(declaration.distributionRoot);
+
+    await expect(verifyNativeAcpxInstallation({ ...pinned, helperExecutableEnvironment: { name: "ANTIGRAVITY_HARNESS_PATH", path: "absent" } }))
+      .rejects.toThrow("helper executable is absent");
+    await expect(verifyNativeAcpxInstallation({ ...pinned, helperExecutableEnvironment: { name: "ANTIGRAVITY_HARNESS_PATH", path: "../helper" } }))
+      .rejects.toThrow("launch declaration is invalid");
+  });
   it("waits for consumed native snapshot deletion before command retirement completes", async () => {
     const declaration = await fixture();
     const lease = await (await verifyNativeAcpxInstallation(declaration)).openCommand();
