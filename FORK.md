@@ -160,6 +160,10 @@ in sync-decisions; these fixes do not certify every historical test as passing.
   sandbox mount point is treated like the info/exclude-only placeholder, so it no longer fails run preparation with
   `workspace_git_source_unproven`. Server only (`server/src/services/workspace-git-source-roots.ts`).
 
+- Google subscription on Linux (`michael/antigravity-linux`, HOM-480/HOM-485): Connect Google sign-in and Antigravity agent sessions on
+  linux-x64, pinned to the official `agy-acp-server-1.4.3-linux-x86_64.zip`, with a Linux admission twin (`/proc/self/exe` plus the Linux
+  helper digest) and a remote-browser paste-back of the loopback redirect. macOS admission bytes and pins unchanged. No schema change.
+
 - Sidebar working for running subagents (`michael/subagent-working-status`, HOM-484, Owner 2026-11-21 「有 subagent 在跑的時候也要顯示 working」):
   the Agent Chat list adds `hasRunningSubagents`/`runningSubagentsUntil`, derived from background subagent events in the chat's latest
   succeeded run log (bounded to 30 minutes, cleared when the next run starts); the sidebar shows the existing blue `working`. No schema change.

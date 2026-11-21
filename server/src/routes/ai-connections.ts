@@ -20,6 +20,7 @@ import {
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
   localAiLoginStartSchema,
+  localAiLoginRedirectSchema,
   browserCodeSchema,
   isAiConnectionCompatible,
   type AiConnectionLoginIntent,
@@ -215,6 +216,16 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     assertCompanyAccess(req, companyId);
     const id = z.string().uuid().parse(req.params.sessionId);
     await localLogin.submitCode(companyId, getActorInfo(req).actorId, id, browserCodeSchema.parse(req.body.browserCode));
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true });
+  });
+  router.post("/companies/:companyId/ai-connections/local/attempts/:sessionId/redirect", validate(localAiLoginRedirectSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertLocalLoginAvailable();
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const id = z.string().uuid().parse(req.params.sessionId);
+    await localLogin.submitRedirect(companyId, getActorInfo(req).actorId, id, localAiLoginRedirectSchema.parse(req.body).redirectUrl);
     res.setHeader("Cache-Control", "no-store");
     res.json({ ok: true });
   });

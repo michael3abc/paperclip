@@ -284,3 +284,81 @@ describe("Google local sign-in service admission", () => {
     await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+describe("Google remote-browser redirect submission", () => {
+  const ADDRESS = "http://127.0.0.1:18973/?state=state-canary&code=code-canary";
+  // Starting the attempt logs its own activity; only the submission is asserted here.
+  async function redirectFixture() { const f = await fixture(); mocks.activity.mockClear(); return f; }
+  const live = () => ({ status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+  class AntigravityRedirectError extends Error { constructor(message: string) { super(message); this.name = "AntigravityRedirectError"; } }
+
+  it("replays the pasted address through the live attempt once and logs only the provider", async () => {
+    const f = await redirectFixture(); const submit = vi.fn(async () => undefined); f.browser.submitCode = submit;
+    f.db.selections.push([live()]);
+    await f.service.submitRedirect("company", "user", f.attempt.sessionId, ADDRESS);
+    expect(submit).toHaveBeenCalledOnce(); expect(submit).toHaveBeenCalledWith(ADDRESS);
+    expect(mocks.activity).toHaveBeenCalledOnce();
+    const entry = mocks.activity.mock.calls[0]![1];
+    expect(entry).toMatchObject({ companyId: "company", actorType: "user", actorId: "user", action: "ai_connection.local_login_redirect_submitted", entityType: "adapter_auth_session", entityId: f.attempt.sessionId, details: { provider: "google" } });
+    expect(JSON.stringify(entry)).not.toMatch(/canary|127\.0\.0\.1/);
+    f.release();
+  });
+
+  it("is not found for another user, company or adapter (empty authorization selection)", async () => {
+    const f = await redirectFixture(); const submit = vi.fn(); f.browser.submitCode = submit;
+    f.db.selections.push([]);
+    await expect(f.service.submitRedirect("company", "other-user", f.attempt.sessionId, ADDRESS)).rejects.toMatchObject({ status: 404 });
+    expect(submit).not.toHaveBeenCalled(); expect(mocks.activity).not.toHaveBeenCalled();
+    f.release();
+  });
+
+  it.each([
+    ["cancelled", { status: "cancelled", expiresAt: new Date(Date.now() + 60_000) }],
+    ["expired", { status: "waiting_for_user", expiresAt: new Date(Date.now() - 1) }],
+    ["without a deadline", { status: "waiting_for_user", expiresAt: null }],
+  ])("refuses a %s attempt without touching the browser", async (_label, row) => {
+    const f = await redirectFixture(); const submit = vi.fn(); f.browser.submitCode = submit;
+    f.db.selections.push([row]);
+    await expect(f.service.submitRedirect("company", "user", f.attempt.sessionId, ADDRESS)).rejects.toMatchObject({ status: 422 });
+    expect(submit).not.toHaveBeenCalled(); expect(mocks.activity).not.toHaveBeenCalled();
+    f.release();
+  });
+
+  it.each([
+    ["no live browser process", (browser: LocalBrowserLoginState) => { delete browser.submitCode; }],
+    ["a finished sign-in", (browser: LocalBrowserLoginState) => { browser.submitCode = vi.fn(); browser.outcome = "success"; }],
+    ["no authorization address yet", (browser: LocalBrowserLoginState) => { browser.submitCode = vi.fn(); delete browser.authorizationUrl; }],
+  ])("refuses %s", async (_label, mutate) => {
+    const f = await redirectFixture(); mutate(f.browser);
+    f.db.selections.push([live()]);
+    await expect(f.service.submitRedirect("company", "user", f.attempt.sessionId, ADDRESS)).rejects.toMatchObject({ status: 422 });
+    expect(mocks.activity).not.toHaveBeenCalled();
+    f.release();
+  });
+
+  it("maps a runner redirect error to its fixed 422 message and keeps the attempt open for another paste", async () => {
+    const f = await redirectFixture();
+    const submit = vi.fn().mockRejectedValueOnce(new AntigravityRedirectError("That address belongs to a different sign-in attempt. Start sign-in again and use the new Google window.")).mockResolvedValueOnce(undefined);
+    f.browser.submitCode = submit;
+    f.db.selections.push([live()]);
+    const failure = await f.service.submitRedirect("company", "user", f.attempt.sessionId, ADDRESS).catch((error: any) => error);
+    expect(failure).toMatchObject({ status: 422, message: expect.stringContaining("different sign-in attempt"), details: { code: "ai_connection_redirect_rejected" } });
+    expect(mocks.activity).not.toHaveBeenCalled();
+    expect(f.browser.submitCode).toBe(submit);
+    f.db.selections.push([live()]);
+    await f.service.submitRedirect("company", "user", f.attempt.sessionId, ADDRESS);
+    expect(submit).toHaveBeenCalledTimes(2); expect(mocks.activity).toHaveBeenCalledOnce();
+    f.release();
+  });
+
+  it("never reflects an unexpected failure's text", async () => {
+    const f = await redirectFixture(); f.browser.submitCode = vi.fn().mockRejectedValue(new Error("boom " + ADDRESS));
+    f.db.selections.push([live()]);
+    const failure = await f.service.submitRedirect("company", "user", f.attempt.sessionId, ADDRESS).catch((error: any) => error);
+    expect(failure).toMatchObject({ status: 422 });
+    expect(String(failure.message) + JSON.stringify(failure.details ?? {})).not.toMatch(/canary|boom|127\.0\.0\.1/);
+    expect(mocks.activity).not.toHaveBeenCalled();
+    f.release();
+  });
+});
+

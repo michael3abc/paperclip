@@ -1,7 +1,8 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, rename, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { antigravityPrivateEnvironment, checkAntigravityPrivateHome, retireAntigravityProcess } from "./antigravity-process.js";
@@ -15,14 +16,88 @@ const AUTH_PREFIX = "Open the following link to authenticate the ACP server: ";
 const MAX_BYTES = 64 * 1024;
 const LOGIN_ERROR = "Google sign-in did not complete. Start sign-in again.";
 /** Shown when this host has no admitted native closure; retrying cannot help. */
-export const UNSUPPORTED_PLATFORM_ERROR = "Google subscription sign-in is not available on this server's platform yet (only macOS ARM64 has an admitted Antigravity runtime). Use a Gemini API key instead.";
+export const UNSUPPORTED_PLATFORM_ERROR = "Google subscription sign-in is not available on this server's platform yet (only macOS ARM64 and Linux x64 have an admitted Antigravity runtime). Use a Gemini API key instead.";
 const UNSUPPORTED_PLATFORM_PREFIX = "Antigravity has no admitted complete runtime closure for ";
+/** Shown when the admitted runtime exists for this platform but was never installed. */
+export const RUNTIME_NOT_INSTALLED_ERROR = "The Google Antigravity runtime is not installed on this server. Ask an administrator to run `paperclipai runtime setup antigravity` as the user that runs Paperclip, then start sign-in again.";
+
+/** Safe, fixed messages for a pasted redirect address. They never echo the address. */
+export class AntigravityRedirectError extends Error {
+  constructor(message: string) { super(message); this.name = "AntigravityRedirectError"; }
+}
+const REDIRECT_INVALID = "That is not the Google redirect address. After you approve access, copy the full address from the browser's address bar (it starts with http://127.0.0.1) and paste it here.";
+const REDIRECT_MISMATCH = "That address belongs to a different sign-in attempt. Start sign-in again and use the new Google window.";
+const REDIRECT_DENIED = "Google did not grant access. Start sign-in again to retry.";
+const REDIRECT_CONSUMED = "This sign-in already received its redirect address. Start sign-in again to retry.";
+const REDIRECT_FORWARD_FAILED = "The sign-in could not be completed on the server. Start sign-in again.";
+const REDIRECT_MAX_LENGTH = 4096;
+const REDIRECT_PARAMETERS = new Set(["code", "state", "scope", "authuser", "prompt", "hd", "iss", "error", "error_description", "error_uri"]);
+
+/**
+ * Validate an address pasted from a remote browser against this attempt and
+ * return the one loopback URL to replay to the local ACP server. Only the exact
+ * port and state of this attempt are accepted; only `code`, `state` and a
+ * well-formed `scope` are forwarded. The address, code and state are never put
+ * in an error message.
+ */
+export function antigravityRedirectTarget(pasted: string, authorizationUrl: string): string {
+  const value = pasted.trim();
+  if (!value || value.length > REDIRECT_MAX_LENGTH || /[\x00-\x20\x7f]/.test(value)) throw new AntigravityRedirectError(REDIRECT_INVALID);
+  let expected: URL, expectedState: string, received: URL;
+  try {
+    const authorization = new URL(authorizationUrl);
+    expected = new URL(authorization.searchParams.get("redirect_uri") ?? "");
+    expectedState = authorization.searchParams.get("state") ?? "";
+    received = new URL(value);
+  } catch { throw new AntigravityRedirectError(REDIRECT_INVALID); }
+  if (received.protocol !== "http:" || received.hostname !== "127.0.0.1" || received.username || received.password || received.hash
+    || received.pathname !== "/" || !received.port) throw new AntigravityRedirectError(REDIRECT_INVALID);
+  const keys = [...received.searchParams.keys()];
+  if (keys.some(key => !REDIRECT_PARAMETERS.has(key)) || new Set(keys).size !== keys.length) throw new AntigravityRedirectError(REDIRECT_INVALID);
+  const state = received.searchParams.get("state") ?? "";
+  const given = Buffer.from(state), wanted = Buffer.from(expectedState);
+  if (!expectedState || given.length !== wanted.length || !timingSafeEqual(given, wanted) || received.port !== expected.port) throw new AntigravityRedirectError(REDIRECT_MISMATCH);
+  if (received.searchParams.has("error")) throw new AntigravityRedirectError(REDIRECT_DENIED);
+  const code = received.searchParams.get("code") ?? "";
+  const scope = received.searchParams.get("scope");
+  if (!/^[A-Za-z0-9._~\/+=-]{8,2048}$/.test(code) || (scope !== null && !/^[A-Za-z0-9:/._ -]{1,1024}$/.test(scope))) throw new AntigravityRedirectError(REDIRECT_INVALID);
+  const target = new URL(expected.href);
+  target.searchParams.set("code", code);
+  target.searchParams.set("state", expectedState);
+  if (scope !== null) target.searchParams.set("scope", scope);
+  return target.href;
+}
+
+/** Replay the validated redirect to the ACP server's own loopback listener. */
+function replayAntigravityRedirect(target: string, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(target);
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") { reject(new AntigravityRedirectError(REDIRECT_FORWARD_FAILED)); return; }
+    const failure = () => new AntigravityRedirectError(REDIRECT_FORWARD_FAILED);
+    const call = httpRequest({ host: "127.0.0.1", port: Number(url.port), path: `${url.pathname}${url.search}`, method: "GET", agent: false, signal, timeout: 10_000 }, response => {
+      // The status and body are provider-owned; success is judged by the native authenticate result.
+      response.resume();
+      response.once("end", resolve);
+      response.once("error", () => reject(failure()));
+    });
+    call.once("timeout", () => call.destroy());
+    call.once("error", () => reject(failure()));
+    call.end();
+  });
+}
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const verifiedCredentials = new Map<string, { credential: string; accountEmail: string }>();
 const activeBrowserHomes = new Set<string>();
 
 export type AntigravityBrowserLoginState = {
   authorizationUrl?: string;
+  /**
+   * Remote-browser fallback. Accepts the full address the browser stopped on
+   * after Google approval and replays it to this attempt's loopback listener.
+   * A rejected address leaves the attempt open; an address that passes
+   * validation is used once. Rejections are `AntigravityRedirectError`.
+   */
+  submitCode?: (redirectAddress: string) => Promise<void>;
   outcome?: "success" | "failure";
   error?: string;
   /** Resolves only after physical process retirement and lease release. */
@@ -147,6 +222,14 @@ export async function verifyAntigravityCredential(home: string, options: { signa
   return { ...result };
 }
 
+/** The pinned closure's own manifest is absent: setup was never run for this host. */
+function runtimeMissing(error: unknown): boolean {
+  let manifest: string | undefined;
+  try { manifest = antigravityNativeDistributionSpec().manifestPath; } catch { return false; }
+  const failure = error as NodeJS.ErrnoException | undefined;
+  return failure?.code === "ENOENT" && failure.path === manifest;
+}
+
 /** A setup-only native ACP client. Its complete outgoing method set is
  * initialize/authenticate; pending provider qualification remains enforced for
  * every session and prompt by the ordinary runtime installation path.
@@ -156,7 +239,18 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
   activeBrowserHomes.add(home);
   let resolveStopped: () => void;
   const stopped = new Promise<void>(resolve => { resolveStopped = resolve; });
-  const state: AntigravityBrowserLoginState = { abort() { controller.abort(); activeBrowserHomes.delete(home); verifiedCredentials.delete(home); return stopped; } };
+  let redirectUsed = false;
+  const state: AntigravityBrowserLoginState = {
+    abort() { controller.abort(); activeBrowserHomes.delete(home); verifiedCredentials.delete(home); return stopped; },
+    async submitCode(redirectAddress: string) {
+      if (redirectUsed || state.outcome !== undefined || controller.signal.aborted) throw new AntigravityRedirectError(REDIRECT_CONSUMED);
+      if (!state.authorizationUrl) throw new AntigravityRedirectError(REDIRECT_INVALID);
+      const target = antigravityRedirectTarget(redirectAddress, state.authorizationUrl);
+      // Single use: set before the first await so a concurrent paste cannot replay it.
+      redirectUsed = true;
+      await replayAntigravityRedirect(target, controller.signal);
+    },
+  };
   void (async () => {
     let lease: VerifiedAcpxCommandLease | undefined;
     let child: ChildProcessWithoutNullStreams | undefined, closed: Promise<void> | undefined;
@@ -231,7 +325,8 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
       state.outcome = "success";
     } catch (error) {
       state.outcome = "failure";
-      state.error = error instanceof Error && error.message.startsWith(UNSUPPORTED_PLATFORM_PREFIX) ? UNSUPPORTED_PLATFORM_ERROR : LOGIN_ERROR;
+      state.error = error instanceof Error && error.message.startsWith(UNSUPPORTED_PLATFORM_PREFIX) ? UNSUPPORTED_PLATFORM_ERROR
+        : runtimeMissing(error) ? RUNTIME_NOT_INSTALLED_ERROR : LOGIN_ERROR;
     } finally {
       if (timeout) clearTimeout(timeout);
       let observedClose = child === undefined;
@@ -255,7 +350,7 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
           finally { if (retryTimer) clearTimeout(retryTimer); }
         }
       }
-      if (cleanupWasUncertain && state.error !== UNSUPPORTED_PLATFORM_ERROR) state.error = LOGIN_ERROR;
+      if (cleanupWasUncertain && state.error !== UNSUPPORTED_PLATFORM_ERROR && state.error !== RUNTIME_NOT_INSTALLED_ERROR) state.error = LOGIN_ERROR;
       if (state.outcome !== "success") { activeBrowserHomes.delete(home); verifiedCredentials.delete(home); }
       resolveStopped!();
     }

@@ -25,7 +25,7 @@ async function fixture(t, behavior = "success") {
   const admissionSource = "# trusted test admission source\n";
   const admissionSourceSha256 = hash(admissionSource);
   await writeFile(join(scripts, "patch-antigravity-runtime.admission.py"), admissionSource);
-  await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1'; export function patchAntigravityRuntime(){throw new Error('Metadata must never patch or install');}");
+  await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1'; export const ANTIGRAVITY_PATCH_SOURCES={'darwin-arm64':{admission:'patch-antigravity-runtime.admission.py'}}; export function patchAntigravityRuntime(){throw new Error('Metadata must never patch or install');}");
   const auditPath = join(root, "audit.json");
   const script = `#!${process.execPath}
 const { writeFileSync } = require('node:fs');

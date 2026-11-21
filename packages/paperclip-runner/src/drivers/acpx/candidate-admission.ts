@@ -35,8 +35,8 @@ export function parseAcpxCandidateAdmission(
   const profile = entry.agent === "antigravity" ? QUALIFIED_ACPX_PROFILES.antigravity
     : entry.agent === "kimi" ? QUALIFIED_ACPX_PROFILES.kimi : undefined;
   const target = `${entry.platform}-${entry.architecture}`;
-  const closure = entry.agent === "antigravity" && target === "darwin-arm64"
-    ? ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256
+  const closure = entry.agent === "antigravity" && (target === "darwin-arm64" || target === "linux-x64")
+    ? ANTIGRAVITY_DISTRIBUTION_PINS[target].closureSha256
     : entry.agent === "kimi" && (target === "darwin-arm64" || target === "linux-x64")
       ? KIMI_DISTRIBUTION_CLOSURE_SHA256[target] : undefined;
   if (!Number.isSafeInteger(now) || now < 0 || Object.keys(entry).length !== BASE_FIELDS.length || Object.keys(entry).some(key => !BASE_FIELDS.includes(key))

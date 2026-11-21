@@ -11,6 +11,11 @@ it("redacts Slack manager grants and sealed OAuth handoffs", () => {
   expect(JSON.stringify(result)).not.toContain("canary");
 });
 
+it("redacts the pasted Google redirect address that carries the one-time code and PKCE state", () => {
+  const result = redactSensitive({ redirectUrl: "http://127.0.0.1:18973/?state=state-canary&code=code-canary", nested: { redirectUrl: "code-canary" } });
+  expect(JSON.stringify(result)).not.toContain("canary");
+});
+
 describe("redactSensitive", () => {
   it("redacts a plaintext password field on a sign-in body", () => {
     const body = {

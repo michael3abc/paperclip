@@ -9,11 +9,14 @@ import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.
 import { createRunnerdCodexTransport, runnerdLaunchProfileInternals } from "./runnerd-codex-transport.js";
 
 const identity = { runnerInstanceId: "runner-candidate", environmentLeaseId: "lease-candidate", runId: "run-candidate", normalizedSessionId: "session-candidate", turnId: "turn-candidate", itemId: "item-candidate" };
+// Each admitted native host binds its own pinned closure; other hosts use the macOS record.
+const linuxHost = process.platform === "linux" && process.arch === "x64";
+const target = linuxHost ? "linux-x64" : "darwin-arm64";
 const candidate = (): AcpxCandidateAdmission => ({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model: "gemini-3.8-flash-low",
   profileDigest: resolveQualifiedAcpxProfile("antigravity", "gemini-3.8-flash-low").commandDigest,
-  nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
-  platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 });
-const supported = process.platform === "darwin" && process.arch === "arm64";
+  nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS[target].closureSha256}`,
+  platform: linuxHost ? "linux" : "darwin", architecture: linuxHost ? "x64" : "arm64", expiresAt: Date.now() + 60_000 });
+const supported = linuxHost || process.platform === "darwin" && process.arch === "arm64";
 
 describe("Antigravity candidate trusted startup", () => {
   it("bounds argv and structured launches by the absolute candidate expiry across replacement", () => {

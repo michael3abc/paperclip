@@ -14,7 +14,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerVersion": "1.4.3",
     "agentRuntimePackage": "native:antigravity-localharness",
     "agentRuntimeVersion": "1.4.3",
-    "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+    "commandDigest": "sha256:9981efd7d182a916fb808bcc1d49b55e60a60d27469452aba2577535b8f02a1f",
     "qualificationStatus": "pending",
     "permissionPolicy": "interactive"
   },
@@ -134,5 +134,12 @@ export const ANTIGRAVITY_DISTRIBUTION_PINS = {
     "closureSha256": "044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a",
     "executable": "agy_acp_server.par",
     "args": []
+  },
+  "linux-x64": {
+    "closureSha256": "1685ac029e315c35491dd3c4238af73cd30b018648e3d87900b5a80d813b059d",
+    "executable": "agy_acp_server.par",
+    "args": [
+      "--uid="
+    ]
   }
 } as const;

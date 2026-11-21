@@ -12,7 +12,8 @@ export type LocalBrowserLoginState = {
   code?: string;
   outcome?: "success" | "failure";
   error?: string;
-  submitCode?: (code: string) => void;
+  /** Claude: one-time code (fire and forget). Google: pasted redirect address, validated and replayed by the runner. */
+  submitCode?: (code: string) => void | Promise<void>;
   abort: () => void;
 };
 
