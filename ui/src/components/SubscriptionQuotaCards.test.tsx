@@ -83,4 +83,15 @@ describe("subscription quota cards", () => {
       windows: [w("Claude and GPT models · 7d"), w("Claude and GPT models · 5h")] }]);
     expect(html.indexOf("Claude and GPT models · 5h")).toBeLessThan(html.indexOf("Claude and GPT models · 7d"));
   });
+
+  it("shows the Google Cloud credit card only when the company reports it, without a reset line for credits", () => {
+    expect(render([account])).not.toContain("Google Cloud credits");
+    const html = render([account, { provider: "google_cloud", ok: true, accountLabel: "Google Cloud billing · TWD", capturedAt: "2026-11-21T09:57:00Z",
+      windows: [{ label: "Credits left (estimate) · NT$9,839.82 of NT$9,852.00", usedPercent: 0.12, resetsAt: null, valueLabel: null },
+        { label: "Spend this month (before credits) · NT$12.18 of NT$318.00 budget", usedPercent: 3.83, resetsAt: "2026-12-01T07:00:00.000Z", valueLabel: null }] }]);
+    expect(html).toContain("Google Cloud credits");
+    expect(html).toContain("Credits left (estimate) · NT$9,839.82 of NT$9,852.00");
+    expect(html).toContain("Google has no credit-balance API");
+    expect(html.match(/Reset time not reported/g)?.length ?? 0).toBe(1);
+  });
 });

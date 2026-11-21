@@ -15,6 +15,7 @@ const PROVIDERS = [
   { id: "openai", title: "Codex" },
   { id: "anthropic", title: "Claude" },
   { id: "antigravity", title: "Antigravity" },
+  { id: "google_cloud", title: "Google Cloud credits", optional: true },
 ];
 
 export function quotaResetLabel(reset: string | null, now: number): string {
@@ -61,6 +62,8 @@ export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, faile
 }) {
   if (!accounts.length && !refreshing && !failed) return null;
   const now = Date.now();
+  // Optional sources (Google Cloud credits) appear only for companies whose quota source configures them.
+  const visible = PROVIDERS.filter((provider) => !provider.optional || accounts.some((value) => value.provider === provider.id));
   return (
     <section className="space-y-3" aria-label="Subscription quotas" data-testid="subscription-quota-cards">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -74,8 +77,8 @@ export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, faile
         </Button>
       </div>
       {failed && <p role="alert" className="text-sm text-destructive">Quota refresh failed. Any values below are from the previous check.</p>}
-      <div className="grid gap-4 md:grid-cols-3">
-        {PROVIDERS.map(({ id, title }) => {
+      <div className={visible.length > 3 ? "grid gap-4 md:grid-cols-2 xl:grid-cols-4" : "grid gap-4 md:grid-cols-3"}>
+        {visible.map(({ id, title }) => {
           const account = accounts.find((value) => value.provider === id);
           return (
             <Card key={id}>
@@ -113,12 +116,13 @@ function QuotaContent({ provider, account, refreshing, now }: { provider: string
             <QuotaBar label={window.label} percentUsed={window.usedPercent} valueMode="remaining"
               leftLabel={new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(100 - window.usedPercent) + "% remaining"} />
           )}
-          {window.usedPercent != null && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
+          {window.usedPercent != null && (window.resetsAt || provider !== "google_cloud") && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
             {quotaResetLabel(window.resetsAt, now)}
           </p>}
         </div>
       ))}
     {provider === "antigravity" && <p className="text-xs text-muted-foreground">Only provider-reported model groups are shown. Other groups are unknown.</p>}
+    {provider === "google_cloud" && account?.ok && <p className="text-xs text-muted-foreground">Estimate: Google has no credit-balance API. Credits-page amounts minus spend Google reports, which runs a few hours behind.</p>}
     {account?.capturedAt && <p className="text-xs text-muted-foreground">Last checked {formatDateTime(account.capturedAt)}</p>}
   </>;
 }
