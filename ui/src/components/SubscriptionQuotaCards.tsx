@@ -29,6 +29,29 @@ export function quotaResetLabel(reset: string | null, now: number): string {
   return "Resets in " + Math.floor(hours / 24) + "d " + (hours % 24) + "h";
 }
 
+const WINDOW_UNIT_MINUTES: Record<string, number> = { m: 1, h: 60, d: 1440, w: 10080 };
+
+function windowMinutes(label: string): number {
+  const match = /·\s*(\d+)\s*([mhdw])\s*$/i.exec(label);
+  return match ? Number(match[1]) * WINDOW_UNIT_MINUTES[match[2]!.toLowerCase()]! : Number.POSITIVE_INFINITY;
+}
+
+function windowGroup(label: string): string {
+  const at = label.lastIndexOf("·");
+  return at < 0 ? label : label.slice(0, at).trim();
+}
+
+/** Groups keep their reported order; inside a group the shortest window comes first (5h above 7d). */
+export function orderQuotaWindows<T extends { label: string }>(windows: readonly T[]): T[] {
+  const groups = new Map<string, number>();
+  windows.forEach((window) => { if (!groups.has(windowGroup(window.label))) groups.set(windowGroup(window.label), groups.size); });
+  return windows
+    .map((window, index) => ({ window, index }))
+    .sort((a, b) => groups.get(windowGroup(a.window.label))! - groups.get(windowGroup(b.window.label))!
+      || windowMinutes(a.window.label) - windowMinutes(b.window.label) || a.index - b.index)
+    .map(({ window }) => window);
+}
+
 export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, failed, onRefresh }: {
   companyId?: string;
   accounts: ProviderQuotaResult[];
@@ -79,7 +102,7 @@ function QuotaContent({ provider, account, refreshing, now }: { provider: string
   return <>
     {!account ? <p className="text-sm text-muted-foreground">{refreshing ? "Checking quota…" : "Quota unavailable"}</p>
       : !account.ok ? <p className="text-sm text-muted-foreground" role="status">{account.error ?? "Quota unavailable"}</p>
-      : account.windows.map((window, index) => (
+      : orderQuotaWindows(account.windows).map((window, index) => (
         <div key={window.label + ":" + index} className="space-y-1" title={window.detail ?? undefined}>
           {window.usedPercent == null ? (
             <div className="space-y-1 text-xs">
