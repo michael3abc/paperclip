@@ -257,7 +257,11 @@ mod tests {
                 .unwrap()
         );
         candidate.validate_at(now, "linux", "x86_64").unwrap();
-        for (os, architecture) in [("linux", "aarch64"), ("macos", "aarch64"), ("macos", "x86_64")] {
+        for (os, architecture) in [
+            ("linux", "aarch64"),
+            ("macos", "aarch64"),
+            ("macos", "x86_64"),
+        ] {
             assert!(candidate.validate_at(now, os, architecture).is_err());
         }
         candidate.architecture = "arm64".to_owned();
