@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { promisify } from "node:util";
 import type { ProviderQuotaResult } from "@paperclipai/shared";
 import { collectHostSubscriptionQuotas } from "./host-subscription-quota-reader.js";
+import { readGoogleCloudCredits } from "./google-cloud-credits.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./task-admission.js";
 
 const execFileAsync = promisify(execFile);
@@ -11,7 +12,9 @@ const CACHE_MS = 60_000;
 const cached = new Map<string, { expiresAt: number; accounts: ProviderQuotaResult[] }>();
 const pending = new Map<string, Promise<ProviderQuotaResult[]>>();
 const PROVIDERS = ["openai", "anthropic", "antigravity"];
-interface QuotaSource { hostId: string; kind: "local" | "ssh"; sshAlias?: string; readerPath?: string }
+interface QuotaSource { hostId: string; kind: "local" | "ssh"; sshAlias?: string; readerPath?: string;
+  /** Optional host-written Google Cloud credit estimate (paperclip.google-cloud-credits.v1). */
+  googleCloudCreditsFile?: string }
 
 export function hostSubscriptionQuotasEnabled(): boolean {
   return process.env.PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS === "1";
@@ -30,6 +33,9 @@ async function sourceForCompany(companyId: string): Promise<QuotaSource> {
   if (source.kind === "ssh" && (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(source.sshAlias ?? "")
     || !/^\/[a-zA-Z0-9/_.-]+\.mjs$/.test(source.readerPath ?? ""))) {
     throw new Error("Subscription quota SSH source is invalid.");
+  }
+  if (source.googleCloudCreditsFile !== undefined && !/^\/[a-zA-Z0-9/_.-]+\.json$/.test(source.googleCloudCreditsFile)) {
+    throw new Error("Google Cloud credit source is invalid.");
   }
   return source;
 }
@@ -82,8 +88,10 @@ export async function fetchHostSubscriptionQuotas(companyId: string): Promise<Pr
   if (hit && hit.expiresAt > Date.now()) return hit.accounts;
   const existing = pending.get(key);
   if (existing) return existing;
-  const reading = trackIdleWork(source.kind === "local"
-    ? collectHostSubscriptionQuotas(source.hostId) : collectRemote(source)).then(accounts => {
+  const reading = trackIdleWork(Promise.all([
+    source.kind === "local" ? collectHostSubscriptionQuotas(source.hostId) : collectRemote(source),
+    source.googleCloudCreditsFile ? readGoogleCloudCredits(source.googleCloudCreditsFile) : null,
+  ]).then(([host, google]) => google ? [...host, google] : host)).then(accounts => {
     cached.set(key, { expiresAt: Date.now() + CACHE_MS, accounts });
     return accounts;
   }).finally(() => { pending.delete(key); });
