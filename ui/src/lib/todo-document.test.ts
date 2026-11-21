@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   parseTodoDocument,
   storedTodoDocument,
+  EMPTY_TODO_ANSWER,
+  todoAnswerComment,
+  todoBatchComment,
   todoCancelComment,
   todoDocumentMarkdown,
   todoDisplayText,
@@ -127,5 +130,36 @@ describe("todo document", () => {
     expect(storedTodoDocument("notes", body([]))).toBeNull();
     expect(storedTodoDocument("todo", "# 目標\n- [ ] item")).toBeNull();
     expect(storedTodoDocument(undefined, body([]))).toBeNull();
+  });
+
+  it("reads optional answer options, trimmed, de-duplicated and capped", () => {
+    const body = [
+      JSON.stringify({ type: "todo", v: 1, goal: "g", stop: "s", nextId: 4 }),
+      JSON.stringify({ id: 1, text: "pick", status: "open", owner: true, options: [" A ", "B", "A", "", 3, ...Array.from({ length: 12 }, (_, i) => `x${i}`)] }),
+      JSON.stringify({ id: 2, text: "plain", status: "open", owner: true }),
+    ].join("\n");
+    const items = parseTodoDocument(body)!.items;
+    expect(items[0]!.options).toEqual(["A", "B", "x0", "x1", "x2", "x3", "x4", "x5"]);
+    expect(items[1]!.options).toEqual([]);
+  });
+
+  it("words staged Needs-you answers, keeping the original text for a bare approval or note", () => {
+    const item = { id: 9, text: "確認是否對外投稿" };
+    expect(todoAnswerComment(item, { ...EMPTY_TODO_ANSWER, decision: "approve" })).toContain("TODO #9（Needs you）：同意／已完成。");
+    expect(todoAnswerComment(item, { ...EMPTY_TODO_ANSWER, note: " 先放著 " })).toBe(
+      "回覆 TODO #9（Needs you）「確認是否對外投稿」：\n\n先放著\n\n請依此處理這一項，處理完執行 `todo check 9 --note …`。");
+    expect(todoAnswerComment(item, { decision: "approve", choice: null, note: "但等週一" })).toContain("同意／已完成。\n\n但等週一");
+    expect(todoAnswerComment(item, { decision: null, choice: "B", note: "" })).toContain("選擇「B」。");
+    expect(todoAnswerComment(item, { decision: "decline", choice: null, note: "" })).toContain("不同意，先不要照這項做。");
+  });
+
+  it("sends one answer as itself and several as one comment with a count", () => {
+    const one = { item: { id: 1, text: "a" }, answer: { ...EMPTY_TODO_ANSWER, decision: "approve" as const } };
+    expect(todoBatchComment([one])).toBe(todoAnswerComment(one.item, one.answer));
+    const two = { item: { id: 2, text: "b" }, answer: { ...EMPTY_TODO_ANSWER, note: "ok" } };
+    const batch = todoBatchComment([one, two]);
+    expect(batch.startsWith("回覆 2 項 TODO（Needs you），逐項處理：")).toBe(true);
+    expect(batch).toContain("TODO #1（Needs you）");
+    expect(batch).toContain("回覆 TODO #2（Needs you）");
   });
 });

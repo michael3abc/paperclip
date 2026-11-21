@@ -142,56 +142,79 @@ describe("TaskTodoPanel", () => {
     expect(row.textContent).toContain("Cancel requested");
   });
 
-  it("lets the Owner approve a Needs-you item, or reply to it in words, through a comment", async () => {
-    mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", body: todoBody([...ITEMS, { id: 10, text: "提供 API 金鑰給 104", status: "open", owner: true }]), updatedAt: ago(5) });
+  const typeInto = async (field: HTMLTextAreaElement, value: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  it("stages Needs-you answers per item and sends them all with one Submit (one comment)", async () => {
+    mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", updatedAt: ago(5), body: todoBody([
+      ...ITEMS,
+      { id: 10, text: "提供 API 金鑰給 104", status: "open", owner: true },
+      { id: 11, text: "選配方", status: "open", owner: true, options: ["配方 A", "配方 B"] },
+    ]) });
     mocks.addComment.mockResolvedValue({ id: "comment-3" });
     await render();
+    const submit = () => button("Submit answers", container) ?? Array.from(container.querySelectorAll("button")).find((node) => /^Submit \d/.test(node.textContent ?? ""))!;
+    expect(button("Submit answers")!.disabled).toBe(true);
+
     const approveRow = container.querySelector('[data-testid="todo-owner-9"]')!;
     await act(async () => button("Approve", approveRow)!.click());
     expect(mocks.addComment).not.toHaveBeenCalled();
-    expect(text('[aria-label="Approve item 9"]')).toContain("approved or already done");
-    await act(async () => button("Approve item", approveRow)!.click());
-    await settle();
-    expect(mocks.addComment).toHaveBeenCalledWith("chat-1",
-      "TODO #9（Needs you）：同意／已完成。「確認是否對外投稿」。請確認現況後照這項繼續，完成後執行 `todo check 9 --note …`，不必再問我。",
-      undefined, undefined, undefined, expect.stringMatching(/^[0-9a-f-]{36}$/));
-    expect(approveRow.textContent).toContain("Approved");
-    expect(button("Approve", approveRow)).toBeUndefined();
+    expect(button("Approve", approveRow)!.getAttribute("aria-pressed")).toBe("true");
 
-    const replyRow = container.querySelector('[data-testid="todo-owner-10"]')!;
-    await act(async () => button("Reply", replyRow)!.click());
-    const send = button("Send reply", replyRow)!;
-    expect(send.disabled).toBe(true);
-    const field = replyRow.querySelector("textarea")!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "  金鑰已放進 vault，名稱 job104  ");
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => button("Send reply", replyRow)!.click());
+    const noteRow = container.querySelector('[data-testid="todo-owner-10"]')!;
+    await act(async () => button("Note", noteRow)!.click());
+    await typeInto(noteRow.querySelector("textarea")!, "  金鑰已放進 vault，名稱 job104  ");
+
+    const choiceRow = container.querySelector('[data-testid="todo-owner-11"]')!;
+    expect(button("Approve", choiceRow)).toBeUndefined();
+    await act(async () => button("配方 B", choiceRow)!.click());
+    expect(submit().textContent).toBe("Submit 3 answers");
+    expect(mocks.addComment).not.toHaveBeenCalled();
+
+    await act(async () => submit().click());
     await settle();
-    expect(mocks.addComment).toHaveBeenCalledTimes(2);
-    expect(mocks.addComment.mock.calls[1]![1]).toBe(
-      "回覆 TODO #10（Needs you）「提供 API 金鑰給 104」：\n\n金鑰已放進 vault，名稱 job104\n\n請依此處理這一項，處理完執行 `todo check 10 --note …`。");
-    expect(mocks.addComment.mock.calls[1]![5]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(mocks.addComment.mock.calls[1]![5]).not.toBe(mocks.addComment.mock.calls[0]![5]);
-    expect(replyRow.textContent).toContain("Reply sent");
+    expect(mocks.addComment).toHaveBeenCalledTimes(1);
+    const body = mocks.addComment.mock.calls[0]![1] as string;
+    expect(body).toContain("回覆 3 項 TODO（Needs you），逐項處理");
+    expect(body).toContain("TODO #9（Needs you）：同意／已完成。「確認是否對外投稿」。");
+    expect(body).toContain("回覆 TODO #10（Needs you）「提供 API 金鑰給 104」：\n\n金鑰已放進 vault，名稱 job104\n\n請依此處理這一項");
+    expect(body).toContain("回覆 TODO #11（Needs you）「選配方」：選擇「配方 B」。");
+    expect(mocks.addComment.mock.calls[0]![5]).toMatch(/^[0-9a-f-]{36}$/);
+    for (const id of [9, 10, 11]) expect(text(`[data-testid="todo-owner-${id}"]`)).toContain("Answered");
+    expect(container.querySelector('[data-testid="todo-owner-submit"]')).toBeNull();
   });
 
-  it("keeps a failed Needs-you answer open and retries it with the same request id", async () => {
+  it("sends a single approval with the original wording and a decline with its own", async () => {
+    mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", body: todoBody(ITEMS), updatedAt: ago(5) });
+    mocks.addComment.mockResolvedValue({ id: "comment-5" });
+    await render();
+    const row = container.querySelector('[data-testid="todo-owner-9"]')!;
+    await act(async () => button("Approve", row)!.click());
+    await act(async () => button("Submit 1 answer")!.click());
+    await settle();
+    expect(mocks.addComment.mock.calls[0]![1]).toBe(
+      "TODO #9（Needs you）：同意／已完成。「確認是否對外投稿」。請確認現況後照這項繼續，完成後執行 `todo check 9 --note …`，不必再問我。");
+  });
+
+  it("keeps staged answers when sending fails and retries with the same request id", async () => {
     mocks.getDocument.mockResolvedValue({ id: "doc", key: "todo", body: todoBody(ITEMS), updatedAt: ago(5) });
     mocks.addComment.mockRejectedValue(new Error("offline"));
     await render();
     const row = container.querySelector('[data-testid="todo-owner-9"]')!;
-    await act(async () => button("Approve", row)!.click());
-    await act(async () => button("Approve item", row)!.click());
+    await act(async () => button("Decline", row)!.click());
+    await act(async () => button("Submit 1 answer")!.click());
     await settle();
-    expect(row.textContent).toContain("Could not send");
+    expect(text('[data-testid="todo-owner-submit"]')).toContain("Could not send");
+    expect(button("Decline", row)!.getAttribute("aria-pressed")).toBe("true");
     mocks.addComment.mockResolvedValue({ id: "comment-4" });
-    await act(async () => button("Approve item", row)!.click());
+    await act(async () => button("Submit 1 answer")!.click());
     await settle();
     expect(mocks.addComment).toHaveBeenCalledTimes(2);
     expect(mocks.addComment.mock.calls[1]![5]).toBe(mocks.addComment.mock.calls[0]![5]);
-    expect(row.textContent).toContain("Approved");
+    expect(mocks.addComment.mock.calls[1]![1]).toContain("不同意，先不要照這項做");
+    expect(row.textContent).toContain("Answered");
   });
 
   it("does not treat an item that names this conversation itself as waiting on a task", async () => {
