@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CostByProviderModel } from "@paperclipai/shared";
-import { modelColorVar, modelCostPeriodStartIso, modelFamily, OTHER_SLICE_KEY, splitModelCosts } from "./model-cost-split";
+import { modelColorVar, modelCostPeriodStartIso, modelFamily, OTHER_SLICE_KEY, splitModelCosts, splitModelTokens } from "./model-cost-split";
 
 function row(partial: Partial<CostByProviderModel>): CostByProviderModel {
   return {
@@ -163,6 +163,36 @@ describe("splitModelCosts", () => {
     expect(split.compass.slices).toHaveLength(6);
     expect(split.compass.slices.at(-1)!.key).toBe(OTHER_SLICE_KEY);
     expect(split.compass.slices.reduce((sum, s) => sum + s.cents, 0)).toBe(2800);
+  });
+});
+
+describe("splitModelTokens", () => {
+  it("sizes both wholes by recorded tokens and keeps models without a price", () => {
+    const split = splitModelTokens([
+      row({ model: "compass-opus5.5[1m]", costCents: 3000, inputTokens: 100, cachedInputTokens: 300 }),
+      row({ model: "compass-opus5.5", outputTokens: 100 }),
+      row({ provider: "codex", model: "compass-6-astra", inputTokens: 500 }),
+      row({ provider: "google", biller: "google", billingType: "subscription_included", model: "gemini-4-hydrogen-high", inputTokens: 600 }),
+      row({ biller: "anthropic_subscription", billingType: "subscription_included", model: "sonnet[1m]", outputTokens: 200 }),
+      row({ biller: "anthropic_subscription", billingType: "subscription_included", model: "vendor/sonnet-preview", inputTokens: 200 }),
+      row({ biller: "anthropic", billingType: "metered_api", model: "claude-opus-5-5", inputTokens: 999 }),
+      row({ billingType: "subscription_included", model: "opus", inputTokens: 0 }),
+    ]);
+    expect(split.compass.totalTokens).toBe(1000);
+    expect(split.compass.slices.map((s) => [s.key, s.tokens, s.share])).toEqual([["gpt-6-astra", 500, 0.5], ["opus", 500, 0.5]]);
+    expect(split.compass.slices.find((s) => s.key === "opus")!.models).toEqual(["compass-opus5.5", "compass-opus5.5[1m]"]);
+    expect(split.subscription.totalTokens).toBe(1000);
+    expect(split.subscription.slices.map((s) => [s.key, s.tokens])).toEqual([["gemini-4-hydrogen", 600], ["sonnet", 400]]);
+    expect(split.subscription.slices[0]!.color).toBe(modelColorVar("gemini-4-hydrogen"));
+    expect(split.subscription.slices[1]!.models).toEqual(["sonnet[1m]", "vendor/sonnet-preview"]);
+  });
+
+  it("folds a long token tail into Other", () => {
+    const rows = ["a", "b", "c", "d", "e", "f", "g"].map((model, index) =>
+      row({ billingType: "subscription_included", model, inputTokens: 100 - index }));
+    const split = splitModelTokens(rows);
+    expect(split.subscription.slices).toHaveLength(6);
+    expect(split.subscription.slices.at(-1)).toMatchObject({ key: OTHER_SLICE_KEY, tokens: 95 + 94, models: ["f", "g"] });
   });
 });
 
