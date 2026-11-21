@@ -334,6 +334,39 @@ export function localAiLoginService(db: Db) {
     });
   }
 
+  /**
+   * Remote-browser fallback for Google sign-in. The browser that approved access
+   * stops on a loopback address the server cannot see; the user pastes that
+   * address and the runner replays it to this attempt's own loopback listener
+   * after checking the attempt's exact state and port. The address and the code
+   * inside it are never logged, stored or put in an error or activity record.
+   */
+  async function submitRedirect(companyId: string, userId: string, id: string, redirectUrl: string) {
+    const [session] = await db.select({ status: adapterAuthSessions.status, expiresAt: adapterAuthSessions.expiresAt }).from(adapterAuthSessions).where(and(
+      eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
+      eq(adapterAuthSessions.startedByUserId, userId), eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+      eq(adapterAuthSessions.adapterType, "paperclip_runner"),
+    ));
+    if (!session) throw notFound("Local sign-in attempt not found.");
+    if (session.status !== "waiting_for_user" || !session.expiresAt || session.expiresAt.getTime() <= Date.now())
+      throw unprocessable("This sign-in attempt has expired or was cancelled. Start sign-in again.");
+    const login = browserLogins.get(id);
+    if (!login?.authorizationUrl || !login.submitCode || login.outcome)
+      throw unprocessable("This sign-in attempt cannot accept a redirect address. Start sign-in again.");
+    try {
+      await login.submitCode(redirectUrl);
+    } catch (error) {
+      // Runner redirect errors carry fixed, address-free copy that is safe to show.
+      if (error instanceof Error && error.name === "AntigravityRedirectError")
+        throw unprocessable(error.message, { code: "ai_connection_redirect_rejected" });
+      throw unprocessable("The sign-in could not be completed on the server. Start sign-in again.", { code: "ai_connection_redirect_rejected" });
+    }
+    await logActivity(db, {
+      companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_redirect_submitted",
+      entityType: "adapter_auth_session", entityId: id, details: { provider: "google" },
+    });
+  }
+
   async function complete(companyId: string, userId: string, id: string, intent: AiConnectionLoginIntent, managementContext?: ConnectionManagementContext) {
     await managementContext?.reauthorize();
     const result = await db.transaction(async (tx) => {
@@ -401,5 +434,5 @@ export function localAiLoginService(db: Db) {
     });
     deferredRetirements.delete(id);
   }
-  return { start, check, submitCode, complete, cancel, reapExpired, nextCleanupAt, subscribeCleanupReady };
+  return { start, check, submitCode, submitRedirect, complete, cancel, reapExpired, nextCleanupAt, subscribeCleanupReady };
 }

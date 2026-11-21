@@ -14,6 +14,7 @@ import {
 } from "./onboarding/onboarding-motion";
 import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
+import { describeError } from "@/api/errors";
 
 /**
  * Which shell a login panel draws itself in.
@@ -499,16 +500,20 @@ export function ProviderApiKeyCard({
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login }: {
   adapterType: string;
-  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
+  login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; submitRedirect?: (redirectUrl: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [codeSubmitted, setCodeSubmitted] = useState(false);
   const codeSubmissionRef = useRef<symbol | null>(null);
+  const [redirectUrl, setRedirectUrl] = useState("");
+  const [redirectError, setRedirectError] = useState<string | null>(null);
   useEffect(() => {
     codeSubmissionRef.current = null;
     setBrowserCode("");
+    setRedirectUrl("");
+    setRedirectError(null);
     setSubmitting(false);
     setCodeSubmitted(false);
   }, [login?.authorizationUrl, login?.preparing]);
@@ -529,6 +534,28 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
     } catch {
       // The login hook presents the request error beside the sign-in card.
       if (codeSubmissionRef.current === submission) codeSubmissionRef.current = null;
+    } finally {
+      if (codeSubmissionRef.current === submission || codeSubmissionRef.current === null) setSubmitting(false);
+    }
+  }
+  /** Remote-browser fallback: a rejected address keeps the card open so it can be corrected. */
+  async function submitRedirectAddress() {
+    const value = redirectUrl.trim();
+    if (!value || !login?.submitRedirect || codeSubmissionRef.current) return;
+    const submission = Symbol();
+    codeSubmissionRef.current = submission;
+    setSubmitting(true);
+    setRedirectError(null);
+    try {
+      await login.submitRedirect(value);
+      if (codeSubmissionRef.current !== submission) return;
+      setRedirectUrl("");
+      setCodeSubmitted(true);
+    } catch (cause) {
+      if (codeSubmissionRef.current === submission) {
+        codeSubmissionRef.current = null;
+        setRedirectError(describeError(cause).body);
+      }
     } finally {
       if (codeSubmissionRef.current === submission || codeSubmissionRef.current === null) setSubmitting(false);
     }
@@ -568,7 +595,26 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
           disabled={submitting}
         />
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit code</Button>
-      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Google browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+      </div> : adapterType === "antigravity_runtime" ? <div className="flex flex-col gap-2">
+        <p>Finish signing in in the Google browser window, then return here.</p>
+        {login.submitRedirect && <details className="rounded-md border p-3">
+          <summary className="cursor-pointer text-foreground">Signed in on a different computer than this server?</summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p>After you approve access, the browser may stop on a page that cannot be reached. That is expected. Copy the full address from the browser's address bar (it starts with http://127.0.0.1) and paste it here.</p>
+            <OnboardingCardField
+              value={redirectUrl}
+              onChange={(value) => { setRedirectUrl(value); setRedirectError(null); }}
+              onSubmit={() => void submitRedirectAddress()}
+              disabled={submitting}
+              label="Redirect address"
+              placeholder="Paste the address starting with http://127.0.0.1"
+              masked
+            />
+            {redirectError && <p role="alert">{redirectError}</p>}
+            <Button type="button" disabled={!redirectUrl.trim() || submitting} onClick={() => void submitRedirectAddress()}>Submit address</Button>
+          </div>
+        </details>}
+      </div> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
     {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>

@@ -1661,6 +1661,17 @@ describe("openapi routes", () => {
     ).toBeDefined();
   });
 
+  it("publishes the Google remote-browser redirect route with a bounded address", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/redirect"].post;
+    const body = operation.requestBody.content["application/json"].schema;
+    expect(body.properties.redirectUrl.maxLength).toBe(4096);
+    expect(body.properties.redirectUrl.minLength).toBe(1);
+    expect(body.required).toContain("redirectUrl");
+    expect(body.additionalProperties).toBe(false);
+    expect(operation.responses["422"]).toBeDefined();
+  });
+
   it("publishes the Claude browser-code grammar and strict setup-token response shapes", () => {
     const { spec } = loadSpecRoutes();
     const base = "/api/companies/{companyId}/setup-token-login-sessions";

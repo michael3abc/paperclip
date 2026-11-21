@@ -15,8 +15,13 @@ Paperclip, and can be stopped with physical process cleanup.
 
 - Transport: Google's official Antigravity ACP server through the existing ACPX
   harness driver. The standalone `agy` print protocol is a separate interface.
-- First environment: local macOS ARM64. Other registry platforms are an inventory,
-  not a live qualification claim. No new hosting environment is promised.
+- First environment: local macOS ARM64. Linux x64 (HOM-480) adds the official
+  `agy-acp-server-1.4.3-linux-x86_64.zip` (archive SHA-256
+  `0634ce53…a382714`) as a second verified closure, launched with `--uid=` and
+  patched with the same admission source; its evidence is a no-login startup to
+  the Google authorization URL, not a live subscription qualification. Other
+  registry platforms are an inventory, not a live qualification claim. No new
+  hosting environment is promised.
 - Runtime pin: ACP server **1.4.3**, including its matching
   `localharness_external` executable. The CLI's separately versioned release is
   not this runtime's version. Use explicit setup and verified immutable assets.

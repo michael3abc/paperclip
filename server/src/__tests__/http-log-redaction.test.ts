@@ -20,6 +20,18 @@ it.each([400, 500])("keeps host Claude login codes out of %i diagnostics", async
   await request(app).post("/api/companies/company/dashboard/host-claude/sessions/id/code").send({ browserCode: canary });
   expect(chunks.join("")).not.toContain(canary);
 });
+it.each([422, 500])("keeps the pasted Google redirect address out of %i diagnostics", async status => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.use(express.json());
+  const canary = "google-redirect-private-canary";
+  app.use((_req, _res, next) => next(new HttpError(status, "The sign-in could not be completed on the server.")));
+  app.use(errorHandler);
+  await request(app).post("/api/companies/company/ai-connections/local/attempts/id/redirect").send({ redirectUrl: `http://127.0.0.1:18973/?state=${canary}&code=${canary}` });
+  expect(chunks.join("")).not.toContain(canary);
+});
 it.each([200, 400, 500])("keeps Codex device URL/code and diagnostics out of %i logs", async status => {
   const chunks: string[] = [];
   const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });

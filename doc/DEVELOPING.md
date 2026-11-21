@@ -2567,14 +2567,29 @@ CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 Google Antigravity's pending integration uses the official ACP server 1.4.3 with
 a pinned native admission patch. `paperclipai runtime setup antigravity` installs
-its verified assets on macOS ARM64 as the OS user running Paperclip. Setup does
+its verified assets on macOS ARM64 and Linux x64 as the OS user running Paperclip.
+The Linux x64 closure is the official `agy-acp-server-1.4.3-linux-x86_64.zip`
+from `dl.google.com/agy-extensions`; it is launched with `--uid=` because its
+hermetic launcher otherwise looks up a `nobody` group, and the same owned
+admission patch is applied to its ELF `.par_data` section. The Linux closure is
+admitted for Google sign-in and session-free catalog calls only: the admission
+module's native session path still resolves the harness through macOS `libSystem`
+and pins the macOS helper digest, so agent sessions stay closed on Linux until
+that module is made platform-aware (which changes the macOS pin). Setup does
 not enable global execution: qualification remains pending and admission is
 closed by default. An isolated company can use a finite trusted server-startup
 candidate authorization bound to the exact model, local platform, profile and
 native closure. The candidate's recorded setup and two-turn task reused the same
 owner's managed personal-default Google subscription on macOS ARM64 with
 `gemini-3.8-flash-low`; fresh consent and API-key live acceptance remain separate
-gates. Workspace OAuth is not runtime authentication. See the
+gates. Google's redirect is the ACP server's own `http://127.0.0.1:<port>/`, so a
+browser on another computer cannot reach it. Connect Google therefore also offers
+a paste-back: after approval, copy the full address from the browser's address
+bar (an unreachable `http://127.0.0.1:<port>/?code=…&state=…` page) into
+Connect Google. `POST /companies/:companyId/ai-connections/local/attempts/:sessionId/redirect`
+checks that attempt's exact loopback port and state, forwards only
+`code`/`state`/`scope` to the server's own listener once, and never logs,
+stores or echoes the address. Workspace OAuth is not runtime authentication. See the
 [contract, evidence, and remaining gates](plans/2026-10-28-antigravity-integration.md).
 
 To add a harness/provider to the new native Paperclip Runner, use
