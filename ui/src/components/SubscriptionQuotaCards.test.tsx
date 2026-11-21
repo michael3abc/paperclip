@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { SubscriptionQuotaPanels, quotaResetLabel } from "./SubscriptionQuotaCards";
+import { SubscriptionQuotaPanels, orderQuotaWindows, quotaResetLabel } from "./SubscriptionQuotaCards";
 import type { ProviderQuotaResult } from "@paperclipai/shared";
 import { QuotaBar } from "./QuotaBar";
 
@@ -66,5 +66,21 @@ describe("subscription quota cards", () => {
     expect(quotaResetLabel("2026-11-13T01:00:00Z", now)).toBe("Resets in 3d 1h");
     expect(quotaResetLabel("2026-11-09T00:00:00Z", now)).toContain("refresh to check");
     expect(quotaResetLabel(null, now)).toBe("Reset time not reported");
+  });
+
+  it("shows the 5h window above the 7d window inside each Antigravity group, keeping group order", () => {
+    const w = (label: string) => ({ label, usedPercent: 10, resetsAt: null, valueLabel: null });
+    expect(orderQuotaWindows([
+      w("Claude and GPT models · 7d"), w("Claude and GPT models · 5h"),
+      w("Gemini models · 7d"), w("Gemini models · 5h"),
+      w("Weekly limit"), w("Unknown limit"),
+    ]).map((window) => window.label)).toEqual([
+      "Claude and GPT models · 5h", "Claude and GPT models · 7d",
+      "Gemini models · 5h", "Gemini models · 7d",
+      "Weekly limit", "Unknown limit",
+    ]);
+    const html = render([{ provider: "antigravity", ok: true, accountLabel: "michael-server",
+      windows: [w("Claude and GPT models · 7d"), w("Claude and GPT models · 5h")] }]);
+    expect(html.indexOf("Claude and GPT models · 5h")).toBeLessThan(html.indexOf("Claude and GPT models · 7d"));
   });
 });
