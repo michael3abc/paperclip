@@ -160,6 +160,10 @@ in sync-decisions; these fixes do not certify every historical test as passing.
   sandbox mount point is treated like the info/exclude-only placeholder, so it no longer fails run preparation with
   `workspace_git_source_unproven`. Server only (`server/src/services/workspace-git-source-roots.ts`).
 
+- Sidebar working for running subagents (`michael/subagent-working-status`, HOM-484, Owner 2026-11-21 「有 subagent 在跑的時候也要顯示 working」):
+  the Agent Chat list adds `hasRunningSubagents`/`runningSubagentsUntil`, derived from background subagent events in the chat's latest
+  succeeded run log (bounded to 30 minutes, cleared when the next run starts); the sidebar shows the existing blue `working`. No schema change.
+
 - Agent TODO tab (`michael/todo-panel`, Owner 2026-11-19 「放這邊加一個 TODO」, 「最多 3 項，而且只顯示 6 小時內完成的」,
   「可以在待辦那邊加上一個 cancel，s.t. 讓 main 去取消這個 task」, 「介面好看一點，不要只用 .md 渲染」): the task side panel's
   launcher offers a `TODO` tab (always in an agent chat, on a task once it has one). It reads the conversation's

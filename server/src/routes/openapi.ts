@@ -4524,7 +4524,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/chats",
   tags: ["issues"],
   summary: "List the current board user's agent conversations",
-  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user. hasLiveChildTasks is true while a readable task the chat created in its current session, or a direct subtask, has a queued, running or scheduled-retry run.",
+  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user. hasLiveChildTasks is true while a readable task the chat created in its current session, or a direct subtask, has a queued, running or scheduled-retry run. hasRunningSubagents is true while native subagents (Claude Agent tool, background tasks) that the chat's latest succeeded run started have no completion in the run logs; Paperclip hears nothing about them after a run ends, so it is a bounded estimate that is false once the next run starts, when the latest run did not succeed, or after runningSubagentsUntil (ISO time, null when false).",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

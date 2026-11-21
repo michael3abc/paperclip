@@ -18,7 +18,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSha
 import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useProjectPmSidebarStatus } from "@/hooks/useProjectPmSidebarStatus";
-import { deriveChatWaitingForTaskAgentIds } from "@/lib/agent-sidebar-status";
+import { deriveChatRunningSubagentAgentIds, deriveChatWaitingForTaskAgentIds, nextRunningSubagentsExpiry } from "@/lib/agent-sidebar-status";
 import { queryKeys } from "@/lib/queryKeys";
 import type { RecentTaskEntry } from "@/lib/recent-tasks";
 import { Link, useLocation } from "@/lib/router";
@@ -218,11 +218,24 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   // itself. Working and needs-input keep their existing indicators.
   const waitingAgentIds = useMemo(() => deriveChatWaitingForTaskAgentIds({ chats: chats.data, liveRuns: liveRuns.data }),
     [chats.data, liveRuns.data]);
+  // Blue "working" while native subagents the chat started still run after its own run ended. The server only
+  // vouches for them until a bound, so a clock tick at that bound clears the row even if the list is not refetched.
+  const [subagentClock, setSubagentClock] = useState(() => Date.now());
+  const subagentExpiry = useMemo(() => nextRunningSubagentsExpiry(chats.data, subagentClock), [chats.data, subagentClock]);
+  useEffect(() => {
+    if (subagentExpiry === null) return;
+    const timer = setTimeout(() => setSubagentClock(Date.now()), Math.max(0, subagentExpiry - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [subagentExpiry]);
+  const subagentAgentIds = useMemo(() => deriveChatRunningSubagentAgentIds({ chats: chats.data, liveRuns: liveRuns.data, now: subagentClock }),
+    [chats.data, liveRuns.data, subagentClock]);
   const agentRows = useMemo(() => {
     const unreadAgentIds = new Set((chats.data ?? []).flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []));
+    // Owner input (`needs_input`) outranks subagent work, which outranks waiting for a task.
     return listedAgents.map(agent => ({ agent, unread: unreadAgentIds.has(agent.id),
-      status: pmStatusByAgent.get(agent.id) ?? (waitingAgentIds.has(agent.id) ? "waiting_for_task" as const : undefined) }));
-  }, [listedAgents, chats.data, pmStatusByAgent, waitingAgentIds]);
+      status: pmStatusByAgent.get(agent.id) ?? (subagentAgentIds.has(agent.id) ? "working" as const
+        : waitingAgentIds.has(agent.id) ? "waiting_for_task" as const : undefined) }));
+  }, [listedAgents, chats.data, pmStatusByAgent, waitingAgentIds, subagentAgentIds]);
   const activeChatRef = location.pathname.match(/\/chats\/([^/]+)/)?.[1];
   const agentsFailed = agents.isError;
   const agentsLoading = agents.isPending && agents.fetchStatus === "fetching";

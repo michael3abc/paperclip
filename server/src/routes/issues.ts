@@ -40,6 +40,7 @@ import { recordDeclinedInteractionRead } from "../services/chat-interaction-outc
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { conversationsWithLiveChildTasks } from "../services/agent-chat-live-tasks.js";
+import { conversationsWithRunningSubagents } from "../services/agent-chat-running-subagents.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
 import { enqueueFastResponse } from "../services/fast-responses.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
@@ -19765,11 +19766,18 @@ export function issueRoutes(
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
     if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const conversations = await filterIssuesForActor(req, await svc.listConversations(companyId, req.actor.userId));
-    const [withReadState, waiting] = await Promise.all([
+    const [withReadState, waiting, subagents] = await Promise.all([
       withConversationReadState(db, companyId, req.actor.userId, conversations),
       conversationsWithLiveChildTasks(db, companyId, req.actor, conversations),
+      // Presentation only: a failed projection must not take the chat list down.
+      conversationsWithRunningSubagents(db, companyId, conversations).catch(() => new Map()),
     ]);
-    res.json(withReadState.map(chat => ({ ...chat, hasLiveChildTasks: waiting.has(chat.id) })));
+    res.json(withReadState.map(chat => ({
+      ...chat,
+      hasLiveChildTasks: waiting.has(chat.id),
+      hasRunningSubagents: subagents.has(chat.id),
+      runningSubagentsUntil: subagents.has(chat.id) ? new Date(subagents.get(chat.id)!.until).toISOString() : null,
+    })));
   });
 
   // GET stays read-only. POST resolves the single chat on explicit add or first send/upload.

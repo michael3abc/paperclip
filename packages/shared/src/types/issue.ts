@@ -1057,6 +1057,16 @@ export interface Issue {
    * included.
    */
   hasLiveChildTasks?: boolean;
+  /**
+   * Agent Chat list only: native subagents (Claude Agent tool, background tasks)
+   * the chat's latest finished run started are still running, as far as the run's
+   * log shows. Paperclip receives no event for them after the run ends, so this is
+   * a bounded estimate: it is false once the next run starts, when the latest run
+   * did not succeed, or at `runningSubagentsUntil`. Presentation only ("working").
+   */
+  hasRunningSubagents?: boolean;
+  /** ISO time after which `hasRunningSubagents` must no longer be trusted; null when it is false. */
+  runningSubagentsUntil?: string | null;
   unreadMessageCount?: number;
   archivedAt?: Date | null;
   archivedByActorType?: "user" | "agent" | null;
