@@ -16,6 +16,13 @@ export interface NativeAcpxDistributionInput {
   entrypoint?: string;
   fixedArguments: readonly string[];
   isolatedCacheEnvironmentName?: "COPILOT_PKG_CACHE_HOME";
+  /**
+   * Trusted Antigravity profile only: name an executable closure helper whose
+   * snapshot path the bootstrap exports. On Linux the native executable is
+   * spawned through /proc/self/fd, so a provider cannot find its sibling helper
+   * from its own invocation path; the frozen snapshot copy is the only value.
+   */
+  helperExecutableEnvironment?: { name: "ANTIGRAVITY_HARNESS_PATH"; path: string };
   /** Trusted Copilot profile only; resolved inside each immutable spawn lease. */
   copilotDistributionDirectory?: string;
 }
@@ -65,7 +72,9 @@ export function parseNativeAcpxDistributionEntries(value: unknown, expectedSha25
 
 export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistributionInput): Promise<NativeAcpxDistributionEntry[]> {
   if (!validPath(input.executable) || (input.entrypoint !== undefined && !validPath(input.entrypoint)) || input.fixedArguments.length > 128 || input.fixedArguments.some(arg => typeof arg !== "string" || arg.length > 16_384 || arg.includes("\0")) || (input.isolatedCacheEnvironmentName !== undefined && input.isolatedCacheEnvironmentName !== "COPILOT_PKG_CACHE_HOME")
-    || (input.copilotDistributionDirectory !== undefined && (!validPath(input.copilotDistributionDirectory) || input.entrypoint !== undefined))) throw new Error("Native ACPX launch declaration is invalid");
+    || (input.copilotDistributionDirectory !== undefined && (!validPath(input.copilotDistributionDirectory) || input.entrypoint !== undefined))
+    || (input.helperExecutableEnvironment !== undefined && (input.helperExecutableEnvironment.name !== "ANTIGRAVITY_HARNESS_PATH"
+      || !validPath(input.helperExecutableEnvironment.path) || input.helperExecutableEnvironment.path === input.executable))) throw new Error("Native ACPX launch declaration is invalid");
   const file = await open(input.manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await file.stat({ bigint: true });
@@ -75,6 +84,7 @@ export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistrib
     const entries = parseNativeAcpxDistributionEntries(JSON.parse(bytes.toString("utf8")), input.expectedClosureSha256);
     if (!entries.some(entry => entry.path === input.executable && entry.executable && entry.size > 0) || (input.entrypoint !== undefined && !entries.some(entry => entry.path === input.entrypoint && entry.size > 0))) throw new Error("Native ACPX executable or entrypoint is absent from its closure");
     if (input.copilotDistributionDirectory !== undefined && !entries.some(entry => entry.path === `${input.copilotDistributionDirectory}/index.js` && entry.size > 0)) throw new Error("Copilot owned entrypoint is absent from its closure");
+    if (input.helperExecutableEnvironment !== undefined && !entries.some(entry => entry.path === input.helperExecutableEnvironment!.path && entry.executable && entry.size > 0)) throw new Error("Native ACPX helper executable is absent from its closure");
     return entries;
   } finally { await file.close(); }
 }
@@ -223,7 +233,10 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
       await writeFile(join(packageRoot, GUARD), guard, { mode: 0o400, flag: "wx" });
       digests[join(packageRoot, GUARD)] = sha256(guard);
     }
-    const bootstrap = Buffer.from(nativeBootstrap(executable, digests[executable]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory));
+    const helper = input.helperExecutableEnvironment;
+    if (helper !== undefined && !entries.some(entry => entry.path === helper.path && entry.executable && entry.size > 0)) throw new Error("Native ACPX helper executable is absent from its closure");
+    const bootstrap = Buffer.from(nativeBootstrap(executable, digests[executable]!, args, input.isolatedCacheEnvironmentName ? { name: input.isolatedCacheEnvironmentName, value: cacheRoot } : undefined, copilotEntryDirectory,
+      helper ? { name: helper.name, value: join(packageRoot, ...helper.path.split("/")) } : undefined));
     await writeFile(join(packageRoot, BOOTSTRAP), bootstrap, { mode: 0o400, flag: "wx" });
     digests[join(packageRoot, BOOTSTRAP)] = sha256(bootstrap);
     // executable is null: commandLease's separately-qualified provider runtime
@@ -239,7 +252,7 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
   } finally { await heldRoot.close(); }
 }
 
-function nativeBootstrap(executable: string, executableDigest: string, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string): string {
+function nativeBootstrap(executable: string, executableDigest: string, args: string[], cache?: { name: string; value: string }, copilotEntryDirectory?: string, helper?: { name: string; value: string }): string {
   return [
     'const {spawn}=require("node:child_process");',
     'const fs=require("node:fs");',
@@ -249,6 +262,8 @@ function nativeBootstrap(executable: string, executableDigest: string, args: str
     'const env={...process.env}; delete env.PAPERCLIP_ACPX_NATIVE_GUARDED; delete env.PAPERCLIP_ACPX_PRIVATE_SNAPSHOT; delete env.PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE;',
     'env.NODE_DISABLE_COMPILE_CACHE="1"; delete env.NODE_COMPILE_CACHE;',
     ...(cache ? [`env[${JSON.stringify(cache.name)}]=${JSON.stringify(cache.value)};`] : []),
+    // Replaces any ambient value: only the frozen snapshot helper is admitted.
+    ...(helper ? [`env[${JSON.stringify(helper.name)}]=${JSON.stringify(helper.value)};`] : []),
     ...(copilotEntryDirectory ? [
       // Never permit the native loader to choose a different cached version,
       // app, bootstrap mode or module path supplied by a workspace/caller.
