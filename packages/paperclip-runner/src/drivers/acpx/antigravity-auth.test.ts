@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn() }));
-vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: () => ({ pinned: true }) }));
+const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn(), unsupportedPlatform: false }));
+vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: () => {
+  if (setup.unsupportedPlatform) throw new Error("Antigravity has no admitted complete runtime closure for linux-x64");
+  return { pinned: true };
+} }));
 vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: setup.verify }));
-import { sanitizeAntigravityCredential, startAntigravityBrowserLogin, validateAntigravityAuthorizationUrl, verifyAntigravityCredential } from "./antigravity-auth.js";
+import { UNSUPPORTED_PLATFORM_ERROR, sanitizeAntigravityCredential, startAntigravityBrowserLogin, validateAntigravityAuthorizationUrl, verifyAntigravityCredential } from "./antigravity-auth.js";
 
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const credential = { client_id: CLIENT_ID, client_secret: "fixture-client-secret", refresh_token: "fixture-refresh-token", token_uri: "https://oauth2.googleapis.com/token",
@@ -21,7 +24,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid!, "SIGKILL"); } catch {} }
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
-  vi.unstubAllGlobals(); vi.clearAllMocks();
+  vi.unstubAllGlobals(); vi.clearAllMocks(); setup.unsupportedPlatform = false;
 });
 
 async function fixture(mode = "success") {
@@ -134,6 +137,18 @@ describe("Antigravity setup-only Google authentication", () => {
     await vi.waitFor(() => expect(setup.close).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(login.error).not.toContain("fixture");
     if (mode.startsWith("bad-url") || ["early-url", "late-bad-url"].includes(mode)) expect(login.authorizationUrl).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("reports an unadmitted server platform explicitly instead of a retryable generic failure", async () => {
+    const home = await fixture(), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    setup.unsupportedPlatform = true;
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    await login.abort();
+    expect(login.error).toBe(UNSUPPORTED_PLATFORM_ERROR);
+    expect(login.authorizationUrl).toBeUndefined();
+    expect(setup.verify).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 

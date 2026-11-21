@@ -14,6 +14,9 @@ const SCOPES = ["https://www.googleapis.com/auth/cloud-platform", "https://www.g
 const AUTH_PREFIX = "Open the following link to authenticate the ACP server: ";
 const MAX_BYTES = 64 * 1024;
 const LOGIN_ERROR = "Google sign-in did not complete. Start sign-in again.";
+/** Shown when this host has no admitted native closure; retrying cannot help. */
+export const UNSUPPORTED_PLATFORM_ERROR = "Google subscription sign-in is not available on this server's platform yet (only macOS ARM64 has an admitted Antigravity runtime). Use a Gemini API key instead.";
+const UNSUPPORTED_PLATFORM_PREFIX = "Antigravity has no admitted complete runtime closure for ";
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const verifiedCredentials = new Map<string, { credential: string; accountEmail: string }>();
 const activeBrowserHomes = new Set<string>();
@@ -226,8 +229,9 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
       await verifyAntigravityCredential(home, { signal: controller.signal });
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
       state.outcome = "success";
-    } catch {
-      state.outcome = "failure"; state.error = LOGIN_ERROR;
+    } catch (error) {
+      state.outcome = "failure";
+      state.error = error instanceof Error && error.message.startsWith(UNSUPPORTED_PLATFORM_PREFIX) ? UNSUPPORTED_PLATFORM_ERROR : LOGIN_ERROR;
     } finally {
       if (timeout) clearTimeout(timeout);
       let observedClose = child === undefined;
@@ -251,7 +255,7 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
           finally { if (retryTimer) clearTimeout(retryTimer); }
         }
       }
-      if (cleanupWasUncertain) state.error = LOGIN_ERROR;
+      if (cleanupWasUncertain && state.error !== UNSUPPORTED_PLATFORM_ERROR) state.error = LOGIN_ERROR;
       if (state.outcome !== "success") { activeBrowserHomes.delete(home); verifiedCredentials.delete(home); }
       resolveStopped!();
     }
