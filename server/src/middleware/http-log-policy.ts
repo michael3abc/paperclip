@@ -154,7 +154,7 @@ export function isPrivateDotPrincipalHttpRequest(url: string | undefined): boole
  * metadata: raw provider text/files/credentials cannot be named-field redacted.
  */
 export function isPrivateHostClaudeHttpRequest(url: string | undefined): boolean {
-  return !!url && /^\/api\/companies\/[^/]+\/dashboard\/host-claude(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""));
+  return !!url && /^\/api\/companies\/[^/]+\/dashboard\/host-(?:claude|codex)(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""));
 }
 
 export function isSecretSensitiveHttpRequest(
