@@ -80,7 +80,7 @@ export async function bundleVerifiedProviderEntrypoints({ write = true } = {}) {
     await copyFile(resolve(packageRoot, "cursor-distributions.json"), resolve(packageRoot, "dist/cursor-distributions.json"));
     await copyFile(resolve(packageRoot, "antigravity-distributions.json"), resolve(packageRoot, "dist/antigravity-distributions.json"));
     await mkdir(resolve(packageRoot, "dist/cli"), { recursive: true });
-    await copyFile(resolve(packageRoot, "scripts/patch-antigravity-runtime.admission.py"), resolve(packageRoot, "dist/cli/patch-antigravity-runtime.admission.py"));
+    for (const name of ["patch-antigravity-runtime.admission.py", "patch-antigravity-runtime.admission.linux.py"]) await copyFile(resolve(packageRoot, "scripts", name), resolve(packageRoot, "dist/cli", name));
   }
   const results = [];
   for (const entrypoint of verifiedProviderEntrypoints) {

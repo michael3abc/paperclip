@@ -8,12 +8,14 @@ import { resolveNativeRuntimeMode } from "./runtime-mode.js";
 const companyId = "candidate-company";
 const model = "gemini-3.8-flash-low";
 const config = { provider: "acpx", acpxAgent: "antigravity", model };
-const localHost = process.platform === "darwin" && process.arch === "arm64";
+// Each admitted native host (macOS ARM64, Linux x64) binds its own pinned closure.
+const linuxHost = process.platform === "linux" && process.arch === "x64";
+const localHost = linuxHost || process.platform === "darwin" && process.arch === "arm64";
 const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
 const admission = () => ({ schema: "paperclip.acpx-candidate-admission.v1", companyId,
   agent: "antigravity", model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
-  nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
-  platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 });
+  nativeClosureDigest: `sha256:${distributions.platforms[linuxHost ? "linux-x64" : "darwin-arm64"].closureSha256}`,
+  platform: linuxHost ? "linux" : "darwin", architecture: linuxHost ? "x64" : "arm64", expiresAt: Date.now() + 60_000 });
 
 describe("Antigravity operator candidate admission", () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -56,8 +58,8 @@ describe("Antigravity operator candidate admission", () => {
 
   it.runIf(localHost).each([
     { expiresAt: 0 }, { profileDigest: `sha256:${"0".repeat(64)}` },
-    { nativeClosureDigest: `sha256:${"0".repeat(64)}` }, { platform: "linux" },
-    { architecture: "x64" }, { allowAll: true },
+    { nativeClosureDigest: `sha256:${"0".repeat(64)}` }, { platform: linuxHost ? "darwin" : "linux" },
+    { architecture: linuxHost ? "arm64" : "x64" }, { allowAll: true },
   ])("rejects expired, changed or broad operator authorization %j", changes => {
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, JSON.stringify({ ...admission(), ...changes }));
     expect(() => resolveAntigravityCandidateAdmission({ companyId, model })).toThrow();

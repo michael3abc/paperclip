@@ -51,7 +51,7 @@
     "linux-x64": {
       "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-x86_64.zip",
       "archiveSha256": "0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714",
-      "closureSha256": "e5b318ad8e461f8684277652ad315133fa499b80385c47bc3683995588ae0531",
+      "closureSha256": "1685ac029e315c35491dd3c4238af73cd30b018648e3d87900b5a80d813b059d",
       "provisioning": "verified-closure",
       "executable": "agy_acp_server.par",
       "args": [
@@ -60,7 +60,7 @@
       "entries": [
         {
           "path": "agy_acp_server.par",
-          "sha256": "5a26433c73b386cdf9b59f896a24faf3ac47d7723e6902908f0d9859abd04327",
+          "sha256": "53f313f4d4d0cf34c66f133e0e539491be36a74c5752f64bcbc973d282d8a5c4",
           "size": 927707135,
           "executable": true
         },
@@ -87,7 +87,7 @@
       ],
       "vendorClosureSha256": "ae35f8775348a2002e6d963196d02541164a9f75216e4703b527d7bf987a889f",
       "patchVersion": "1.4.3-paperclip.5",
-      "admissionSourceSha256": "d660759a424ddc27ac382ce4512e85ca4eb87e5ca446ea111e093d3ab257f7da"
+      "admissionSourceSha256": "0fa164f4a025eba9a7176df6e54f8e9e5c170ac69e2a101284f02e3ee1a63174"
     },
     "linux-arm64": {
       "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-arm64.zip",

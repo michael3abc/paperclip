@@ -64,6 +64,7 @@ async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, 
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1';
+export const ANTIGRAVITY_PATCH_SOURCES={'darwin-arm64':{admission:'patch-antigravity-runtime.admission.py'}};
 export async function patchAntigravityRuntime({source,destination}) {
  await writeFile(${JSON.stringify(join(root, "patch.called"))},'called');
  await mkdir(destination,{mode:0o700});

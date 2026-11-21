@@ -8,15 +8,18 @@ export const ANTIGRAVITY_PATCH_SCHEMA = "paperclip.antigravity.native_patch.v1";
 export const ANTIGRAVITY_PATCH_VERSION = "1.4.3-paperclip.5";
 /** Official 1.4.3 vendor executables the patch accepts, by distribution key.
  * The embedded Python archive is identical across targets; only the native
- * container holding it (Mach-O or ELF) differs. */
+ * container holding it (Mach-O or ELF) and the owned admission source differ.
+ * The macOS source is pinned byte for byte; Linux has its own platform twin. */
 export const ANTIGRAVITY_PATCH_SOURCES = Object.freeze({
   "darwin-arm64": Object.freeze({
     format: "macho",
+    admission: "patch-antigravity-runtime.admission.py",
     serverSha256: "1251927db3e21f3d693fd042d6890d82f65eb00587e97f1f3d8f0d798e7f0954",
     harnessSha256: "9e8fdc6e20a3262ca0a771850ca4a8414ca839a642cc964ec5c547cc2c33c200",
   }),
   "linux-x64": Object.freeze({
     format: "elf",
+    admission: "patch-antigravity-runtime.admission.linux.py",
     serverSha256: "7e06ec4aab6dcff53911a16c124692bc95c8848b2a1fd3220be6f67dbe7efafb",
     harnessSha256: "55b2d1d8206d3f38353cdba3c5c5d087cd718241b90500bce4f8009f64495285",
   }),
@@ -319,7 +322,7 @@ export async function patchAntigravityRuntime({ source, destination, platform = 
     const stat = await lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) fail("vendor closure contains links or special files");
   }
-  const [server, harness, admission] = await Promise.all([readFile(serverPath), readFile(harnessPath), readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url))]);
+  const [server, harness, admission] = await Promise.all([readFile(serverPath), readFile(harnessPath), readFile(new URL(`./${pinned.admission}`, import.meta.url))]);
   if (digest(server) !== pinned.serverSha256) fail("official server SHA-256 mismatch");
   if (digest(harness) !== pinned.harnessSha256) fail("official helper SHA-256 mismatch");
   const patched = patchAntigravityServerBytes(server, admission);

@@ -67,18 +67,27 @@ impl AcpxCandidateAdmission {
         let (closure, host_matches) = match self.agent.as_str() {
             "antigravity" => {
                 let manifest: Value = serde_json::from_str(DISTRIBUTIONS).map_err(|_| invalid())?;
+                // Only the two admitted native hosts exist; each has its own pinned closure.
+                let host_matches = matches!(
+                    (
+                        self.platform.as_str(),
+                        self.architecture.as_str(),
+                        os,
+                        architecture
+                    ),
+                    ("darwin", "arm64", "macos", "aarch64") | ("linux", "x64", "linux", "x86_64")
+                );
+                let key = match (self.platform.as_str(), self.architecture.as_str()) {
+                    ("darwin", "arm64") => "darwin-arm64",
+                    ("linux", "x64") => "linux-x64",
+                    _ => return Err(invalid()),
+                };
                 let closure = manifest
-                    .pointer("/platforms/darwin-arm64/closureSha256")
+                    .pointer(&format!("/platforms/{key}/closureSha256"))
                     .and_then(Value::as_str)
                     .ok_or_else(invalid)?
                     .to_owned();
-                (
-                    closure,
-                    self.platform == "darwin"
-                        && self.architecture == "arm64"
-                        && os == "macos"
-                        && architecture == "aarch64",
-                )
+                (closure, host_matches)
             }
             "kimi" if profile.qualification_pending => {
                 let closure =
@@ -230,6 +239,29 @@ mod tests {
         value["extra"] = json!(true);
         assert!(serde_json::from_value::<AcpxCandidateAdmission>(value).is_err());
         assert!(AcpxCandidateAdmission::parse_json(&"x".repeat(4_097)).is_err());
+    }
+
+    #[test]
+    fn antigravity_linux_x64_binds_its_own_closure_and_host() {
+        let manifest: Value = serde_json::from_str(DISTRIBUTIONS).unwrap();
+        let mut candidate = test_admission("run-1", "session-1");
+        candidate.platform = "linux".to_owned();
+        candidate.architecture = "x64".to_owned();
+        // The macOS closure never admits the Linux host, and vice versa.
+        let now = candidate.expires_at - 1;
+        assert!(candidate.validate_at(now, "linux", "x86_64").is_err());
+        candidate.native_closure_digest = format!(
+            "sha256:{}",
+            manifest["platforms"]["linux-x64"]["closureSha256"]
+                .as_str()
+                .unwrap()
+        );
+        candidate.validate_at(now, "linux", "x86_64").unwrap();
+        for (os, architecture) in [("linux", "aarch64"), ("macos", "aarch64"), ("macos", "x86_64")] {
+            assert!(candidate.validate_at(now, os, architecture).is_err());
+        }
+        candidate.architecture = "arm64".to_owned();
+        assert!(candidate.validate_at(now, "linux", "aarch64").is_err());
     }
 
     #[test]

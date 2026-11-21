@@ -14,6 +14,8 @@ const source = process.env.PAPERCLIP_ANTIGRAVITY_NATIVE_TEST_SOURCE;
 const nativeHost = (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
 // The linux closure's hermetic launcher otherwise looks up a "nobody" group.
 const nativeArguments = process.platform === "linux" ? ["--uid="] : [];
+// Each pinned platform runs its own owned admission source.
+const admissionName = ANTIGRAVITY_PATCH_SOURCES[`${process.platform}-${process.arch}`]?.admission ?? "patch-antigravity-runtime.admission.py";
 
 function runNative(executable, home, requests) {
   return new Promise((resolve, reject) => {
@@ -592,6 +594,24 @@ test("the patch accepts only the two pinned official targets, with deterministic
   assert.throws(() => patchAntigravityServerBytes(elfFixture(), Buffer.from("module")), /SHA-256 mismatch/);
 });
 
+test("macOS admission source stays byte-pinned and the linux twin differs only in executable lookup and helper digest", async () => {
+  const darwin = await readFile(new URL(`./${ANTIGRAVITY_PATCH_SOURCES["darwin-arm64"].admission}`, import.meta.url), "utf8");
+  const linux = await readFile(new URL(`./${ANTIGRAVITY_PATCH_SOURCES["linux-x64"].admission}`, import.meta.url), "utf8");
+  assert.equal(hash(darwin), "d660759a424ddc27ac382ce4512e85ca4eb87e5ca446ea111e093d3ab257f7da", "the darwin-arm64 admission bytes are Owner-pinned");
+  assert.notEqual(ANTIGRAVITY_PATCH_SOURCES["darwin-arm64"].admission, ANTIGRAVITY_PATCH_SOURCES["linux-x64"].admission);
+  const darwinHelper = ANTIGRAVITY_PATCH_SOURCES["darwin-arm64"].harnessSha256;
+  const linuxHelper = ANTIGRAVITY_PATCH_SOURCES["linux-x64"].harnessSha256;
+  const lookup = /  executable_path = ctypes[\s\S]*?os\.fsdecode\(executable_path\.value\)\)\), "localharness_external"\)\n/;
+  const linuxLookup = /  # linux-x64 twin[\s\S]*?os\.fsdecode\(executable\)\)\), "localharness_external"\)\n/;
+  assert.match(darwin, lookup);
+  assert.match(linux, linuxLookup);
+  assert.match(darwin, /libSystem\.B\.dylib/);
+  assert(!/libSystem|ctypes/.test(linux) && linux.includes('os.readlink("/proc/self/exe")'));
+  const normalized = linux.replace(linuxLookup, "@@LOOKUP@@").replace(linuxHelper, "@@DIGEST@@").replace("import ctypes\n", "");
+  assert.equal(normalized, darwin.replace("import ctypes\n", "").replace(lookup, "@@LOOKUP@@").replace(darwinHelper, "@@DIGEST@@"), "linux twin must not drift from the pinned macOS source");
+  assert(!darwin.includes(linuxHelper) && !linux.includes(darwinHelper), "each platform pins only its own helper digest");
+});
+
 test("pinned native closure reproducibly loads exact admission and rejects requests before authentication", {
   skip: !source || !nativeHost,
   timeout: 180_000,
@@ -621,16 +641,12 @@ test("pinned native closure reproducibly loads exact admission and rejects reque
   assert.equal(byId.get(6).error.code, -32602, "the native model request contract rejects extra fields");
   assert(!result.events.some(event => event.result?._meta?.paperclipAntigravityAdmission), "no native init means no fabricated receipt");
 
-  // The admission module's native session regressions locate the owned harness through
-  // libSystem and pin the macOS helper digest. The linux-x64 closure is admitted for
-  // sign-in and session-free catalog calls only; session execution stays closed.
-  if (process.platform !== "darwin") return;
   const fixtureScripts = join(root, "fixture-scripts");
   const { mkdir } = await import("node:fs/promises");
   await mkdir(fixtureScripts);
   await copyFile(new URL("./patch-antigravity-runtime.mjs", import.meta.url), join(fixtureScripts, "patch-antigravity-runtime.mjs"));
-  const module = await readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url), "utf8");
-  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + nativeBoundaryTests + nativeHelperIsolationTests + nativeManagedSurfaceTests + nativeModelCatalogTests + nativeStateTests);
+  const module = await readFile(new URL(`./${admissionName}`, import.meta.url), "utf8");
+  await writeFile(join(fixtureScripts, admissionName), module + nativeBoundaryTests + nativeHelperIsolationTests + nativeManagedSurfaceTests + nativeModelCatalogTests + nativeStateTests);
   const fixture = await import(pathToFileURL(join(fixtureScripts, "patch-antigravity-runtime.mjs")));
   await fixture.patchAntigravityRuntime({ source, destination: join(root, "boundary-fixture") });
   const tested = await runNative(join(root, "boundary-fixture/agy_acp_server.par"), join(root, "fixture-home"), [initialize()]);
@@ -654,9 +670,9 @@ test("native client file callbacks settle exact tool identity without broadcasti
   const { mkdir } = await import("node:fs/promises");
   await mkdir(fixtureScripts);
   await copyFile(new URL("./patch-antigravity-runtime.mjs", import.meta.url), join(fixtureScripts, "patch-antigravity-runtime.mjs"));
-  const module = await readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url), "utf8");
+  const module = await readFile(new URL(`./${admissionName}`, import.meta.url), "utf8");
   const regression = await readFile(new URL("./patch-antigravity-runtime.tool-lifecycle.test.py", import.meta.url), "utf8");
-  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + "\n" + regression);
+  await writeFile(join(fixtureScripts, admissionName), module + "\n" + regression);
   const fixture = await import(pathToFileURL(join(fixtureScripts, "patch-antigravity-runtime.mjs")));
   await fixture.patchAntigravityRuntime({ source, destination: join(root, "runtime") });
   const tested = await runNative(join(root, "runtime/agy_acp_server.par"), join(root, "home"), [initialize()]);
