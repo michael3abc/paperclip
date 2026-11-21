@@ -633,6 +633,34 @@ describe("HTTP logger redaction", () => {
     }
   });
 
+  it("redacts Cloudflare Access assertions and service tokens from HTTP logs", async () => {
+    const headers = {
+      "Cf-Access-Jwt-Assertion": "eyJcf-access-jwt-canary",
+      "Cf-Access-Client-Id": "cf-client-id-canary",
+      "Cf-Access-Client-Secret": "cf-client-secret-canary",
+    };
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.get("/api/companies", (_req, res) => { res.json({}); });
+
+    await request(app).get("/api/companies").set(headers).set("Cf-Access-Authenticated-User-Email", "owner@example.com").expect(200);
+
+    const output = chunks.join("");
+    const log = JSON.parse(output.trim());
+    for (const [header, secret] of Object.entries(headers)) {
+      expect(output).not.toContain(secret);
+      expect(log.req.headers[header.toLowerCase()]).toBe("[Redacted]");
+    }
+    expect(log.req.headers["cf-access-authenticated-user-email"]).toBe("owner@example.com");
+  });
+
   it("drops OAuth callback query data from the message and structured request", async () => {
     const chunks: string[] = [];
     const stream = new Writable({
