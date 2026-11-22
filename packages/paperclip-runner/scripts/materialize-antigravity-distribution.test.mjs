@@ -64,6 +64,7 @@ async function fixture(t, { expectedFiles = files, expectedVendorFiles = files, 
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1';
+export const ANTIGRAVITY_PATCH_SOURCES={'darwin-arm64':{admission:'patch-antigravity-runtime.admission.py'}};
 export async function patchAntigravityRuntime({source,destination}) {
  await writeFile(${JSON.stringify(join(root, "patch.called"))},'called');
  await mkdir(destination,{mode:0o700});
@@ -99,13 +100,27 @@ export async function patchAntigravityRuntime({source,destination}) {
   return { root, destination, options, api, provision, distribution: await api.antigravityDistribution("darwin", "arm64") };
 }
 
-test("the inspected native mac ARM closure is pinned; other platforms remain inventory-only", async () => {
+test("the inspected native mac ARM and Linux x64 closures are pinned; other platforms remain inventory-only", async () => {
   const pin = await antigravityDistribution("darwin", "arm64");
   assert.equal(pin.version, "1.4.3");
   assert.deepEqual(pin.entries.map(entry => entry.path), files.map(entry => entry.path));
   assert.equal(hash(JSON.stringify(pin.entries)), pin.closureSha256);
-  for (const [platform, architecture] of [["darwin", "x64"], ["linux", "x64"], ["linux", "arm64"]]) await assert.rejects(antigravityDistribution(platform, architecture), /inventory-only/);
+  for (const [platform, architecture] of [["darwin", "x64"], ["linux", "arm64"]]) await assert.rejects(antigravityDistribution(platform, architecture), /inventory-only/);
   await assert.rejects(antigravityDistribution("win32", "x64"), /no pinned distribution/);
+});
+
+test("the official Linux x64 closure pins its archive, vendor files and patched runtime", async () => {
+  const pin = await antigravityDistribution("linux", "x64");
+  assert.equal(pin.url, "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-x86_64.zip");
+  assert.equal(pin.archiveSha256, "0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714");
+  assert.deepEqual(pin.args, ["--uid="]);
+  assert.deepEqual(pin.entries.map(entry => entry.path), ["agy_acp_server.par", "localharness_external"]);
+  assert.equal(hash(JSON.stringify(pin.entries)), pin.closureSha256);
+  assert.equal(hash(JSON.stringify(pin.vendorEntries)), pin.vendorClosureSha256);
+  assert.equal(pin.vendorEntries[0].sha256, "7e06ec4aab6dcff53911a16c124692bc95c8848b2a1fd3220be6f67dbe7efafb");
+  assert.equal(pin.vendorEntries[1].sha256, pin.entries[1].sha256, "the helper is not patched");
+  assert.notEqual(pin.entries[0].sha256, pin.vendorEntries[0].sha256, "the server carries the owned admission patch");
+  assert.equal(pin.entries[0].size, pin.vendorEntries[0].size, "the patch preserves the embedded archive size");
 });
 
 test("ZIP inspection rejects traversal, absolute names, duplicates, links and partial closure", () => {

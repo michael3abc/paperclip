@@ -4,7 +4,10 @@
  *
  *   {"type":"todo","v":1,"goal":"…","stop":"…","nextId":8}
  *   {"id":3,"text":"…","status":"open|done|cancelled","owner":false,"task":"HOM-389","note":null,
- *    "createdAt":"…","closedAt":null}
+ *    "options":["A","B"],"createdAt":"…","closedAt":null}
+ *
+ * `options` is optional: a "Needs you" item that lists them is answered by picking one (plus an optional note);
+ * one without is a yes/no item (plus an optional note).
  *
  * The agent edits it with its helper; this file only reads it. Ids are never reused, so `nextId - 1` is the
  * number of items ever created even after old finished items were dropped from the document.
@@ -28,6 +31,8 @@ export interface TodoItem {
   /** Identifier of the linked task, e.g. HOM-389. */
   task: string | null;
   note: string | null;
+  /** Ready-made answers for an Owner item; empty when it is a plain yes/no matter. */
+  options: string[];
   createdAt: string | null;
   closedAt: string | null;
 }
@@ -45,6 +50,18 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 const text = (value: unknown) => typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 const time = (value: unknown) => typeof value === "string" && !Number.isNaN(new Date(value).getTime()) ? value : null;
+
+export const TODO_OPTIONS_LIMIT = 8;
+
+function parseOptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const option = text(entry);
+    if (option) seen.add(option);
+  }
+  return [...seen].slice(0, TODO_OPTIONS_LIMIT);
+}
 
 /** Parse the stored JSONL. Null means the body is not this format (for example an older markdown TODO). */
 export function parseTodoDocument(body: string | null | undefined): TodoDocument | null {
@@ -67,6 +84,7 @@ export function parseTodoDocument(body: string | null | undefined): TodoDocument
       owner: raw.owner === true,
       task: text(raw.task) || null,
       note: text(raw.note) || null,
+      options: parseOptions(raw.options),
       createdAt: time(raw.createdAt),
       closedAt: status === "open" ? null : time(raw.closedAt),
     });
@@ -168,6 +186,43 @@ export function todoApproveComment(item: Pick<TodoItem, "id" | "text">): string 
 export function todoReplyComment(item: Pick<TodoItem, "id" | "text">, message: string): string {
   return `回覆 TODO #${item.id}（Needs you）「${todoDisplayText(item.text)}」：\n\n${message.trim()}\n\n`
     + `請依此處理這一項，處理完執行 \`todo check ${item.id} --note …\`。`;
+}
+
+/** The Owner's staged answer to one "Needs you" item: a verdict or a picked option, and an optional note. */
+export interface TodoAnswer {
+  decision: "approve" | "decline" | null;
+  choice: string | null;
+  note: string;
+}
+
+export const EMPTY_TODO_ANSWER: TodoAnswer = { decision: null, choice: null, note: "" };
+
+export function todoAnswerEmpty(answer: TodoAnswer): boolean {
+  return !answer.decision && !answer.choice && !answer.note.trim();
+}
+
+/**
+ * One item's answer as comment text. A bare approval or a bare note keeps the original wording; anything combined
+ * (a verdict or choice with a note, or a decline) says so explicitly.
+ */
+export function todoAnswerComment(item: Pick<TodoItem, "id" | "text">, answer: TodoAnswer): string {
+  const note = answer.note.trim();
+  if (answer.decision === "approve" && !note) return todoApproveComment(item);
+  if (!answer.decision && !answer.choice) return todoReplyComment(item, note);
+  const verdict = answer.choice
+    ? `選擇「${answer.choice}」。`
+    : answer.decision === "approve" ? "同意／已完成。" : "不同意，先不要照這項做。";
+  const follow = answer.decision === "decline"
+    ? `請不要照這項做，記下原因後繼續其他項目；處理完執行 \`todo check ${item.id} --note …\`（或 \`todo cancel ${item.id}\`）。`
+    : `請依此處理這一項，處理完執行 \`todo check ${item.id} --note …\`。`;
+  return `回覆 TODO #${item.id}（Needs you）「${todoDisplayText(item.text)}」：${verdict}${note ? `\n\n${note}` : ""}\n\n${follow}`;
+}
+
+/** Several staged answers sent as one comment (one agent wake). A single answer is the same text as before. */
+export function todoBatchComment(entries: ReadonlyArray<{ item: Pick<TodoItem, "id" | "text">; answer: TodoAnswer }>): string {
+  const blocks = entries.map(({ item, answer }) => todoAnswerComment(item, answer));
+  if (blocks.length === 1) return blocks[0]!;
+  return `回覆 ${blocks.length} 項 TODO（Needs you），逐項處理：\n\n${blocks.join("\n\n---\n\n")}`;
 }
 
 /**

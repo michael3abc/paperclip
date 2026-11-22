@@ -1,9 +1,10 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import { dashboardService } from "../services/dashboard.js";
 import { companyService } from "../services/companies.js";
 import { fetchHostSubscriptionQuotas } from "../services/host-subscription-quotas.js";
 import { listHostClaudeLogins, checkHostClaudeLogin, startHostClaudeLogin, hostClaudeSession } from "../services/host-claude-login.js";
+import { listHostCodexLogins, checkHostCodexLogin, startHostCodexLogin, hostCodexSession } from "../services/host-codex-login.js";
 import {
   DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT,
   MAX_WINDOW_WEEKS,
@@ -27,7 +28,7 @@ export function dashboardRoutes(db: Db) {
   const svc = dashboardService(db);
   const recoveryObservability = recoveryObservabilityService(db);
   // Literal paths keep the mounted-route OpenAPI coverage scanner exact.
-  router.use("/companies/:companyId/dashboard/host-claude", async (req, res, next) => {
+  const hostLoginGuard: RequestHandler = async (req, res, next) => {
     assertInstanceAdmin(req);
     assertCompanyAccess(req, req.params.companyId as string);
     if (!await companyService(db).getById(req.params.companyId as string)) {
@@ -36,7 +37,9 @@ export function dashboardRoutes(db: Db) {
     res.set("Cache-Control", "no-store");
     res.set("Referrer-Policy", "no-referrer");
     next();
-  });
+  };
+  router.use("/companies/:companyId/dashboard/host-claude", hostLoginGuard);
+  router.use("/companies/:companyId/dashboard/host-codex", hostLoginGuard);
   router.get("/companies/:companyId/dashboard/host-claude", async (req, res) => {
     res.json(await listHostClaudeLogins(req.params.companyId as string));
   });
@@ -54,6 +57,23 @@ export function dashboardRoutes(db: Db) {
   });
   router.post("/companies/:companyId/dashboard/host-claude/sessions/:id/cancel", (req, res) => {
     res.json(hostClaudeSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string, "cancel", req.body?.browserCode));
+  });
+  // Codex uses device authorization: the view shows the device page and one-time
+  // code, and the native CLI completes by itself, so there is no code submission.
+  router.get("/companies/:companyId/dashboard/host-codex", async (req, res) => {
+    res.json(await listHostCodexLogins(req.params.companyId as string));
+  });
+  router.post("/companies/:companyId/dashboard/host-codex/:hostId/check", async (req, res) => {
+    res.json(await checkHostCodexLogin(req.params.companyId as string, req.params.hostId as string));
+  });
+  router.post("/companies/:companyId/dashboard/host-codex/:hostId/login", async (req, res) => {
+    res.json(await startHostCodexLogin(req.params.companyId as string, req.actor.userId ?? "local", req.params.hostId as string));
+  });
+  router.get("/companies/:companyId/dashboard/host-codex/sessions/:id", (req, res) => {
+    res.json(hostCodexSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string));
+  });
+  router.post("/companies/:companyId/dashboard/host-codex/sessions/:id/cancel", (req, res) => {
+    res.json(hostCodexSession(req.params.companyId as string, req.actor.userId ?? "local", req.params.id as string, "cancel"));
   });
 
   router.get("/companies/:companyId/dashboard/subscription-quotas", async (req, res) => {

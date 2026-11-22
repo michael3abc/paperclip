@@ -15,6 +15,10 @@ native `claude auth login --claudeai` on that host; credentials stay there. Bind
 temporary sessions to company/user/host, allow one active login per host, expire
 after five minutes, and confirm `auth status --json` reports a Claude.ai login.
 Never persist authorization URLs, codes, CLI output or credentials in audit/logs.
+Codex uses the same company/host/human/admin boundary with registry `codexLogin.command`
+and optional `codexHome`: run `codex login --device-auth`, expire sessions after ten
+minutes, and confirm `codex login status` reports `Logged in using ChatGPT`. Show the
+device URL/code only to the initiating administrator; never log or persist either.
 
 Guidance for human and AI contributors working in this repository.
 

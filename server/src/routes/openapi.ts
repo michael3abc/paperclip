@@ -30,6 +30,7 @@ import {
   localAiConnectionSchema,
   localAiLoginStartSchema,
   browserCodeSchema,
+  localAiLoginRedirectSchema,
   emailEndpointSetupSchema,
   emailConnectionSchema,
   emailAddressCheckSchema,
@@ -1751,7 +1752,7 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
-  if (path.startsWith("/api/companies/{companyId}/dashboard/host-claude")) return "instance_admin";
+  if (path.startsWith("/api/companies/{companyId}/dashboard/host-claude") || path.startsWith("/api/companies/{companyId}/dashboard/host-codex")) return "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
       || key === "POST /api/mcp/requests/{id}/dot-pairing/preview"
@@ -4524,7 +4525,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/chats",
   tags: ["issues"],
   summary: "List the current board user's agent conversations",
-  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user. hasLiveChildTasks is true while a readable task the chat created in its current session, or a direct subtask, has a queued, running or scheduled-retry run.",
+  description: "Requires Agent Chat to be enabled. Returns accessible conversations in the company, ordered by most recent activity. Each agent has one conversation per user. hasLiveChildTasks is true while a readable task the chat created in its current session, or a direct subtask, has a queued, running or scheduled-retry run. hasRunningSubagents is true while native subagents (Claude Agent tool, background tasks) that the chat's latest succeeded run started have no completion in the run logs; Paperclip hears nothing about them after a run ends, so it is a bounded estimate that is false once the next run starts, when the latest run did not succeed, or after runningSubagentsUntil (ISO time, null when false).",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -6883,6 +6884,56 @@ registry.registerPath({
   method: "post", path: "/api/companies/{companyId}/dashboard/host-claude/sessions/{id}/cancel", tags: ["dashboard"],
   summary: "Cancel own host Claude sign-in",
   description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary login material must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/dashboard/host-codex", tags: ["dashboard"],
+  summary: "List company host Codex login capabilities",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-codex/{hostId}/check", tags: ["dashboard"],
+  summary: "Check native host Codex ChatGPT login",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-codex/{hostId}/login", tags: ["dashboard"],
+  summary: "Start native host Codex device sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/dashboard/host-codex/sessions/{id}", tags: ["dashboard"],
+  summary: "Read own host Codex sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/dashboard/host-codex/sessions/{id}/cancel", tags: ["dashboard"],
+  summary: "Cancel own host Codex sign-in",
+  description: "Human instance administrators only, with company access. Host credentials remain on the selected enrolled host. Temporary device codes must never enter logs or agent tools.",
   "x-paperclip-authorization": { actor: "board", humanOnly: true },
   "x-paperclip-transport": "protocol",
   request: { params: z.object({ companyId: z.string(), id: z.string() }) },
@@ -14513,6 +14564,13 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code",
   tags: ["ai-connections"], summary: "Submit the browser code for an owned local Claude sign-in",
   body: z.object({ browserCode: browserCodeSchema }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/redirect",
+  tags: ["ai-connections"], summary: "Submit the pasted Google redirect address for an owned local Google sign-in (remote browser)",
+  body: localAiLoginRedirectSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 

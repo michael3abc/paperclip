@@ -237,7 +237,7 @@ import {
 import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getDefaultCompanyGoal } from "./goals.js";
-import { assertAssignableAgent } from "./agent-assignability.js";
+import { assertAssignableAgent, assertMainProjectMatch } from "./agent-assignability.js";
 import {
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
   isExternalChatPresentationContext,
@@ -10737,6 +10737,10 @@ export function issueService(db: Db) {
         await assertAssignableAgent(db, companyId, data.assigneeAgentId, {
           kind: "work",
         });
+        await assertMainProjectMatch(db, companyId, data.assigneeAgentId, {
+          projectId: data.projectId ?? null,
+          conversationAgentId: (data as { conversationAgentId?: string | null }).conversationAgentId ?? null,
+        });
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
@@ -12035,6 +12039,15 @@ export function issueService(db: Db) {
         issueData.projectId !== undefined
           ? issueData.projectId
           : existing.projectId;
+      if (
+        nextAssigneeAgentId &&
+        (issueData.assigneeAgentId !== undefined || issueData.projectId !== undefined)
+      ) {
+        await assertMainProjectMatch(dbOrTx as Db, existing.companyId, nextAssigneeAgentId, {
+          projectId: nextProjectId ?? null,
+          conversationAgentId: existing.conversationAgentId ?? null,
+        });
+      }
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined
           ? issueData.projectWorkspaceId

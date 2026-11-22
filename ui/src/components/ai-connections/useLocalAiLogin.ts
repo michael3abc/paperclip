@@ -112,6 +112,11 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         throw cause;
       }
     },
+    // A rejected address leaves the attempt open, so this never replaces the card with a hook error.
+    submitRedirect: async (redirectUrl: string) => {
+      if (!companyId || !attempt) throw new Error("Start sign-in before submitting an address.");
+      await aiConnectionsApi.submitLocalLoginRedirect(companyId, attempt.sessionId, redirectUrl);
+    },
     connect: (input = intent) => {
       if (!companyId) throw new Error("Choose a company before connecting.");
       if (isolated && !attempt) throw new Error("Prepare local sign-in before connecting.");

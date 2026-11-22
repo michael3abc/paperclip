@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents } from "@paperclipai/db";
+import { agents, projects } from "@paperclipai/db";
+import { mainProjectMismatch } from "./main-agent-workers.js";
 import {
   getAgentWorkEligibility,
   type AgentEligibilityAgent,
@@ -168,4 +169,44 @@ export async function assertAssignableAgent(
         ? firstInvalidAncestor.id
         : null,
   }));
+}
+
+/**
+ * Reject a task whose project differs from the project of the project-main agent it is assigned to: that main could
+ * never start it (adapter `main_project_mismatch`), and recovery would only retry and strand it. The caller names the
+ * issue's final project, so a single request may change assignee and project together.
+ */
+export async function assertMainProjectMatch(
+  db: Db,
+  companyId: string,
+  agentId: string | null | undefined,
+  issue: { projectId?: string | null; conversationAgentId?: string | null },
+) {
+  if (!agentId) return;
+  const agent = await db
+    .select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .then((rows) => rows[0] ?? null);
+  if (!agent || agent.companyId !== companyId) return;
+  const requiredProjectId = mainProjectMismatch(
+    { ...agent, adapterConfig: (agent.adapterConfig ?? null) as Record<string, unknown> | null },
+    issue,
+  );
+  if (!requiredProjectId) return;
+  const project = await db
+    .select({ name: projects.name })
+    .from(projects)
+    .where(eq(projects.id, requiredProjectId))
+    .then((rows) => rows[0] ?? null);
+  throw unprocessable(
+    `${agent.name} is the project main of "${project?.name ?? requiredProjectId}" and only runs tasks of that project. ` +
+      `Create the task in that project (projectId ${requiredProjectId}) or assign it to an agent of the task's own project.`,
+    {
+      code: "main_project_mismatch",
+      assigneeAgentId: agentId,
+      requiredProjectId,
+      issueProjectId: issue.projectId ?? null,
+    },
+  );
 }

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useLocalAiLogin } from "./useLocalAiLogin";
 import { LocalProviderLoginInstructions } from "../AdapterLoginChrome";
 
-const api = vi.hoisted(() => ({ startLocalLogin: vi.fn(), checkLocalLogin: vi.fn(), submitLocalLoginCode: vi.fn(), cancelLocalLogin: vi.fn(), connectLocal: vi.fn() }));
+const api = vi.hoisted(() => ({ startLocalLogin: vi.fn(), checkLocalLogin: vi.fn(), submitLocalLoginCode: vi.fn(), submitLocalLoginRedirect: vi.fn(), cancelLocalLogin: vi.fn(), connectLocal: vi.fn() }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: api }));
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
@@ -15,6 +15,7 @@ beforeEach(() => {
   api.startLocalLogin.mockImplementation(async () => ({ sessionId: "attempt-1", expiresAt: "2099-01-01T00:00:00Z" }));
   api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-12345" });
   api.submitLocalLoginCode.mockResolvedValue({ ok: true });
+  api.submitLocalLoginRedirect.mockResolvedValue({ ok: true });
   api.cancelLocalLogin.mockResolvedValue({});
   api.connectLocal.mockResolvedValue({ connectionId: "connection", grantId: "grant" });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -179,3 +180,26 @@ it.each(["start", "check"])("cancels a local subscription with a pending %s and 
   expect(api.checkLocalLogin).toHaveBeenCalledTimes(stage === "start" ? 0 : 1);
   expect(api.connectLocal).not.toHaveBeenCalled();
 });
+
+function GoogleHarness({ onLogin }: { onLogin: (login: ReturnType<typeof useLocalAiLogin>) => void }) {
+  const login = useLocalAiLogin("company", { provider: "google", method: "subscription", name: "Google", ownership: "personal", agentIds: [], allAgents: true }, true);
+  onLogin(login);
+  return <LocalProviderLoginInstructions adapterType="antigravity_runtime" login={login} />;
+}
+
+it("posts a pasted Google redirect address to the owned attempt and keeps the sign-in card on rejection", async () => {
+  api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture" });
+  let latest!: ReturnType<typeof useLocalAiLogin>;
+  flushSync(() => root.render(<GoogleHarness onLogin={login => { latest = login; }} />));
+  await vi.waitFor(() => expect(host.querySelector('input[aria-label="Redirect address"]')).not.toBeNull());
+  await latest.submitRedirect("http://127.0.0.1:18973/?state=a&code=b");
+  expect(api.submitLocalLoginRedirect).toHaveBeenCalledWith("company", "attempt-1", "http://127.0.0.1:18973/?state=a&code=b");
+  expect(api.submitLocalLoginCode).not.toHaveBeenCalled();
+
+  api.submitLocalLoginRedirect.mockRejectedValueOnce(new Error("rejected"));
+  await expect(latest.submitRedirect("http://127.0.0.1:18973/?state=wrong&code=b")).rejects.toThrow("rejected");
+  expect(latest.error).toBeNull();
+  expect(host.querySelector('input[aria-label="Redirect address"]')).not.toBeNull();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+

@@ -33,7 +33,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: Some("native:antigravity-localharness"),
             agent_runtime_version: Some("1.4.3"),
             command_digest:
-                "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+                "sha256:9981efd7d182a916fb808bcc1d49b55e60a60d27469452aba2577535b8f02a1f",
             requires_provider_policy: true,
             qualification_pending: true,
         },

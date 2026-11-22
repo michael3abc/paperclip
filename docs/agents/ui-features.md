@@ -96,10 +96,28 @@ sets it when a readable, unhidden task that chat created in its current session
 (`chat_task_handoffs`) or a direct subtask of the chat has a `queued`, `running` or
 `scheduled_retry` run (`server/src/services/agent-chat-live-tasks.ts`). Working and
 `pending` outrank it; it is computed from runs, not chat state, and does not read
-the PM status exclusion list. Native subagents exist only in run transcripts and are
-not included. Run lifecycle live events (queued, and every status except `running`)
-refetch the viewer's chat list unless the run belongs to the chat itself; there is
-no polling. Classic SidebarAgents rows are not chats and are unchanged.
+the PM status exclusion list. Run lifecycle live events (queued, and every status
+except `running`) refetch the viewer's chat list; a run of the chat itself refetches
+it only when it ends (terminal status). There is no polling. Classic SidebarAgents
+rows are not chats and are unchanged.
+
+The same rows show the blue `working` indicator while native subagents (Claude Agent
+tool, background tasks) the chat started are still running after its own run ended:
+the chat list also carries `hasRunningSubagents` and `runningSubagentsUntil`
+(`server/src/services/agent-chat-running-subagents.ts`). Paperclip hears a Bridge
+session only while a run executes: the ccpocket adapter stops forwarding
+`subagent_task` events at run end and the Bridge keeps no durable subagent state, so
+a completion arrives only inside a later run. The server therefore reads the
+`[ccpocket:event]` `subagent_task` lines of the chat's recent finished runs (parsed
+once per run, cached) and reports a background task (`isBackgrounded`, or one that was
+already running when a run began) as running while no event says completed, failed or
+stopped, within 30 minutes of the end of the last run that carried it. Only a latest
+run that `succeeded` counts; a queued or running next run is the agent working itself,
+a failed, cancelled, timed out or interrupted one abandons the session, and subagents
+of an earlier Bridge session id are dropped. The UI also ignores the flag past
+`runningSubagentsUntil` (a timer re-renders at that moment). `pending` outranks it and
+it outranks `waiting for task`. A run transcript's own `running` subagent card is not
+evidence after the run ended.
 
 PDF attachment opens use the shared PdfPreviewProvider under BrowserRouter.
 Its local-state dialog keeps Back, Open original and Download visible without

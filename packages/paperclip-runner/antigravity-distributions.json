@@ -51,11 +51,43 @@
     "linux-x64": {
       "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-x86_64.zip",
       "archiveSha256": "0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714",
-      "provisioning": "inventory-only",
+      "closureSha256": "1685ac029e315c35491dd3c4238af73cd30b018648e3d87900b5a80d813b059d",
+      "provisioning": "verified-closure",
       "executable": "agy_acp_server.par",
       "args": [
         "--uid="
-      ]
+      ],
+      "entries": [
+        {
+          "path": "agy_acp_server.par",
+          "sha256": "53f313f4d4d0cf34c66f133e0e539491be36a74c5752f64bcbc973d282d8a5c4",
+          "size": 927707135,
+          "executable": true
+        },
+        {
+          "path": "localharness_external",
+          "sha256": "55b2d1d8206d3f38353cdba3c5c5d087cd718241b90500bce4f8009f64495285",
+          "size": 133926136,
+          "executable": true
+        }
+      ],
+      "vendorEntries": [
+        {
+          "path": "agy_acp_server.par",
+          "sha256": "7e06ec4aab6dcff53911a16c124692bc95c8848b2a1fd3220be6f67dbe7efafb",
+          "size": 927707135,
+          "executable": true
+        },
+        {
+          "path": "localharness_external",
+          "sha256": "55b2d1d8206d3f38353cdba3c5c5d087cd718241b90500bce4f8009f64495285",
+          "size": 133926136,
+          "executable": true
+        }
+      ],
+      "vendorClosureSha256": "ae35f8775348a2002e6d963196d02541164a9f75216e4703b527d7bf987a889f",
+      "patchVersion": "1.4.3-paperclip.5",
+      "admissionSourceSha256": "0fa164f4a025eba9a7176df6e54f8e9e5c170ac69e2a101284f02e3ee1a63174"
     },
     "linux-arm64": {
       "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-arm64.zip",

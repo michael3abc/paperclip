@@ -7,6 +7,9 @@ import type { LiveRunForIssue } from "../api/heartbeats";
  * - `needs_input`: a request is waiting on the human Owner personally (label: `pending`).
  * - `working`: a task of the PM's project (subtasks included) is executing, or
  *   an opted-in agent (`selfRunAgentIds`) is executing its own run.
+ * - `working` also covers an agent whose chat started native subagents (Claude
+ *   Agent tool, background tasks) that are still running after its own run ended
+ *   (see `deriveChatRunningSubagentAgentIds`).
  * - `waiting_for_task` (Coordinator chat rows only): the agent is not working
  *   itself, but a task its chat created is still live
  *   (see `deriveChatWaitingForTaskAgentIds`).
@@ -155,7 +158,7 @@ export function deriveProjectPmSidebarStatus({
  * chat created (current session) or a direct subtask has a queued, running or
  * scheduled-retry run (`hasLiveChildTasks`), and the agent has no working run of
  * its own. A working agent keeps its existing `working` indicator instead.
- * Native subagents are not tracked server-side, so they are not part of this.
+ * Native subagents are a separate signal (`deriveChatRunningSubagentAgentIds`).
  */
 export function deriveChatWaitingForTaskAgentIds({
   chats,
@@ -168,6 +171,55 @@ export function deriveChatWaitingForTaskAgentIds({
   return new Set((chats ?? []).flatMap(chat =>
     chat.hasLiveChildTasks === true && chat.conversationAgentId && !working.has(chat.conversationAgentId)
       ? [chat.conversationAgentId] : []));
+}
+
+type RunningSubagentChat = Pick<Issue, "conversationAgentId" | "hasRunningSubagents" | "runningSubagentsUntil">;
+
+/**
+ * Expiry (epoch ms) of a chat's running-subagent flag. A flag without a bound
+ * (an older server) has no expiry; an unreadable bound is already expired.
+ */
+function runningSubagentsExpiry(chat: RunningSubagentChat): number | null {
+  if (chat.runningSubagentsUntil === undefined || chat.runningSubagentsUntil === null) return null;
+  const until = new Date(chat.runningSubagentsUntil).getTime();
+  return Number.isFinite(until) ? until : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Agents shown `working` because the server says native subagents their chat
+ * started are still running (`hasRunningSubagents`) after the agent's own run
+ * ended. Paperclip hears nothing from a Bridge session once the run is over, so
+ * the server only vouches for them until `runningSubagentsUntil`; past that
+ * bound the flag is ignored here too, without waiting for a refetch. An agent
+ * whose own run is already working keeps that indicator, so it is left out.
+ */
+export function deriveChatRunningSubagentAgentIds({
+  chats,
+  liveRuns,
+  now = Date.now(),
+}: {
+  chats: readonly RunningSubagentChat[] | null | undefined;
+  liveRuns: readonly Pick<LiveRunForIssue, "agentId" | "status" | "execution">[] | null | undefined;
+  now?: number;
+}): Set<string> {
+  const working = new Set((liveRuns ?? []).flatMap(run => isWorkingLiveRun(run) ? [run.agentId] : []));
+  return new Set((chats ?? []).flatMap(chat => {
+    if (chat.hasRunningSubagents !== true || !chat.conversationAgentId || working.has(chat.conversationAgentId)) return [];
+    const expiry = runningSubagentsExpiry(chat);
+    return expiry === null || expiry > now ? [chat.conversationAgentId] : [];
+  }));
+}
+
+/** The earliest future bound among flagged chats, so a view can re-evaluate exactly then. */
+export function nextRunningSubagentsExpiry(
+  chats: readonly RunningSubagentChat[] | null | undefined,
+  now: number = Date.now(),
+): number | null {
+  const bounds = (chats ?? []).flatMap(chat => {
+    const expiry = chat.hasRunningSubagents === true ? runningSubagentsExpiry(chat) : null;
+    return expiry !== null && expiry > now ? [expiry] : [];
+  });
+  return bounds.length ? Math.min(...bounds) : null;
 }
 
 /**

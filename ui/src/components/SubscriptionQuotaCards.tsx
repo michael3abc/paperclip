@@ -9,11 +9,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { QuotaBar } from "./QuotaBar";
 import { HostClaudeLogin } from "./HostClaudeLogin";
+import { HostCodexLogin } from "./HostCodexLogin";
 
 const PROVIDERS = [
   { id: "openai", title: "Codex" },
   { id: "anthropic", title: "Claude" },
   { id: "antigravity", title: "Antigravity" },
+  { id: "google_cloud", title: "Google Cloud credits", optional: true },
 ];
 
 export function quotaResetLabel(reset: string | null, now: number): string {
@@ -28,6 +30,29 @@ export function quotaResetLabel(reset: string | null, now: number): string {
   return "Resets in " + Math.floor(hours / 24) + "d " + (hours % 24) + "h";
 }
 
+const WINDOW_UNIT_MINUTES: Record<string, number> = { m: 1, h: 60, d: 1440, w: 10080 };
+
+function windowMinutes(label: string): number {
+  const match = /·\s*(\d+)\s*([mhdw])\s*$/i.exec(label);
+  return match ? Number(match[1]) * WINDOW_UNIT_MINUTES[match[2]!.toLowerCase()]! : Number.POSITIVE_INFINITY;
+}
+
+function windowGroup(label: string): string {
+  const at = label.lastIndexOf("·");
+  return at < 0 ? label : label.slice(0, at).trim();
+}
+
+/** Groups keep their reported order; inside a group the shortest window comes first (5h above 7d). */
+export function orderQuotaWindows<T extends { label: string }>(windows: readonly T[]): T[] {
+  const groups = new Map<string, number>();
+  windows.forEach((window) => { if (!groups.has(windowGroup(window.label))) groups.set(windowGroup(window.label), groups.size); });
+  return windows
+    .map((window, index) => ({ window, index }))
+    .sort((a, b) => groups.get(windowGroup(a.window.label))! - groups.get(windowGroup(b.window.label))!
+      || windowMinutes(a.window.label) - windowMinutes(b.window.label) || a.index - b.index)
+    .map(({ window }) => window);
+}
+
 export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, failed, onRefresh }: {
   companyId?: string;
   accounts: ProviderQuotaResult[];
@@ -37,6 +62,8 @@ export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, faile
 }) {
   if (!accounts.length && !refreshing && !failed) return null;
   const now = Date.now();
+  // Optional sources (Google Cloud credits) appear only for companies whose quota source configures them.
+  const visible = PROVIDERS.filter((provider) => !provider.optional || accounts.some((value) => value.provider === provider.id));
   return (
     <section className="space-y-3" aria-label="Subscription quotas" data-testid="subscription-quota-cards">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -50,8 +77,8 @@ export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, faile
         </Button>
       </div>
       {failed && <p role="alert" className="text-sm text-destructive">Quota refresh failed. Any values below are from the previous check.</p>}
-      <div className="grid gap-4 md:grid-cols-3">
-        {PROVIDERS.map(({ id, title }) => {
+      <div className={visible.length > 3 ? "grid gap-4 md:grid-cols-2 xl:grid-cols-4" : "grid gap-4 md:grid-cols-3"}>
+        {visible.map(({ id, title }) => {
           const account = accounts.find((value) => value.provider === id);
           return (
             <Card key={id}>
@@ -62,7 +89,9 @@ export function SubscriptionQuotaPanels({ companyId, accounts, refreshing, faile
               <CardContent className="space-y-3">
                 {id === "anthropic" && companyId ? <HostClaudeLogin key={companyId} companyId={companyId}>
                   <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />
-                </HostClaudeLogin> : <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />}
+                </HostClaudeLogin> : id === "openai" && companyId ? <HostCodexLogin key={companyId} companyId={companyId}>
+                  <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />
+                </HostCodexLogin> : <QuotaContent provider={id} account={account} refreshing={refreshing} now={now} />}
               </CardContent>
             </Card>
           );
@@ -76,7 +105,7 @@ function QuotaContent({ provider, account, refreshing, now }: { provider: string
   return <>
     {!account ? <p className="text-sm text-muted-foreground">{refreshing ? "Checking quota…" : "Quota unavailable"}</p>
       : !account.ok ? <p className="text-sm text-muted-foreground" role="status">{account.error ?? "Quota unavailable"}</p>
-      : account.windows.map((window, index) => (
+      : orderQuotaWindows(account.windows).map((window, index) => (
         <div key={window.label + ":" + index} className="space-y-1" title={window.detail ?? undefined}>
           {window.usedPercent == null ? (
             <div className="space-y-1 text-xs">
@@ -87,12 +116,13 @@ function QuotaContent({ provider, account, refreshing, now }: { provider: string
             <QuotaBar label={window.label} percentUsed={window.usedPercent} valueMode="remaining"
               leftLabel={new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(100 - window.usedPercent) + "% remaining"} />
           )}
-          {window.usedPercent != null && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
+          {window.usedPercent != null && (window.resetsAt || provider !== "google_cloud") && <p className="text-xs text-muted-foreground" title={window.resetsAt ? formatDateTime(window.resetsAt) : undefined}>
             {quotaResetLabel(window.resetsAt, now)}
           </p>}
         </div>
       ))}
     {provider === "antigravity" && <p className="text-xs text-muted-foreground">Only provider-reported model groups are shown. Other groups are unknown.</p>}
+    {provider === "google_cloud" && account?.ok && <p className="text-xs text-muted-foreground">Estimate: Google has no credit-balance API. Credits-page amounts minus spend Google reports, which runs a few hours behind.</p>}
     {account?.capturedAt && <p className="text-xs text-muted-foreground">Last checked {formatDateTime(account.capturedAt)}</p>}
   </>;
 }
@@ -117,5 +147,7 @@ export function SubscriptionQuotaCards({ companyId }: { companyId: string }) {
       void quotas.refetch();
       void client.invalidateQueries({ queryKey: ["host-claude-logins", companyId] });
       void client.invalidateQueries({ queryKey: ["host-claude-status", companyId] });
+      void client.invalidateQueries({ queryKey: ["host-codex-logins", companyId] });
+      void client.invalidateQueries({ queryKey: ["host-codex-status", companyId] });
     }} />;
 }

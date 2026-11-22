@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { SubscriptionQuotaPanels, quotaResetLabel } from "./SubscriptionQuotaCards";
+import { SubscriptionQuotaPanels, orderQuotaWindows, quotaResetLabel } from "./SubscriptionQuotaCards";
 import type { ProviderQuotaResult } from "@paperclipai/shared";
 import { QuotaBar } from "./QuotaBar";
 
@@ -66,5 +66,32 @@ describe("subscription quota cards", () => {
     expect(quotaResetLabel("2026-11-13T01:00:00Z", now)).toBe("Resets in 3d 1h");
     expect(quotaResetLabel("2026-11-09T00:00:00Z", now)).toContain("refresh to check");
     expect(quotaResetLabel(null, now)).toBe("Reset time not reported");
+  });
+
+  it("shows the 5h window above the 7d window inside each Antigravity group, keeping group order", () => {
+    const w = (label: string) => ({ label, usedPercent: 10, resetsAt: null, valueLabel: null });
+    expect(orderQuotaWindows([
+      w("Claude and GPT models · 7d"), w("Claude and GPT models · 5h"),
+      w("Gemini models · 7d"), w("Gemini models · 5h"),
+      w("Weekly limit"), w("Unknown limit"),
+    ]).map((window) => window.label)).toEqual([
+      "Claude and GPT models · 5h", "Claude and GPT models · 7d",
+      "Gemini models · 5h", "Gemini models · 7d",
+      "Weekly limit", "Unknown limit",
+    ]);
+    const html = render([{ provider: "antigravity", ok: true, accountLabel: "michael-server",
+      windows: [w("Claude and GPT models · 7d"), w("Claude and GPT models · 5h")] }]);
+    expect(html.indexOf("Claude and GPT models · 5h")).toBeLessThan(html.indexOf("Claude and GPT models · 7d"));
+  });
+
+  it("shows the Google Cloud credit card only when the company reports it, without a reset line for credits", () => {
+    expect(render([account])).not.toContain("Google Cloud credits");
+    const html = render([account, { provider: "google_cloud", ok: true, accountLabel: "Google Cloud billing · TWD", capturedAt: "2026-11-21T09:57:00Z",
+      windows: [{ label: "Credits left (estimate) · NT$9,839.82 of NT$9,852.00", usedPercent: 0.12, resetsAt: null, valueLabel: null },
+        { label: "Spend this month (before credits) · NT$12.18 of NT$318.00 budget", usedPercent: 3.83, resetsAt: "2026-12-01T07:00:00.000Z", valueLabel: null }] }]);
+    expect(html).toContain("Google Cloud credits");
+    expect(html).toContain("Credits left (estimate) · NT$9,839.82 of NT$9,852.00");
+    expect(html).toContain("Google has no credit-balance API");
+    expect(html.match(/Reset time not reported/g)?.length ?? 0).toBe(1);
   });
 });

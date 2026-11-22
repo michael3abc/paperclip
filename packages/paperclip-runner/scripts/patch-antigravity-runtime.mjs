@@ -6,8 +6,24 @@ import { inflateRawSync } from "node:zlib";
 
 export const ANTIGRAVITY_PATCH_SCHEMA = "paperclip.antigravity.native_patch.v1";
 export const ANTIGRAVITY_PATCH_VERSION = "1.4.3-paperclip.5";
-const SERVER_HASH = "1251927db3e21f3d693fd042d6890d82f65eb00587e97f1f3d8f0d798e7f0954";
-const HARNESS_HASH = "9e8fdc6e20a3262ca0a771850ca4a8414ca839a642cc964ec5c547cc2c33c200";
+/** Official 1.4.3 vendor executables the patch accepts, by distribution key.
+ * The embedded Python archive is identical across targets; only the native
+ * container holding it (Mach-O or ELF) and the owned admission source differ.
+ * The macOS source is pinned byte for byte; Linux has its own platform twin. */
+export const ANTIGRAVITY_PATCH_SOURCES = Object.freeze({
+  "darwin-arm64": Object.freeze({
+    format: "macho",
+    admission: "patch-antigravity-runtime.admission.py",
+    serverSha256: "1251927db3e21f3d693fd042d6890d82f65eb00587e97f1f3d8f0d798e7f0954",
+    harnessSha256: "9e8fdc6e20a3262ca0a771850ca4a8414ca839a642cc964ec5c547cc2c33c200",
+  }),
+  "linux-x64": Object.freeze({
+    format: "elf",
+    admission: "patch-antigravity-runtime.admission.linux.py",
+    serverSha256: "7e06ec4aab6dcff53911a16c124692bc95c8848b2a1fd3220be6f67dbe7efafb",
+    harnessSha256: "55b2d1d8206d3f38353cdba3c5c5d087cd718241b90500bce4f8009f64495285",
+  }),
+});
 const ACP_ROOT = "google3/cloud/developer_experience/antigravity_extensions/acp_server/";
 const SDK_ROOT = "google3/third_party/py/google/antigravity/connections/local/";
 const SERVER_SOURCE = ACP_ROOT + "server.py";
@@ -22,7 +38,7 @@ const REMOVED_BYTECODE = new Set([
 const digest = value => createHash("sha256").update(value).digest("hex");
 const fail = message => { throw new Error(`Antigravity native patch: ${message}`); };
 
-export function antigravityParSection(bytes) {
+function machoParSection(bytes) {
   if (!Buffer.isBuffer(bytes) || bytes.length < 32 || bytes.readUInt32LE(0) !== 0xfeedfacf || bytes.readUInt32LE(4) !== 0x0100000c) fail("expected the pinned ARM64 Mach-O executable");
   const commandCount = bytes.readUInt32LE(16);
   let cursor = 32;
@@ -49,6 +65,44 @@ export function antigravityParSection(bytes) {
   }
   if (sections.length !== 1) fail("expected exactly one embedded Python archive");
   return sections[0];
+}
+
+/** ELF64 little-endian x86-64: locate the single `.par_data` PROGBITS section. */
+function elfParSection(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 64 || bytes.readUInt32BE(0) !== 0x7f454c46 || bytes[4] !== 2 || bytes[5] !== 1 || bytes.readUInt16LE(18) !== 62) fail("expected the pinned x86-64 ELF executable");
+  const tableOffset = Number(bytes.readBigUInt64LE(40));
+  const entrySize = bytes.readUInt16LE(58);
+  const count = bytes.readUInt16LE(60);
+  const namesIndex = bytes.readUInt16LE(62);
+  if (!Number.isSafeInteger(tableOffset) || entrySize !== 64 || count < 1 || namesIndex >= count || tableOffset + count * entrySize > bytes.length) fail("invalid ELF section table");
+  const section = index => {
+    const offset = tableOffset + index * entrySize;
+    return { name: bytes.readUInt32LE(offset), type: bytes.readUInt32LE(offset + 4), start: Number(bytes.readBigUInt64LE(offset + 24)), length: Number(bytes.readBigUInt64LE(offset + 32)) };
+  };
+  const names = section(namesIndex);
+  if (!Number.isSafeInteger(names.start) || !Number.isSafeInteger(names.length) || names.start + names.length > bytes.length) fail("invalid ELF section names");
+  const nameOf = offset => {
+    if (offset >= names.length) fail("invalid ELF section name");
+    const begin = names.start + offset;
+    const end = bytes.indexOf(0, begin);
+    if (end < 0 || end > names.start + names.length) fail("invalid ELF section name");
+    return bytes.subarray(begin, end).toString("utf8");
+  };
+  const sections = [];
+  for (let index = 0; index < count; index++) {
+    const candidate = section(index);
+    if (nameOf(candidate.name) !== ".par_data") continue;
+    if (candidate.type !== 1 || !Number.isSafeInteger(candidate.start) || !Number.isSafeInteger(candidate.length) || candidate.length < 22 || candidate.start + candidate.length > bytes.length) fail("invalid embedded Python archive bounds");
+    sections.push({ start: candidate.start, length: candidate.length });
+  }
+  if (sections.length !== 1) fail("expected exactly one embedded Python archive");
+  return sections[0];
+}
+
+/** Auto-detects the native container; the caller has already pinned the full digest. */
+export function antigravityParSection(bytes) {
+  if (Buffer.isBuffer(bytes) && bytes.length >= 4 && bytes.readUInt32BE(0) === 0x7f454c46) return elfParSection(bytes);
+  return machoParSection(bytes);
 }
 
 const crcTable = Array.from({ length: 256 }, (_, index) => {
@@ -236,7 +290,8 @@ function rebuildZip(entries, length) {
 }
 
 export function patchAntigravityServerBytes(server, admissionSource) {
-  if (digest(server) !== SERVER_HASH) fail("official server SHA-256 mismatch");
+  const serverDigest = digest(server);
+  if (!Object.values(ANTIGRAVITY_PATCH_SOURCES).some(source => source.serverSha256 === serverDigest)) fail("official server SHA-256 mismatch");
   const section = antigravityParSection(server);
   const entries = antigravityEmbeddedZip(server.subarray(section.start, section.start + section.length));
   const byName = new Map(entries.map(entry => [entry.name, entry]));
@@ -251,36 +306,44 @@ export function patchAntigravityServerBytes(server, admissionSource) {
   return result;
 }
 
-/** Explicit install step; uses Node built-ins and the macOS signing tool only. */
-export async function patchAntigravityRuntime({ source, destination } = {}) {
-  if (process.platform !== "darwin" || process.arch !== "arm64") fail("only native macOS ARM64 is supported by this patch");
+/** Explicit install step; uses Node built-ins, plus the macOS signing tool for the macOS target. */
+export async function patchAntigravityRuntime({ source, destination, platform = process.platform, architecture = process.arch } = {}) {
+  const target = `${platform}-${architecture}`;
+  const pinned = Object.hasOwn(ANTIGRAVITY_PATCH_SOURCES, target) ? ANTIGRAVITY_PATCH_SOURCES[target] : undefined;
+  if (!pinned) fail(`no pinned native runtime for ${target}`);
+  // The macOS executable is re-signed, which only works on a macOS ARM64 host.
+  if (target === "darwin-arm64" && (process.platform !== "darwin" || process.arch !== "arm64")) fail("the macOS ARM64 runtime can only be patched on macOS ARM64");
   if (!source || !destination) fail("explicit source and destination directories are required");
   const original = resolve(source);
-  const target = resolve(destination);
+  const targetDirectory = resolve(destination);
   const serverPath = join(original, "agy_acp_server.par");
   const harnessPath = join(original, "localharness_external");
   for (const file of [serverPath, harnessPath]) {
     const stat = await lstat(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) fail("vendor closure contains links or special files");
   }
-  const [server, harness, admission] = await Promise.all([readFile(serverPath), readFile(harnessPath), readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url))]);
-  if (digest(harness) !== HARNESS_HASH) fail("official helper SHA-256 mismatch");
+  const [server, harness, admission] = await Promise.all([readFile(serverPath), readFile(harnessPath), readFile(new URL(`./${pinned.admission}`, import.meta.url))]);
+  if (digest(server) !== pinned.serverSha256) fail("official server SHA-256 mismatch");
+  if (digest(harness) !== pinned.harnessSha256) fail("official helper SHA-256 mismatch");
   const patched = patchAntigravityServerBytes(server, admission);
-  await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-  try { await lstat(target); fail("destination exists; refusing to replace a runtime"); }
+  await mkdir(dirname(targetDirectory), { recursive: true, mode: 0o700 });
+  try { await lstat(targetDirectory); fail("destination exists; refusing to replace a runtime"); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  const temporary = await mkdtemp(join(dirname(target), ".antigravity-native-patch-"));
+  const temporary = await mkdtemp(join(dirname(targetDirectory), ".antigravity-native-patch-"));
   try {
     const executable = join(temporary, "agy_acp_server.par");
     await writeFile(executable, patched, { mode: 0o700 });
-    execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", executable], { stdio: "pipe", timeout: 30_000 });
-    execFileSync("/usr/bin/codesign", ["--verify", "--strict", executable], { stdio: "pipe", timeout: 30_000 });
+    if (target === "darwin-arm64") {
+      execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", executable], { stdio: "pipe", timeout: 30_000 });
+      execFileSync("/usr/bin/codesign", ["--verify", "--strict", executable], { stdio: "pipe", timeout: 30_000 });
+    }
     await writeFile(join(temporary, "localharness_external"), harness, { mode: 0o555 });
     await chmod(executable, 0o555);
     await chmod(join(temporary, "localharness_external"), 0o555);
-    const signed = await readFile(executable);
-    const result = { schema: ANTIGRAVITY_PATCH_SCHEMA, version: ANTIGRAVITY_PATCH_VERSION, sourceServerSha256: SERVER_HASH, sourceHarnessSha256: HARNESS_HASH, admissionSourceSha256: digest(admission), unsignedServerSha256: digest(patched), serverSha256: digest(signed), harnessSha256: HARNESS_HASH };
-    await rename(temporary, target);
+    // Only the signed macOS executable is read back; ELF bytes are final.
+    const final = target === "darwin-arm64" ? await readFile(executable) : patched;
+    const result = { schema: ANTIGRAVITY_PATCH_SCHEMA, version: ANTIGRAVITY_PATCH_VERSION, sourceServerSha256: pinned.serverSha256, sourceHarnessSha256: pinned.harnessSha256, admissionSourceSha256: digest(admission), unsignedServerSha256: digest(patched), serverSha256: digest(final), harnessSha256: pinned.harnessSha256 };
+    await rename(temporary, targetDirectory);
     return result;
   } catch (error) {
     await rm(temporary, { recursive: true, force: true });

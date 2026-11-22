@@ -989,6 +989,64 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("rejects assigning a task to a project main from another project, on create and update", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const mainProjectId = randomUUID();
+    const otherProjectId = randomUUID();
+    const mainAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(projects).values([
+      { id: mainProjectId, companyId, name: "Main project", status: "in_progress" },
+      { id: otherProjectId, companyId, name: "Other project", status: "in_progress" },
+    ]);
+    await db.insert(agents).values([
+      {
+        ...agentRow(companyId, { id: mainAgentId, name: "ProjectMain" }),
+        adapterType: "ccpocket_bridge",
+        adapterConfig: { role: "main", projectId: mainProjectId, cwd: "/tmp" },
+      },
+      agentRow(companyId, { id: otherAgentId, name: "OtherCoder" }),
+    ]);
+
+    await expect(svc.create(companyId, {
+      title: "Wrong project for this main",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: otherProjectId,
+      assigneeAgentId: mainAgentId,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "main_project_mismatch", assigneeAgentId: mainAgentId, requiredProjectId: mainProjectId },
+    });
+
+    const own = await svc.create(companyId, {
+      title: "Own project",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: mainProjectId,
+      assigneeAgentId: mainAgentId,
+    });
+    expect(own.assigneeAgentId).toBe(mainAgentId);
+
+    const elsewhere = await svc.create(companyId, {
+      title: "Other project task",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: otherProjectId,
+      assigneeAgentId: otherAgentId,
+    });
+    await expect(svc.update(elsewhere.id, { assigneeAgentId: mainAgentId })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "main_project_mismatch" },
+    });
+    // Changing project and assignee together is judged on the final project.
+    const moved = await svc.update(elsewhere.id, { assigneeAgentId: mainAgentId, projectId: mainProjectId });
+    expect(moved?.assigneeAgentId).toBe(mainAgentId);
+  });
+
   it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {
     const companyId = await seedAssignableAgentCompany();
     const activeAgentId = randomUUID();

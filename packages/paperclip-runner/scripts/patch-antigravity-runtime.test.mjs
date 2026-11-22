@@ -6,14 +6,20 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { antigravityParSection, patchAntigravityServerBytes, replaceAntigravitySource } from "./patch-antigravity-runtime.mjs";
+import { ANTIGRAVITY_PATCH_SOURCES, antigravityParSection, patchAntigravityRuntime, patchAntigravityServerBytes, replaceAntigravitySource } from "./patch-antigravity-runtime.mjs";
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const source = process.env.PAPERCLIP_ANTIGRAVITY_NATIVE_TEST_SOURCE;
+// The pinned vendor closures run natively only on their own platform.
+const nativeHost = (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
+// The linux closure's hermetic launcher otherwise looks up a "nobody" group.
+const nativeArguments = process.platform === "linux" ? ["--uid="] : [];
+// Each pinned platform runs its own owned admission source.
+const admissionName = ANTIGRAVITY_PATCH_SOURCES[`${process.platform}-${process.arch}`]?.admission ?? "patch-antigravity-runtime.admission.py";
 
 function runNative(executable, home, requests) {
   return new Promise((resolve, reject) => {
-    const child = execFile(executable, [], {
+    const child = execFile(executable, nativeArguments, {
       cwd: dirname(executable),
       env: { PATH: process.env.PATH, HOME: home, GEMINI_HOME: join(home, ".gemini"), BROWSER: "/usr/bin/true", AGY_ACP_FORCE_FILE_STORAGE: "1", ANTIGRAVITY_HARNESS_PATH: join(executable, "..", "localharness_external") },
       timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
@@ -542,8 +548,72 @@ test("Mach-O section decoding rejects invalid architecture and out-of-bounds nat
   assert.throws(() => antigravityParSection(bytes), /archive bounds/);
 });
 
+/** Minimal ELF64 x86-64 image: header, section names, and one `.par_data` payload. */
+function elfFixture({ payload = Buffer.alloc(64, 7), name = ".par_data", type = 1, machine = 62, count = 1, declaredLength } = {}) {
+  const names = Buffer.from(`\0${name}\0.shstrtab\0`);
+  const dataStart = 64;
+  const namesStart = dataStart + payload.length;
+  const tableStart = namesStart + names.length;
+  const bytes = Buffer.alloc(tableStart + 64 * 3);
+  bytes.writeUInt32BE(0x7f454c46);
+  bytes[4] = 2; bytes[5] = 1; bytes[6] = 1;
+  bytes.writeUInt16LE(machine, 18);
+  bytes.writeBigUInt64LE(BigInt(tableStart), 40);
+  bytes.writeUInt16LE(64, 58); bytes.writeUInt16LE(3, 60); bytes.writeUInt16LE(2, 62);
+  payload.copy(bytes, dataStart);
+  names.copy(bytes, namesStart);
+  const section = (index, nameOffset, kind, start, length) => {
+    const offset = tableStart + index * 64;
+    bytes.writeUInt32LE(nameOffset, offset); bytes.writeUInt32LE(kind, offset + 4);
+    bytes.writeBigUInt64LE(BigInt(start), offset + 24); bytes.writeBigUInt64LE(BigInt(length), offset + 32);
+  };
+  section(1, 1, type, dataStart, declaredLength ?? payload.length);
+  section(2, 1 + name.length + 1, 3, namesStart, names.length);
+  if (count !== 1) section(0, 1, type, dataStart, payload.length);
+  return bytes;
+}
+
+test("ELF section decoding finds exactly one pinned embedded archive and rejects malformed images", () => {
+  const found = antigravityParSection(elfFixture());
+  assert.deepEqual(found, { start: 64, length: 64 });
+  assert.throws(() => antigravityParSection(elfFixture({ machine: 183 })), /x86-64 ELF/);
+  assert.throws(() => antigravityParSection(elfFixture({ name: ".other" })), /exactly one embedded Python archive/);
+  assert.throws(() => antigravityParSection(elfFixture({ count: 2 })), /exactly one embedded Python archive/);
+  assert.throws(() => antigravityParSection(elfFixture({ type: 8 })), /archive bounds/);
+  assert.throws(() => antigravityParSection(elfFixture({ declaredLength: 1 << 20 })), /archive bounds/);
+  const truncated = elfFixture();
+  assert.throws(() => antigravityParSection(truncated.subarray(0, truncated.length - 1)), /section table/);
+});
+
+test("the patch accepts only the two pinned official targets, with deterministic non-signed Linux output rules", async () => {
+  assert.deepEqual(Object.keys(ANTIGRAVITY_PATCH_SOURCES).sort(), ["darwin-arm64", "linux-x64"]);
+  for (const entry of Object.values(ANTIGRAVITY_PATCH_SOURCES)) assert.match(entry.serverSha256 + entry.harnessSha256, /^[a-f0-9]{128}$/);
+  assert.equal(ANTIGRAVITY_PATCH_SOURCES["linux-x64"].format, "elf");
+  await assert.rejects(patchAntigravityRuntime({ source: "/nonexistent", destination: "/nonexistent-out", platform: "linux", architecture: "arm64" }), /no pinned native runtime for linux-arm64/);
+  await assert.rejects(patchAntigravityRuntime({ source: "/nonexistent", destination: "/nonexistent-out", platform: "win32", architecture: "x64" }), /no pinned native runtime for win32-x64/);
+  assert.throws(() => patchAntigravityServerBytes(elfFixture(), Buffer.from("module")), /SHA-256 mismatch/);
+});
+
+test("macOS admission source stays byte-pinned and the linux twin differs only in executable lookup and helper digest", async () => {
+  const darwin = await readFile(new URL(`./${ANTIGRAVITY_PATCH_SOURCES["darwin-arm64"].admission}`, import.meta.url), "utf8");
+  const linux = await readFile(new URL(`./${ANTIGRAVITY_PATCH_SOURCES["linux-x64"].admission}`, import.meta.url), "utf8");
+  assert.equal(hash(darwin), "d660759a424ddc27ac382ce4512e85ca4eb87e5ca446ea111e093d3ab257f7da", "the darwin-arm64 admission bytes are Owner-pinned");
+  assert.notEqual(ANTIGRAVITY_PATCH_SOURCES["darwin-arm64"].admission, ANTIGRAVITY_PATCH_SOURCES["linux-x64"].admission);
+  const darwinHelper = ANTIGRAVITY_PATCH_SOURCES["darwin-arm64"].harnessSha256;
+  const linuxHelper = ANTIGRAVITY_PATCH_SOURCES["linux-x64"].harnessSha256;
+  const lookup = /  executable_path = ctypes[\s\S]*?os\.fsdecode\(executable_path\.value\)\)\), "localharness_external"\)\n/;
+  const linuxLookup = /  # linux-x64 twin[\s\S]*?os\.fsdecode\(executable\)\)\), "localharness_external"\)\n/;
+  assert.match(darwin, lookup);
+  assert.match(linux, linuxLookup);
+  assert.match(darwin, /libSystem\.B\.dylib/);
+  assert(!/libSystem|ctypes/.test(linux) && linux.includes('os.readlink("/proc/self/exe")'));
+  const normalized = linux.replace(linuxLookup, "@@LOOKUP@@").replace(linuxHelper, "@@DIGEST@@").replace("import ctypes\n", "");
+  assert.equal(normalized, darwin.replace("import ctypes\n", "").replace(lookup, "@@LOOKUP@@").replace(darwinHelper, "@@DIGEST@@"), "linux twin must not drift from the pinned macOS source");
+  assert(!darwin.includes(linuxHelper) && !linux.includes(darwinHelper), "each platform pins only its own helper digest");
+});
+
 test("pinned native closure reproducibly loads exact admission and rejects requests before authentication", {
-  skip: !source || process.platform !== "darwin" || process.arch !== "arm64",
+  skip: !source || !nativeHost,
   timeout: 180_000,
 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-native-patch-test-"));
@@ -575,8 +645,8 @@ test("pinned native closure reproducibly loads exact admission and rejects reque
   const { mkdir } = await import("node:fs/promises");
   await mkdir(fixtureScripts);
   await copyFile(new URL("./patch-antigravity-runtime.mjs", import.meta.url), join(fixtureScripts, "patch-antigravity-runtime.mjs"));
-  const module = await readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url), "utf8");
-  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + nativeBoundaryTests + nativeHelperIsolationTests + nativeManagedSurfaceTests + nativeModelCatalogTests + nativeStateTests);
+  const module = await readFile(new URL(`./${admissionName}`, import.meta.url), "utf8");
+  await writeFile(join(fixtureScripts, admissionName), module + nativeBoundaryTests + nativeHelperIsolationTests + nativeManagedSurfaceTests + nativeModelCatalogTests + nativeStateTests);
   const fixture = await import(pathToFileURL(join(fixtureScripts, "patch-antigravity-runtime.mjs")));
   await fixture.patchAntigravityRuntime({ source, destination: join(root, "boundary-fixture") });
   const tested = await runNative(join(root, "boundary-fixture/agy_acp_server.par"), join(root, "fixture-home"), [initialize()]);
@@ -591,7 +661,7 @@ test("pinned native closure reproducibly loads exact admission and rejects reque
 
 
 test("native client file callbacks settle exact tool identity without broadcasting errors", {
-  skip: !source || process.platform !== "darwin" || process.arch !== "arm64",
+  skip: !source || !nativeHost,
   timeout: 90_000,
 }, async t => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-tool-lifecycle-test-"));
@@ -600,9 +670,9 @@ test("native client file callbacks settle exact tool identity without broadcasti
   const { mkdir } = await import("node:fs/promises");
   await mkdir(fixtureScripts);
   await copyFile(new URL("./patch-antigravity-runtime.mjs", import.meta.url), join(fixtureScripts, "patch-antigravity-runtime.mjs"));
-  const module = await readFile(new URL("./patch-antigravity-runtime.admission.py", import.meta.url), "utf8");
+  const module = await readFile(new URL(`./${admissionName}`, import.meta.url), "utf8");
   const regression = await readFile(new URL("./patch-antigravity-runtime.tool-lifecycle.test.py", import.meta.url), "utf8");
-  await writeFile(join(fixtureScripts, "patch-antigravity-runtime.admission.py"), module + "\n" + regression);
+  await writeFile(join(fixtureScripts, admissionName), module + "\n" + regression);
   const fixture = await import(pathToFileURL(join(fixtureScripts, "patch-antigravity-runtime.mjs")));
   await fixture.patchAntigravityRuntime({ source, destination: join(root, "runtime") });
   const tested = await runNative(join(root, "runtime/agy_acp_server.par"), join(root, "home"), [initialize()]);

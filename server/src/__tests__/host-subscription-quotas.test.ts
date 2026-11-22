@@ -164,4 +164,21 @@ describe("company quota sources", () => {
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
     expect((await read("shopee")).every(row => !row.ok)).toBe(true);
   });
+
+  it("adds the Google Cloud credit card only for a company that configures its credit file", async () => {
+    const credits = path.join(directory, "credits.json");
+    await writeFile(credits, JSON.stringify({
+      schema: "paperclip.google-cloud-credits.v1", currency: "TWD", snapshotAt: "2026-11-21T08:50:00Z",
+      creditsOriginal: 9852, creditsRemainingEstimate: 9849.82, spendSinceSnapshot: 0, month: null,
+      lastReportAt: null, checkedAt: new Date().toISOString(),
+    }));
+    await writeFile(config, JSON.stringify({ version: 1, companies: { home: { ...local, googleCloudCreditsFile: credits }, shopee: remote } }));
+    const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
+    const home = await read("home");
+    expect(home.map(row => row.provider)).toEqual(["openai", "anthropic", "antigravity", "google_cloud"]);
+    expect(home[3]).toMatchObject({ ok: true, accountLabel: "Google Cloud billing · TWD" });
+    expect((await read("shopee")).map(row => row.provider)).toEqual(["openai", "anthropic", "antigravity"]);
+    await writeFile(config, JSON.stringify({ version: 1, companies: { home: { ...local, googleCloudCreditsFile: "relative.json; uname" } } }));
+    await expect(read("home")).rejects.toThrow("invalid");
+  });
 });

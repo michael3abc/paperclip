@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SubscriptionQuotaPanels } from "./SubscriptionQuotaCards";
 const api = vi.hoisted(() => ({ claudeHosts: vi.fn(), checkHostClaude: vi.fn(), startHostClaude: vi.fn(), hostClaudeSession: vi.fn(), hostClaudeAction: vi.fn() }));
-vi.mock("@/api/dashboard", () => ({ dashboardApi: api }));
+vi.mock("@/api/dashboard", () => ({ dashboardApi: { ...api, codexHosts: async () => [] } }));
 let root: ReturnType<typeof createRoot>, host: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.resetAllMocks();

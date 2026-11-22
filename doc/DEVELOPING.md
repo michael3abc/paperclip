@@ -116,6 +116,34 @@ process group on its host. Closing the page leaves at most the five-minute
 deadline; sign-in failures are explicit and never retried automatically.
 No inference, Bridge restart, new database table or new dependency is required.
 
+The Codex quota card follows the same logged-out-only replacement, company-host
+registry, human-only instance-admin access and visible once-per-minute status
+checks. Opt in with
+`codexLogin: { command: "/absolute/path/to/codex", codexHome?: "/absolute/path" }`
+in the host entry. The registered `sshAlias` selects the execution host; client
+commands, home paths and SSH targets are never used. Codex runs there as
+`codex login --device-auth`. Open the OpenAI device page and enter the displayed
+one-time code there; the Dashboard has no code input or submission endpoint.
+Its active session is polled every 1.5 seconds while visible, for at most ten
+minutes, stopping on terminal state, query error or unmount. A query error keeps
+the cancel action available. Expiry removes the code and URL from the view.
+After the CLI exits successfully, `codex login status` must report
+`Logged in using ChatGPT`; an API-key login does not qualify. Success restores
+quota content and refreshes quota data; Dashboard Refresh invalidates both
+providers' host lists and status queries.
+
+Human-only endpoints under `/api/companies/:companyId/dashboard/host-codex`:
+GET lists enrolled hosts; POST `/:hostId/check` reads native status; POST
+`/:hostId/login` starts device auth; GET `/sessions/:id` reads the initiating
+user's session; POST `/sessions/:id/cancel` stops it. Sessions bind company, user
+and host, with one active Codex login per host. Responses are no-store with
+no-referrer; device URLs, codes, CLI output and credentials never enter logs or
+audit storage. URL/code/session state is memory-only and credentials remain on
+the selected host. Inherited `OPENAI_*` and `CODEX_*` variables are removed before
+launch, except the registry's explicit `CODEX_HOME`. Cancellation, EOF and the
+ten-minute deadline kill the native process group; closing the page leaves only
+that bounded lifetime. No automatic login retries or host fallback occur.
+
 Set PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 explicitly in the managed server service
 to show Codex, Claude and Antigravity subscription cards on Dashboard. This is
 off by default. GET /api/companies/:companyId/dashboard/subscription-quotas
@@ -2539,14 +2567,33 @@ CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 Google Antigravity's pending integration uses the official ACP server 1.4.3 with
 a pinned native admission patch. `paperclipai runtime setup antigravity` installs
-its verified assets on macOS ARM64 as the OS user running Paperclip. Setup does
+its verified assets on macOS ARM64 and Linux x64 as the OS user running Paperclip.
+The Linux x64 closure is the official `agy-acp-server-1.4.3-linux-x86_64.zip`
+from `dl.google.com/agy-extensions`; it is launched with `--uid=` because its
+hermetic launcher otherwise looks up a `nobody` group. It receives the owned
+admission patch in its ELF `.par_data` section, from its own Linux admission source
+(`patch-antigravity-runtime.admission.linux.py`): the macOS source and its
+digest stay byte-identical, and the Linux twin differs only in locating the owned
+executable through `/proc/self/exe` (instead of `libSystem._NSGetExecutablePath`) and
+in pinning the Linux `localharness_external` digest. Admission stays fail-closed on
+both platforms: a sibling helper that is not the immutable, digest-pinned file refuses the
+session. A trusted-startup candidate (`PAPERCLIP_ACPX_CANDIDATE_ADMISSION`) can bind
+either `darwin-arm64` or `linux-x64`, each to its own pinned closure and exact host.
+Linux agent sessions therefore admit like macOS ones. Setup does
 not enable global execution: qualification remains pending and admission is
 closed by default. An isolated company can use a finite trusted server-startup
 candidate authorization bound to the exact model, local platform, profile and
 native closure. The candidate's recorded setup and two-turn task reused the same
 owner's managed personal-default Google subscription on macOS ARM64 with
 `gemini-3.8-flash-low`; fresh consent and API-key live acceptance remain separate
-gates. Workspace OAuth is not runtime authentication. See the
+gates. Google's redirect is the ACP server's own `http://127.0.0.1:<port>/`, so a
+browser on another computer cannot reach it. Connect Google therefore also offers
+a paste-back: after approval, copy the full address from the browser's address
+bar (an unreachable `http://127.0.0.1:<port>/?code=…&state=…` page) into
+Connect Google. `POST /companies/:companyId/ai-connections/local/attempts/:sessionId/redirect`
+checks that attempt's exact loopback port and state, forwards only
+`code`/`state`/`scope` to the server's own listener once, and never logs,
+stores or echoes the address. Workspace OAuth is not runtime authentication. See the
 [contract, evidence, and remaining gates](plans/2026-10-28-antigravity-integration.md).
 
 To add a harness/provider to the new native Paperclip Runner, use

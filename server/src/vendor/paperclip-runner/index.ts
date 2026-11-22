@@ -229,6 +229,7 @@ export const onNativeSessionCleanupQuarantined = runner.onNativeSessionCleanupQu
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
 export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
+export const AntigravityRedirectError = runner.AntigravityRedirectError;
 export const startAntigravityBrowserLogin = runner.startAntigravityBrowserLogin;
 export const verifyAntigravityCredential = runner.verifyAntigravityCredential;
 export const sanitizeAntigravityCredential = runner.sanitizeAntigravityCredential;

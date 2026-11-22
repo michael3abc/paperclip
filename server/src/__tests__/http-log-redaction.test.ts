@@ -20,6 +20,35 @@ it.each([400, 500])("keeps host Claude login codes out of %i diagnostics", async
   await request(app).post("/api/companies/company/dashboard/host-claude/sessions/id/code").send({ browserCode: canary });
   expect(chunks.join("")).not.toContain(canary);
 });
+it.each([422, 500])("keeps the pasted Google redirect address out of %i diagnostics", async status => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.use(express.json());
+  const canary = "google-redirect-private-canary";
+  app.use((_req, _res, next) => next(new HttpError(status, "The sign-in could not be completed on the server.")));
+  app.use(errorHandler);
+  await request(app).post("/api/companies/company/ai-connections/local/attempts/id/redirect").send({ redirectUrl: `http://127.0.0.1:18973/?state=${canary}&code=${canary}` });
+  expect(chunks.join("")).not.toContain(canary);
+});
+it.each([200, 400, 500])("keeps Codex device URL/code and diagnostics out of %i logs", async status => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.use(express.json());
+  const canary = "codex-private-device-canary";
+  app.use((_req, res, next) => {
+    res.setHeader("Location", "https://auth.openai.com/codex/device?" + canary);
+    if (status >= 400) { next(new HttpError(status, canary)); return; }
+    res.json({ verificationUrl: "https://auth.openai.com/codex/device?" + canary, userCode: canary });
+  });
+  app.use(errorHandler);
+  const response = await request(app).post("/api/companies/company/dashboard/host-codex/host/login?" + canary).send({ userCode: canary });
+  expect(response.status).toBe(status);
+  expect(chunks.join("")).not.toContain(canary);
+});
 import { errorHandler } from "../middleware/error-handler.js";
 import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
@@ -614,6 +643,34 @@ describe("HTTP logger redaction", () => {
       expect(log.errorContext.message).toBe("Synthetic cloud request failure");
       expect(log.err.message).toBe("Synthetic cloud request failure");
     }
+  });
+
+  it("redacts Cloudflare Access assertions and service tokens from HTTP logs", async () => {
+    const headers = {
+      "Cf-Access-Jwt-Assertion": "eyJcf-access-jwt-canary",
+      "Cf-Access-Client-Id": "cf-client-id-canary",
+      "Cf-Access-Client-Secret": "cf-client-secret-canary",
+    };
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.get("/api/companies", (_req, res) => { res.json({}); });
+
+    await request(app).get("/api/companies").set(headers).set("Cf-Access-Authenticated-User-Email", "owner@example.com").expect(200);
+
+    const output = chunks.join("");
+    const log = JSON.parse(output.trim());
+    for (const [header, secret] of Object.entries(headers)) {
+      expect(output).not.toContain(secret);
+      expect(log.req.headers[header.toLowerCase()]).toBe("[Redacted]");
+    }
+    expect(log.req.headers["cf-access-authenticated-user-email"]).toBe("owner@example.com");
   });
 
   it("drops OAuth callback query data from the message and structured request", async () => {

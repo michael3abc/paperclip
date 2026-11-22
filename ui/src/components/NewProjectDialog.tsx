@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { projectsApi } from "../api/projects";
+import { agentsApi } from "../api/agents";
 import { describeError } from "../api/errors";
 import { queryKeys } from "../lib/queryKeys";
 import { trackRecentProject } from "../lib/recent-projects";
@@ -14,6 +15,8 @@ import { QueryErrorState, useQueryView } from "./QueryView";
 import { NativeSelect } from "./ui/select";
 import { Button } from "./ui/button";
 import { ProjectRepositoryInput, repositoryOptionsKey } from "./ProjectRepositoryInput";
+import { MainAgentOptionFields, useMainAgentOption } from "./ProjectMainAgentOption";
+import { mainAgentCreateBody } from "../lib/project-main-agent";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 
 export function NewProjectDialog() {
@@ -41,11 +44,30 @@ export function NewProjectForm({ companyId, onClose, onCreated }: { companyId: s
   const selectedGroup = groupOf(environmentId);
   const environmentReady = Boolean(environmentView.kind !== "error" && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
 
+  const [saving, setSaving] = useState(false);
+  const mainAgent = useMainAgentOption(companyId, name, saving);
+  // Each step is kept once done, so a retry after a later step failed continues instead of creating a second project or agent.
+  const done = useRef<{ project?: Project; agentId?: string; led?: boolean }>({});
   const create = useMutation({
-    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) }),
+    mutationFn: async () => {
+      const progress = done.current;
+      progress.project ??= await projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) });
+      if (mainAgent.enabled) {
+        try {
+          progress.agentId ??= (await agentsApi.create(companyId, mainAgentCreateBody({ name: progress.project.name ?? name, projectId: progress.project.id, hostId: mainAgent.hostId, cwd: mainAgent.cwd, agents: mainAgent.agents }))).id;
+          if (!progress.led) { await projectsApi.update(progress.project.id, { leadAgentId: progress.agentId }, companyId); progress.led = true; }
+        } catch (error) {
+          throw new Error(`The project was created, but its main agent was not: ${describeError(error).body} Press Create again to continue.`);
+        }
+      }
+      return progress.project;
+    },
+    onMutate: () => setSaving(true),
+    onSettled: () => setSaving(false),
     onSuccess: async (project) => {
       trackRecentProject(project.id, companyId);
       void client.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
+      if (mainAgent.enabled) void client.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
       await onCreated?.(project);
       onClose();
     },
@@ -60,7 +82,7 @@ export function NewProjectForm({ companyId, onClose, onCreated }: { companyId: s
           void client.invalidateQueries({ queryKey: repositoryOptionsKey(companyId) });
           setConnecting(false);
         }} />
-      </div> : <form className="flex min-h-0 flex-col overflow-hidden" onSubmit={(event) => { event.preventDefault(); if (name.trim() && environmentReady && !create.isPending) create.mutate(); }}>
+      </div> : <form className="flex min-h-0 flex-col overflow-hidden" onSubmit={(event) => { event.preventDefault(); if (name.trim() && environmentReady && mainAgent.ready && !create.isPending) create.mutate(); }}>
         <div className="flex shrink-0 flex-col gap-4 px-5 pb-4 pt-5">
           <div className="flex items-center justify-between gap-3">
             <DialogTitle className="text-lg font-semibold">Create project</DialogTitle>
@@ -88,12 +110,13 @@ export function NewProjectForm({ companyId, onClose, onCreated }: { companyId: s
           {environmentView.kind === "error" && <QueryErrorState error={environmentView.error} size="inline" action="load project environments"
             className="mb-3" onRetry={environmentView.retry} retrying={environmentView.isFetching} />}
           {options?.error && !selectedGroup && <p role="alert" className="mb-3 text-sm text-destructive">{options.error}</p>}
+          <MainAgentOptionFields option={mainAgent} name={name} />
           <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={() => setConnecting(true)} disabled={create.isPending} />
         </div>
         {create.status === "error" && <p role="alert" className="px-5 pt-3 text-sm text-destructive">{describeError(create.error).body}</p>}
         <div className="flex shrink-0 justify-between gap-2 px-5 py-5">
           <Button type="button" variant="ghost" disabled={create.isPending} onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={!name.trim() || !environmentReady || create.isPending}>{create.isPending ? "Creating…" : "Create project"}</Button>
+          <Button type="submit" disabled={!name.trim() || !environmentReady || !mainAgent.ready || create.isPending}>{create.isPending ? "Creating…" : "Create project"}</Button>
         </div>
       </form>}
     </DialogContent>

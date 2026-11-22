@@ -1,13 +1,17 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn() }));
-vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: () => ({ pinned: true }) }));
+const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn(), unsupportedPlatform: false }));
+vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: () => {
+  if (setup.unsupportedPlatform) throw new Error("Antigravity has no admitted complete runtime closure for linux-x64");
+  return { pinned: true, manifestPath: "/fixture/closure.json" };
+} }));
 vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: setup.verify }));
-import { sanitizeAntigravityCredential, startAntigravityBrowserLogin, validateAntigravityAuthorizationUrl, verifyAntigravityCredential } from "./antigravity-auth.js";
+import { AntigravityRedirectError, RUNTIME_NOT_INSTALLED_ERROR, UNSUPPORTED_PLATFORM_ERROR, antigravityRedirectTarget, sanitizeAntigravityCredential, startAntigravityBrowserLogin, validateAntigravityAuthorizationUrl, verifyAntigravityCredential } from "./antigravity-auth.js";
 
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const credential = { client_id: CLIENT_ID, client_secret: "fixture-client-secret", refresh_token: "fixture-refresh-token", token_uri: "https://oauth2.googleapis.com/token",
@@ -21,7 +25,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid!, "SIGKILL"); } catch {} }
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
-  vi.unstubAllGlobals(); vi.clearAllMocks();
+  vi.unstubAllGlobals(); vi.clearAllMocks(); setup.unsupportedPlatform = false;
 });
 
 async function fixture(mode = "success") {
@@ -137,6 +141,18 @@ describe("Antigravity setup-only Google authentication", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("reports an unadmitted server platform explicitly instead of a retryable generic failure", async () => {
+    const home = await fixture(), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    setup.unsupportedPlatform = true;
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    await login.abort();
+    expect(login.error).toBe(UNSUPPORTED_PLATFORM_ERROR);
+    expect(login.authorizationUrl).toBeUndefined();
+    expect(setup.verify).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("abort retires a waiting native flow without session requests", async () => {
     const home = await fixture("blocked"), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     const login = startAntigravityBrowserLogin(home);
@@ -204,5 +220,134 @@ describe("Antigravity setup-only Google authentication", () => {
     for (const url of [authorizationUrl().replace("accounts.google.com", "example.invalid"), authorizationUrl().replace("S256", "plain"), authorizationUrl().replace("127.0.0.1", "localhost"), authorizationUrl() + "&state=duplicate"]) {
       expect(() => validateAntigravityAuthorizationUrl(url)).toThrow();
     }
+  });
+});
+
+const CODE = "4/0AfixtureCodeCanary_0123456789-abc";
+const STATE = "fixture_state_0123456789";
+const SCOPE = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email";
+function pasted(overrides: Record<string, string | null> = {}, base = "http://127.0.0.1:18973/") {
+  const url = new URL(base);
+  const values: Record<string, string | null> = { state: STATE, code: CODE, scope: SCOPE, authuser: "0", prompt: "consent", ...overrides };
+  for (const [key, value] of Object.entries(values)) if (value !== null) url.searchParams.set(key, value);
+  return url.href;
+}
+function rejection(value: string, authorization = authorizationUrl()) {
+  try { antigravityRedirectTarget(value, authorization); } catch (error) { return error as Error; }
+  throw new Error("expected the pasted address to be rejected");
+}
+
+describe("Antigravity remote-browser redirect address", () => {
+  it("accepts the exact port and state and forwards only code, state and scope to the attempt's own redirect_uri", () => {
+    const target = new URL(antigravityRedirectTarget("  " + pasted() + "\n", authorizationUrl()));
+    expect(target.origin).toBe("http://127.0.0.1:18973");
+    expect(target.pathname).toBe("/");
+    expect([...target.searchParams.keys()].sort()).toEqual(["code", "scope", "state"]);
+    expect(target.searchParams.get("code")).toBe(CODE);
+    expect(target.searchParams.get("state")).toBe(STATE);
+    expect(target.searchParams.get("scope")).toBe(SCOPE);
+    expect(new URL(antigravityRedirectTarget(pasted({ scope: null }), authorizationUrl())).searchParams.has("scope")).toBe(false);
+  });
+
+  it.each([
+    ["a wrong state", pasted({ state: "another_state_0123456789" }), /different sign-in attempt/],
+    ["a state of another length", pasted({ state: STATE + "x" }), /different sign-in attempt/],
+    ["a missing state", pasted({ state: null }), /different sign-in attempt/],
+    ["a wrong port", pasted({}, "http://127.0.0.1:18974/"), /different sign-in attempt/],
+    ["another host", pasted({}, "http://localhost:18973/"), /not the Google redirect address/],
+    ["a remote host", pasted({}, "http://example.invalid:18973/"), /not the Google redirect address/],
+    ["https", pasted({}, "https://127.0.0.1:18973/"), /not the Google redirect address/],
+    ["user information", pasted({}, "http://user:pass@127.0.0.1:18973/"), /not the Google redirect address/],
+    ["a fragment", pasted() + "#fragment", /not the Google redirect address/],
+    ["a non-root path", pasted({}, "http://127.0.0.1:18973/callback"), /not the Google redirect address/],
+    ["a duplicate parameter", pasted() + "&code=" + CODE, /not the Google redirect address/],
+    ["an unknown parameter", pasted({ extra: "1" }), /not the Google redirect address/],
+    ["a bad code character set", pasted({ code: "4/0A bad<code>canary" }), /not the Google redirect address/],
+    ["a short code", pasted({ code: "abc" }), /not the Google redirect address/],
+    ["a bad scope", pasted({ scope: "scope<script>" }), /not the Google redirect address/],
+    ["an oversized address", pasted({ prompt: "x".repeat(5000) }), /not the Google redirect address/],
+    ["an embedded newline", pasted().replace("code=", "\ncode="), /not the Google redirect address/],
+    ["an embedded space", pasted().replace("&code=", "&code= "), /not the Google redirect address/],
+    ["a control character", pasted() + "\u0007", /not the Google redirect address/],
+    ["an empty value", "   ", /not the Google redirect address/],
+    ["a non-URL value", "not a url canary", /not the Google redirect address/],
+  ])("rejects %s with fixed copy that never echoes the address, code or state", (_label, value, message) => {
+    const error = rejection(value);
+    expect(error).toBeInstanceOf(AntigravityRedirectError);
+    expect(error.name).toBe("AntigravityRedirectError");
+    expect(error.message).toMatch(message);
+    for (const secret of [CODE, STATE, "canary", "127.0.0.1:18973", "bad<code>"]) expect(error.message).not.toContain(secret);
+  });
+
+  it("reports a Google denial as denied, not as a code failure", () => {
+    const error = rejection(pasted({ error: "access_denied", code: null, error_description: CODE }));
+    expect(error.message).toMatch(/did not grant access/);
+    expect(error.message).not.toContain(CODE);
+  });
+
+  it("rejects when the attempt's authorization address has no usable redirect or state", () => {
+    expect(() => antigravityRedirectTarget(pasted(), "not a url")).toThrow(AntigravityRedirectError);
+    expect(() => antigravityRedirectTarget(pasted(), authorizationUrl().replace(/state=[^&]*&?/, ""))).toThrow(AntigravityRedirectError);
+  });
+
+  describe("submitCode on a live attempt", () => {
+    const listeners: Server[] = [];
+    afterEach(async () => { await Promise.all(listeners.splice(0).map(server => new Promise<void>(resolve => server.close(() => resolve())))); });
+    async function listen(received: string[]) {
+      const server = createServer((request, response) => { received.push(request.url ?? ""); response.end("ok"); });
+      listeners.push(server);
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(18973, "127.0.0.1", resolve); });
+    }
+
+    it("replays a valid address once to the loopback listener, keeps the attempt open after a rejected paste and refuses a second valid paste", async () => {
+      const home = await fixture("blocked"); vi.stubGlobal("fetch", vi.fn());
+      const received: string[] = [];
+      await listen(received);
+      const login = startAntigravityBrowserLogin(home);
+      await vi.waitFor(() => expect(login.authorizationUrl).toBeDefined());
+      await expect(login.submitCode!(pasted({ state: "another_state_0123456789" }))).rejects.toBeInstanceOf(AntigravityRedirectError);
+      expect(received).toEqual([]);
+      await login.submitCode!(pasted());
+      expect(received).toHaveLength(1);
+      const forwarded = new URL(received[0]!, "http://127.0.0.1:18973");
+      expect([...forwarded.searchParams.keys()].sort()).toEqual(["code", "scope", "state"]);
+      expect(forwarded.searchParams.get("state")).toBe(STATE);
+      const second = await login.submitCode!(pasted()).catch((error: Error) => error);
+      expect(second).toBeInstanceOf(AntigravityRedirectError);
+      expect((second as Error).message).toMatch(/already received/);
+      expect(received).toHaveLength(1);
+      await login.abort();
+      await expect(login.submitCode!(pasted())).rejects.toThrow(/already received/);
+    });
+
+    it("hides a failed replay behind fixed copy and still treats the address as used", async () => {
+      const home = await fixture("blocked"); vi.stubGlobal("fetch", vi.fn());
+      const login = startAntigravityBrowserLogin(home);
+      await vi.waitFor(() => expect(login.authorizationUrl).toBeDefined());
+      const failure = await login.submitCode!(pasted()).catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(AntigravityRedirectError);
+      expect((failure as Error).message).toMatch(/could not be completed on the server/);
+      expect((failure as Error).message).not.toContain(CODE);
+      await expect(login.submitCode!(pasted())).rejects.toThrow(/already received/);
+      await login.abort();
+    });
+
+    it("rejects a paste before the authorization address exists and after the attempt has ended", async () => {
+      const home = await fixture("error"); vi.stubGlobal("fetch", vi.fn());
+      const login = startAntigravityBrowserLogin(home);
+      await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+      await expect(login.submitCode!(pasted())).rejects.toThrow(/already received/);
+    });
+  });
+
+  it("tells the administrator to install the runtime when its closure manifest is missing", async () => {
+    const home = await fixture(); vi.stubGlobal("fetch", vi.fn());
+    setup.verify.mockRejectedValue(Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT", path: "/fixture/closure.json" }));
+    const login = startAntigravityBrowserLogin(home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    await login.abort();
+    expect(login.error).toBe(RUNTIME_NOT_INSTALLED_ERROR);
+    expect(RUNTIME_NOT_INSTALLED_ERROR).not.toContain("/fixture");
+    expect(UNSUPPORTED_PLATFORM_ERROR).toContain("Linux x64");
   });
 });

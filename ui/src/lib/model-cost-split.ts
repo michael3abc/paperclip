@@ -145,31 +145,42 @@ interface Bucket {
   unpricedModels: Set<string>;
 }
 
-function buildWhole(buckets: Map<string, Bucket>): ModelCostWhole {
-  const priced = [...buckets.values()].filter((bucket) => bucket.priced && bucket.cents > 0);
-  priced.sort((a, b) => b.cents - a.cents || a.label.localeCompare(b.label));
-  const totalCents = priced.reduce((sum, bucket) => sum + bucket.cents, 0);
-  const head = priced.length > MAX_SLICES ? priced.slice(0, MAX_SLICES - 1) : priced;
-  const tail = priced.length > MAX_SLICES ? priced.slice(MAX_SLICES - 1) : [];
-  const slices: ModelCostSlice[] = head.map((bucket) => ({
-    key: bucket.key,
-    label: bucket.label,
-    cents: bucket.cents,
-    share: totalCents > 0 ? bucket.cents / totalCents : 0,
-    color: modelColorVar(bucket.key),
-    models: [...bucket.models].sort(),
-  }));
+interface ShareItem {
+  key: string;
+  label: string;
+  value: number;
+  models: string[];
+}
+
+/** Largest items first; past MAX_SLICES the tail folds into one Other slice. */
+function topSlices(items: ShareItem[]): { total: number; slices: (ShareItem & { share: number; color: string })[] } {
+  const positive = items.filter((item) => item.value > 0);
+  positive.sort((a, b) => b.value - a.value || a.label.localeCompare(b.label));
+  const total = positive.reduce((sum, item) => sum + item.value, 0);
+  const head = positive.length > MAX_SLICES ? positive.slice(0, MAX_SLICES - 1) : positive;
+  const tail = positive.length > MAX_SLICES ? positive.slice(MAX_SLICES - 1) : [];
+  const slices = head.map((item) => ({ ...item, share: total > 0 ? item.value / total : 0, color: modelColorVar(item.key) }));
   if (tail.length > 0) {
-    const cents = tail.reduce((sum, bucket) => sum + bucket.cents, 0);
+    const value = tail.reduce((sum, item) => sum + item.value, 0);
     slices.push({
       key: OTHER_SLICE_KEY,
       label: "Other",
-      cents,
-      share: totalCents > 0 ? cents / totalCents : 0,
+      value,
+      models: tail.flatMap((item) => item.models).sort(),
+      share: total > 0 ? value / total : 0,
       color: "var(--chart-series-other)",
-      models: tail.flatMap((bucket) => [...bucket.models]).sort(),
     });
   }
+  return { total, slices };
+}
+
+function buildWhole(buckets: Map<string, Bucket>): ModelCostWhole {
+  const { total: totalCents, slices: shared } = topSlices(
+    [...buckets.values()]
+      .filter((bucket) => bucket.priced)
+      .map((bucket) => ({ key: bucket.key, label: bucket.label, value: bucket.cents, models: [...bucket.models].sort() })),
+  );
+  const slices: ModelCostSlice[] = shared.map(({ value, ...slice }) => ({ ...slice, cents: value }));
   const unpriced = [...buckets.values()]
     .filter((bucket) => bucket.unpricedTokens > 0 || bucket.unpricedEvents > 0)
     .map((bucket) => ({
@@ -221,6 +232,56 @@ export function splitModelCosts(rows: readonly CostByProviderModel[]): ModelCost
     }
   }
   return { compass: buildWhole(compass), subscription: buildWhole(subscription) };
+}
+
+export interface ModelTokenSlice {
+  key: string;
+  label: string;
+  tokens: number;
+  share: number;
+  color: string;
+  models: string[];
+}
+
+export interface ModelTokenWhole {
+  totalTokens: number;
+  slices: ModelTokenSlice[];
+}
+
+export interface ModelTokenSplit {
+  compass: ModelTokenWhole;
+  subscription: ModelTokenWhole;
+}
+
+/**
+ * Token usage by model family, with the same Compass/subscription split and
+ * colors as the cost pies. Every recorded model counts, priced or not, so a
+ * subscription without a rate card still shows its usage.
+ */
+export function splitModelTokens(rows: readonly CostByProviderModel[]): ModelTokenSplit {
+  const compass = new Map<string, ShareItem & { modelSet: Set<string> }>();
+  const subscription = new Map<string, ShareItem & { modelSet: Set<string> }>();
+  for (const row of rows) {
+    const tokens = row.inputTokens + row.cachedInputTokens + row.outputTokens;
+    if (tokens <= 0) continue;
+    const target = isSubscriptionRow(row) ? subscription : isCompassRow(row) ? compass : null;
+    if (!target) continue;
+    const family = modelFamily(row.model);
+    let item = target.get(family.key);
+    if (!item) {
+      item = { key: family.key, label: family.label, value: 0, models: [], modelSet: new Set() };
+      target.set(family.key, item);
+    }
+    item.value += tokens;
+    item.modelSet.add(row.model);
+  }
+  const whole = (items: Map<string, ShareItem & { modelSet: Set<string> }>): ModelTokenWhole => {
+    const { total, slices } = topSlices(
+      [...items.values()].map((item) => ({ key: item.key, label: item.label, value: item.value, models: [...item.modelSet].sort() })),
+    );
+    return { totalTokens: total, slices: slices.map(({ value, ...slice }) => ({ ...slice, tokens: value })) };
+  };
+  return { compass: whole(compass), subscription: whole(subscription) };
 }
 
 export type ModelCostPeriod = "year" | "month" | "week" | "today";
