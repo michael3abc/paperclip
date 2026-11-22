@@ -23,6 +23,21 @@ export function mainAgentProjectId(agent: AgentLike): string | null {
   return typeof config.projectId === "string" && UUID.test(config.projectId) ? config.projectId : null;
 }
 
+/**
+ * A project main only runs its own conversation or tasks of its configured project (the adapter fails any other
+ * issue with `main_project_mismatch`). Returns that project's ID when assigning `issue` to `agent` would be such a
+ * mismatch, else null. Agents that are not mains, or mains without a project, never mismatch.
+ */
+export function mainProjectMismatch(
+  agent: AgentLike,
+  issue: { projectId?: string | null; conversationAgentId?: string | null },
+): string | null {
+  const required = mainAgentProjectId(agent);
+  if (!required) return null;
+  if (issue.conversationAgentId && issue.conversationAgentId === agent.id) return null;
+  return issue.projectId === required ? null : required;
+}
+
 /** Where an agent's managed worker table lives and how it is rendered. */
 export function workerPolicyLayout(agent: AgentLike): { version: PmWorkerDocumentLayout; workerDocumentPath: "WORKERS.md" | "PROJECT.md" } {
   if (mainAgentProjectId(agent)) return { version: "main-v1", workerDocumentPath: "PROJECT.md" };
