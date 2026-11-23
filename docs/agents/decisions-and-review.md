@@ -37,9 +37,9 @@ POSTs require a current assigned request revision, an evidence-linked decision n
 and the independent Owner grant; generic API access never bypasses those checks.
 Company decision delegation remains a separate
 human-Owner-managed permission grant. Outside an independently authorized project,
-new worker questions route through their task project's PM; PM questions route to the company delegate via
-`request_human_input`, not by adding the delegate to the worker catalog. Omit
-`resolverPolicy` for ordinary delegated questions; explicit human gates stay human.
+new worker questions route through their task project's main; a main's own
+questions and Agent Chat questions stay with the Owner. Omit `resolverPolicy`
+for ordinary delegated questions.
 Use the assigned request's current revision with the controlled resolve/escalate
 tools. Preserve worker checkout and the original provider callback. Never replay
 old pending cards or revive cancelled work when enabling delegation. Only the
@@ -48,6 +48,22 @@ and an agent's risk label cannot widen it. Record agent decisions as agents with
 grant version, run and reason. A missing delegate or expired provider request is
 an explicit unresolved failure, not consent. Test the real pinned ACP/SDK under
 approve-all as well as HTTP scope, dispatch/review and save/finalization behavior.
+
+Worker-requested human audience (Owner 2026-11-23, HOM-545): a new interaction
+whose only human restriction is the worker's explicit `human_only` request
+(including `board_only`) goes to the existing task main recipient at level `pm`.
+Keep `requestedResolverPolicy: human_only` and `resolverPolicyProvenance: explicit`
+on the card; the effective audience is delegated to that main. The main may
+answer directly or use the existing escalation path (`nextDelegatedDecision`)
+to send an Owner-reserved or board-only matter to the Owner. This routes the
+decision, without granting the main access to a board-only API.
+Governed tool/secret actions (except the existing ordinary-tool delegation),
+required quality reviews, human-only company caps/defaults and kind defaults,
+and server-supplied decision reservations stay human-owned. A request without a
+main keeps the existing company-delegate/Owner rules; an explicit human request
+there stays with the Owner. Main/Agent Chat behavior is unchanged. Existing cards,
+including idempotent creates, are never rerouted. Approval/runtime routing is
+unchanged.
 
 Delegated-request delivery (Owner 2026-11-19 「好，一次發布」): the server's
 `decision-delegation` sweep may wake the recipient main's idle (waiting) Chat;

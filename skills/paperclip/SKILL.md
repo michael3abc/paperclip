@@ -166,7 +166,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Continue work on the current issue. Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - For a real blocker, use `blockedByIssueIds` or an `unblockDescriptor` with your own `owner: { "agentId": "<your-agent-id>" }` and an exact `action`. Agents cannot set board/user or other-agent unblock owners. Human-input waits use a saved pending interaction and `in_review`; prose alone is not a waiting path. See [Questions and waiting for human input](references/api-reference.md#questions-and-waiting-for-human-input) for valid payloads.
-- Human authority or missing permission does not imply a manager handoff. Keep ownership, identify the missing capability, and use the human-input payload below when a person must decide. Verify actual capability and permission before suggesting delegation.
+- Keep ownership and identify the missing capability. On worker tasks, send decision questions to the project main first; the server routes an explicit human-audience request there when no independent human gate applies. The main uses the existing escalation action if it cannot decide. Routing a question never grants access to a restricted API.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
 <a id="asking-for-human-input"></a>
@@ -195,6 +195,13 @@ In Agent Chat, Paperclip addresses the question to the conversation owner automa
 ```
 
 Verify the interaction was saved and is pending, then PATCH the same task to `in_review` without changing its assignee. An omitted `resolverPolicy` defaults to `anyone`, so omission does not establish a human-only wait. See [the API reference](references/api-reference.md#questions-and-waiting-for-human-input) for choice questions and response handling. Include the normal Authorization and X-Paperclip-Run-Id headers.
+
+On worker tasks with a task main and active company delegation, an explicit
+`human_only` request first goes to that main unless an independent human gate
+applies. Check the saved `delegation`, addressee and effective policy; the requested
+policy records the worker's intent. The main escalates a decision it cannot make
+to the Owner. A `board_access_required` denial remains an API permission denial:
+ask the main to decide the next step, and do not retry that API with another identity.
 
 When a saved interaction is answered or rejected, read its result and resolver
 identity. An authorized requester's clear response can narrow or replace the
@@ -681,7 +688,7 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
 - **@-mentions** are context links and never trigger heartbeats, assign work, or forward comments to another task. For machine-authored comments, resolve the target agent and use `[@Agent Name](agent://<agent-id>)`. To request work, assign a task or use an explicit review request.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
-- **Handle blockers directly.** Identify the exact missing capability or authority. Do not reassign blocked work or create a task for a manager or another agent merely because you are stuck. A title or reporting line does not grant access or authority. For a human-only action, use the connection/approval flow when available; otherwise save an interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"` on the current task, keep yourself assigned, and leave it `in_review`. Use the complete [human-input payload](#asking-for-human-input). Verify the recipient's actual capability and permission before offering delegation as an option or creating a bounded task for them. Never delegate to bypass a permission denial; a human answer also does not grant a missing permission.
+- **Handle blockers directly.** Identify the exact missing capability or authority. Keep the task assigned to yourself. Use the connection/approval flow for governed actions when available; otherwise save a question on the current task with `continuationPolicy: "wake_assignee"` and leave it `in_review`. Worker decision questions go to the project's main first, even when the worker requests `human_only`; independent human/security gates remain in force. The main escalates when it cannot decide. Use the complete [human-input payload](#asking-for-human-input). A title, routing decision or reporting line does not grant access to a restricted API. Never delegate to bypass a permission denial; a human answer also does not grant a missing permission.
 - **Keep scope decisions on the current task.** Make the call yourself and record the reason. Only when the decision needs a person (spend, public commitments, deleting data, credentials, legal or security matters, or requirements that contradict each other) save a human-input interaction with `resolverPolicy: "human_only"` and `continuationPolicy: "wake_assignee"`. Keep the task assigned to yourself and `in_review` while waiting. If the decision requires a particular person's answer, explicitly address that person; otherwise leave the recipient open to eligible humans. For an agent-directed question, set `addresseeAgentId` and omit `resolverPolicy`. Do not substitute a manager or invent an identity.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
 - **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.

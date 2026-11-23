@@ -10,6 +10,7 @@ import { escalateDelegatedRequest, getDelegatedRequest } from "../services/deleg
 import { deliverLegacyRuntimeDecision, requestLegacyRuntimeDecision } from "../services/native-runtime/legacy-runtime-decision-bridge.js";
 import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { delegatedDecisionDelivery } from "../services/delegated-decision-delivery.js";
+import { documentService } from "../services/documents.js";
 
 describe("Owner-issued layered decision authority", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -83,10 +84,10 @@ describe("Owner-issued layered decision authority", () => {
     expect(await route(pmId)).toMatchObject({ level: "pm", recipientAgentId: mainId });
     expect(await route(mainId)).toBeNull();
     expect(await route(mainId, [], { category: "runtime" })).toBeNull();
-    // Only explicit_human survives for a main recipient.
-    expect(await route(workerId, ["sensitive_data_export"])).toMatchObject({ level: "pm", recipientAgentId: mainId, reservedReasons: [] });
+    // Interaction reservations remain human-owned even when a main exists.
+    expect(await route(workerId, ["sensitive_data_export"])).toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: ["sensitive_data_export"] });
     expect(await route(workerId, ["explicit_human", "account_security_expansion"]))
-      .toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: ["explicit_human"] });
+      .toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: ["explicit_human", "account_security_expansion"] });
     // Tool-action confirmations go to the main as well.
     expect(await route(workerId, [], { requiredScopes: ["external_writes"] }))
       .toMatchObject({ level: "pm", recipientAgentId: mainId, requiredScopes: ["task_decisions", "external_writes"] });
@@ -257,7 +258,7 @@ describe("Owner-issued layered decision authority", () => {
     const mainId = await addLeadMain();
     await activate();
     const mainRunId = await runningRun(mainId);
-    const request = await question(workerId);
+    const request = await question(workerId, true);
     expect(request.delegation).toMatchObject({ level: "pm", recipientAgentId: mainId });
     const actor = { companyId, agentId: mainId, runId: mainRunId };
     const human = await escalateDelegatedRequest(db, actor, { kind: "interaction", requestId: request.id,
@@ -270,15 +271,132 @@ describe("Owner-issued layered decision authority", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.assigneeAgentId).toBe(workerId);
   });
 
-  it("keeps explicit human requests out of the main's authority", async () => {
+  it("lets the main answer a worker's explicit human request while retaining its provenance", async () => {
     const mainId = await addLeadMain();
     await activate();
     const request = await question(pmId, true);
-    expect(request.delegation?.level).toBe("human");
-    await expect(issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, request.id,
-      { answers: [{ questionId: "plan", optionIds: ["a"] }], delegationRevision: request.delegation!.revision },
-      { agentId: mainId, runId: await runningRun(mainId) })).rejects.toThrow(/human Owner/);
-    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.id)))[0]?.status).toBe("pending");
+    expect(request).toMatchObject({ requestedResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicy: "anyone", effectiveResolverPolicySource: "company_delegation",
+      addresseeAgentId: mainId, addresseeUserId: null,
+      delegation: { level: "pm", recipientAgentId: mainId, reservedReasons: [] } });
+    const answered = await issueThreadInteractionService(db).answerQuestions({ id: issueId, companyId }, request.id,
+      { answers: [{ questionId: "plan", optionIds: ["a"] }], delegationRevision: request.delegation!.revision,
+        summaryMarkdown: "Plan A uses the authorized implementation" },
+      { agentId: mainId, runId: await runningRun(mainId) });
+    expect(answered).toMatchObject({ status: "answered", resolvedByAgentId: mainId, resolvedByUserId: null });
+  });
+
+  it.each(["human_only", "board_only"] as const)("routes explicit %s worker confirmations to the main", async resolverPolicy => {
+    const mainId = await addLeadMain();
+    await activate();
+    const request = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+      kind: "request_confirmation", resolverPolicy, continuationPolicy: "none",
+      payload: { version: 1, prompt: "Choose whether the existing plan is sufficient" },
+    }, { agentId: workerId });
+    expect(request).toMatchObject({ requestedResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+      delegation: { level: "pm", recipientAgentId: mainId, reservedReasons: [] } });
+    expect(await issueThreadInteractionService(db).acceptInteraction({ id: issueId, companyId, projectId, goalId: null }, request.id,
+      { delegationRevision: request.delegation!.revision, reason: "The plan fits the existing task authorization" },
+      { agentId: mainId, runId: await runningRun(mainId) }))
+      .toMatchObject({ interaction: { status: "accepted", resolvedByAgentId: mainId } });
+  });
+
+  it.each(["cap", "defaultPolicy"] as const)("keeps a company human-only %s with the Owner even when the worker also asks", async key => {
+    await addLeadMain();
+    await activate();
+    await db.update(companies).set({ interactionResolverGovernance: { ask_user_questions: { [key]: "human_only" } } })
+      .where(eq(companies.id, companyId));
+    for (const explicit of [false, true]) {
+      expect(await question(workerId, explicit)).toMatchObject({ effectiveResolverPolicy: "human_only",
+        addresseeUserId: ownerId, delegation: { level: "human", recipientAgentId: null, reservedReasons: ["explicit_human"] } });
+    }
+  });
+
+  it("keeps human-only kind defaults with the Owner", async () => {
+    await addLeadMain();
+    await activate();
+    const request = await issueThreadInteractionService(db).createConnectionIntent({ id: issueId, companyId }, {
+      sourceRunId: await runningRun(workerId), addresseeUserId: ownerId, idempotencyKey: randomUUID(),
+      payload: { version: 1, serviceSlug: "notion", serviceName: "Notion", serviceLogoUrl: null,
+        requestingAgentId: workerId, requestingAgentName: "Worker", phase: "requested" },
+    });
+    expect(request).toMatchObject({ requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      addresseeUserId: ownerId, addresseeAgentId: null, delegation: null });
+  });
+
+  it.each(["explicit_human", "major_irreversible_destruction", "sensitive_data_export", "account_security_expansion", "delegation_change", "uncertain"] as const)(
+    "preserves the server reservation %s on an explicit worker request", async reason => {
+      await addLeadMain();
+      await activate();
+      const request = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+        kind: "request_confirmation", resolverPolicy: "human_only", continuationPolicy: "none",
+        payload: { version: 1, prompt: "Reserved operation" },
+      }, { agentId: workerId }, { decisionReservedReasons: [reason] });
+      expect(request.delegation).toMatchObject({ level: "human", recipientAgentId: null, reservedReasons: [reason] });
+    });
+
+  it("keeps governed tool and secret confirmations human-only, including explicit requests", async () => {
+    await addLeadMain();
+    await activate();
+    const governedPayloads = [
+      { toolAction: { version: 1 as const, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "provider.action",
+        toolDisplayName: "Provider action", connectionId: null, applicationId: null, appDisplayName: null,
+        risk: "write" as const, previewMarkdown: "Run action", argumentsSummaryJson: "{}", argumentsHash: "a".repeat(64), expiresAt: null } },
+      { secretProposal: { version: 1 as const, proposalId: randomUUID(), sourceSecretLabel: "test/source", configPath: "access.TEST",
+        targetAgentId: workerId, targetAgentName: "Worker", justification: "Test boundary", expiresAt: new Date(Date.now() + 60_000).toISOString() } },
+    ];
+    for (const payload of governedPayloads) {
+      for (const resolverPolicy of [undefined, "human_only"] as const) {
+        const request = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+          kind: "request_confirmation", resolverPolicy, continuationPolicy: "none",
+          payload: { version: 1, prompt: "Governed operation", ...payload },
+        }, { agentId: workerId });
+        expect(request.delegation).toMatchObject({ level: "human", recipientAgentId: null });
+      }
+    }
+    const ordinary = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+      kind: "request_confirmation", continuationPolicy: "none",
+      payload: { version: 1, prompt: "Ordinary authorized operation", ...governedPayloads[0] },
+    }, { agentId: workerId }, { delegateOrdinaryToolAction: true });
+    expect(ordinary.delegation).toMatchObject({ level: "pm", requiredScopes: ["task_decisions", "external_writes"] });
+  });
+
+  it("keeps required quality review human-only even with a project main", async () => {
+    await addLeadMain();
+    await activate();
+    await db.update(issues).set({ executionPolicy: { requiredQualityReview: { version: 1, deliverables: [{ key: "copy", label: "Copy" }] } } })
+      .where(eq(issues.id, issueId));
+    const saved = await documentService(db).upsertIssueDocument({ issueId, key: "copy", title: "Copy", body: "Draft",
+      format: "markdown", baseRevisionId: null, createdByUserId: ownerId });
+    const request = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+      kind: "request_confirmation", resolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Review required output", qualityReview: { key: "copy" },
+        target: { type: "issue_document", key: "copy", revisionId: saved.document.latestRevisionId! } },
+    }, { agentId: workerId });
+    expect(request.delegation).toMatchObject({ level: "human", recipientAgentId: null });
+  });
+
+  it("keeps explicit worker requests human-owned without a main and leaves main and Chat questions alone", async () => {
+    await activate();
+    expect((await question(workerId, true)).delegation).toMatchObject({ level: "human", recipientAgentId: null });
+    const mainId = await addLeadMain();
+    expect(await question(mainId, true)).toMatchObject({ delegation: null, effectiveResolverPolicy: "human_only" });
+    await db.update(issues).set({ conversationAgentId: workerId, conversationUserId: ownerId, conversationState: "active" })
+      .where(eq(issues.id, issueId));
+    expect(await question(workerId, true)).toMatchObject({ delegation: null, effectiveResolverPolicy: "human_only", addresseeUserId: ownerId });
+  });
+
+  it("does not reroute old human-only cards on idempotent creation after delegation is enabled", async () => {
+    await addLeadMain();
+    const request = await question(workerId, true);
+    expect(request.delegation).toBeNull();
+    await activate();
+    if (request.kind !== "ask_user_questions") throw new Error("Expected question");
+    const replay = await issueThreadInteractionService(db).create({ id: issueId, companyId }, {
+      kind: "ask_user_questions", idempotencyKey: request.idempotencyKey!, sourceRunId: request.sourceRunId!,
+      resolverPolicy: "human_only", continuationPolicy: "none", payload: request.payload,
+    }, { agentId: workerId, runId: request.sourceRunId! });
+    expect(replay).toMatchObject({ id: request.id, delegation: null, effectiveResolverPolicy: "human_only" });
   });
 
   it("returns plan Allow from the lead main to the original live provider callback without changing worker checkout", async () => {

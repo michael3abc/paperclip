@@ -151,6 +151,8 @@ Custom remote MCP browser sign-in uses the human-only `/api/tool-connections/:id
 Question answers with `continuationPolicy: none` are caller-delivered; save the answer
 without a generic continuation outbox entry. `runtimeRequestId` retains Runner's native
 response delivery. Preserve source runs and test both paths with owned PostgreSQL.
+Worker-only explicit human audience requests go to the task main first; preserve
+governance/quality/security reservations and use existing escalation. See docs/agents/decisions-and-review.md.
 
 Use owned disposable databases and dedicated test notifications; do not wake real
 agents. Non-Git workspace tests require a clean owned temporary root with no
