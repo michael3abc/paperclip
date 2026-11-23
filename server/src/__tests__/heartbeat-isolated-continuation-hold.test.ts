@@ -177,7 +177,8 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
   it.each(["pending", "delivered", "delegated", "not_requested"] as const)(
     "workspace recovery settles its late hold into a %s remote_epoch continuation of the same run", async delivery => {
     const f = await killedRunAfterFreshContinuation({ isolation: "remote_epoch", delivery });
-    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.holdId });
+    // Terminal runs release admission before background recovery settles its receipts.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
     await recoverHold(f);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
     expect(await holdRow(f.holdId)).toMatchObject({ status: "resolved", outcome: "restored",
@@ -198,12 +199,13 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     ["the hold records an explicit continuation", { holdEvidence: { explicitUserContinuation: { runId: randomUUID() } } }],
     ["the hold records a reconciliation", { holdEvidence: { executionReconciliation: { runId: randomUUID() } } }],
     ["the hold records a null-valued owner-gone attestation", { holdEvidence: { ownerGoneAttestation: null } }],
-  ] as const)("keeps the hold when %s", async (_name, shape) => {
+  ] as const)("preserves the recovery receipt without blocking the next run when %s", async (_name, shape) => {
     const f = await killedRunAfterFreshContinuation(shape);
     expect(await settleHoldIntoAbandonedEpochContinuation(db, { companyId: f.companyId, issueId: f.issueId,
       runId: f.sourceRunId, actionId: f.holdId })).toBe(false);
     expect(await holdRow(f.holdId)).toMatchObject({ status: "active" });
-    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.holdId });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    expect(await runRow(f.sourceRunId)).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
   });
 
   it("treats a present human-gate key as a person's decision in both SQL and TypeScript, whatever its value", () => {
@@ -232,19 +234,34 @@ suite("a hold on a run that a fresh continuation already isolated", () => {
     }
   }, 60_000);
 
-  it("still withholds the queued run when a person owns the late hold", async () => {
+  it("starts the queued run when a person owns a recovery receipt but has not paused execution", async () => {
     held.reset();
     const f = await killedRunAfterFreshContinuation({ isolation: "remote_epoch", personOwned: true });
     const heartbeat = heartbeatService(db);
     try {
       await recoverHold(f);
       await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
-      await vi.waitFor(async () => expect((await runRow(f.queuedRunId)).status).toBe("cancelled"), { timeout: 20_000 });
-      expect(await runRow(f.queuedRunId)).toMatchObject({ startedAt: null, errorCode: "execution_reconciliation_required" });
-      expect(await startedRunIds(f.companyId)).toEqual([]);
+      await vi.waitFor(async () => expect((await runRow(f.queuedRunId)).status).not.toBe("queued"), { timeout: 20_000 });
+      expect((await runRow(f.queuedRunId)).errorCode).not.toBe("execution_reconciliation_required");
+      expect(await startedRunIds(f.companyId)).toEqual([f.queuedRunId]);
+      expect(await runRow(f.sourceRunId)).toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
     } finally {
       held.release();
       await heartbeat.drainActiveRunExecutions();
     }
   }, 60_000);
+
+  it("keeps an explicit agent pause effective after the previous run terminates", async () => {
+    const f = await killedRunAfterFreshContinuation({ personOwned: true });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRunsForAgent(f.companyId, f.agentId);
+      expect((await runRow(f.queuedRunId)).startedAt).toBeNull();
+      expect(await startedRunIds(f.companyId)).toEqual([]);
+      expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].status).toBe("paused");
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  });
 });

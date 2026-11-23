@@ -90,6 +90,8 @@ export const DETERMINISTIC_RUN_FAILURE_CODES: ReadonlySet<string> = new Set<stri
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   "native_sandbox_disk_full",
+  "sandbox_disk_full",
+  "agent_interaction_delivery_denied",
   "adapter_engine_unavailable",
   "configuration_incomplete",
   "agent_not_invokable",

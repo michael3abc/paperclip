@@ -31,7 +31,7 @@ describe("liveness-first run failure classification", () => {
     for (const code of [
       "project_access_denied", "native_provider_model_rejected", "provider_tool_definition_invalid",
       "adapter_engine_unavailable", "configuration_incomplete", "agent_not_invokable", "budget_blocked",
-      "native_sandbox_disk_full",
+      "native_sandbox_disk_full", "sandbox_disk_full", "agent_interaction_delivery_denied",
     ]) {
       expect(classifyRunFailure(code), code).toBe("deterministic");
     }

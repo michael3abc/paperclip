@@ -44,6 +44,9 @@ poller under liveness-first; classify sandbox disk exhaustion as deterministic.
 No DB or migration changes. Decisions and checks:
 [sync-decisions](/HOM/issues/HOM-460#document-sync-decisions). Saturday integration
 only; no release build, deployment or restart.
+2026-11-23 validation repair: unify both disk-full aliases and permanent interaction
+delivery denial; retain liveness-first admission and verified pre-dispatch Retry,
+with the original saved snapshot intact when the successor needs a fresh attempt.
 
 ## 2026-11-20 upstream merge (HOM-421; not deployed)
 

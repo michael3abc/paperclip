@@ -55,7 +55,15 @@ recovery, stranded-issue reconciliation).
   at the 5th consecutive failure.
 - Deterministic: bad configuration a retry cannot fix. No automatic retry; one
   notice per (issue, code). Notices never block dispatch.
+  This includes sandbox disk exhaustion (native_sandbox_disk_full and
+  sandbox_disk_full) and permanently denied agent-interaction delivery
+  (agent_interaction_delivery_denied); all recovery paths use this same table.
 - Unknown codes: retry 3 times as transient, then treat as deterministic.
+
+An authorized Retry of a verified pre-dispatch cancellation uses that saved
+non-delivery receipt; it does not wait for provider delivery evidence. If the
+cancelled admission never owned the preserved workspace, retain a fresh attempt
+and leave the original saved snapshot intact.
 
 Shutdown and process-loss recovery keep the chain's persisted failure counter and
 backoff; they do not implicitly open a separate upstream server-restart window.

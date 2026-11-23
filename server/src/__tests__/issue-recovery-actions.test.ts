@@ -2189,21 +2189,25 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     ["checkout", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
       request(f.agent).post(`/api/issues/${f.sourceIssueId}/checkout`).send({ agentId: f.coderId, expectedStatuses: ["blocked"] })],
     ["completion that its review stage hands to a reviewer", async (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) => {
+      // Exercise the handoff without launching a real reviewer provider.
+      await seedHeartbeatRun({ companyId: f.companyId, agentId: f.managerId, runId: randomUUID() });
       await db.update(issues).set({ executionPolicy: { mode: "normal", commentRequired: false,
         stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: f.managerId }] }] } })
         .where(eq(issues.id, f.sourceIssueId));
       return request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "done" });
     }],
-    ["status change while a live previous run also owns the task", async (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) => {
+    ["status change while a terminal previous run retains a live process", async (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) => {
       await seedLiveOwnerRun(f);
       return request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "todo" });
     }],
-  ])("keeps a task blocked behind a no-replay hold when its agent tries a %s", async (_entry, send) => {
+  ])("allows an authorized %s past a historical no-replay receipt", async (entry, send) => {
     const f = await seedHeldBlockedTask();
     const response = await send(f);
-    expect(response.status).toBe(409);
-    expect(response.body.details).toMatchObject({ recoveryActionId: f.hold.id, nextAction: expect.stringContaining(f.hold.nextAction) });
-    expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]!.status).toBe("blocked");
+    expect(response.status).toBe(entry === "resume comment" ? 201 : 200);
+    const expectedStatus = entry === "completion that its review stage hands to a reviewer" ? "in_review"
+      : entry === "status change" || entry === "checkout" ? "in_progress" : "todo";
+    expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]!.status).toBe(expectedStatus);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.hold.id)))[0]).toEqual(f.hold);
   });
 
   it("lets the agent close a held task, or move it on once the hold no longer blocks replay", async () => {
