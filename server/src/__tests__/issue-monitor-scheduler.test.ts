@@ -183,6 +183,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
     issueStatus?: "in_progress" | "in_review";
+    waitingConversation?: boolean;
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
   }) {
@@ -238,6 +239,12 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: input?.issueStatus ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      ...(input?.waitingConversation ? {
+        conversationAgentId: agentId,
+        conversationUserId: "responsible-user",
+        responsibleUserId: "responsible-user",
+        conversationState: "waiting",
+      } : {}),
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       executionPolicy: {
@@ -280,6 +287,23 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     return { companyId, agentId, issueId, nextCheckAt };
   }
+
+  it("dispatches a due monitor once for an idle waiting main Chat", async () => {
+    const { issueId, agentId } = await seedFixture({ issueStatus: "in_review", waitingConversation: true,
+      monitorAttemptCount: 2, monitor: { maxAttempts: 3, timeoutAt: "2026-04-11T16:00:00.000Z" } });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    expect(await heartbeat.tickIssueMonitors(tickAt)).toMatchObject({ triggered: 1 });
+    await waitForHeartbeatIdle();
+    expect(await heartbeat.tickIssueMonitors(new Date(tickAt.getTime() + 5 * 60_000))).toMatchObject({ triggered: 0 });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "succeeded", contextSnapshot: { issueId, wakeReason: "issue_monitor_due" } });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 3, monitorWakeRequestedAt: null });
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.filter(wake => wake.idempotencyKey?.startsWith(`issue-monitor:${issueId}:`))).toHaveLength(1);
+  });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();

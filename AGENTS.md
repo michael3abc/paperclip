@@ -26,6 +26,11 @@ The issue-list inboxArchive filter is board-user-only and cannot be combined
 with attention; preserve the viewer-scoped isArchivedForMe projection. See
 docs/api/issues.md. Upstream Chat retry stop-wait polling is intentionally
 excluded: terminal cleanup remains background work under liveness-first.
+Due monitors can wake a waiting main Chat only through their persisted schedule
+and claim guard. Named admission waits retain the monitor; unclassified null
+admissions consume the existing attempt ledger and clear at three total attempts
+or the smaller configured limit. Record static refusal reasons; preserve stale
+wake rejection and the agent scheduling API switch. See doc/execution-semantics.md.
 
 Execution is liveness-first (Owner 2026-11-13). The binding source is
 `/home/michael/services/docs/agents/liveness-first.md`; it supersedes every

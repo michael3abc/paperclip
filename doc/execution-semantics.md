@@ -819,13 +819,24 @@ An external wait counts as a live or waiting path only when the next move surviv
 
 A one-shot issue monitor consumes its persisted `nextCheckAt` when it dispatches the assignee wake. If that monitor-consuming run is lost before it records a new disposition or future monitor, Paperclip restores exactly one bounded continuation using the existing process-loss retry limit; if that continuation is also lost, the normal recovery-action escalation owns the next step instead of creating another monitor loop.
 
-A due monitor remains scheduled when queue admission defers it. Execution recovery
-holds still prevent provider work until the existing reconciliation path clears
-those holds. `issue.monitor_deferred` activity records that decision and a safe
-blocker cause when available. Unexpected admission failures retain the schedule
-and record `issue.monitor_dispatch_failed`, with no raw provider error. Repeated
-identical diagnostics for one schedule are limited to one per five minutes.
-Diagnostics never authorize execution or consume a monitor attempt.
+A due monitor is an independent wake cause for a waiting main Chat. Admission
+still verifies the company, conversation requester, target agent, exact persisted
+schedule and dispatch claim under the issue lock. A stale claim or schedule
+cannot wake the Chat. This does not enable agent monitor scheduling APIs.
+
+Named admission waits retain their schedule and attempt count. `issue.monitor_deferred`
+records a static reason (for example `monitor_run_active`, `monitor_state_changed`,
+`conversation_wake_ineligible` or `heartbeat.wakeOnDemand.disabled`), or an execution
+blocker cause. A null admission with no recognized reason is
+`monitor_dispatch_unclassified`: it consumes an attempt atomically with claim
+release. At three total attempts, or the monitor's smaller configured limit, the
+schedule clears with `dispatch_skipped`; the diagnostic includes `attemptLimit`
+and `cleared`. It does not pause the agent or change task ownership/status.
+Unexpected thrown admission failures retain the schedule and record
+`issue.monitor_dispatch_failed`, with no raw provider error. Identical diagnostics
+are limited to one per five minutes, except the final exhaustion receipt.
+Diagnostics never authorize execution. Deferred wakes whose saved schedule no
+longer matches remain discarded and are never replayed.
 
 A native run's terminal provider status does not release its timer while
 finalization is unfinished. Scheduled and manual monitor dispatch wait for that

@@ -257,6 +257,34 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, agent, service };
   }
 
+  it.each(["missing guard", "stale schedule", "stale claim", "foreign requester"] as const)(
+    "does not wake a waiting Chat from a monitor with %s", async kind => {
+      const f = await waitingConversationFixture();
+      const scheduledAt = new Date("2026-11-23T08:30:00.000Z");
+      const claimedAt = new Date("2026-11-23T08:35:00.000Z");
+      await db.update(issues).set({ monitorNextCheckAt: scheduledAt, monitorWakeRequestedAt: claimedAt })
+        .where(eq(issues.id, f.issue.id));
+      const deferred = vi.fn();
+      expect(await f.queue.enqueueWakeup(f.agent.id, {
+        source: "automation", triggerDetail: "system", reason: "issue_monitor_due",
+        requestedByActorType: kind === "foreign requester" ? "user" : "system",
+        requestedByActorId: kind === "foreign requester" ? "foreign-user" : "heartbeat_scheduler",
+        idempotencyKey: `issue-monitor:${f.issue.id}:${scheduledAt.toISOString()}`,
+        payload: { issueId: f.issue.id },
+        contextSnapshot: { issueId: f.issue.id, source: "issue.monitor", nextCheckAt: scheduledAt.toISOString() },
+        ...(kind === "missing guard" ? {} : { issueStateGuard: {
+          statuses: ["in_review"], assigneeAgentId: f.agent.id,
+          monitorNextCheckAt: kind === "stale schedule" ? new Date(0).toISOString() : scheduledAt.toISOString(),
+          monitorWakeRequestedAt: kind === "stale claim" ? new Date(0).toISOString() : claimedAt.toISOString(),
+          onDispatchDeferred: deferred,
+        } }),
+      })).toBeNull();
+      expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+      expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+      if (kind !== "missing guard") expect(deferred).toHaveBeenCalledWith(
+        kind === "foreign requester" ? "conversation_wake_ineligible" : "monitor_state_changed");
+    });
+
   it.each([
     { body: "Continue", actorType: "user", foreign: false },
     { body: "/new", actorType: "user", foreign: false },
