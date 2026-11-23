@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { getTableName, type SQL } from "drizzle-orm";
 
@@ -51,7 +51,6 @@ function createFakeDb(args: {
   const interactionUpdates: Array<Record<string, unknown>> = [];
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
   const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
-  let selectCallCount = 0;
   let transactionDepth = 0;
 
   const db: any = {
@@ -64,21 +63,19 @@ function createFakeDb(args: {
       if (statement.sql.includes("with recursive affected")) return [{ issueId: interactionRow.issueId }];
       throw new Error(`Unexpected interaction fixture query: ${statement.sql}`);
     }),
-    select: vi.fn(() => {
-      selectCallCount += 1;
-      const rows = selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []);
-      return createSelectChain(table => {
-        if (getTableName(table as never) === "agent_wakeup_requests") return [];
-        if (getTableName(table as never) === "issues") return [{
-          id: interactionRow.issueId, companyId: interactionRow.companyId, status: "in_progress",
-          assigneeAgentId: interactionRow.createdByAgentId, conversationAgentId: null,
-        }];
-        if (getTableName(table as never) === "agents") return [{
-          id: interactionRow.createdByAgentId, companyId: interactionRow.companyId, permissions: {},
-        }];
-        return rows;
-      });
-    }),
+    select: vi.fn(() => createSelectChain(table => {
+      // Resolution rereads the interaction under the transaction lock.
+      if (getTableName(table as never) === "issue_thread_interactions") return [interactionRow];
+      if (getTableName(table as never) === "issues") return [{
+        id: interactionRow.issueId, companyId: interactionRow.companyId, status: "in_progress",
+        assigneeAgentId: interactionRow.createdByAgentId, conversationAgentId: null,
+      }];
+      if (getTableName(table as never) === "agents") return [{
+        id: interactionRow.createdByAgentId, companyId: interactionRow.companyId, permissions: {},
+      }];
+      if (getTableName(table as never) === "tool_action_requests") return args.parentRows ?? [];
+      return [];
+    })),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
         return {
@@ -125,8 +122,17 @@ function createFakeDb(args: {
 }
 
 describe("issueThreadInteractionService", () => {
+  let issueThreadInteractionService: typeof import("./issue-thread-interactions.js").issueThreadInteractionService;
+  let resolveInteractionPolicy: typeof import("./issue-thread-interactions.js").resolveInteractionPolicy;
+
+  // The service reaches the Runner source barrel through question-interaction-answers
+  // and other runtime dependencies. Cold transforms took >30s on the release host.
+  // Import once in a bounded setup hook; keep each assertion's default 15s budget.
+  beforeAll(async () => {
+    ({ issueThreadInteractionService, resolveInteractionPolicy } = await import("./issue-thread-interactions.js"));
+  }, 60_000);
+
   beforeEach(() => {
-    vi.resetModules();
     vi.clearAllMocks();
   });
 
@@ -140,7 +146,6 @@ describe("issueThreadInteractionService", () => {
   ] as const)(
     "resolves %s requested/default/cap policy snapshots",
     async (kind, requested, governance, expectedRequested, expectedEffective, expectedProvenance, expectedSource) => {
-      const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
       expect(resolveInteractionPolicy({
         kind,
         requested,
@@ -156,7 +161,6 @@ describe("issueThreadInteractionService", () => {
   );
 
   it("always clamps tool-action confirmations to human-only", async () => {
-    const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
     expect(resolveInteractionPolicy({
       kind: "request_confirmation",
       requested: "board_or_agents",
@@ -171,8 +175,6 @@ describe("issueThreadInteractionService", () => {
   });
 
   it("create reuses an existing interaction for the same idempotency key", async () => {
-    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
-
     const existingRow = {
       id: "interaction-1",
       companyId: "company-1",
@@ -203,13 +205,11 @@ describe("issueThreadInteractionService", () => {
       updatedAt: new Date("2026-04-20T10:00:00.000Z"),
     };
 
-    let selectCallCount = 0;
-  let transactionDepth = 0;
     const db: any = {
-      select: vi.fn(() => {
-        selectCallCount += 1;
-        return createSelectChain(selectCallCount <= 2 ? [existingRow] : []);
-      }),
+      // Governance and delegation reads must not consume the idempotent row.
+      select: vi.fn(() => createSelectChain(table =>
+        getTableName(table as never) === "issue_thread_interactions" ? [existingRow] : [],
+      )),
       insert: vi.fn(),
       update: vi.fn(),
     };
@@ -239,8 +239,6 @@ describe("issueThreadInteractionService", () => {
   });
 
   it("answerQuestions normalizes duplicate option ids and persists answered results", async () => {
-    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
-
     const interactionRow = {
       id: "interaction-2",
       companyId: "company-1",
@@ -325,7 +323,6 @@ describe("issueThreadInteractionService", () => {
   });
 
   it("withdraws an unlinked pending interaction with attribution and rejects repeats", async () => {
-    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
       id: "interaction-withdraw", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
       kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
@@ -352,7 +349,6 @@ describe("issueThreadInteractionService", () => {
   });
 
   it("refuses withdrawal when the linked tool action is already executing", async () => {
-    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
       id: "interaction-executing", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
       kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
@@ -373,7 +369,6 @@ describe("issueThreadInteractionService", () => {
   });
 
   it("expires pending interactions when the issue is terminal", async () => {
-    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
       id: "interaction-close", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
       kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee",
@@ -392,7 +387,6 @@ describe("issueThreadInteractionService", () => {
   });
 
   it("expires the linked tool action request when a terminal issue closes a confirmation card", async () => {
-    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
       id: "interaction-tool", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
       kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
