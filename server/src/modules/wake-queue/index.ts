@@ -119,15 +119,16 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
     },
     releaseIssueExecution: createReleaseIssueExecution({ issueLock, recovery: deps.recovery }),
     admitIssueWake(
-      { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,
+      { companyId, issueId, durableChatRequest, externalWaitAdmission }: IssueAdmissionTarget & { externalWaitAdmission?: import("../../services/issue-external-waits.js").ExternalWaitAdmission },
       // Specialized heartbeat gates and continuation writes still use this locked transaction.
       evaluateHeartbeatPolicy: (tx: IssueAdmissionDbTransaction, admission: LockedIssueAdmission) => Promise<IssueWakeAdmissionOutcome<HeartbeatRun>>,
       effects: IssueWakeAdmissionEffects<HeartbeatRun>,
     ) {
-      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, (tx, { lockedIssue, lockIssue, recovery, deferBlockedWake, reader, writer, fresh }) => {
+      return admitIssueWake(() => withIssueAdmission({ companyId, issueId, durableChatRequest }, async (tx, { lockedIssue, lockIssue, recovery, deferBlockedWake, reader, writer, fresh }) => {
         const admitBusy = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: deps.wakeAdmissionHelpers });
         const admitFresh = createFreshIssueRunAdmission(fresh);
-        return evaluateHeartbeatPolicy(tx, {
+        if (externalWaitAdmission && !await externalWaitAdmission.before(tx as unknown as Db)) return { kind: "skipped" };
+        const outcome = await evaluateHeartbeatPolicy(tx, {
           lockedIssue,
           lockIssue,
           prepareRecovery: createWakeRecoveryAdmission(recovery, async (input: Parameters<typeof admitBusy>[0]) => {
@@ -142,6 +143,8 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
             return admitFresh(input);
           }, deferBlockedWake),
         });
+        await externalWaitAdmission?.after(tx as unknown as Db);
+        return outcome;
       }), effects);
     },
   };

@@ -46,6 +46,10 @@ export const agentWakeupRequests = pgTable(
       .defaultNow(),
   },
   (table) => ({
+    externalWaitCompletionUq: uniqueIndex("agent_wakeup_requests_external_wait_completed_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .concurrently()
+      .where(sql`${table.idempotencyKey} LIKE 'external-wait-completed:%'`),
     pmFollowthroughIdempotencyUq: uniqueIndex("agent_wakeup_requests_pm_followthrough_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'issue-continue:%' OR ${table.idempotencyKey} LIKE 'pm-followthrough:%'`),

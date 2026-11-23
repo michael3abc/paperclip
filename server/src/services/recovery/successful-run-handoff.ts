@@ -140,6 +140,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
   "issue already has a queued or deferred wake",
   "pending interaction or approval owns the next action",
   "persisted issue monitor owns the next action",
+  "external wait owns the next action",
   "explicit blocker path owns the next action",
   "open recovery issue owns the ambiguity",
   "issue is under an active pause hold",
@@ -478,6 +479,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasPersistedMonitor: boolean;
+  hasExternalWait?: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
@@ -530,6 +532,7 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasPendingInteractionOrApproval) {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
+  if (input.hasExternalWait) return { kind: "skip", reason: "external wait owns the next action" };
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };

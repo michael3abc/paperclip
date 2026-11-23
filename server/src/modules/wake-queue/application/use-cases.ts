@@ -690,6 +690,7 @@ async function runReleaseRecoveryTail(
       ISSUE_DISPOSITION_REPAIR_RETRY_REASON &&
     !hasExistingExecutionPath &&
     !issue.monitorNextCheckAt &&
+    !issue.hasExternalWait &&
     !hasExplicitBlockerPath &&
     !suppressedByPauseHold &&
     !isStrandedRecoveryOrigin
@@ -729,7 +730,7 @@ async function runReleaseRecoveryTail(
     },
     shared: {
       hasExistingExecutionPath,
-      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
+      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt || issue.hasExternalWait),
       suppressedByPauseHold,
       isStrandedRecoveryOrigin,
       recoveryAgentPresent: recoveryAgent !== null,

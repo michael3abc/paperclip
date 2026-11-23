@@ -794,6 +794,8 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
 
 
 export interface WakeupOptions {
+  /** Server-only completion hooks; the wait and wake receipt commit under the issue lock. */
+  externalWaitAdmission?: import("../issue-external-waits.js").ExternalWaitAdmission;
   /** Server-owned workspace recovery intent, verified again under the issue lock. */
   workspaceRecoveryRequest?: import("../recovery/workspace-creator.js").WorkspaceRecoveryWake;
   mainBlockerRequest?: import("../recovery/main-blocker.js").MainBlockerWake;

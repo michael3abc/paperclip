@@ -288,6 +288,12 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("accepts an LRH wait as a valid successful-run disposition", () => {
+    const decision = decide({ hasExternalWait: true });
+    expect(decision).toEqual({ kind: "skip", reason: "external wait owns the next action" });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+  });
+
   it("does not queue when a successful run records an accepted next-action path", () => {
     expect(decide({ issue: { ...issue, status: "in_review" } as any })).toEqual({
       kind: "skip",

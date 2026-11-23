@@ -92,7 +92,7 @@ export function wakeMustNotJoinActiveRun(
   const differentInput = incomingIds.some(id => !activeIds.includes(id)) || activeIds.some(id => !incomingIds.includes(id));
   const introducesRepair = activeIds.length > 0 && !activePrior && incomingPrior;
   // Context compaction and retained external-chat retries keep their own input.
-  return (activePrior || incomingPrior) && (differentInput || introducesRepair)
+  return wakeContext.wakeReason === "external_wait_completed" || (activePrior || incomingPrior) && (differentInput || introducesRepair)
     || hasRetainedExternalChatRetry(activeRunContext) || interactionReceipt || Boolean(active.interactionId)
     || Boolean(readNonEmptyString(active.contextCompactionRequestId))
     || Boolean(readNonEmptyString(wakeContext.contextCompactionRequestId)) ||

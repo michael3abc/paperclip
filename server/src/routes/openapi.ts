@@ -1,3 +1,4 @@
+import { completeIssueExternalWaitSchema, registerIssueExternalWaitSchema } from "@paperclipai/shared";
 import { delegateWorkerSecretSchema } from "../services/worker-secret-delegation.js";
 import { managedWorktreeOperationSchema, managedWorktreeRecheckSchema, catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema, issueDocumentBatchQuerySchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
@@ -12191,6 +12192,15 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Retry a scheduled issue run now",
 });
+
+registerCurrentRoute({ method: "get", path: "/api/issues/{id}/external-waits", tags: ["issues"], summary: "List durable LRH external waits" });
+for (const operation of ["register", "complete", "cancel"] as const) {
+  registerCurrentRoute({ method: "post", path: `/api/issues/{id}/external-waits${operation === "register" ? "" : `/${operation}`}`,
+    tags: ["issues"], summary: `${operation} a durable LRH external wait; completion wakes the current assignee once`,
+    body: operation === "complete" ? completeIssueExternalWaitSchema : registerIssueExternalWaitSchema,
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
 
 registerCurrentRoute({
   method: "post",

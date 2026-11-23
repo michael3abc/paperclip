@@ -1,3 +1,4 @@
+import { externalWaitPathSql } from "../../../services/issue-external-wait-path.js";
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { wakeMustNotJoinActiveRun } from "../domain/context.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
@@ -25,7 +26,7 @@ import { preserveTaskRemoteWorkspaceWriter } from "../../../services/native-runt
 import type { WakeRecoveryAdmissionStore } from "../application/recovery-admission.js";
 import { createWakeRecoveryDeferral } from "../application/recovery-deferral.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
-import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, getTableColumns, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
 import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
@@ -106,7 +107,7 @@ export const ALREADY_REPORTED_WAKE_REASON = "Already reported by an earlier repl
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
-type IssueRow = typeof issues.$inferSelect;
+type IssueRow = typeof issues.$inferSelect & { hasExternalWait?: boolean };
 export type IssueAdmissionDbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type IssueAdmissionTarget = {
   companyId: string;
@@ -189,6 +190,7 @@ function toIssueSnapshot(row: IssueRow): IssueSnapshot {
     hiddenAt: row.hiddenAt,
     originKind: row.originKind,
     monitorNextCheckAt: row.monitorNextCheckAt,
+    hasExternalWait: row.hasExternalWait,
     executionState: (row.executionState as Record<string, unknown> | null) ?? null,
     responsibleUserId: row.responsibleUserId,
     parentId: row.parentId,
@@ -1251,6 +1253,7 @@ const issueAdmissionFields = {
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
   monitorNextCheckAt: issues.monitorNextCheckAt,
+  hasExternalWait: externalWaitPathSql(issues),
   monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
   checkoutRunId: issues.checkoutRunId,
   executionRunId: issues.executionRunId,
@@ -1414,7 +1417,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         const candidateIssues = await tx
-          .select()
+          .select({ ...getTableColumns(issues), hasExternalWait: externalWaitPathSql(issues) })
           .from(issues)
           .where(
             and(

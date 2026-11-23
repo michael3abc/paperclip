@@ -1,3 +1,4 @@
+import { externalWaitPathSql } from "../issue-external-wait-path.js";
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -87,7 +88,7 @@ const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
-  | "projectId" | "statusVersion" | "executionState" | "identifier" | "createdAt" | "blockedOwnerNotifiedAt">;
+  | "projectId" | "statusVersion" | "executionState" | "identifier" | "createdAt" | "blockedOwnerNotifiedAt"> & { hasExternalWait?: boolean };
 
 type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "agentId" | "runtimeMode" | "errorCode" | "finishedAt"
   | "scheduledRetryAt" | "controllerBootId" | "controllerLeaseExpiresAt" | "controllerProcess" | "resultJson"> & { issueId: string };
@@ -429,6 +430,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           createdAt: issue.createdAt,
           unblockOwner: (issue.unblockDescriptor?.owner ?? null) as AssignedWorkFacts["issue"]["unblockOwner"],
           monitorNextCheckAt: issue.monitorNextCheckAt,
+          hasExternalWait: issue.hasExternalWait,
           isConversation: Boolean(issue.conversationAgentId) || issue.originKind === "chat_channel",
           awaitingFirstMessage: onboardingIds.has(issue.id),
         },
@@ -471,6 +473,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   const issueColumns = {
+    hasExternalWait: externalWaitPathSql(issues),
     id: issues.id, companyId: issues.companyId, status: issues.status, assigneeAgentId: issues.assigneeAgentId,
     assigneeUserId: issues.assigneeUserId, hiddenAt: issues.hiddenAt, blockedTransitionAt: issues.blockedTransitionAt,
     updatedAt: issues.updatedAt, unblockDescriptor: issues.unblockDescriptor, monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -535,6 +538,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       isNull(issues.conversationAgentId),
       sql`coalesce(${issues.originKind}, '') <> 'chat_channel'`,
       sql`(${issues.status} <> 'blocked' or coalesce(${issues.blockedTransitionAt}, ${issues.updatedAt}) > ${new Date(at.getTime() - STALE_BLOCK_MS).toISOString()}::timestamptz)`,
+      sql`not ${externalWaitPathSql(issues)}`,
       sql`(${issues.monitorNextCheckAt} is null or ${issues.monitorNextCheckAt} <= ${at.toISOString()}::timestamptz)`,
       // A legacy run whose controller lease lapsed may have lost its owner;
       // the predicate judges it with the owner proof. Other active runs are live.

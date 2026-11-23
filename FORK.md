@@ -162,6 +162,12 @@ in sync-decisions; these fixes do not certify every historical test as passing.
 
 ## Custom history
 
+- HOM-543 (`michael/lrh-completion-wake`, server HOM-544): additive `0512`
+  `issue_external_waits`, assignee/board APIs and one completion wake through
+  ordinary heartbeat admission. Outstanding LRH waits are durable recovery and
+  run-end dispositions; busy completion wakes remain queued. Agent monitor
+  scheduling stays disabled under HOM-539. No deployment or main-branch merge.
+
 - Dashboard host Codex sign-in (`michael/host-codex-login`, HOM-471): the Codex
   quota card offers human-only instance-admin device authorization for explicitly
   logged-out company hosts. Registry `codexLogin` pins the native CLI and home;

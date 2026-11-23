@@ -3571,6 +3571,13 @@
       "when": 1794743254990,
       "tag": "0511_square_doorman",
       "breakpoints": true
+    },
+    {
+      "idx": 512,
+      "version": "7",
+      "when": 1795416864652,
+      "tag": "0512_ordinary_stardust",
+      "breakpoints": true
     }
   ]
 }

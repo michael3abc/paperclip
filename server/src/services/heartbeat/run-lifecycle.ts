@@ -1,3 +1,4 @@
+import { externalWaitPathSql } from "../issue-external-wait-path.js";
 import { enqueuePushSource } from "../web-push-events.js";
 import { notifyRunStopSettlement } from "../run-stop-settlement-notifications.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
@@ -1870,6 +1871,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        hasExternalWait: externalWaitPathSql(issues),
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
         originKind: issues.originKind,
@@ -2077,6 +2079,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         pendingInteraction || pendingApproval,
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasExternalWait: issue?.hasExternalWait ?? false,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),

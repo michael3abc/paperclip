@@ -11,6 +11,9 @@ describe("independent input and disposition repair boundaries", () => {
   ])("keeps separate authority when %s", (_label, active, incoming) => {
     expect(wakeMustNotJoinActiveRun(active, incoming, false)).toBe(true);
   });
+  it("queues an LRH completion behind an active turn even without a comment", () => {
+    expect(wakeMustNotJoinActiveRun({}, { wakeReason: "external_wait_completed", externalWait: { externalRef: "lrh:run" } }, false)).toBe(true);
+  });
   it("still permits ordinary fresh comment batching without retry ancestry", () => {
     expect(wakeMustNotJoinActiveRun(fresh, { wakeCommentIds: ["second-comment"] }, false)).toBe(false);
   });

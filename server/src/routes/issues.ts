@@ -1,3 +1,4 @@
+import { registerIssueExternalWaitRoutes } from "./issue-external-waits.js";
 import { workerInstructionDelivery, inspectWorkerInstructionDelivery } from "../services/worker-instruction-delivery.js";
 import { reconcileWorkspaceHolder } from "../services/recovery/workspace-holder.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
@@ -11365,6 +11366,21 @@ export function issueRoutes(
       res.json({ refreshed: results });
     },
   );
+
+  registerIssueExternalWaitRoutes(router, db, {
+    heartbeat,
+    read: async (req, res) => {
+      const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+      if (!issue || !await assertIssueReadAllowed(req, res, issue)) return null;
+      return issue;
+    },
+    mutate: async (req, res, issue) => {
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (decision.allowed) return true;
+      res.status(403).json({ error: "Issue mutation access required" });
+      return false;
+    },
+  });
 
   registerIssueDocumentBatchRoute(router, db, {
     filterReadable: filterIssuesForActor,

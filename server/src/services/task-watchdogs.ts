@@ -1,3 +1,4 @@
+import { hasIssueExternalWait } from "./issue-external-wait-path.js";
 import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
@@ -1340,7 +1341,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function watchdogIssueHasPendingReviewPath(companyId: string, issueId: string) {
-    const [interaction, approval] = await Promise.all([
+    const [externalWait, interaction, approval] = await Promise.all([
+      hasIssueExternalWait(db, companyId, issueId),
       db
         .select({ id: issueThreadInteractions.id })
         .from(issueThreadInteractions)
@@ -1363,7 +1365,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .limit(1)
         .then((rows) => rows[0] ?? null),
     ]);
-    return Boolean(interaction || approval);
+    return Boolean(externalWait || interaction || approval);
   }
 
   async function markTerminalWatchdogIssueReviewed(watchdog: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
