@@ -129,6 +129,20 @@ export type ReleaseIssueExecutionInput = {
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
 
+const MONITOR_WAKE_CONTEXT_SOURCES: ReadonlySet<string> = new Set(["issue.monitor", "issue.execution_review_recovery"]);
+const STALE_MONITOR_WAKE_REASON = "Stale monitor wake discarded: its schedule no longer matches the issue monitor";
+
+function monitorWakeScheduledAt(context: Record<string, unknown>): string | null {
+  const source = readNonEmptyString(context.source);
+  return source && MONITOR_WAKE_CONTEXT_SOURCES.has(source) ? readNonEmptyString(context.nextCheckAt) : null;
+}
+
+/** A deferred monitor wake that no longer matches the issue's current monitor schedule. */
+function isStaleMonitorWake(candidate: DeferredWakeCandidate, issue: IssueSnapshot): boolean {
+  const scheduledAt = monitorWakeScheduledAt(candidate.deferredContextSeed);
+  return scheduledAt !== null && issue.monitorNextCheckAt?.toISOString() !== scheduledAt;
+}
+
 /**
  * Drains the deferred-wake queue for the issue a run just released, in
  * `requestedAt` order, promoting at most one wake. When the queue empties
@@ -186,6 +200,20 @@ async function runReleaseDrain(
     // An earlier reply in this conversation already reported this wake's
     // outcome. Settle it here so a duplicate report never becomes a run.
     if (await ports.transaction.skipAlreadyReportedChatWake({ companyId: run.companyId, issueId: issue.id, wake: candidate, now: input.now })) {
+      continue;
+    }
+
+    // A monitor wake is only valid for the schedule it was created for. When
+    // the issue's monitor was rescheduled, cleared or already consumed while
+    // the wake waited, replaying it would run a check nobody asked for now.
+    if (isStaleMonitorWake(candidate, issue)) {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId,
+        wakeId: candidate.id,
+        agentId: candidate.agentId,
+        reason: STALE_MONITOR_WAKE_REASON,
+        now: input.now,
+      });
       continue;
     }
 
@@ -969,6 +997,11 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       });
       if (run) return { kind: "coalesced", run };
     }
+
+    // The scheduler retries a monitor that could not be admitted, so it keeps
+    // its schedule instead of leaving a durable receipt. A receipt per retry
+    // would replay as one stale run each when the issue's execution releases.
+    if (monitorWakeScheduledAt(input.contextSnapshot) !== null) return { kind: "deferred" };
 
     const existingDeferred =
       (interactionReceipt || input.allowRunCoalescing === false)

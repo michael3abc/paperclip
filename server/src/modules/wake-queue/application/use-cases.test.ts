@@ -438,6 +438,70 @@ describe("releaseIssueExecution", () => {
     expect(transaction.failDeferredWake).toHaveBeenCalledTimes(2);
   });
 
+  it("discards a deferred monitor wake whose schedule no longer matches the issue monitor, then promotes the next wake", async () => {
+    const staleSeed = { source: "issue.monitor", nextCheckAt: "2026-11-22T20:30:00.000Z" };
+    const queue = [
+      wakeCandidate({ id: "wake-stale-monitor", reason: "issue_execution_deferred", deferredContextSeed: staleSeed }),
+      wakeCandidate({ id: "wake-later" }),
+    ];
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => queue.shift() ?? null) });
+    const host = createFakeHost();
+    const issue = { ...ISSUE, monitorNextCheckAt: new Date("2026-11-23T08:30:00.000Z") };
+    const releaseIssueExecution = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(host, transaction, issue), recovery: createFakeRecovery(),
+    });
+
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      wakeId: "wake-stale-monitor", reason: expect.stringContaining("Stale monitor wake"),
+    }));
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: "wake-later" }));
+    expect(result.outcome.kind).toBe("promoted");
+  });
+
+  it.each([
+    { label: "was cleared", monitorNextCheckAt: null },
+    { label: "was rescheduled", monitorNextCheckAt: new Date("2026-11-23T08:30:00.000Z") },
+  ])("never promotes a deferred monitor wake whose monitor $label", async ({ monitorNextCheckAt }) => {
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(wakeCandidate({
+          id: "wake-stale-review-monitor",
+          deferredContextSeed: { source: "issue.execution_review_recovery", nextCheckAt: "2026-11-22T20:30:00.000Z" },
+        }))
+        .mockResolvedValue(null),
+    });
+    const host = createFakeHost();
+    const releaseIssueExecution = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(host, transaction, { ...ISSUE, monitorNextCheckAt }), recovery: createFakeRecovery(),
+    });
+
+    await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledOnce();
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+  });
+
+  it("still promotes a deferred monitor wake that matches the issue's current monitor schedule", async () => {
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => wakeCandidate({
+        id: "wake-current-monitor",
+        deferredContextSeed: { source: "issue.monitor", nextCheckAt: "2026-11-23T08:30:00.000Z" },
+      })),
+    });
+    const host = createFakeHost();
+    const issue = { ...ISSUE, monitorNextCheckAt: new Date("2026-11-23T08:30:00.000Z") };
+    const releaseIssueExecution = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(host, transaction, issue), recovery: createFakeRecovery(),
+    });
+
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(result.outcome.kind).toBe("promoted");
+  });
+
   it("stops the loop after the first promotion", async () => {
     const findNextDeferredWake = vi.fn(async () => wakeCandidate({ id: "wake-promotes" }));
     const transaction = createFakeTransaction({ findNextDeferredWake });
@@ -1106,6 +1170,22 @@ describe("admitWakeBehindIssueExecution", () => {
         expect.objectContaining({ chatConversationId: incoming }));
       expect(writer.insertNewDeferredWake).toHaveBeenCalledOnce();
     }
+  });
+
+  it("leaves no durable receipt for a monitor wake behind an active execution", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: createFakeAdmissionHelpers() });
+
+    const result = await admit(admissionInput({
+      contextSnapshot: { issueId: "issue-1", source: "issue.monitor", nextCheckAt: "2026-11-22T20:30:00.000Z" },
+      allowRunCoalescing: false,
+      activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status: "running" },
+    }));
+
+    expect(result).toEqual({ kind: "deferred" });
+    expect(writer.insertNewDeferredWake).not.toHaveBeenCalled();
+    expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
   });
 
   it("partitions durable admission by the exact actor before considering a deferred merge", async () => {
