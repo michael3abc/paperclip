@@ -36,6 +36,13 @@ function isSelfWakeMonitor(monitor: SelfWakeMonitor | null) {
     && (monitor.scheduledBy ?? "assignee") === "assignee");
 }
 
+/** Host flag (Owner 2026-11-23, HOM-411): `PAPERCLIP_AGENT_ISSUE_MONITORS=disabled`
+ * stops agents from scheduling, rescheduling or triggering issue monitors. Agents
+ * may still clear one. Board users and server-owned monitors are unaffected. */
+export function agentIssueMonitorsDisabled(env: NodeJS.ProcessEnv = process.env) {
+  return env.PAPERCLIP_AGENT_ISSUE_MONITORS === "disabled";
+}
+
 export async function assertCanManageIssueMonitor(
   accessSvc: Pick<ReturnType<typeof accessService>, "decide">,
   req: { actor: AuthorizationActor },
@@ -43,9 +50,16 @@ export async function assertCanManageIssueMonitor(
   assigneeAgentId: string | null,
   monitorChanged: boolean,
   ownTask?: { monitor: SelfWakeMonitor | null; existing: SelfWakeMonitor | null },
+  clearsOnly = false,
 ) {
   if (!monitorChanged) return;
   if (req.actor.type === "board") return;
+  if (req.actor.type === "agent" && !clearsOnly && agentIssueMonitorsDisabled()) {
+    throw forbidden(
+      "Agents cannot schedule or trigger task monitors on this instance. End the turn with the wait recorded; a board user can schedule a check from the task page.",
+      { reason: "agent_issue_monitors_disabled" },
+    );
+  }
   const isAssignee =
     req.actor.type === "agent" &&
     !!req.actor.agentId &&

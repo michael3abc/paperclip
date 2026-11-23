@@ -15461,6 +15461,8 @@ export function issueRoutes(
         existing.companyId,
         existing.assigneeAgentId,
         req.body.executionPolicy !== undefined && monitorChanged,
+        undefined,
+        !nextExecutionPolicy?.monitor,
       );
 
       // Workspace maintenance cannot implicitly advance or normalize a review.

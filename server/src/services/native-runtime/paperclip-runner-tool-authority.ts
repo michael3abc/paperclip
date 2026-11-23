@@ -2848,7 +2848,8 @@ export class PaperclipRunnerToolAuthority {
       const wakeKeepsTrust = taskTrust.kind === "low_trust_review" && runTrust.kind === "low_trust_review"
         && canonicalJson(taskTrust.boundary) === canonicalJson(runTrust.boundary);
       await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true,
-        wakeKeepsTrust ? { monitor: input.monitor, existing: normalizeIssueExecutionPolicy(target.executionPolicy)?.monitor ?? null } : undefined);
+        wakeKeepsTrust ? { monitor: input.monitor, existing: normalizeIssueExecutionPolicy(target.executionPolicy)?.monitor ?? null } : undefined,
+        input.monitor === null);
       if (target.assigneeAgentId !== this.binding.agentId || target.assigneeUserId ||
           !["in_progress", "in_review"].includes(target.status)) {
         throw forbidden("Monitors require an in-progress or in-review task assigned to this agent");
