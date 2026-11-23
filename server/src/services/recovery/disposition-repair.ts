@@ -258,7 +258,7 @@ export async function collectDispositionRepairSourceState(
   });
 
   const durableState = {
-    hasExternalWait,
+    ...(hasExternalWait ? { hasExternalWait } : {}),
     source: {
       status: issue.status,
       assigneeAgentId: issue.assigneeAgentId,
