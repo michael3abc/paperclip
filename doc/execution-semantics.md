@@ -823,6 +823,8 @@ A due monitor is an independent wake cause for a waiting main Chat. Admission
 still verifies the company, conversation requester, target agent, exact persisted
 schedule and dispatch claim under the issue lock. A stale claim or schedule
 cannot wake the Chat. This does not enable agent monitor scheduling APIs.
+The same rule applies to a claimed `wake_owner` recovery after timeout or attempt
+exhaustion; admission can activate the Chat before the claim is consumed.
 
 Named admission waits retain their schedule and attempt count. `issue.monitor_deferred`
 records a static reason (for example `monitor_run_active`, `monitor_state_changed`,

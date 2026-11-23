@@ -305,6 +305,24 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(wakes.filter(wake => wake.idempotencyKey?.startsWith(`issue-monitor:${issueId}:`))).toHaveLength(1);
   });
 
+  it.each(["timeout", "attempt limit"] as const)("dispatches waiting Chat monitor recovery once after its %s", async limit => {
+    const { issueId, agentId } = await seedFixture({ issueStatus: "in_review", waitingConversation: true,
+      monitorAttemptCount: 2, monitor: limit === "timeout"
+        ? { timeoutAt: "2026-04-11T12:30:00.000Z" } : { maxAttempts: 2 } });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    expect(await heartbeat.tickIssueMonitors(tickAt)).toMatchObject({ skipped: 1 });
+    await waitForHeartbeatIdle();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "succeeded", contextSnapshot: { issueId, wakeReason: "issue_monitor_recovery" } });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ monitorNextCheckAt: null, monitorWakeRequestedAt: null, monitorAttemptCount: 2 });
+    await heartbeat.tickIssueMonitors(new Date(tickAt.getTime() + 5 * 60_000));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId))).toHaveLength(1);
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);

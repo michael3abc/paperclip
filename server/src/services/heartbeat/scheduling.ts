@@ -513,7 +513,7 @@ export function createHeartbeatScheduling(
           issue: input.claimed, policy: input.policy, clearReason: input.clearReason, clearedAt: input.now,
         })),
         updatedAt: input.now,
-      }).where(issueMonitorClaimCondition(input.claimed)).returning({ id: issues.id });
+      }).where(issueMonitorClaimCondition(input.claimed, input.recoveryPolicy === "wake_owner")).returning({ id: issues.id });
       if (rows.length && input.recoveryPolicy === "escalate_to_board") {
         await insertIssueComment(tx, {
           companyId: input.claimed.companyId,

@@ -2916,7 +2916,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       wakeCommentId || opts.taskRetryRequestId ||
       // Internal monitor claims are checked again under the issue lock. A
       // settled Chat may still owe its previously scheduled external check.
-      (contextSnapshot.source === "issue.monitor" && reason === "issue_monitor_due"
+      ((contextSnapshot.source === "issue.monitor"
+        || (contextSnapshot.source === "issue.monitor.recovery" && reason === "issue_monitor_recovery"))
         && opts.issueStateGuard?.monitorNextCheckAt && opts.issueStateGuard.monitorWakeRequestedAt) ||
       (reason === "onboarding_chat_greeting" && opts.manualUserWake === true
         && opts.requestedByActorType === "user" && source === "on_demand") ||
