@@ -1,3 +1,4 @@
+import { externalWaitPathSql, hasIssueExternalWait } from "../issue-external-wait-path.js";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -87,25 +88,21 @@ export function dispositionRepairDelayMs(attempt: number, fingerprint: string) {
 }
 
 type DurableWaitingFacts = {
+  hasExternalWait: boolean;
   hasBlocker: boolean;
   hasPendingInteraction: boolean;
   hasPendingApproval: boolean;
 };
 
 function dispositionRepairDurablePathReason(issue: DispositionRepairIssue, facts: DurableWaitingFacts) {
-  return issue.assigneeUserId
-    ? "user_owner"
-    : facts.hasBlocker
-      ? "blocker"
-      : issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
-        ? "monitor"
-        : parseIssueExecutionState(issue.executionState)?.status === "pending"
-          ? "execution_stage"
-          : facts.hasPendingInteraction
-            ? "interaction"
-            : facts.hasPendingApproval
-              ? "approval"
-              : null;
+  if (issue.assigneeUserId) return "user_owner";
+  if (facts.hasExternalWait) return "external_wait";
+  if (facts.hasBlocker) return "blocker";
+  if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()) return "monitor";
+  if (parseIssueExecutionState(issue.executionState)?.status === "pending") return "execution_stage";
+  if (facts.hasPendingInteraction) return "interaction";
+  if (facts.hasPendingApproval) return "approval";
+  return null;
 }
 
 /** Current wait facts for recovery resolution, without collecting retry fingerprints. */
@@ -115,6 +112,7 @@ export async function readDispositionRepairDurableWaitingState(
 ): Promise<Pick<DispositionRepairSourceState, "hasDurableWaitingPath" | "durablePathReason">> {
   const issue = input.issue;
   const [facts] = await db.execute<DurableWaitingFacts>(sql`select
+    ${externalWaitPathSql(issue)} as "hasExternalWait",
     exists (select 1 from ${issueRelations}
       inner join ${issues} on ${issues.companyId} = ${issueRelations.companyId}
         and ${issues.id} = ${issueRelations.issueId}
@@ -147,7 +145,7 @@ export async function collectDispositionRepairSourceState(
   },
 ): Promise<DispositionRepairSourceState> {
   const issue = input.issue;
-  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes] =
+  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes, hasExternalWait] =
     await Promise.all([
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -249,15 +247,18 @@ export async function collectDispositionRepairSourceState(
               : sql`true`,
           ),
         ),
+      hasIssueExternalWait(db, issue.companyId, issue.id),
     ]);
 
   const durablePathReason = dispositionRepairDurablePathReason(issue, {
+    hasExternalWait,
     hasBlocker: blockers.length > 0,
     hasPendingInteraction: interactions.some((row) => row.status === "pending"),
     hasPendingApproval: linkedApprovals.some((row) => row.status === "pending" || row.status === "revision_requested"),
   });
 
   const durableState = {
+    ...(hasExternalWait ? { hasExternalWait } : {}),
     source: {
       status: issue.status,
       assigneeAgentId: issue.assigneeAgentId,

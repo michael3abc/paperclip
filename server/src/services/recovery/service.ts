@@ -1,3 +1,4 @@
+import { hasIssueExternalWait } from "../issue-external-wait-path.js";
 import { creatorRecovery, WORKSPACE_CREATOR_MAX_REPAIRS } from "./workspace-creator.js";
 import { isOriginalMainBlockerRetry } from "./main-blocker-run.js";
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
@@ -1609,7 +1610,7 @@ export function recoveryService(
     latestRun: LatestIssueRun,
     pass?: RecoveryPassReads,
   ) {
-    if (issue.monitorNextCheckAt) return true;
+    if (issue.monitorNextCheckAt || await hasIssueExternalWait(db, issue.companyId, issue.id)) return true;
     if (issue.status === "in_review" && latestRun?.status === "succeeded" &&
       await hasExternalReviewWait(issue, pass)) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&

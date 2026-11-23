@@ -145,3 +145,46 @@ retain the fork failure scheduler and never restore automatic blocked recovery.
 - A later block by anyone else changes `statusVersion`; the answer then cancels
   as `issue_not_in_progress`, and checkout re-checks the same version.
   Implementation: `server/src/services/blocked-question-answer.ts`.
+
+## LRH external waits (HOM-543)
+
+`issue_external_waits` is the narrow exception to
+`PAPERCLIP_AGENT_ISSUE_MONITORS=disabled`. It registers an external LRH run;
+there is no timer, polling, monitor reschedule or check-now permission.
+Agent monitor create/update/check-now still returns 403
+`agent_issue_monitors_disabled`.
+
+The current agent assignee (without a user assignee), or a board actor with issue
+mutation access, may call these company-scoped endpoints:
+
+- `POST /api/issues/:id/external-waits` with `{service, externalRef}` returns
+  `{wait, created}`. Closed issues return 409 `external_wait_issue_closed`.
+  Existing identities return their unchanged row with `created:false`.
+- `POST /api/issues/:id/external-waits/complete` accepts the same identity plus
+  optional `outcome` and `commentId`, returning `{wait, woke, reason?}`.
+  A comment must belong to this issue. Completing without prior registration
+  supports jobs armed before this release.
+- `POST /api/issues/:id/external-waits/cancel` changes waiting to cancelled,
+  returns `{wait}`, and never wakes. A missing identity returns 404.
+- `GET /api/issues/:id/external-waits` lists rows with ordinary issue read access.
+
+Only `service:"long-running-harness"` is accepted. `externalRef` is 1–128
+characters matching `^[A-Za-z0-9._:-]+$`. Other agents receive 403
+`external_wait_not_assignee`. Identity is unique by company/issue/service/ref.
+
+Waiting counts as a durable disposition only on an open issue and for its
+current assignee (or a board registration with null agent). Completion/cancellation
+removes that path; old assignees cannot keep a reassigned task waiting.
+Recovery, assigned-work and run-end handoff use the same SQL existence predicate.
+
+Completion and its heartbeat receipt commit together under normal issue wake
+admission. Only the first completion can wake: repeated completed/cancelled refs
+return `woke:false, reason:"already_settled"`. Only `in_progress`/`in_review`
+issues with an agent assignee and no user assignee wake; other statuses record
+completion with `reason:"issue_<status>"`. The unique receipt key is
+`external-wait-completed:<issueId>:<service>:<externalRef>`, reason
+`external_wait_completed`. Payload and context retain `externalWait` and the
+completion comment reference (`LRH_COMPLETION v1`). Busy execution retains a
+separate deferred wake for promotion after the active turn. An admission failure
+is surfaced and rolls back the completion, so it cannot consume a waiting target
+without its wake receipt. No monitor columns change.

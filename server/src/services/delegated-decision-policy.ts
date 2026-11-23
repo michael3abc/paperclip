@@ -173,6 +173,8 @@ export async function routeDelegatedDecision(db: Db, input: {
   sourceRunId: string | null; fingerprint: string; createdAt: Date;
   category: "interaction" | "approval" | "runtime";
   reservedReasons: HumanReservedDecisionReason[];
+  /** The worker's audience preference alone, without an independent human gate. */
+  agentRequestedHumanOnly?: boolean;
   requiredScopes?: DecisionDelegationScope["scopes"];
 }): Promise<DelegatedDecisionContext | null> {
   const requiredScopes: DecisionDelegationScope["scopes"] = [...new Set([
@@ -210,11 +212,17 @@ export async function routeDelegatedDecision(db: Db, input: {
     // Owner 2026-11-14 「「找不到 main 的卡片」或「預算超額審批」改由 momo 決定」: a request with no
     // main (including budget-threshold approvals, which have no requester or task) goes to
     // the company delegate; any reserved reason keeps it with the Owner.
-    const human = input.reservedReasons.length > 0 || (requester?.id === grant.agentId && !grant.scope.allowSelfApproval);
+    const reservedReasons = [...new Set([...input.reservedReasons,
+      ...(input.category === "interaction" && input.agentRequestedHumanOnly ? ["explicit_human" as const] : []),
+    ])];
+    const human = reservedReasons.length > 0 || (requester?.id === grant.agentId && !grant.scope.allowSelfApproval);
     return { ...base, level: human ? "human" : "delegate", recipientAgentId: human ? null : grant.agentId,
-      projectId: issue?.projectId ?? null, reservedReasons: input.reservedReasons };
+      projectId: issue?.projectId ?? null, reservedReasons };
   }
-  const reservedReasons = input.reservedReasons.filter(reason => reason === "explicit_human");
+  // Worker audience preferences may go to the main; independent interaction
+  // reservations must survive. Approval/runtime authority is unchanged.
+  const reservedReasons = input.category === "interaction" ? input.reservedReasons
+    : input.reservedReasons.filter(reason => reason === "explicit_human");
   return { ...base, level: reservedReasons.length ? "human" : "pm",
     recipientAgentId: reservedReasons.length ? null : recipient.agentId, projectId: recipient.projectId, reservedReasons };
 }

@@ -29,6 +29,7 @@ export interface IssueLivenessIssueInput {
   createdByUserId?: string | null;
   executionPolicy?: Record<string, unknown> | null;
   executionState?: Record<string, unknown> | null;
+  hasExternalWait?: boolean;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
 }
@@ -71,6 +72,7 @@ export type IssueReviewPathFactKind =
   | "interaction"
   | "approval"
   | "monitor"
+  | "external_wait"
   | "external_response"
   | "human_reviewer"
   | "active_run"
@@ -313,6 +315,7 @@ function reviewPaths(
 ): IssueReviewPathFact[] {
   if (issue.status !== "in_review") return [];
   const paths: IssueReviewPathFact[] = [];
+  if (issue.hasExternalWait) paths.push({ kind: "external_wait", ref: issue.id, agentId: issue.assigneeAgentId ?? null, userId: null, since: null });
   if (issue.conversationAgentId && issue.conversationUserId && issue.conversationState === "waiting") {
     return [{ kind: "human_reviewer", ref: issue.conversationUserId, userId: issue.conversationUserId, agentId: null, since: null }];
   }
@@ -595,6 +598,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
+    if (issue.hasExternalWait) return true;
     return Boolean(issue.assigneeUserId) ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
       index.activeRuns(issue).length > 0 ||

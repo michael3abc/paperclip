@@ -1,3 +1,4 @@
+import { externalWaitPathSql } from "../issue-external-wait-path.js";
 import { and, asc, eq, inArray, isNotNull, isNull, lt, notExists, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
@@ -617,6 +618,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
       // A saved monitor deadline is a first-class wait path.
+      sql`not ${externalWaitPathSql(issues)}`,
       or(isNull(issues.monitorNextCheckAt), lt(issues.monitorNextCheckAt, now)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),

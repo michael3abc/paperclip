@@ -46,6 +46,7 @@ export type IssueSnapshot = {
   hiddenAt: Date | null;
   originKind: string | null;
   monitorNextCheckAt: Date | null;
+  hasExternalWait?: boolean;
   executionState: Record<string, unknown> | null;
   /** Carried so the routine-env and responsible-user reader ports can use this
    * transaction-scoped snapshot instead of reading the issue again. */

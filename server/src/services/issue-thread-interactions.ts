@@ -4895,6 +4895,21 @@ export function issueThreadInteractionService(
           data.kind === "request_confirmation" &&
           data.payload.secretProposal !== undefined,
       });
+      // Resolve without the worker's preference to detect independent company
+      // caps/defaults, even when an explicit human request masks their source.
+      const inheritedPolicy = resolveInteractionPolicy({ kind: data.kind, governance, hasToolAction: false });
+      const agentRequestedHumanOnly = qualityItems.length === 0
+        && policy.requestedResolverPolicy === "human_only"
+        && policy.resolverPolicyProvenance === "explicit"
+        && policy.effectiveResolverPolicySource === "requested"
+        && inheritedPolicy.effectiveResolverPolicy !== "human_only";
+      const reservedReasons = new Set(options.decisionReservedReasons ?? []);
+      if (policy.effectiveResolverPolicy === "human_only" && !agentRequestedHumanOnly
+        && (data.resolverPolicy !== undefined || inheritedPolicy.effectiveResolverPolicy === "human_only"
+          || governance[data.kind]?.cap !== undefined || governance[data.kind]?.defaultPolicy !== undefined
+          || policy.effectiveResolverPolicySource === "governed_action" && !options.delegateOrdinaryToolAction)) {
+        reservedReasons.add("explicit_human");
+      }
       const previousRequest = data.idempotencyKey ? await getIdempotentInteraction({
         issueId: issue.id, companyId: issue.companyId, idempotencyKey: data.idempotencyKey,
       }) : null;
@@ -4904,10 +4919,7 @@ export function issueThreadInteractionService(
           sourceRunId: data.sourceRunId ?? actor.runId ?? null,
           fingerprint: decisionFingerprint({ kind: data.kind, payload: data.payload, sourceRunId: data.sourceRunId ?? null }),
           createdAt: options.decisionRequestedAt ?? new Date(), category: "interaction",
-          reservedReasons: policy.effectiveResolverPolicy === "human_only"
-            && (data.resolverPolicy !== undefined || governance[data.kind]?.cap !== undefined
-              || governance[data.kind]?.defaultPolicy !== undefined || policy.effectiveResolverPolicySource === "governed_action" && !options.delegateOrdinaryToolAction)
-            ? ["explicit_human", ...(options.decisionReservedReasons ?? [])] : options.decisionReservedReasons ?? [],
+          reservedReasons: [...reservedReasons], agentRequestedHumanOnly,
           ...(options.delegateOrdinaryToolAction ? { requiredScopes: ["external_writes"] } : {}),
         }) : null;
       if (delegation) {

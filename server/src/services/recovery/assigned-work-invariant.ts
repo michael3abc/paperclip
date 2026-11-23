@@ -22,6 +22,7 @@ export const PENDING_INTENTS = [
   "queued_wake",
   "scheduled_retry",
   "scheduled_monitor",
+  "external_wait",
   "native_recovery",
   "pending_handoff",
   "session_goal",
@@ -140,6 +141,7 @@ export type AssignedWorkFacts = {
     /** Owner of the agent's declared unblock action, when it declared one. */
     unblockOwner: { agentId: string } | { userId: string } | "board" | null;
     monitorNextCheckAt: Date | null;
+    hasExternalWait?: boolean;
     isConversation: boolean;
     awaitingFirstMessage: boolean;
   };
@@ -289,6 +291,7 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date, queuedRunStalled = f
   if (facts.nativeRecoveryPending) return "native_recovery";
   if (facts.pendingHandoff) return "pending_handoff";
   if (facts.sessionGoal === "active") return "session_goal";
+  if (facts.issue.hasExternalWait) return "external_wait";
   if (facts.issue.monitorNextCheckAt && facts.issue.monitorNextCheckAt.getTime() > now.getTime()) return "scheduled_monitor";
   if (facts.savedWorkRecovery && savedWorkRecoveryPending(facts.savedWorkRecovery, now)) return "saved_work_recovery";
   const interruption = facts.interruption;

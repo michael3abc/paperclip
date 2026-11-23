@@ -3145,7 +3145,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       : {};
     const existingDurableReceipt = async (queryDb: Db) => {
       const trackedKey = opts.idempotencyKey;
-      if (!receiptRequest && (trackedKey?.startsWith("issue-continue:") || trackedKey?.startsWith("pm-followthrough:"))) {
+      if (!receiptRequest && (trackedKey?.startsWith("issue-continue:") || trackedKey?.startsWith("pm-followthrough:") || trackedKey?.startsWith("external-wait-completed:"))) {
         const [receipt] = await queryDb.select().from(agentWakeupRequests).where(and(
           eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.idempotencyKey, trackedKey))).limit(1);
         if (receipt && (receipt.agentId !== agentId || receipt.payload?.issueId !== issueId))
@@ -3668,7 +3668,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const issuePostCommitActions: IssuePostCommitAction[] = [];
 
       return wakeQueue.admitIssueWake(
-        { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
+        { companyId: agent.companyId, issueId, durableChatRequest: durableRequest, externalWaitAdmission: opts.externalWaitAdmission },
         async (tx, { lockedIssue, lockIssue, prepareRecovery }) => {
           if (workspaceRequest) await verifyWorkspaceRequest(tx as unknown as Db);
           if (mainBlockerRequest) await verifyMainRequest(tx as unknown as Db);

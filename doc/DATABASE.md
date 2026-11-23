@@ -2035,3 +2035,13 @@ preserved; snapshot pruning follows the five-newest-snapshots rule.
 | Response-size diagnostics, the postgres.js patch, transaction memory | [database-client-internals.md](database-client-internals.md) |
 | Remote workspace snapshot storage | [workspace-storage.md](workspace-storage.md#experimental-remote-workspace-snapshots) |
 | Execution admission tables | [server/src/modules/README.md](../server/src/modules/README.md#execution-admission-accounting) |
+
+### LRH external waits
+
+Migration `0512_ordinary_stardust.sql` adds `issue_external_waits` and an
+`external-wait-completed:` partial unique wake index. The prefix is new, so prior
+releases cannot violate it. The large wake table index builds concurrently;
+this migration is registered for top-level execution and every statement is
+idempotent. The table's scoped identity and waiting-only index support bounded
+recovery existence probes. Completion and its queued/deferred wake receipt share
+the issue admission transaction; see `docs/agents/execution-semantics.md`.

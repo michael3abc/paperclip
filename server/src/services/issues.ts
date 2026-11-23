@@ -1,3 +1,4 @@
+import { externalWaitPathSql } from "./issue-external-wait-path.js";
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import { verifiedVoiceReplyProvenance } from "./heartbeat/chat-input-provenance.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -1987,7 +1988,7 @@ export interface IssueFilters {
   updatedSince?: string;
 }
 
-type IssueRow = typeof issues.$inferSelect & { displayStatus?: IssueDisplayStatus; externalConversationState?: "active" | "waiting" | null };
+type IssueRow = typeof issues.$inferSelect & { hasExternalWait?: boolean; displayStatus?: IssueDisplayStatus; externalConversationState?: "active" | "waiting" | null };
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
@@ -4838,6 +4839,8 @@ function reviewPathLabel(
       return "Linked approval";
     case "monitor":
       return "Scheduled review monitor";
+    case "external_wait":
+      return "Waiting for LRH completion";
     case "external_response":
       return "Waiting for an external update";
     case "human_reviewer":
@@ -4877,6 +4880,7 @@ const reviewAttentionIssueSelect = {
   conversationState: issues.conversationState,
   executionPolicy: issues.executionPolicy,
   executionState: issues.executionState,
+  hasExternalWait: externalWaitPathSql(issues),
   monitorNextCheckAt: issues.monitorNextCheckAt,
   monitorAttemptCount: issues.monitorAttemptCount,
   updatedAt: issues.updatedAt,
@@ -5209,6 +5213,7 @@ async function listIssueReviewAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      hasExternalWait: issue.hasExternalWait,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
@@ -6106,7 +6111,7 @@ async function listIssueBlockedInboxAttentionMap(
   const [graphIssueRows, graphRelationRows, companyAgentRows] =
     await Promise.all([
       dbOrTx
-        .select()
+        .select({ ...getTableColumns(issues), hasExternalWait: externalWaitPathSql(issues) })
         .from(issues)
         .where(
           and(
@@ -6378,6 +6383,7 @@ async function listIssueBlockedInboxAttentionMap(
       conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
+      hasExternalWait: issue.hasExternalWait,
       monitorNextCheckAt: issue.monitorNextCheckAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
