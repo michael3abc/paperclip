@@ -505,12 +505,6 @@ export async function admitExplicitNativeContinuation(input: {
     const stoppedAt = userStopBoundaryAt(run)!;
     const failedPreparation = recovery && input.workspaceRecoveryRequest?.phase === "repair" && run.id === recovery.state.failedRunId
       ? true : await isFailedNativePreparation(db, run, coordinator, "admission");
-    // A cleanup receipt does not prove that the original input was never sent.
-    // Retrying a native preparation must retain its independent delivery proof;
-    // new comments have their separate user receipt and are not source replay.
-    if (taskRetry && run.id === taskRetry.sourceRunId && run.runtimeMode !== "native"
-      && agentIsNative && !failedPreparation)
-      return blocked("delivery_unknown", "The original input's delivery cannot be verified. Reconcile its receipt before retrying.");
     if (recovery && input.workspaceRecoveryRequest?.phase !== "repair" && (
       run.resultJson?.workspaceRecoveryActionId !== recovery.action.id || run.resultJson?.interruptedByActorType !== "system"
     )) return blocked("unrelated_stop", "The system notice cannot override an unrelated Stop.");
@@ -518,6 +512,11 @@ export async function admitExplicitNativeContinuation(input: {
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId &&
       (!taskRetry || await isPreDispatchExecutionWaitVerified(db, run));
+    // An admission cancelled before dispatch has its own verified non-delivery
+    // receipt; it must not wait for provider delivery evidence it cannot have.
+    if (taskRetry && run.id === taskRetry.sourceRunId && run.runtimeMode !== "native"
+      && agentIsNative && !failedPreparation && !unusedAdmission)
+      return blocked("delivery_unknown", "The original input's delivery cannot be verified. Reconcile its receipt before retrying.");
     const sourceRunId = run.id;
     const strategyRequestId = input.taskRetryRequestId ?? input.queuedCommentRequestId ?? savedChatRequestId;
     const strategyEvidence = strategyRequestId && !Object.hasOwn(action.evidence, "systemRecovery")

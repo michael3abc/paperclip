@@ -22,6 +22,11 @@ device URL/code only to the initiating administrator; never log or persist eithe
 
 Guidance for human and AI contributors working in this repository.
 
+The issue-list inboxArchive filter is board-user-only and cannot be combined
+with attention; preserve the viewer-scoped isArchivedForMe projection. See
+docs/api/issues.md. Upstream Chat retry stop-wait polling is intentionally
+excluded: terminal cleanup remains background work under liveness-first.
+
 Execution is liveness-first (Owner 2026-11-13). The binding source is
 `/home/michael/services/docs/agents/liveness-first.md`; it supersedes every
 fail-closed rule in this repository's docs (stop proof, settlement ladders,
@@ -39,6 +44,8 @@ retain the durable backoff counter instead of opening a fresh restart window; se
 manual pause still apply and revoke automatic retry. New human or project-main
 input supersedes automatic retry of a failed predecessor and keeps its own input
 receipt. See `docs/agents/execution-semantics.md`.
+Sandbox disk exhaustion (native_sandbox_disk_full, sandbox_disk_full) and permanent
+agent_interaction_delivery_denied are deterministic in the unified classifier.
 Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
 require system interruption, process loss or controller loss. Ordinary failures keep
 their failure counter and provider retry deadline.
@@ -369,6 +376,8 @@ docs/agents/execution-semantics.md.
 Lightweight preflight preserves conversation-requester ownership; prepareRecovery
 checks saved Retry and queued-comment ownership before busy/fresh admission. Keep
 one-shot execution review/approval/changes handoffs durable in recovery deferral.
+Verified pre-dispatch cancellation receipts need no provider delivery evidence.
+Keep a fresh attempt when that admission never owned the preserved workspace.
 
 ## Native session bridge
 

@@ -3178,6 +3178,9 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.isUnreadForMe !== undefined
       ? { isUnreadForMe: issue.isUnreadForMe }
       : {}),
+    ...(issue.isArchivedForMe !== undefined
+      ? { isArchivedForMe: issue.isArchivedForMe }
+      : {}),
     activeRecoveryAction: issue.activeRecoveryAction ?? null,
     interruption: issue.interruption ?? null,
     successfulRunHandoff: issue.successfulRunHandoff ?? null,
@@ -7418,6 +7421,22 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertAgentMayLeaveBlocked(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string },
+    nextStatus: string,
+  ) {
+    if (req.actor.type !== "agent" || issue.status !== "blocked" || nextStatus === "blocked" || isClosedIssueStatus(nextStatus)) return true;
+    const hold = await getExecutionBlocker(db, issue.companyId, issue.id, { recoveryHoldOnly: true });
+    if (!hold?.recoveryActionId) return true;
+    res.status(409).json({
+      error: `Issue stays blocked until its execution recovery hold is released. ${hold.nextAction}`,
+      details: { issueId: issue.id, recoveryActionId: hold.recoveryActionId, cause: hold.cause, nextAction: hold.nextAction },
+    });
+    return false;
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -8964,6 +8983,15 @@ export function issueRoutes(
       res.status(400).json({ error: "ids and parentIds require view=index or view=rows without attention" });
       return;
     }
+    const inboxArchive = req.query.inboxArchive;
+    if (inboxArchive !== undefined && ((inboxArchive !== "include" && inboxArchive !== "archived") || attention)) {
+      res.status(400).json({ error: "inboxArchive must be include or archived and cannot be used with attention" });
+      return;
+    }
+    if (inboxArchive && (req.actor.type !== "board" || !req.actor.userId)) {
+      res.status(403).json({ error: "inboxArchive requires board authentication" });
+      return;
+    }
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -9131,6 +9159,9 @@ export function issueRoutes(
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
+      inboxArchive: inboxArchive && req.actor.type === "board" && req.actor.userId
+        ? { mode: inboxArchive, userId: req.actor.userId }
+        : undefined,
       unreadForUserId,
       readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
@@ -9188,7 +9219,7 @@ export function issueRoutes(
       requestKey,
       // The new collection projections must reflect read/archive/undo mutations
       // immediately. Keep in-flight coalescing and ETags, without a stale TTL body.
-      allowTtlCache: view === "compact",
+      allowTtlCache: view === "compact" && !inboxArchive,
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         return prepareIssueListForActor(req, companyId, listFilters, view, { reportPagination: true });
@@ -15500,6 +15531,7 @@ export function issueRoutes(
       }
 
       const nextStatus = updateFields.status ?? existing.status;
+      if (!(await assertAgentMayLeaveBlocked(req, res, existing, nextStatus))) return;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
         throw unprocessable("unblockDescriptor requires blocked status");
       }
@@ -17450,6 +17482,7 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+      if (req.body.expectedStatuses.includes("blocked") && !(await assertAgentMayLeaveBlocked(req, res, issue, "in_progress"))) return;
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.
@@ -20384,6 +20417,12 @@ export function issueRoutes(
           .json({ error: "Issue follow-up blocked by unresolved blockers" });
         return;
       }
+      if (
+        effectiveMoveToTodoRequested &&
+        !hasUnresolvedFirstClassBlockers &&
+        !(await assertAgentMayLeaveBlocked(req, res, issue, "todo"))
+      )
+        return;
       if (
         !(await assertCrossIssueInfluenceWithinRunCap(
           req,

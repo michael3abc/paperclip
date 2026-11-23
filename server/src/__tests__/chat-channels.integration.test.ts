@@ -66128,7 +66128,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
+  it.each(["person", "person_with_input_before_stop", "person_after_held_admission", "person_paused_after_accept", "person_with_superseded_continuation", "restart_recovery", "restart_recovery_joined_by_person"] as const)("continues an accepted GitHub task Retry from recovered saved work when its chat replay is refused after the click: %s", async initiator => {
     const f = await currentGitHubTaskRetryFixture(initiator === "person_with_input_before_stop");
     try {
       const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -66193,19 +66193,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const blocker = await getExecutionBlocker(db, companyId, issueId);
       const interruption = await taskInterruptionPresentation(db, f.issue);
       expect(interruption).toMatchObject({ state: "failed", canRetry: true });
-      expect(blocker).toMatchObject({ recoveryActionId, canRetry: true,
-        nextAction: "Saved work recovered. Retry continues from it.",
-        workspaceRecovery: { status: "recovered", message: "Saved work recovered. Retry continues from it." } });
-      expect(JSON.stringify(blocker)).not.toContain("Send a message");
+      // Liveness-first: terminal cleanup and saved recovery receipts never gate Retry.
+      expect(blocker).toBeNull();
       await db.update(heartbeatRuns).set({ status: "timed_out" }).where(eq(heartbeatRuns.id, f.runId));
-      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ canRetry: true,
-        nextAction: "Saved work recovered. Retry continues from it.",
-        workspaceRecovery: { message: "Saved work recovered. Retry continues from it." } });
+      expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
       await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_session_cleanup_quarantined" })
         .where(eq(heartbeatRuns.id, f.runId));
       const quarantined = await getExecutionBlocker(db, companyId, issueId);
-      expect(quarantined).toMatchObject({ canRetry: false, nextAction: "Saved work recovered.",
-        workspaceRecovery: { message: "Saved work recovered." } });
+      expect(quarantined).toBeNull();
       await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation" })
         .where(eq(heartbeatRuns.id, f.runId));
 
@@ -66231,6 +66226,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(joined).toMatchObject({ accepted: true, requestId: request.requestId, chatActionId: request.chatActionId });
       }
       expect(request).toMatchObject({ accepted: true, stale: false, chatActionId: expect.any(String) });
+      if (initiator === "person_with_superseded_continuation") await db.insert(heartbeatRuns).values({ companyId,
+        agentId: f.fixture.assignedAgentId, status: "cancelled", errorCode: "issue_execution_lock_changed", runtimeMode: "legacy",
+        issueId, retryOfRunId: sourceRunId, finishedAt: new Date(), contextSnapshot: { issueId } });
       const chatAction = async () => (await db.select().from(chatActions).where(eq(chatActions.id, request.chatActionId!)))[0];
       expect((await chatAction()).payload.sourceAuthorizationPending).toBe(true);
 
@@ -66270,7 +66268,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(admitted).toMatchObject({ status: "coalesced", runId: expect.any(String) });
       const [run] = await readHeartbeatRunsById(admitted.runId!);
       expect(run).toMatchObject({ status: "queued", contextSnapshot: { issueId, taskRetryRequestId: request.requestId } });
-      expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({ mode: "resume_preserved_workspace" });
+      // A cancelled pre-dispatch admission never owned the preserved workspace.
+      // Keep its fresh attempt and the original saved snapshot intact.
+      expect(await readFreshWorkspaceReadiness(db, run)).toMatchObject({
+        mode: initiator === "person_after_held_admission" ? "fresh_isolated_workspace" : "resume_preserved_workspace",
+      });
+      expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, snapshotId)))[0])
+        .toMatchObject({ status: "committed", sourceRunId: f.runId, sha256: "c".repeat(64) });
       expect((await readHeartbeatRunsByCompanyId(companyId))
         .filter(candidate => candidate.contextSnapshot?.taskRetryRequestId === request.requestId)).toHaveLength(1);
       const activity = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),

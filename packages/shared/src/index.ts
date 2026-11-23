@@ -1200,6 +1200,7 @@ export type {
   ExternalObjectSummary,
   ExternalObjectSummaryItem,
   CompactIssue,
+  IssueInboxArchiveFilter,
   IssueSummary,
   Issue,
   IssueVisibility,
