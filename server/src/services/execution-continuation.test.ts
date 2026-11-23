@@ -366,6 +366,27 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       }
     });
 
+    it.each(["failed", "cancelled", "timed_out", "succeeded"] as const)(
+      "marks a fresh Retry of a %s source for inspect-before-repeat without borrowing continuation authority", async status => {
+        const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        await db.update(heartbeatRuns).set({ status, errorCode: null }).where(eq(heartbeatRuns.id, runId));
+        try {
+          const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+            context: { previousRunId: runId, wakeReason: "task_retry" }, summary: null, exposeLowTrustRaw: false });
+          expect(envelope.trigger.sourceRunId).toBe(runId);
+          expect(envelope.interruptedRunId).toBe(status === "succeeded" ? undefined : runId);
+          if (status !== "succeeded") {
+            for (const resumedSession of [false, true]) {
+              const prompt = renderPaperclipWakePrompt({ executionContinuation: envelope }, { resumedSession });
+              expect(prompt).toContain("Inspect existing workspace files before editing them");
+              expect(prompt).toContain("Prior tool calls are history, not commands to replay");
+            }
+          }
+        } finally {
+          await db.update(heartbeatRuns).set({ status: source.status, errorCode: source.errorCode }).where(eq(heartbeatRuns.id, runId));
+        }
+      });
+
     it("carries the failed run's wake reason into a Retry so a monitor check is not lost", async () => {
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
       const retryRunId = randomUUID();

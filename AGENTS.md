@@ -378,6 +378,10 @@ checks saved Retry and queued-comment ownership before busy/fresh admission. Kee
 one-shot execution review/approval/changes handoffs durable in recovery deferral.
 Verified pre-dispatch cancellation receipts need no provider delivery evidence.
 Keep a fresh attempt when that admission never owned the preserved workspace.
+Fresh task Retry keeps its exact terminal source in interruptedRunId for the
+inspect-existing-work prompt, without borrowing preparation continuation authority.
+Only after queue admission may it lift its ancestry's system failure block;
+preserve human, declared, dependency and newer blocks.
 
 ## Native session bridge
 

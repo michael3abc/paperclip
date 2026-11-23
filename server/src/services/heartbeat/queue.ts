@@ -1,3 +1,4 @@
+import { liftTaskRetryInterruptionBlock } from "../interruption-block-release.js";
 import { loadBridgeWorkerCapacity } from "./bridge-worker-routing.js";
 import { bridgeWorkerCapacities } from "../bridge-worker-routing.js";
 import { MAIN_BLOCKER_REASON, verifyMainBlockerWake } from "../recovery/main-blocker.js";
@@ -5203,6 +5204,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             },
           });
           if (!newRun) return { kind: "deferred" as const };
+          if (!explicitContinuation && taskRetryActorId && !failedChatRetry) {
+            await liftTaskRetryInterruptionBlock(tx as unknown as Db, { companyId: issue.companyId,
+              issueId: issue.id, agentId, sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId)!,
+              successorRunId: newRun.id });
+          }
 
           // executionRunId is NOT stamped here (enqueueWakeup queues the run but
           // doesn't start it). It will be stamped in claimQueuedRun() once the run

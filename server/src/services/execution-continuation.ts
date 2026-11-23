@@ -566,11 +566,17 @@ export async function buildExecutionContinuation(input: {
     if (!predecessor || (!authorization && !verifiedWorkspace) || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }
-  const interruptedRunId = explicitUserSource ?? (staleInterruptedSource ? undefined : interruptedSource) ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
+  const triggerReason = string(input.context.wakeReason) ?? "task_execution";
+  // A fresh Retry can have no preparation-continuation certificate. Its exact
+  // terminal source still needs the inspect-before-repeat prompt; this marker
+  // carries history only and grants no continuation authority.
+  const retrySource = retryWakeReasons.has(triggerReason) && sourceRunId
+    ? priorRuns.find(run => run.id === sourceRunId && ["failed", "interrupted", "timed_out", "cancelled"].includes(run.status))?.id
+    : undefined;
+  const interruptedRunId = explicitUserSource ?? (staleInterruptedSource ? undefined : interruptedSource) ?? retrySource ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
-  const triggerReason = string(input.context.wakeReason) ?? "task_execution";
   const retriedCandidate = await requeuedWakeReason(db, { companyId, issueId, runId: input.runId, context: input.context });
   const retriedReason = retriedCandidate && retriedCandidate !== triggerReason && !retryWakeReasons.has(retriedCandidate)
     ? retriedCandidate : null;

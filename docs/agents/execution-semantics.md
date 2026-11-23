@@ -35,6 +35,13 @@ Owner Recheck may still inspect a cancelled run; it is diagnostic only.
 Saved-message recovery follows the same rule: a terminal native source does not
 need a committed finalization record. Preserve missing or failed finalization
 evidence while the next authorized input passes normal admission.
+A fresh task Retry retains its exact terminal source as `interruptedRunId` in
+its continuation envelope, including a refused pre-dispatch admission. This
+renders the inspect-existing-work / never-replay-tool-history notice in both fresh
+and resumed prompts; the marker grants no preparation continuation authority.
+After that Retry is queued, lift only its ancestry's system failure block, using
+the existing status-version, human attribution and dependency checks. A human,
+declared, dependency or newer block stays in place.
 Preparation-only Retry can retain its saved directory after automatic retries
 are exhausted. The host exhaustion event must match the run's failure class and
 durable retry accounting; promotion must occur after the recorded due time.

@@ -49,14 +49,26 @@ describe("durable task Retry admission", () => {
       contextSnapshot: { issueId }, finishedAt: new Date() });
     return { db, companyId, issueId, actorId: "board", observedRunId: runId, idempotencyKey: randomUUID() };
   }
+  // Exercise the preparation-only certificate with the host's real settlement
+  // shape; a bootstrap flag alone is not a settled preparation receipt.
+  async function recordPreparationSettlement(run: typeof heartbeatRuns.$inferSelect) {
+    await db.insert(heartbeatRunEvents).values([
+      { companyId: run.companyId, agentId: run.agentId, runId: run.id, seq: 1,
+        eventType: "error", stream: "system", level: "error", message: run.error },
+      { companyId: run.companyId, agentId: run.agentId, runId: run.id, seq: 2,
+        eventType: "lifecycle", stream: "system", level: "info", message: "task.run.measured",
+        payload: { phase: "task.run.measured", outcome: "failed", durationMs: 1, durableSettlement: true } },
+    ]);
+  }
   it.each(["valid", "wrong_run", "wrong_actor", "wrong_source", "wrong_generation", "unadmitted", "missing_authorization"])(
     "dispatches a preparation Retry with no recovery-action row only from its exact admitted receipt: %s", async state => {
       const input = await seed();
       await db.update(issues).set({ status: "todo" }).where(eq(issues.id, input.issueId));
-      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "setup_failed",
+      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "setup_failed", error: "Preparation failed",
         executionStage: "preparing", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
-        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+        resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+      await recordPreparationSettlement(source);
       const receipt = await requestTaskRetry(input), successorRunId = randomUUID();
       const continuation = await db.transaction(async tx => {
         await tx.select().from(issues).where(eq(issues.id, input.issueId)).for("update");
@@ -98,10 +110,11 @@ describe("durable task Retry admission", () => {
   async function seedFailedRetryAdmittedRun() {
     const input = await seed();
     await db.update(issues).set({ status: "todo" }).where(eq(issues.id, input.issueId));
-    const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "setup_failed",
+    const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "setup_failed", error: "Preparation failed",
       executionStage: "preparing", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+    await recordPreparationSettlement(source);
     const receipt = await requestTaskRetry(input), parentId = randomUUID();
     const continuation = await db.transaction(async tx => {
       await tx.select().from(issues).where(eq(issues.id, input.issueId)).for("update");
@@ -151,7 +164,7 @@ describe("durable task Retry admission", () => {
       outcome: "scheduled", run: { id: first.run.id } });
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.input.issueId)))
       .toHaveLength(1);
-    // A second transient failure retries from its immediate parent, then the budget ends.
+    // An unknown code gets three automatic retries before it becomes deterministic.
     const later = new Date(f.now.getTime() + 2000);
     const [failedFirst] = await db.update(heartbeatRuns).set({ status: "failed", errorCode: "remote_workspace_restore_failed",
       startedAt: later, finishedAt: later, resultJson: f.parent.resultJson }).where(eq(heartbeatRuns.id, first.run.id)).returning();
@@ -164,10 +177,17 @@ describe("durable task Retry admission", () => {
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "remote_workspace_restore_failed",
       startedAt: later, finishedAt: later }).where(eq(heartbeatRuns.id, second.run.id));
     await db.update(issues).set({ executionRunId: second.run.id }).where(eq(issues.id, f.input.issueId));
-    expect(await heartbeat.scheduleBoundedRetry(second.run.id, { now: later })).toMatchObject({ outcome: "retry_exhausted" });
+    const third = await heartbeat.scheduleBoundedRetry(second.run.id, { now: later });
+    expect(third).toMatchObject({ outcome: "scheduled", run: { scheduledRetryAttempt: 3, retryOfRunId: second.run.id } });
+    if (third.outcome !== "scheduled") throw new Error("Expected third unknown-code retry");
+    await expect(dispatchRun(f.input, third.run)).resolves.toMatchObject({ interruptedRunId: second.run.id });
+    await db.update(heartbeatRuns).set({ status: "failed", startedAt: later, finishedAt: later,
+      errorCode: "remote_workspace_restore_failed", resultJson: f.parent.resultJson }).where(eq(heartbeatRuns.id, third.run.id));
+    await db.update(issues).set({ executionRunId: third.run.id }).where(eq(issues.id, f.input.issueId));
+    expect(await heartbeat.scheduleBoundedRetry(third.run.id, { now: later })).toMatchObject({ outcome: "retry_exhausted" });
     // Removing the successor's own receipt reproduces the dispatch refusal.
     const receipts = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.input.issueId));
-    expect(receipts).toHaveLength(2);
+    expect(receipts).toHaveLength(3);
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id,
       receipts.find(row => (row.evidence.explicitUserContinuation as Record<string, unknown>).runId === second.run.id)!.id));
     await expect(dispatchRun(f.input, second.run)).rejects.toThrow("continuation_user_authorization_missing");
@@ -520,25 +540,29 @@ describe("durable task Retry admission", () => {
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
     expect(await notices()).toBe(escalated);
   });
-  it("still escalates a failed Retry run's transient preparation failure once its bounded retries are spent", async () => {
+  it("schedules the third unknown-code preparation retry without blocking the task", async () => {
     const f = await seedFailedRetryAdmittedRun();
     await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed",
       scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     }).where(eq(heartbeatRuns.id, f.parent.id));
     await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
-    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "blocked" });
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 3 });
+    expect(successors[0].scheduledRetryAt!.getTime()).toBeGreaterThan(f.now.getTime());
   });
   async function seedRefusedRetry() {
     const input = await seed();
     const now = Date.now();
     const [source] = await db.update(heartbeatRuns).set({
-      runtimeMode: "legacy", errorCode: "setup_failed", executionStage: "preparing",
+      runtimeMode: "legacy", errorCode: "setup_failed", error: "Preparation failed", executionStage: "preparing",
       createdAt: new Date(now - 3000), finishedAt: new Date(now - 2000),
       runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+    await recordPreparationSettlement(source);
     const [hold] = await db.insert(issueRecoveryActions).values({ companyId: input.companyId, sourceIssueId: input.issueId,
       kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: source.id,
       status: "resolved", outcome: "blocked", nextAction: "Continue after recovery.",
@@ -553,7 +577,7 @@ describe("durable task Retry admission", () => {
   }
 
   it.each(["ready", "provider_event", "provider_event_with_hold", "retained_lease", "started", "missing_receipt", "foreign_receipt", "live_ancestor"] as const)(
-    "admits Retry after a refused automatic attempt only with no provider work: %s", async gate => {
+    "declines unverified preparation certificates and admits a fresh Retry: %s", async gate => {
     const { input, source, refused, hold } = await seedRefusedRetry();
     if (gate === "provider_event_with_hold") await db.insert(issueRecoveryActions).values({ companyId: input.companyId, sourceIssueId: input.issueId,
       kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: refused.id,
@@ -583,18 +607,22 @@ describe("durable task Retry admission", () => {
       }
       return continuation;
     });
+    expect(continuation).toBeNull();
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0].evidence.explicitUserContinuation)
+      .toBeUndefined();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successorRunId))).toHaveLength(0);
     if (gate === "ready") {
-      expect(continuation).toMatchObject({ previousRunId: refused.id, taskRetryRequestId: receipt.requestId });
-      await expect(buildExecutionContinuation({ db, companyId: input.companyId, issueId: input.issueId,
-        agentId: source.agentId, runId: successorRunId, context: { issueId: input.issueId, explicitUserContinuation: continuation },
-        summary: null, exposeLowTrustRaw: false })).resolves.toMatchObject({ interruptedRunId: refused.id });
+      // A refused admission has no workspace of its own. Retry keeps its
+      // source receipt and starts a fresh attempt instead of borrowing authority.
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "queued")));
+      expect(queued).toHaveLength(1);
+      expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: refused.id, taskRetryRequestId: receipt.requestId });
+      expect(await dispatchRun(input, queued[0])).toMatchObject({ interruptedRunId: refused.id });
       expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0].evidence.automaticRecovery)
-        .toMatchObject({ actionOutcome: "unknown", replay: "explicit_user_continuation" });
-    } else {
-      expect(continuation).toBeNull();
-      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0].evidence.explicitUserContinuation)
-        .toBeUndefined();
-      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successorRunId))).toHaveLength(0);
+        .toMatchObject({ actionOutcome: "unknown", replay: "blocked" });
     }
   });
 
@@ -673,7 +701,7 @@ describe("durable task Retry admission", () => {
 
   it.each(["provider_work_started", "provider_event", "native_checkpoint", "missing_bootstrap_proof",
     "missing_stop_receipt", "changed_snapshot", "pending_approval", "late_operator_stop", "agent_paused", "company_paused", "budget_hard_stop"] as const)(
-    "holds a recovered process-lost preparation Retry when a current gate changes: %s", async gate => {
+    "resends uncertain preparation outcomes while preserving current governance gates: %s", async gate => {
       const { input, source, hold, leaseId, snapshotId } = await seedRecoveredLostPreparation(2);
       await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
       await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
@@ -682,7 +710,7 @@ describe("durable task Retry admission", () => {
         .set({ resultJson: { ...source.resultJson, executionRecovery: { kind: "bootstrap",
           ...(gate === "provider_work_started" ? { providerWorkStarted: true } : {}) } } }).where(eq(heartbeatRuns.id, source.id));
       if (gate === "provider_event") await db.insert(heartbeatRunEvents).values({ companyId: input.companyId,
-        agentId: source.agentId, runId: source.id, seq: 1, eventType: "tool.execution.started" });
+        agentId: source.agentId, runId: source.id, seq: 3, eventType: "tool.execution.started" });
       if (gate === "native_checkpoint") {
         await db.update(heartbeatRuns).set({ nativeIssueId: input.issueId }).where(eq(heartbeatRuns.id, source.id));
         await db.insert(nativeRunFinalizations).values({ companyId: input.companyId, issueId: input.issueId,
@@ -717,9 +745,19 @@ describe("durable task Retry admission", () => {
           }
         } else expect(attempt.status).toBe("fulfilled");
       }
-      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
-      if (!["late_operator_stop", "agent_paused", "company_paused", "budget_hard_stop"].includes(gate)) {
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")));
+      const governanceGate = ["pending_approval", "late_operator_stop", "agent_paused", "company_paused", "budget_hard_stop"].includes(gate);
+      expect(queued).toHaveLength(governanceGate ? 0 : 1);
+      if (!governanceGate) {
+        const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+        expect(wake).toMatchObject({ status: "coalesced", runId: queued[0].id });
+        expect(queued[0].contextSnapshot).toMatchObject({ taskRetryRequestId: receipt.requestId });
+        const continuation = await dispatchRun(input, queued[0]);
+        expect(continuation).toMatchObject({ interruptedRunId: input.observedRunId,
+          trigger: { sourceRunId: input.observedRunId } });
+      }
+      if (gate === "pending_approval") {
         expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0].evidence.explicitUserContinuation)
           .toBeUndefined();
       }
@@ -739,8 +777,8 @@ describe("durable task Retry admission", () => {
     const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "queued")));
     expect(queued, JSON.stringify(wake.payload)).toHaveLength(1);
     expect(wake).toMatchObject({ status: "coalesced", runId: queued[0].id });
-    expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: refused.id,
-      explicitUserContinuation: { previousRunId: refused.id, taskRetryRequestId: receipt.requestId } });
+    expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: refused.id, taskRetryRequestId: receipt.requestId });
+    expect(queued[0].contextSnapshot).not.toHaveProperty("explicitUserContinuation");
     await expect(dispatchRun(input, queued[0])).resolves.toMatchObject({ interruptedRunId: refused.id });
   });
 
@@ -765,7 +803,7 @@ describe("durable task Retry admission", () => {
       const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "queued")));
       const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
       if (reason === "failure") {
-        expect(queued[0]?.contextSnapshot).toMatchObject({ explicitUserContinuation: { previousRunId: refused.id } });
+        expect(queued[0]?.contextSnapshot).toMatchObject({ previousRunId: refused.id, taskRetryRequestId: receipt.requestId });
         expect(task).toMatchObject({ status: "todo", blockedTransitionAt: null });
       } else expect(task.status, reason).toBe("blocked");
     }
@@ -944,7 +982,8 @@ describe("durable task Retry admission", () => {
       expect(retained).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
       expect(repairs).toHaveLength(1);
       expect(readSystemRecovery(repairs[0].evidence)).toMatchObject({ state: "scheduled", intentId: receipt.requestId });
-      expect(await taskChatRetryCanAwaitRecovery(db, source, input.issueId, receipt.requestId!)).toBe(true);
+      // Terminal runs release admission immediately; preservation continues in the background.
+      expect(await taskChatRetryCanAwaitRecovery(db, source, input.issueId, receipt.requestId!)).toBe(false);
     } else {
       expect(source.resultJson).toBeNull();
       expect(retained).toMatchObject({ status: "active", leasePolicy: "reuse_by_environment" });

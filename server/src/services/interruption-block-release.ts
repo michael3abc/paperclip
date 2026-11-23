@@ -1,5 +1,6 @@
-import { and, desc, eq, sql, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type SQLWrapper } from "drizzle-orm";
 import { activityLog, heartbeatRuns, issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
+import { taskRetryRunAncestry } from "./recovery-run-ancestry.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { persistActivity } from "./activity-log.js";
 
@@ -61,4 +62,24 @@ export async function liftInterruptionBlock(db: Db, task: typeof issues.$inferSe
     action: "issue.updated", entityType: "issue", entityId: task.id,
     details: { status: "todo", previousStatus: "blocked", reason: "continuation_queued", successorRunId,
       _previous: { status: "blocked" } } });
+}
+
+/** Called after a fresh Retry is queued, under the same issue lock. A failed
+ * predecessor's system block belongs to its ancestry even when no preparation
+ * continuation certificate can be issued. Human and unrelated blocks stay. */
+export async function liftTaskRetryInterruptionBlock(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; sourceRunId: string; successorRunId: string;
+}) {
+  const [task] = await db.select().from(issues).where(and(
+    eq(issues.companyId, input.companyId), eq(issues.id, input.issueId), eq(issues.assigneeAgentId, input.agentId)));
+  if (!task || task.status !== "blocked") return;
+  const ancestry = await taskRetryRunAncestry({ db, ...input });
+  if (!ancestry?.length) return;
+  const sources = await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), inArray(heartbeatRuns.id, ancestry)));
+  const actions = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    inArray(sql<string>`${issueRecoveryActions.evidence}->>'runId'`, ancestry)));
+  if (!actions.length) return;
+  await liftInterruptionBlock(db, task, actions, sources, input.successorRunId);
 }
