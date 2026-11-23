@@ -191,6 +191,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   }, 30_000);
 
   afterEach(async () => {
+    // Issue routes enqueue wakes after responding; join them before deleting
+    // fixtures so a late wake cannot recreate agent_wakeup_requests mid-cleanup.
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(caseHandoffs);
     await db.delete(cases);
     await db.delete(documentRevisions);

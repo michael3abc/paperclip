@@ -47,6 +47,9 @@ only; no release build, deployment or restart.
 2026-11-23 validation repair: unify both disk-full aliases and permanent interaction
 delivery denial; retain liveness-first admission and verified pre-dispatch Retry,
 with the original saved snapshot intact when the successor needs a fresh attempt.
+Final validation: 185 residual failures match main's actual assertions; recovery
+120/120 passes after joining background wakes before fixture cleanup. Source
+build, low-memory typecheck, token gates and MCP 18/18 pass; no deployment.
 
 ## 2026-11-20 upstream merge (HOM-421; not deployed)
 
