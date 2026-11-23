@@ -183,6 +183,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
     issueStatus?: "in_progress" | "in_review";
+    waitingConversation?: boolean;
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
   }) {
@@ -238,6 +239,12 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: input?.issueStatus ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      ...(input?.waitingConversation ? {
+        conversationAgentId: agentId,
+        conversationUserId: "responsible-user",
+        responsibleUserId: "responsible-user",
+        conversationState: "waiting",
+      } : {}),
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       executionPolicy: {
@@ -280,6 +287,41 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     return { companyId, agentId, issueId, nextCheckAt };
   }
+
+  it("dispatches a due monitor once for an idle waiting main Chat", async () => {
+    const { issueId, agentId } = await seedFixture({ issueStatus: "in_review", waitingConversation: true,
+      monitorAttemptCount: 2, monitor: { maxAttempts: 3, timeoutAt: "2026-04-11T16:00:00.000Z" } });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    expect(await heartbeat.tickIssueMonitors(tickAt)).toMatchObject({ triggered: 1 });
+    await waitForHeartbeatIdle();
+    expect(await heartbeat.tickIssueMonitors(new Date(tickAt.getTime() + 5 * 60_000))).toMatchObject({ triggered: 0 });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "succeeded", contextSnapshot: { issueId, wakeReason: "issue_monitor_due" } });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 3, monitorWakeRequestedAt: null });
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.filter(wake => wake.idempotencyKey?.startsWith(`issue-monitor:${issueId}:`))).toHaveLength(1);
+  });
+
+  it.each(["timeout", "attempt limit"] as const)("dispatches waiting Chat monitor recovery once after its %s", async limit => {
+    const { issueId, agentId } = await seedFixture({ issueStatus: "in_review", waitingConversation: true,
+      monitorAttemptCount: 2, monitor: limit === "timeout"
+        ? { timeoutAt: "2026-04-11T12:30:00.000Z" } : { maxAttempts: 2 } });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    expect(await heartbeat.tickIssueMonitors(tickAt)).toMatchObject({ skipped: 1 });
+    await waitForHeartbeatIdle();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "succeeded", contextSnapshot: { issueId, wakeReason: "issue_monitor_recovery" } });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ monitorNextCheckAt: null, monitorWakeRequestedAt: null, monitorAttemptCount: 2 });
+    await heartbeat.tickIssueMonitors(new Date(tickAt.getTime() + 5 * 60_000));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId))).toHaveLength(1);
+  });
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
@@ -521,7 +563,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
   });
 
-  it.each(["unknown", "exhausted"] as const)("does not replay a quota monitor with %s execution evidence", async (kind) => {
+  it.each(["unknown", "exhausted"] as const)("retains a durable liveness retry for a quota monitor with %s preparation evidence", async (kind) => {
     const sourceRunId = randomUUID();
     const { companyId, issueId, agentId } = await seedFixture({
       monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: sourceRunId },
@@ -533,9 +575,16 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       resultJson: kind === "exhausted" ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } : null,
     });
     await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
-    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
-    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
-    expect(await db.select().from(issueRecoveryActions)).toMatchObject([{ ownerType: "board", evidence: { runId: sourceRunId } }]);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: kind === "exhausted" ? 3 : 1 });
+    const wakes = await db.select().from(agentWakeupRequests);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ status: "queued", runId: successors[0]!.id, payload: { issueId, retryOfRunId: sourceRunId } });
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(2);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1 });
   });
 
   it("wakes a cross-agent review participant for provider quota monitors", async () => {
@@ -674,7 +723,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const [blocker] = await db.insert(issues).values({ companyId, title: "Unfinished dependency", status: "todo" }).returning();
     await db.insert(issueRelations).values({ companyId, issueId: blocker.id, relatedIssueId: issueId, type: "blocks" });
     const result = await heartbeatService(db).triggerIssueMonitor(issueId, { actorType: "user", actorId: "local-board" });
-    expect(result).toMatchObject({ outcome: "skipped" });
+    expect(result).toMatchObject({ outcome: "skipped", reason: "issue_dependencies_blocked" });
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue).toMatchObject({ status: "blocked", monitorNextCheckAt: nextCheckAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);

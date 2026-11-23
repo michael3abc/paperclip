@@ -193,7 +193,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const f = await fixture();
     f.deps.enqueueWakeup.mockResolvedValueOnce(null);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
     const calls = f.deps.enqueueWakeup.mock.calls;
     expect(calls[0]![1]!.idempotencyKey).toBe(calls[1]![1]!.idempotencyKey);
@@ -256,7 +256,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(JSON.stringify(events)).not.toContain("PRIVATE_PROVIDER_FAILURE");
   });
 
-  it("repeats a persistent diagnostic after its bounded quiet window", async () => {
+  it("bounds unexplained null admissions even without a configured attempt limit", async () => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockResolvedValue(null);
     await f.scheduler.tickTimers(now);
@@ -265,7 +265,11 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     await db.update(activityLog).set({ createdAt: new Date(Date.now() - 6 * 60_000) }).where(eq(activityLog.entityId, f.issue.id));
     await f.scheduler.tickTimers(new Date(now.getTime() + 60_000));
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(2);
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 3 });
+    await f.scheduler.tickTimers(new Date(now.getTime() + 5 * 60_000));
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(3);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
+    expect(events.at(-1)?.details).toMatchObject({ reason: "monitor_dispatch_unclassified", attemptCount: 3, cleared: true });
   });
 
   it("does not copy an unrecognized blocker cause into monitor activity", async () => {
@@ -278,6 +282,37 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
     expect(events).toMatchObject([{ action: "issue.monitor_deferred", details: { reason: "execution_reconciliation_required" } }]);
     expect(JSON.stringify(events)).not.toContain("PRIVATE_BLOCKER_CAUSE");
+  });
+
+  it.each(["monitor_run_active", "issue_dependencies_blocked", "issue_continuation_pending",
+    "issue_rewake_throttled", "heartbeat_daily_cap", "heartbeat.worktree_execution_cutoff"])(
+    "records the named admission wait %s without consuming a monitor attempt", async reason => {
+    const f = await fixture();
+    f.deps.enqueueWakeup.mockImplementationOnce(async (_agentId, options) => {
+      options?.issueStateGuard?.onDispatchDeferred?.(reason);
+      return null;
+    });
+    await f.scheduler.tickTimers(now);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id)))
+      .toMatchObject([{ details: { reason, attemptCount: 0 } }]);
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it("never logs an unrecognized admission reason and respects the monitor's smaller limit", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ executionPolicy: { mode: "normal", stages: [],
+      monitor: { nextCheckAt: dueAt.toISOString(), maxAttempts: 1 } } }).where(eq(issues.id, f.issue.id));
+    f.deps.enqueueWakeup.mockImplementationOnce(async (_agentId, options) => {
+      options?.issueStateGuard?.onDispatchDeferred?.("PRIVATE_ADMISSION_REASON");
+      return null;
+    });
+    await f.scheduler.tickTimers(now);
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1,
+      executionState: { monitor: { status: "cleared", attemptCount: 1, clearReason: "dispatch_skipped" } } });
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
+    expect(events).toMatchObject([{ details: { reason: "monitor_dispatch_unclassified", attemptLimit: 1, cleared: true } }]);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_ADMISSION_REASON");
   });
 
   it("releases a monitor claim when diagnostic storage fails", async () => {

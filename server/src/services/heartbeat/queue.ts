@@ -2914,6 +2914,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
+      // Internal monitor claims are checked again under the issue lock. A
+      // settled Chat may still owe its previously scheduled external check.
+      ((contextSnapshot.source === "issue.monitor"
+        || (contextSnapshot.source === "issue.monitor.recovery" && reason === "issue_monitor_recovery"))
+        && opts.issueStateGuard?.monitorNextCheckAt && opts.issueStateGuard.monitorWakeRequestedAt) ||
       (reason === "onboarding_chat_greeting" && opts.manualUserWake === true
         && opts.requestedByActorType === "user" && source === "on_demand") ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
@@ -2964,11 +2969,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     if (issueId && await hasAutomaticInteractionDeliveryHold(db, {
       companyId: agent.companyId, issueId, agentId, payload, context: enrichedContextSnapshot,
       actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
-    })) return null;
+    })) {
+      opts.issueStateGuard?.onDispatchDeferred?.("interaction_delivery_pending");
+      return null;
+    }
     if (issueId) {
       const [pending] = await db.select().from(caseHandoffs).where(and(eq(caseHandoffs.companyId, agent.companyId), eq(caseHandoffs.issueId, issueId),
         inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch"]))).limit(1);
-      if (pending && opts.durableCaseHandoffRequest?.handoffId !== pending.id) return null;
+      if (pending && opts.durableCaseHandoffRequest?.handoffId !== pending.id) {
+        opts.issueStateGuard?.onDispatchDeferred?.("case_handoff_pending");
+        return null;
+      }
     }
     // Mentions only annotate comments. Ignore legacy callers before creating
     // a run or deferred request; assignment and review have their own wakes.
@@ -2986,7 +2997,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         taskRetryActorId,
         hasIndependentConversationWakeCause: hasIndependentConversationWakeCause(),
       });
-      if (preflight.kind === "skipped") return null;
+      if (preflight.kind === "skipped") {
+        opts.issueStateGuard?.onDispatchDeferred?.("conversation_wake_ineligible");
+        return null;
+      }
       if (preflight.onboardingCompletion) enrichedContextSnapshot.onboardingCompletion = true;
     }
     if (agent.adapterType === "paperclip_runner") {
@@ -3217,6 +3231,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
       waitCondition?: Record<string, unknown>,
     ): Promise<{ created: boolean; waitSaved?: boolean }> => {
+      opts.issueStateGuard?.onDispatchDeferred?.(skipReason);
       // A temporary refusal must leave the handoff retryable, without burning
       // its one durable receipt ID on a skipped wake.
       if (caseRequest) return { created: false };
@@ -3956,12 +3971,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }
           }
 
-          // Completion can settle the conversation while admission is outside
-          // the issue lock. Recheck the current state before persisting a wake.
-          if (isWaitingConversation(issue) && !hasIndependentConversationWakeCause()) {
-            return { kind: "skipped" as const };
-          }
-
           if (taskRetryActorId) {
             assertTaskRetryConversationAllowed(issue, taskRetryActorId);
             if (await retireSupersededTaskRetry(tx as unknown as Db, {
@@ -3991,7 +4000,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             if (caseRequest) throw conflict("Case handoff task changed before admission");
             // A deferred monitor retains its schedule; do not create a receipt
             // that could suppress its next admission attempt.
-            if (issueStateGuard.monitorNextCheckAt !== undefined) return { kind: "skipped" as const };
+            if (issueStateGuard.monitorNextCheckAt !== undefined) {
+              issueStateGuard.onDispatchDeferred?.(activeMonitorRun ? "monitor_run_active" : "monitor_state_changed");
+              return { kind: "skipped" as const };
+            }
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
               companyId: agent.companyId,
@@ -4017,6 +4029,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+            return { kind: "skipped" as const };
+          }
+
+          // Completion can settle the Chat outside admission. A monitor must
+          // first prove its exact persisted schedule and claim above.
+          if (isWaitingConversation(issue) && !hasIndependentConversationWakeCause()) {
+            opts.issueStateGuard?.onDispatchDeferred?.("conversation_wake_ineligible");
             return { kind: "skipped" as const };
           }
 
@@ -4231,6 +4250,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // A recorded fresh continuation that has no run yet is this task's
           // next run: another system wake is coalesced into it, never a second run.
           if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id)) {
+            opts.issueStateGuard?.onDispatchDeferred?.("issue_continuation_pending");
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
               reason: "issue_continuation_pending", payload, status: "skipped",
@@ -4260,6 +4280,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const fresh = freshSourceRunId ? await continueFreshInTransaction(tx as unknown as Db, {
               companyId: issue.companyId, runId: freshSourceRunId, trigger: "continuation_wake", delivery: "record" }) : null;
             if (fresh?.kind !== "continued" && fresh?.kind !== "already_continued") return deferBlockedExecution(continuationHold());
+            opts.issueStateGuard?.onDispatchDeferred?.("issue_continuation_pending");
             return { kind: "skipped" as const };
           }
 
@@ -4268,6 +4289,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             worktreeExecutionCutoff &&
             issue.createdAt < worktreeExecutionCutoff
           ) {
+            opts.issueStateGuard?.onDispatchDeferred?.("heartbeat.worktree_execution_cutoff");
             if (caseRequest) waitForCaseAdmission("heartbeat.worktree_execution_cutoff", "Case handoff is waiting for workspace execution to be enabled");
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -4646,6 +4668,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             !cancelledChildrenWake
           ) {
             if (caseRequest) waitForCaseAdmission("issue_dependencies_blocked", "Case handoff is waiting for task dependencies to resolve");
+            opts.issueStateGuard?.onDispatchDeferred?.("issue_dependencies_blocked");
             await recordExecutionWait(tx as unknown as Db, {
               issueId: issue.id,
               coalesce: coalesceExecutionWait,
@@ -5052,6 +5075,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               });
 
               if (throttleDecision.blocked) {
+                opts.issueStateGuard?.onDispatchDeferred?.("issue_rewake_throttled");
                 await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields,
                   companyId: agent.companyId,
@@ -5091,6 +5115,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             tx,
           );
           if (dailyCapBlock) {
+            opts.issueStateGuard?.onDispatchDeferred?.("heartbeat_daily_cap");
             if (caseRequest) waitForCaseAdmission(dailyCapBlock.reason, "Case handoff is waiting for the agent's daily limit to clear");
             if (executionWaitRequestId && executionBlocker) {
               continuationWait = { reason: dailyCapBlock.reason,
