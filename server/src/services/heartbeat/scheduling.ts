@@ -814,6 +814,8 @@ export function createHeartbeatScheduling(
               // Static codes only; never copy provider text into activity.
               if (["interaction_delivery_pending", "case_handoff_pending", "conversation_wake_ineligible",
                 "monitor_run_active", "monitor_state_changed", "heartbeat.scheduling_suppressed", "company.inactive",
+                "issue_dependencies_blocked", "issue_continuation_pending", "issue_rewake_throttled",
+                "heartbeat_daily_cap", "heartbeat.worktree_execution_cutoff",
                 "heartbeat.wakeOnDemand.disabled", "issue_tree_hold_active", "budget.blocked", "agent.not_invokable"].includes(reason))
                 dispatchDeferredReason = reason;
             } },

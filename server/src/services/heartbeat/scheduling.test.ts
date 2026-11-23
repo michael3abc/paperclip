@@ -284,16 +284,18 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(JSON.stringify(events)).not.toContain("PRIVATE_BLOCKER_CAUSE");
   });
 
-  it("records a named admission wait without consuming a monitor attempt", async () => {
+  it.each(["monitor_run_active", "issue_dependencies_blocked", "issue_continuation_pending",
+    "issue_rewake_throttled", "heartbeat_daily_cap", "heartbeat.worktree_execution_cutoff"])(
+    "records the named admission wait %s without consuming a monitor attempt", async reason => {
     const f = await fixture();
     f.deps.enqueueWakeup.mockImplementationOnce(async (_agentId, options) => {
-      options?.issueStateGuard?.onDispatchDeferred?.("monitor_run_active");
+      options?.issueStateGuard?.onDispatchDeferred?.(reason);
       return null;
     });
     await f.scheduler.tickTimers(now);
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id)))
-      .toMatchObject([{ details: { reason: "monitor_run_active", attemptCount: 0 } }]);
+      .toMatchObject([{ details: { reason, attemptCount: 0 } }]);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
   });
 

@@ -4249,6 +4249,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // A recorded fresh continuation that has no run yet is this task's
           // next run: another system wake is coalesced into it, never a second run.
           if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id)) {
+            opts.issueStateGuard?.onDispatchDeferred?.("issue_continuation_pending");
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
               reason: "issue_continuation_pending", payload, status: "skipped",
@@ -4278,6 +4279,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const fresh = freshSourceRunId ? await continueFreshInTransaction(tx as unknown as Db, {
               companyId: issue.companyId, runId: freshSourceRunId, trigger: "continuation_wake", delivery: "record" }) : null;
             if (fresh?.kind !== "continued" && fresh?.kind !== "already_continued") return deferBlockedExecution(continuationHold());
+            opts.issueStateGuard?.onDispatchDeferred?.("issue_continuation_pending");
             return { kind: "skipped" as const };
           }
 
@@ -4286,6 +4288,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             worktreeExecutionCutoff &&
             issue.createdAt < worktreeExecutionCutoff
           ) {
+            opts.issueStateGuard?.onDispatchDeferred?.("heartbeat.worktree_execution_cutoff");
             if (caseRequest) waitForCaseAdmission("heartbeat.worktree_execution_cutoff", "Case handoff is waiting for workspace execution to be enabled");
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -4664,6 +4667,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             !cancelledChildrenWake
           ) {
             if (caseRequest) waitForCaseAdmission("issue_dependencies_blocked", "Case handoff is waiting for task dependencies to resolve");
+            opts.issueStateGuard?.onDispatchDeferred?.("issue_dependencies_blocked");
             await recordExecutionWait(tx as unknown as Db, {
               issueId: issue.id,
               coalesce: coalesceExecutionWait,
@@ -5070,6 +5074,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               });
 
               if (throttleDecision.blocked) {
+                opts.issueStateGuard?.onDispatchDeferred?.("issue_rewake_throttled");
                 await tx.insert(agentWakeupRequests).values({
                   ...durableReceiptFields,
                   companyId: agent.companyId,
@@ -5109,6 +5114,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             tx,
           );
           if (dailyCapBlock) {
+            opts.issueStateGuard?.onDispatchDeferred?.("heartbeat_daily_cap");
             if (caseRequest) waitForCaseAdmission(dailyCapBlock.reason, "Case handoff is waiting for the agent's daily limit to clear");
             if (executionWaitRequestId && executionBlocker) {
               continuationWait = { reason: dailyCapBlock.reason,

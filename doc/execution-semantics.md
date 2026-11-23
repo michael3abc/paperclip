@@ -826,7 +826,7 @@ cannot wake the Chat. This does not enable agent monitor scheduling APIs.
 
 Named admission waits retain their schedule and attempt count. `issue.monitor_deferred`
 records a static reason (for example `monitor_run_active`, `monitor_state_changed`,
-`conversation_wake_ineligible` or `heartbeat.wakeOnDemand.disabled`), or an execution
+`issue_dependencies_blocked`, `conversation_wake_ineligible` or `heartbeat.wakeOnDemand.disabled`), or an execution
 blocker cause. A null admission with no recognized reason is
 `monitor_dispatch_unclassified`: it consumes an attempt atomically with claim
 release. At three total attempts, or the monitor's smaller configured limit, the
