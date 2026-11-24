@@ -2532,9 +2532,14 @@ export function heartbeatService(
       }
       const wakeCommentId = deriveCommentId(context, null);
       // Review handoff retains the task's worker selection for reassignment.
-      // A main executes using its own provider/model and AI connection.
+      // A main ignores only those worker-selection overrides and executes with
+      // its own provider/model and AI connection; the Owner's Chat composer
+      // model/effort (no workerSelectionId) still applies to the main.
+      const retainsWorkerSelection = typeof (issueContext?.assigneeAdapterOverrides as
+        { workerSelectionId?: unknown } | null | undefined)?.workerSelectionId === "string";
       const useAssigneeOverrides = issueContext?.assigneeAgentId === agent.id
-        && !isMainAgent(agent) && !isPendingExecutionReviewForAgent(issueContext, agent.id);
+        && !(isMainAgent(agent) && retainsWorkerSelection)
+        && !isPendingExecutionReviewForAgent(issueContext, agent.id);
       let issueAssigneeOverrides =
         issueContext && useAssigneeOverrides
           ? parseIssueAssigneeAdapterOverrides(
