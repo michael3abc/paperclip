@@ -782,7 +782,7 @@ async function runSerializedSuites(suites, shardIndex, shardCount) {
         ...parallelTests.map((test) => test.repoPath),
         "--pool=forks",
         "--isolate",
-        "--fileParallelism",
+        workers > 1 ? "--fileParallelism" : "--no-file-parallelism",
         `--maxWorkers=${workers}`,
       ],
       `serialized shard ${shardIndex + 1}/${shardCount}`,

@@ -33,10 +33,10 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `ff68490d03601cdced37e21d919affb079fafc61` (2026-11-24 integration; not deployed). Previous sync base: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `9502a12252208d314f61a23c30589b9f31dc82f2` (2026-11-25 integration; not deployed). Previous sync base: `ff68490d03601cdced37e21d919affb079fafc61`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
-## 2026-11-25 upstream merge (HOM-604; validation pending)
+## 2026-11-25 upstream merge (HOM-604; not deployed)
 
 Integrate 64 upstream commits through `9502a12252208d314f61a23c30589b9f31dc82f2`
 on HOM-562 `ea2bf05a9e`. Retain upstream 0500–0505; move fork SQL to

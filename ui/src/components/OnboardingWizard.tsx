@@ -1338,7 +1338,9 @@ function OnboardingWizardInner({
   /** Without browser login, show instructions for the selected execution environment. */
   const connectStepHasNoSandbox =
     credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
-  const browserSignInUnavailable = connectStepHasNoSandbox && !hasSavedSubscription &&
+  // Harnesses without a managed account or browser-login capability (for example Cursor)
+  // keep their native environment-test path. Browser availability gates sign-in providers.
+  const browserSignInUnavailable = Boolean(managedProvider || adapterCaps.login) && connectStepHasNoSandbox && !hasSavedSubscription &&
     localLogin.status !== "ready" && !(canUseLocalLogin && managedProvider);
 
   /**

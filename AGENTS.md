@@ -76,7 +76,7 @@ Dashboard project usage shares the model charts' period and company scope; sum o
 Codex Business/Enterprise monthly credit quotas come from RPC individualLimit; preserve its remaining percentage and reset. Metadata-only credits are not reported quota, and RPC credit amounts are not dollars.
 Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host ID to independent concurrent-run limit). Task models retain full host/provider IDs; validate and pin their route before workspace preparation. Catalogs probe only the dispatch owner's host. Preserve historical worker/session identities and never fail over to another host. See docs/agents/pm-agents.md.
 
-Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`.
+Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`. Coordinator project pins coexist independently; their project rows expand tasks in place via aria-expanded, without changing chat membership.
 
 Local voice timbre is one browser-wide preference, changed only on the Voice page and used by every agent on the next call. Do not restore per-agent overrides or mutate live call bindings. See `doc/connections/LOCAL-VOICE.md`.
 

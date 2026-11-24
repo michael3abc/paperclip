@@ -32,7 +32,7 @@ nullable (null = existing primary/CEO/PM/star inclusion, true = explicitly show,
 false = explicitly hide). GET resource-memberships returns agentChatPins with only
 explicit boolean entries; agent PUT accepts chatPinned.
 Coordinator project navigation pins coexist with this personal chat preference;
-pinning a project does not change chat visibility or primary-agent identity. Unpin never leaves the
+pinning a project does not change chat visibility or primary-agent identity. Project rows in Recents and pinned navigation expand recent tasks in place through one button with aria-expanded; they do not navigate to the project task page. Unpin never leaves the
 agent, clears its star, or changes primary-agent identity. Pin rejoins a left agent
 without selecting it as primary. The UI uses the same effective visibility helper
 for the button and sidebar, so an automatically listed primary starts with Unpin.
@@ -239,3 +239,7 @@ physical-device microphone quality. Do not report unexecuted checks as passed.
 Main Chat `/plan` keeps Native plan semantics. Ordinary task and creation composers
 map their leading `/plan` to planning; queued edits keep literal text. Both use
 the shared leading-user-command parser and editor-autolink normalization.
+
+Onboarding browser-sign-in availability gates adapters that use a managed account
+or expose login capability. Other harnesses, including Cursor, retain their native
+environment-test path; selecting them from More harnesses remains valid.
