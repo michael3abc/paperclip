@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Browse } from "./Browse";
+import { Browse, pendingFirstSignInOnlyApplicationIds } from "./Browse";
 import { ApiError } from "@/api/client";
 import { aiConnectionRouterAppDefinition, CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
@@ -2200,4 +2200,74 @@ describe("Connectors landing page", () => {
       ),
     ).toBe(true);
   });
+  it("titles the Google AI connector after Antigravity and Gemini", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("google")] });
+    await renderBrowse(false);
+    const google = container.querySelector('[data-app-slug="google"]');
+    expect(google?.querySelector("h2")?.textContent).toBe("Google Antigravity and Gemini");
+    expect(google?.textContent).toContain("Connect Google Antigravity accounts or Gemini API keys for your agents.");
+    expect(container.querySelector('[aria-label="Connect Google Antigravity and Gemini"]')).not.toBeNull();
+  });
+
+  it("masks upstream account labels in the Manage dialog from session replay", async () => {
+    aggregatorCatalogMock.push({
+      name: "Fathom",
+      slug: "fathom",
+      aliases: ["fathom"],
+      routes: [{ provider: "composio", toolkit: "fathom", logoUrl: "https://logos.example.com/fathom.svg", docsUrl: "https://docs.composio.dev/fathom" }],
+    });
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("composio")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", transport: "mcp_remote", config: { sourceTemplateKey: "composio" } })] });
+    const snapshot = { connectionId: "conn-notion", toolkit: "fathom", status: "connected", checkedAt: new Date().toISOString(), accounts: [{ id: "ca-work", alias: "Meeting notes", status: "ACTIVE", isDefault: true }] };
+    listComposioAppsMock.mockResolvedValue({ apps: [snapshot] });
+    refreshComposioAppsMock.mockResolvedValue({ apps: [snapshot] });
+
+    await renderBrowse();
+    await clickButton("Manage", container);
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(replayLeaks("Meeting notes", dialog)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Composio account", dialog)).toEqual({ rendered: true, recorded: false });
+  });
+
+  it("masks Notebook account labels in the row and removal confirmation dialog from session replay", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("paperclip-notebook")] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({
+      id: "notebook-app", name: "Paperclip Notebook", applicationKey: "app-gallery:paperclip-notebook:one",
+      metadata: { sourceTemplateKey: "paperclip-notebook" },
+    })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({
+      id: "saved-notebook", applicationId: "notebook-app", name: "Notebook account",
+      config: { sourceTemplateKey: "paperclip-notebook" }, healthStatus: "error", requiresReauthorization: true,
+    })] });
+
+    await renderBrowse();
+    const row = container.querySelector('[data-app-slug="paperclip-notebook"]')!;
+    await act(() => { row.querySelector<HTMLButtonElement>('button[aria-label^="Manage "]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await flushReact();
+    expect(replayLeaks("Notebook account", row)).toEqual({ rendered: true, recorded: false });
+    await act(() => { [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((item) => item.textContent?.trim() === "Remove connection")!.click(); });
+    await flushReact();
+    const removeDialog = document.querySelector('[role="alertdialog"]')!;
+    expect(replayLeaks("Notebook account", removeDialog)).toEqual({ rendered: true, recorded: false });
+  });
+
+  it("finds apps with only unfinished sign-ins in one pass over a large list", () => {
+    const connections = Array.from({ length: 5000 }, (_, index) => ({
+      applicationId: `app-${index % 2500}`,
+      status: index < 2500 ? "draft" as const : "active" as const,
+      firstSignInPending: index < 2500 || undefined,
+    }));
+    connections.push({ applicationId: "app-only-pending", status: "draft", firstSignInPending: true });
+    let reads = 0;
+    const counted = new Proxy(connections, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect([...pendingFirstSignInOnlyApplicationIds(counted)]).toEqual(["app-only-pending"]);
+    expect(reads).toBeLessThanOrEqual(connections.length);
+  });
+
 });

@@ -30,7 +30,9 @@ Agents list rows and the agent detail header expose AgentChatPinButton. Chat vis
 is a separate company/person/agent preference: agent_memberships.chat_pinned is
 nullable (null = existing primary/CEO/PM/star inclusion, true = explicitly show,
 false = explicitly hide). GET resource-memberships returns agentChatPins with only
-explicit boolean entries; agent PUT accepts chatPinned. Unpin never leaves the
+explicit boolean entries; agent PUT accepts chatPinned.
+Coordinator project navigation pins coexist with this personal chat preference;
+pinning a project does not change chat visibility or primary-agent identity. Unpin never leaves the
 agent, clears its star, or changes primary-agent identity. Pin rejoins a left agent
 without selecting it as primary. The UI uses the same effective visibility helper
 for the button and sidebar, so an automatically listed primary starts with Unpin.
@@ -233,3 +235,7 @@ Verify these controller, call-button, panel and provider behaviors together with
 related relay/provenance tests and token gates. Desktop/mobile-size browser
 fixtures and a bounded real-gateway test are separate evidence; neither proves
 physical-device microphone quality. Do not report unexecuted checks as passed.
+
+Main Chat `/plan` keeps Native plan semantics. Ordinary task and creation composers
+map their leading `/plan` to planning; queued edits keep literal text. Both use
+the shared leading-user-command parser and editor-autolink normalization.

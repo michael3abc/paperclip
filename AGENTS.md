@@ -409,9 +409,12 @@ preserve human, declared, dependency and newer blocks.
 
 ## Native session bridge
 
-HOM-562 retains upstream migration numbers 0500–0502 and moves fork SQL to
-0503–0515 without changing SQL bytes or original journal timestamps. Keep the
-top-level migration execution registry aligned with renamed files. Antigravity
+HOM-604 retains upstream migration numbers 0500–0505 and moves fork SQL to
+0506–0518 without changing SQL bytes or original journal timestamps. Keep the
+top-level migration execution registry aligned with renamed files. Preserve upstream
+0505_nice_rawhide_kid.sql and fork 0518_ordinary_stardust.sql in that registry.
+Provider quota without a reported reset remains transient under the fork classifier;
+upstream account-action hints never gate automatic retry. Antigravity
 ACP 1.5.2 uses one platform-aware admission source with Linux `/proc/self/exe`,
 per-distribution helper digests and the existing remote-browser paste-back;
 `agy_local` and Bridge remain separate. See doc/DATABASE.md and doc/DEVELOPING.md.

@@ -1332,6 +1332,15 @@ function OnboardingWizardInner({
     sourcePicked &&
     [...recommendedAdapters, ...moreAdapters].some((opt) => opt.type === adapterType);
 
+  const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
+    hostAgyLoginPresent ||
+    (credentialMode !== "api" && managedBindingForStep()));
+  /** Without browser login, show instructions for the selected execution environment. */
+  const connectStepHasNoSandbox =
+    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+  const browserSignInUnavailable = connectStepHasNoSandbox && !hasSavedSubscription &&
+    localLogin.status !== "ready" && !(canUseLocalLogin && managedProvider);
+
   /**
    * Whether the connect step may advance.
    *
@@ -1352,7 +1361,7 @@ function OnboardingWizardInner({
   const restoredApiCredential = restoredSetup?.companyId === createdCompanyId
     && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType)
     && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
-  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && connectionModelReady && !(adapterType === "agy_local" && authSignalQuery.isLoading);
+  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && !browserSignInUnavailable && connectionModelReady && !(adapterType === "agy_local" && authSignalQuery.isLoading);
 
   useEffect(() => {
     if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
@@ -1474,10 +1483,6 @@ function OnboardingWizardInner({
   const loginSubmitsBrowserCode =
     adapterCaps.login?.panelMode === "submitted_browser_code";
 
-  /** Without browser login, show instructions for the selected execution environment. */
-  const connectStepHasNoSandbox =
-    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
-
   /*
     The sequence's derived state. Space and visibility are separate throughout:
     the credential link fades on the first beat but keeps its space until the
@@ -1487,9 +1492,6 @@ function OnboardingWizardInner({
   const connectCollapsed =
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
   const connectProgress = sourceSelected && !setupPrepared && !createdAgentId && !setupError ? "Creating your agent…" : adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
-  const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
-    hostAgyLoginPresent ||
-    (credentialMode !== "api" && managedBindingForStep()));
   const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
   const connectCardLive =
     connectHasCard &&
@@ -1699,6 +1701,7 @@ function OnboardingWizardInner({
 
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if (browserSignInUnavailable) return;
     if (retryLogin) {
       setConnectAuthUrl(null);
       setSubmitLoginCode(null);
@@ -3481,7 +3484,7 @@ function OnboardingWizardInner({
                         <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
                       ) : adapterType === "agy_local" ? (
                         <p className="text-xs text-muted-foreground">Antigravity is not signed in on this machine. Run agy in your terminal to sign in, or connect with an API key.</p>
-                      ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
+                      ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null
                     ) : null}
                   </motion.div>
 

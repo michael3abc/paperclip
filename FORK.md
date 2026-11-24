@@ -36,6 +36,17 @@ cache keys include company and source, without local fallback. See doc/DEVELOPIN
 Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `ff68490d03601cdced37e21d919affb079fafc61` (2026-11-24 integration; not deployed). Previous sync base: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
+## 2026-11-25 upstream merge (HOM-604; validation pending)
+
+Integrate 64 upstream commits through `9502a12252208d314f61a23c30589b9f31dc82f2`
+on HOM-562 `ea2bf05a9e`. Retain upstream 0500–0505; move fork SQL to
+0506–0518 with identical bytes and journal timestamps. Owned empty/main/HOM-562
+migration paths pass (517 / 511→517 / 514→517), fork replay 0. Keep 31 fork UI
+regression suites; accept three fixture-only deletions. Preserve liveness-first,
+main Chat Native plan, chatPinned and project pinning together. Decisions:
+[sync-decisions](/HOM/issues/HOM-604#document-sync-decisions).
+Wednesday integration only; no deployment, restart or merge into michael/main.
+
 ## 2026-11-24 upstream merge (HOM-562; not deployed)
 
 Integrate 80 upstream commits through `ff68490d03`. Retain upstream migrations

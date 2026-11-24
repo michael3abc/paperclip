@@ -32,6 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { applyNativeAcceptedOutcome, nativeEffectiveTerminal, readNativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
 import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
@@ -114,6 +115,7 @@ import {
 } from "../heartbeat-run-summary.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
 import { settledResponsePublicationSql } from "./native-response-publication-receipt.js";
+import { ensureNativePlanReviewCard } from "./native-plan-review-card.js";
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import {
   authorizeCommittedChatResponse,
@@ -1160,7 +1162,7 @@ async function recoverCommittedNativeChatResponseInScope(
         .for("share");
       const envelope = record(accepted?.resultJson);
       const result = record(envelope.result);
-      const terminal = record(envelope.terminal);
+      const terminal = nativeEffectiveTerminal(envelope, record(envelope.terminal));
       if (
         !accepted ||
         !decision ||
@@ -1572,10 +1574,11 @@ export async function finalizeNativeRun(input: {
   const envelope = record(resultRow.resultJson);
   const result = record(envelope.result);
   const terminal = record(envelope.terminal);
-  const terminalState = terminal.runTerminalState;
-  if (!["succeeded", "failed", "cancelled"].includes(String(terminalState))) {
+  if (!["succeeded", "failed", "cancelled"].includes(String(terminal.runTerminalState))) {
     throw new Error("native_finalization_invalid");
   }
+  const acceptedOutcome = readNativeAcceptedOutcome(envelope);
+  const terminalState = applyNativeAcceptedOutcome(acceptedOutcome, terminal).runTerminalState;
 
   await input.db
     .update(nativeRunFinalizations)
@@ -1676,6 +1679,23 @@ export async function finalizeNativeRun(input: {
       ? await findSupersededExternalReviewRequests(input.db, {
         companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
       }) : [];
+    // A Plan-mode run that settles with a plan revision nobody was asked to
+    // review gets its review card here, whichever harness ran it and whether
+    // or not the agent remembered to open it. The card is the review gate below.
+    const planReview = terminalState === "succeeded" && input.workspaceFinalizeStatus === "succeeded" &&
+      authoritativeIssue.workMode === "planning" && result.reportedWorkDisposition !== "done" &&
+      !isNativePlanWaitResult(result) &&
+      !readNativeReviewAssignmentContext(run.contextSnapshot)
+      ? await ensureNativePlanReviewCard(input.db, {
+          companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+        }).catch((error: unknown) => {
+          // The run already succeeded; a card that could not be opened must
+          // not fail its settlement. The task settles in its response wait and
+          // the stranded-task pass opens the card (idempotently) later.
+          logger.warn({ runId: run.id, issueId: authoritativeIssue.id, error }, "Plan review card could not be opened at settle; recovery will retry");
+          return null;
+        })
+      : null;
     const governanceGate = await pendingNativeGovernance({
       db: input.db,
       companyId: run.companyId,
@@ -1738,9 +1758,9 @@ export async function finalizeNativeRun(input: {
         (!planWait || nativeSha256(planWait.result) !== nativeSha256(result))) {
       throw new Error("native_plan_wait_authority_lost");
     }
-    const { providerFailure, turnFailure, providerExplanation } = await readPersistedNativeFailureEvidence(
-      input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState,
-    );
+    const { providerFailure, turnFailure, providerExplanation } = acceptedOutcome
+      ? { providerFailure: null, turnFailure: null, providerExplanation: null }
+      : await readPersistedNativeFailureEvidence(input.db, run, resultRow.turnId, envelope.terminal as PrpTerminalState);
     const ownsProviderFailureDecision =
       (!authoritativeIssue.executionRunId || authoritativeIssue.executionRunId === run.id) &&
       (reviewContext ? nativeReview?.interaction.status === "pending"
@@ -1779,6 +1799,7 @@ export async function finalizeNativeRun(input: {
       monitorWaitSuperseded: supersededMonitorWait !== null,
       monitorWaitAuthorized: authoritativeIssue.workMode === "standard" && authoritativeIssue.executionRunId === run.id && monitorWaitAt !== null,
       planWaitAuthorized: planWait !== null,
+      planNotProduced: planReview?.kind === "no_plan" || planReview?.kind === "reviewed",
       hasPendingChildCompletion,
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,

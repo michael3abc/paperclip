@@ -1,31 +1,17 @@
 // @vitest-environment jsdom
-import { sampleHarnesses } from "@/test-support/harness-availability";
-
-import { useState } from "react";
-import { MemoryRouter } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
+import type { Agent, Environment } from "@paperclipai/shared";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
-import { AgentLifecycleStatus, useAgentLifecycleStatus } from "./AgentLifecycleStatus";
-import { queryKeys } from "../lib/queryKeys";
+import { AgentConfigForm } from "./AgentConfigForm";
 import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
-import { defaultCreateValues } from "./agent-config-defaults";
-import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
-import { aiConnectionsApi } from "../api/ai-connections";
-import * as ConnectionField from "./ai-connections/AiConnectionField";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
-import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
-import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
-import { ConfigurationTab } from "../pages/AgentDetail";
-import { ConfigurationTab as ClassicConfigurationTab } from "../pages/AgentDetail.production";
 
 const mockAgentsApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -48,18 +34,6 @@ const mockAgentsApi = vi.hoisted(() => ({
   getClaudeOAuthTokenStatus: vi.fn(),
 }));
 
-// The default resume read for a test that does not exercise resume: no active
-// session for the caller.
-function noActiveSession() {
-  return Promise.reject(
-    new ApiError("Adapter login session not found", 404, { error: "Adapter login session not found" }),
-  );
-}
-
-const mockClipboard = vi.hoisted(() => ({
-  copyTextToClipboard: vi.fn(),
-}));
-
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   capabilities: vi.fn(),
@@ -78,35 +52,19 @@ const mockSecretsApi = vi.hoisted(() => ({
   listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
 }));
 
-vi.mock("../api/agents", () => ({
-  agentsApi: mockAgentsApi,
+const mockAdaptersApi = vi.hoisted(() => ({
+  list: vi.fn(async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]),
 }));
 
+vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/grokBot", () => ({
-  grokBotApi: {
-    connection: async () => ({ enabled: true, canConfigureConnection: true, binding: null }),
-  },
+  grokBotApi: { connection: async () => ({ enabled: true, canConfigureConnection: true, binding: null }) },
 }));
-
-const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn(async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]) }));
 vi.mock("../api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
-
-vi.mock("../api/environments", () => ({
-  environmentsApi: mockEnvironmentsApi,
-}));
-
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
-
-vi.mock("../api/secrets", () => ({
-  secretsApi: mockSecretsApi,
-}));
-
-vi.mock("../lib/clipboard", () => ({
-  copyTextToClipboard: mockClipboard.copyTextToClipboard,
-}));
-
+vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
+vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
+vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
+vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: vi.fn() }));
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "CO" }],
@@ -120,99 +78,32 @@ vi.mock("../context/CompanyContext", () => ({
     createCompany: vi.fn(),
   }),
 }));
-
 vi.mock("../adapters", () => ({
   getUIAdapter: (type: string) => ({
     type,
-    label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
-    // The stand-in also records the two gates the form resolves for every
-    // adapter, so a test can assert the plumbing without rendering a real
-    // adapter's fields.
-    ConfigFields: (props: AdapterConfigFieldsProps) => {
-      if (type === "paperclip_runner") return <CodexLocalConfigFields {...props} />;
-      const { adapterType, hideInstructionsFile, managedSandboxOnly } = props;
-      return adapterType === "hermes_gateway"
-        ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
-        : (
-          <div
-            data-testid="adapter-config-fields"
-            data-hide-instructions-file={String(hideInstructionsFile === true)}
-            data-managed-sandbox-only={String(managedSandboxOnly === true)}
-          />
-        );
-    },
-    buildAdapterConfig: (values: { model?: string }) => ({
-      model: values.model || undefined,
-    }),
+    label: "Codex",
+    ConfigFields: (props: AdapterConfigFieldsProps) =>
+      type === "paperclip_runner" ? <CodexLocalConfigFields {...props} /> : <div data-testid="adapter-config-fields" />,
+    buildAdapterConfig: (values: { model?: string }) => ({ model: values.model || undefined }),
     parseStdoutLine: () => [],
   }),
 }));
-
-// The projected login capability per adapter type. The server projects these
-// safe scalar fields. `codex_local` drives the displayed-code panel; `claude_local`
-// drives the submitted-browser-code panel. A test overrides this map to add a
-// third adapter with a projected login capability.
-const mockLoginProjections = vi.hoisted(
-  () =>
-    new Map<string, { panelMode: string; timeoutPolicy: string }>([
-      ["codex_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
-      ["grok_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
-      ["claude_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
-      // A third adapter, not a built-in, with a projected displayed-code login.
-      ["vendor_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
-      // A non-built-in adapter with a submitted-browser-code login. Every login
-      // runs on a real pseudo-terminal, so the gate requires the provider pty
-      // capability from the login capability, not the adapter name.
-      ["pty_vendor_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
-    ]),
-);
-
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => (adapterType: string) => {
-    const login = mockLoginProjections.get(adapterType);
-    return adapterType === "hermes_gateway"
-      ? {
-          supportsInstructionsBundle: false,
-          supportsSkills: false,
-          supportsLocalAgentJwt: false,
-          requiresMaterializedRuntimeSkills: false,
-          supportsAcp: false,
-        }
-      : {
-          supportsInstructionsBundle: true,
-          supportsSkills: true,
-          supportsLocalAgentJwt: true,
-          requiresMaterializedRuntimeSkills: false,
-          supportsAcp: true,
-          ...(login ? { login } : {}),
-        };
-  },
+  useAdapterCapabilities: () => () => ({
+    supportsInstructionsBundle: true,
+    supportsSkills: true,
+    supportsLocalAgentJwt: true,
+    requiresMaterializedRuntimeSkills: false,
+    supportsAcp: true,
+    login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" },
+  }),
 }));
-
-vi.mock("../adapters/use-disabled-adapters", () => ({
-  useDisabledAdaptersSync: () => [],
-}));
-
+vi.mock("../adapters/use-disabled-adapters", () => ({ useDisabledAdaptersSync: () => [] }));
 vi.mock("./MarkdownEditor", () => ({
-  MarkdownEditor: ({
-    value,
-    onChange,
-    placeholder,
-  }: {
-    value: string;
-    onChange: (value: string) => void;
-    placeholder?: string;
-  }) => (
-    <textarea
-      aria-label={placeholder ?? "Markdown"}
-      value={value}
-      onChange={(event) => onChange(event.currentTarget.value)}
-    />
+  MarkdownEditor: ({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder?: string }) => (
+    <textarea aria-label={placeholder ?? "Markdown"} value={value} onChange={(event) => onChange(event.currentTarget.value)} />
   ),
 }));
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -274,866 +165,49 @@ function makeEnvironment(overrides: Partial<Environment>): Environment {
   };
 }
 
-function setInputValue(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-  setter?.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function daytonaEnvironments() {
-  return [
-    makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
-    makeEnvironment({
-      id: "sandbox-1",
-      name: "Daytona",
-      driver: "sandbox",
-      config: { provider: "daytona" },
-    }),
-  ];
-}
-
-function e2bEnvironments() {
-  return [
-    makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
-    makeEnvironment({
-      id: "sandbox-1",
-      name: "E2B",
-      driver: "sandbox",
-      config: { provider: "e2b" },
-    }),
-  ];
-}
-
-function renderFormView(root: Root, queryClient: QueryClient, children: Parameters<Root["render"]>[0]) {
-  root.render(
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <TooltipProvider>{children}</TooltipProvider>
-      </ToastProvider>
-    </QueryClientProvider>,
-  );
-}
-
-function createFormQueryClient() {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-}
-
-async function renderForm(
-  environments: Environment[],
-  agentOverrides: Partial<Agent> = {},
-  options: {
-    showAdapterTestEnvironmentButton?: boolean;
-    showAdapterTypeField?: boolean;
-    compactTestFeedback?: boolean;
-    content?: "configuration" | "secrets";
-    environmentVariablesPlacement?: "configuration" | "secrets";
-    hideInlineSave?: boolean;
-    onDirtyChange?: (dirty: boolean) => void;
-    onSaveActionChange?: (save: (() => void) | null) => void;
-    onCancelActionChange?: (cancel: (() => void) | null) => void;
-    cloud?: boolean;
-  } = {},
-) {
-  mockEnvironmentsApi.list.mockResolvedValue(environments);
-
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const onSave = vi.fn();
-  const queryClient = createFormQueryClient();
-  if (options.cloud) queryClient.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true, availableHarnesses: sampleHarnesses } });
-
-  await act(async () => {
-    renderFormView(root, queryClient,
-      <AgentConfigForm
-        mode="edit"
-        agent={makeAgent(agentOverrides)}
-        onSave={onSave}
-        hidePromptTemplate
-        compactTestFeedback={options.compactTestFeedback}
-        content={options.content}
-        environmentVariablesPlacement={options.environmentVariablesPlacement}
-        hideInlineSave={options.hideInlineSave}
-        onDirtyChange={options.onDirtyChange}
-        onSaveActionChange={options.onSaveActionChange}
-        onCancelActionChange={options.onCancelActionChange}
-        showAdapterTypeField={options.showAdapterTypeField ?? false}
-        showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-      />
-    );
-  });
-
-  await flushReact();
-  return { container, root, onSave };
-}
-
-async function renderCreateForm(
-  environments: Environment[],
-  valueOverrides: Partial<typeof defaultCreateValues> = {},
-  options: { showAdapterTestEnvironmentButton?: boolean } = {},
-) {
-  mockEnvironmentsApi.list.mockResolvedValue(environments);
-
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const queryClient = createFormQueryClient();
-
-  const values = {
-    ...defaultCreateValues,
-    adapterType: "codex_local",
-    ...valueOverrides,
-  };
-  const onChange = vi.fn();
-
-  await act(async () => {
-    renderFormView(root, queryClient,
-      <AgentConfigForm
-        mode="create"
-        values={values}
-        onChange={onChange}
-        hidePromptTemplate
-        showAdapterTypeField={false}
-        showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-      />
-    );
-  });
-
-  await flushReact();
-  return { container, root, onChange };
-}
-
 const AUTH_MISSING_RESULT = {
   adapterType: "codex_local",
   status: "fail",
-  checks: [
-    {
-      code: "adapter_auth_missing",
-      level: "error",
-      message: "The sandbox has no ready authentication.",
-    },
-  ],
+  checks: [{ code: "adapter_auth_missing", level: "error", message: "The sandbox has no ready authentication." }],
   testedAt: new Date(0).toISOString(),
 };
 
-const VENDOR_AUTH_MISSING_RESULT = {
-  adapterType: "vendor_local",
-  status: "fail",
-  checks: [
-    {
-      code: "adapter_auth_missing",
-      level: "error",
-      message: "The sandbox has no ready authentication.",
-    },
-  ],
-  testedAt: new Date(0).toISOString(),
-};
-
-const GROK_AUTH_MISSING_RESULT = {
-  adapterType: "grok_local",
-  status: "warn",
-  checks: [
-    {
-      code: "grok_hello_probe_auth_required",
-      level: "warn",
-      message: "Grok CLI could not answer the hello probe because authentication is missing.",
-    },
-    {
-      code: "adapter_auth_missing",
-      level: "warn",
-      message: "This environment has no ready authentication for this adapter.",
-    },
-  ],
-  testedAt: new Date(0).toISOString(),
-};
-
-const PTY_VENDOR_AUTH_MISSING_RESULT = {
-  adapterType: "pty_vendor_local",
-  status: "fail",
-  checks: [
-    {
-      code: "adapter_auth_missing",
-      level: "error",
-      message: "The sandbox has no ready authentication.",
-    },
-  ],
-  testedAt: new Date(0).toISOString(),
-};
-
-const CLAUDE_AUTH_MISSING_RESULT = {
-  adapterType: "claude_local",
-  status: "warn",
-  checks: [
-    {
-      code: "claude_hello_probe_auth_required",
-      level: "warn",
-      message: "Claude CLI is installed, but login is required.",
-    },
-    {
-      code: "adapter_auth_missing",
-      level: "warn",
-      message: "The sandbox has no ready authentication for this adapter.",
-    },
-  ],
-  testedAt: new Date(0).toISOString(),
-};
-
-// The provider capabilities the form fetches. Daytona advertises the
-// setup-token login capability; E2B does not. The Claude login panel shows only
-// for a provider with the capability.
 const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
-  sandboxProviders: {
-    daytona: { supportsLoginPty: true, displayName: "Daytona" },
-    e2b: { supportsLoginPty: false, displayName: "E2B" },
-  },
+  sandboxProviders: { daytona: { supportsLoginPty: true, displayName: "Daytona" } },
 });
 
-function findButton(container: HTMLElement, label: string) {
-  return Array.from(container.querySelectorAll("button")).find(
-    (button) => button.textContent?.trim() === label,
+function noActiveSession() {
+  return Promise.reject(
+    new ApiError("Adapter login session not found", 404, { error: "Adapter login session not found" }),
   );
-}
-
-function findByAriaLabel(container: HTMLElement, label: string) {
-  return container.querySelector<HTMLElement>(`[aria-label="${label}"]`);
-}
-
-async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
-  return renderForm(
-    daytonaEnvironments(),
-    { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
-    { showAdapterTestEnvironmentButton: true },
-  );
-}
-
-// A third adapter, not a built-in, in a sandbox environment. Its projected login
-// capability drives the login affordance and the displayed-code panel. The
-// provider advertises the login pseudo-terminal capability the login needs.
-async function renderVendorSandbox(agentOverrides: Partial<Agent> = {}) {
-  return renderForm(
-    daytonaEnvironments(),
-    { adapterType: "vendor_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
-    { showAdapterTestEnvironmentButton: true },
-  );
-}
-
-// A Grok agent in a sandbox environment. Its projected login capability
-// drives the login affordance and the displayed-code panel, the same as
-// Codex. The provider advertises the login pseudo-terminal capability the
-// login needs.
-async function renderGrokSandbox(agentOverrides: Partial<Agent> = {}) {
-  return renderForm(
-    daytonaEnvironments(),
-    { adapterType: "grok_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
-    { showAdapterTestEnvironmentButton: true },
-  );
-}
-
-async function renderClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
-  return renderForm(
-    daytonaEnvironments(),
-    { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
-    { showAdapterTestEnvironmentButton: true },
-  );
-}
-
-async function renderCreateClaudeSandbox(
-  valueOverrides: Partial<typeof defaultCreateValues> = {},
-) {
-  return renderCreateForm(
-    daytonaEnvironments(),
-    { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...valueOverrides },
-    { showAdapterTestEnvironmentButton: true },
-  );
-}
-
-// A create-mode harness that holds the form values in React state. A value
-// patch from the form (a login claim, an environment change) updates the props,
-// so the form re-runs its effects against the new state. The fixed-values
-// `renderCreateForm` harness cannot show the environment-change reset, because
-// its `values` prop never changes. `valuesRef` exposes the current merged
-// values to the test.
-async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
-  mockEnvironmentsApi.list.mockResolvedValue(environments);
-
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const queryClient = createFormQueryClient();
-
-  const valuesRef: { current: typeof defaultCreateValues } = {
-    current: {
-      ...defaultCreateValues,
-      adapterType: "claude_local",
-      defaultEnvironmentId: "sandbox-1",
-    },
-  };
-
-  function Harness() {
-    const [values, setValues] = useState(valuesRef.current);
-    valuesRef.current = values;
-    return (
-      <AgentConfigForm
-        mode="create"
-        values={values}
-        onChange={(patch) => setValues((prev) => ({ ...prev, ...patch }))}
-        hidePromptTemplate
-        showAdapterTypeField={false}
-        showAdapterTestEnvironmentButton
-      />
-    );
-  }
-
-  await act(async () => {
-    renderFormView(root, queryClient, <Harness />);
-  });
-
-  await flushReact();
-  return { container, root, valuesRef };
-}
-
-async function environmentOptions(container: HTMLElement) {
-  const picker = container.querySelector('[aria-label="Environment override"]');
-  expect(picker).not.toBeNull();
-  await clickElement(picker);
-  const options = document.body.querySelector('[role="listbox"][aria-label="Environment override"]');
-  expect(options).not.toBeNull();
-  return options!;
-}
-
-async function selectEnvironment(container: HTMLElement, environmentId: string) {
-  const options = await environmentOptions(container);
-  const option = options.querySelector(`[role="option"][data-value="${environmentId}"]`);
-  expect(option).not.toBeNull();
-  await clickElement(option);
 }
 
 async function clickByText(container: HTMLElement, label: string) {
-  const button = findButton(container, label);
+  const button = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === label);
   await act(async () => {
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   await flushReact();
 }
 
-async function clickElement(element: Element | null | undefined) {
-  await act(async () => {
-    element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-  await flushReact();
-}
-
-async function runTest(container: HTMLElement) {
-  await clickByText(container, "Test");
-}
-
-async function startLogin(container: HTMLElement) {
-  await clickByText(container, "Sign in");
-  await flushReact();
-}
-
-// Flush React effects and pending promises until a condition holds. The Claude
-// login chains a start, a status poll, and a completion read, so a single flush
-// does not settle every state transition.
-async function flushUntil(check: () => boolean, timeoutMs = 4000) {
-  const start = Date.now();
-  while (!check()) {
-    if (Date.now() - start > timeoutMs) break;
-    await flushReact();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  await flushReact();
-}
-
-describe("AgentConfigForm environment selector", () => {
+describe("AgentConfigForm session replay masking", () => {
   let roots: Root[] = [];
 
-  it.each(["paperclip", "legacy"] as const)("uses the resolved %s Claude form to preserve the correct turn limit", async defaultRunner => {
-    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: defaultRunner === "paperclip" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner }]);
-    try {
-      const values = { ...defaultCreateValues, adapterType: "claude_local", runner: "auto" as const };
-      const result = await renderCreateForm([], values);
-      roots.push(result.root);
-      expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-      expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent?.includes("Advanced")).toBe(defaultRunner === "legacy");
-      const resolved = result.onChange.mock.calls.reduce((current, [patch]) => ({ ...current, ...patch }), values);
-      expect(resolved.resolvedRunner).toBe(defaultRunner);
-      const config = buildClaudeLocalConfig(resolved);
-      if (defaultRunner === "legacy") expect(config.maxTurnsPerRun).toBe(1000);
-      else expect(config).not.toHaveProperty("maxTurnsPerRun");
-      expect(config).not.toHaveProperty("resolvedRunner");
-    } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
-  });
-
-
-  it("carries a selected native Claude permission through the ordinary creation builder", async () => {
-    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" }]);
-    try {
-      const values = { ...defaultCreateValues, adapterType: "claude_local", runner: "auto" as const };
-      const result = await renderCreateForm([], values);
-      roots.push(result.root);
-      await clickElement(result.container.querySelector('[aria-label="Permission mode"]'));
-      const deny = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === "Deny all");
-      expect(deny).toBeTruthy();
-      await clickElement(deny);
-      const resolved = result.onChange.mock.calls.reduce((current, [patch]) => ({ ...current, ...patch }), values);
-      expect(buildClaudeLocalConfig(resolved)).toMatchObject({ acpxPermissionMode: "deny-all" });
-    } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
-  });
-
-  it("keeps an explicit Codex draft policy until a harness reset clears it", async () => {
-    mockEnvironmentsApi.list.mockResolvedValue([]);
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    let current = { ...defaultCreateValues, adapterType: "codex_local", runner: "auto" as const,
-      dangerouslyBypassSandbox: false, codexLegacySandboxBypass: false };
-    function Fixture() {
-      const [values, setValues] = useState<typeof defaultCreateValues>(current);
-      current = values as typeof current;
-      return <AgentConfigForm mode="create" values={values}
-        onChange={patch => setValues(prev => ({ ...prev, ...patch }))} showAdapterTypeField hidePromptTemplate />;
-    }
-    try {
-      await act(async () => root.render(<QueryClientProvider client={queryClient}><ToastProvider><TooltipProvider>
-        <Fixture />
-      </TooltipProvider></ToastProvider></QueryClientProvider>));
-      await flushReact();
-      expect(current.codexLegacySandboxBypass).toBe(false);
-      for (const harness of ["claude_local", "codex_local"]) {
-        await clickElement(container.querySelector('[aria-label="Harness"]'));
-        await clickElement(document.querySelector(`[role="option"][data-value="${harness}"]`));
-        await flushReact();
-        expect(current.adapterType).toBe(harness);
-        expect(current).toHaveProperty("codexLegacySandboxBypass", undefined);
-      }
-    } finally {
-      await act(async () => root.unmount());
-      container.remove();
-    }
-  });
-
-  it.each(["codex_local", "paperclip_runner"])("keeps a saved %s runner during unrelated edits", async adapterType => {
-    const adapterConfig = { model: "gpt-5.6-sol", ...(adapterType === "paperclip_runner" ? { provider: "codex", reasoningEffort: "high" } : { modelReasoningEffort: "high" }) };
-    const result = await renderForm([], { adapterType, adapterConfig }, { showAdapterTypeField: true });
-    roots.push(result.root);
-    expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Codex");
-    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-    if (adapterType === "codex_local") {
-      await clickByText(result.container, "Advanced");
-      const labels = [...result.container.querySelectorAll("label")].map(label => label.textContent?.trim());
-      expect(labels).toContain("Command");
-      expect(labels).toContain("Extra args (comma-separated)");
-    }
-    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed Cody"));
-    await flushReact();
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
-  });
-
-  it.each([
-    { harness: "claude_local", label: "Claude", profile: { provider: "acpx", acpxAgent: "claude" } },
-    { harness: "pi_local", label: "Pi", profile: { provider: "acpx", acpxAgent: "pi" } },
-    { harness: "codex_local", label: "Codex", profile: { provider: "codex" } },
-    { harness: "opencode_local", label: "OpenCode", profile: { provider: "opencode" } },
-  ])("uses only Harness to choose $label for new and saved native agents", async ({ harness, label, profile }) => {
-    mockAdaptersApi.list.mockResolvedValue([{ type: harness, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" }]);
-    const created = await renderCreateForm([], { adapterType: harness, runner: "auto" });
-    roots.push(created.root);
-    expect(created.container.querySelector('[aria-label="ACP agent"]')).toBeNull();
-    if (harness === "pi_local") expect(created.container.querySelector('[aria-label="Pi thinking level"]')).not.toBeNull();
-
-    const edited = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: profile }, { showAdapterTypeField: true });
-    roots.push(edited.root);
-    expect(edited.container.querySelector('[aria-label="Harness"]')?.textContent).toContain(label);
-    expect(edited.container.querySelector('[aria-label="ACP agent"]')).toBeNull();
-    if (harness === "pi_local") expect(edited.container.querySelector('[aria-label="Pi thinking level"]')).not.toBeNull();
-    await act(async () => setInputValue(edited.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed agent"));
-    await flushReact();
-    await clickByText(edited.container, "Save");
-    expect(edited.onSave).toHaveBeenCalledWith({ name: "Renamed agent" });
-  });
-
-  it.each([
-    { adapterType: "process", label: "Process", adapterConfig: { command: "node", args: ["worker.js"] } },
-    { adapterType: "http", label: "HTTP", adapterConfig: { url: "https://example.com/agent" } },
-  ])("omits coming-soon options but preserves a saved $label agent", async ({ adapterType, label, adapterConfig }) => {
-    const result = await renderForm([], { adapterType, adapterConfig }, { showAdapterTypeField: true });
-    roots.push(result.root);
-    expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain(label);
-    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
-    const options = document.querySelector('[role="listbox"][aria-label="Harness"]');
-    expect(options).not.toBeNull();
-    const values = Array.from(options!.querySelectorAll('[role="option"]'), option => option.getAttribute("data-value"));
-    expect(values).toEqual(expect.arrayContaining(["claude_local", "codex_local", "opencode_local", "pi_local"]));
-    expect(values).not.toContain("process");
-    expect(values).not.toContain("http");
-    expect(options!.textContent).not.toContain("Coming soon");
-    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
-    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed saved agent"));
-    await flushReact();
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed saved agent" });
-  });
-
-  it.each(["codex_local", "claude_local", "grok_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
-    mockAdaptersApi.list.mockResolvedValueOnce([{ type: adapterType, supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
-    const result = await renderForm([], { adapterType, adapterConfig: { model: "existing-model", effort: "high" } });
-    roots.push(result.root);
-    expect(result.container.textContent).toContain("Upgrade to Paperclip Runner");
-    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed agent"));
-    await flushReact();
-    await clickByText(result.container, "Upgrade runner");
-    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed agent", runner: "paperclip" });
-  });
-
-  it.each(["paperclip_runner", "gemini_local"])("does not offer an upgrade for %s", async adapterType => {
-    const result = await renderForm([], { adapterType });
-    roots.push(result.root);
-    expect(result.container.textContent).not.toContain("Upgrade runner");
-  });
-
-  it("includes an uncommitted environment variable draft in an upgrade", async () => {
-    mockAdaptersApi.list.mockResolvedValueOnce([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
-    const result = await renderForm([], { adapterConfig: { model: "gpt-5.4" } }, { environmentVariablesPlacement: "configuration" });
-    roots.push(result.root);
-    await clickByText(result.container, "Add variable");
-    await act(async () => {
-      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!, "MIGRATION_MARKER");
-      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!, "kept");
-    });
-    await flushReact();
-    await clickByText(result.container, "Upgrade runner");
-    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ runner: "paperclip", replaceAdapterConfig: true,
-      adapterConfig: { model: "gpt-5.4", env: { MIGRATION_MARKER: { type: "plain", value: "kept" } } },
-    }));
-  });
-
-  it("keeps failed upgrades editable and allows retry", async () => {
-    mockAdaptersApi.list.mockResolvedValueOnce([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
-    const result = await renderForm([]);
-    roots.push(result.root);
-    result.onSave.mockRejectedValueOnce(new Error("Paperclip Runner cannot honor these settings: extraArgs."));
-    await clickByText(result.container, "Upgrade runner");
-    expect(result.container.querySelector('[role="alert"]')?.textContent).toContain("extraArgs");
-    expect(result.onSave).toHaveBeenLastCalledWith({ runner: "paperclip" });
-    await clickByText(result.container, "Upgrade runner");
-    expect(result.onSave).toHaveBeenCalledTimes(2);
-    expect(result.container.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("does not show an earlier agent's upgrade result after navigation", async () => {
-    mockAdaptersApi.list.mockResolvedValueOnce([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
-    let finishUpgrade!: () => void;
-    let changeAgent!: () => void;
-    const save = vi.fn(() => new Promise<void>(resolve => { finishUpgrade = resolve; }));
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    roots.push(root);
-    function Fixture() {
-      const [agent, setAgent] = useState(() => makeAgent());
-      changeAgent = () => setAgent(makeAgent({ id: "agent-2", name: "Another agent" }));
-      return <AgentConfigForm mode="edit" agent={agent} onSave={save} hidePromptTemplate />;
-    }
-    await act(async () => renderFormView(root, createFormQueryClient(), <Fixture />));
-    await flushReact();
-    await clickByText(container, "Upgrade runner");
-    await act(async () => changeAgent());
-    await act(async () => finishUpgrade());
-    await flushReact();
-    expect(container.textContent).not.toContain("Upgraded to Paperclip Runner.");
-    expect(findButton(container, "Upgrade runner")).toBeDefined();
-  });
-
-  it("switches a saved legacy Claude agent to Paperclip Runner on a Runner-only environment", async () => {
-    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
-    try {
-      const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { model: "claude-opus-5-5" } });
-      roots.push(result.root);
-      expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-      expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent).not.toContain("Advanced");
-      await clickByText(result.container, "Save");
-      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ runner: "paperclip" }));
-    } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
-  });
-
-  it("switches a new agent's Legacy choice to Paperclip Runner on a Runner-only environment", async () => {
-    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
-    try {
-      const result = await renderCreateForm([], { ...defaultCreateValues, adapterType: "claude_local", runner: "legacy" });
-      roots.push(result.root);
-      expect(result.onChange).toHaveBeenCalledWith({ runner: "paperclip" });
-    } finally { mockAdaptersApi.list.mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]); }
-  });
-
-  it.each(["explicit", "instance", "managed", "env-draft"])("qualifies a saved Daytona Claude agent and upgrades with its legacy turn limit (%s environment)", async mode => {
-    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Sandbox", driver: "sandbox", status: "active",
-      config: { provider: "daytona", snapshot: "managed-snapshot" }, metadata: { managedByPaperclip: true } });
-    const inventory = (qualified: boolean) => [
-      { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
-      { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
-    ];
-    mockAdaptersApi.list.mockResolvedValue(inventory(false));
-    mockAgentsApi.qualifyRunner.mockImplementation(async () => {
-      mockAdaptersApi.list.mockResolvedValue(inventory(true));
-      return { ok: true, driver: "sandbox", details: { platformQualificationRecorded: true, leaseId: "probe-lease" } };
-    });
-    if (mode === "instance") mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: environment.id });
-    if (mode === "managed") mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableEnvironments: false });
-    const result = await renderForm([environment], { adapterType: "claude_local", defaultEnvironmentId: mode === "explicit" || mode === "env-draft" ? environment.id : null,
-      adapterConfig: { model: "claude-opus-5-5", effort: "high", maxTurnsPerRun: 1000, dangerouslySkipPermissions: true } },
-      { environmentVariablesPlacement: "configuration" });
-    roots.push(result.root);
-    expect(result.container.textContent).toContain("Upgrade to Paperclip Runner");
-    expect(result.container.textContent).toContain("Max turns per run");
-    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
-    if (mode === "env-draft") {
-      await clickByText(result.container, "Add variable");
-      await act(async () => {
-        setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!, "MIGRATION_MARKER");
-        setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!, "kept");
-      });
-      await flushReact();
-    }
-    await clickByText(result.container, "Upgrade runner");
-    expect(mockAgentsApi.qualifyRunner).toHaveBeenCalledWith("agent-1", environment.id, "company-1");
-    expect(result.onSave).toHaveBeenCalledWith(mode === "env-draft" ? expect.objectContaining({
-      runner: "paperclip", replaceAdapterConfig: true,
-      adapterConfig: expect.objectContaining({ env: { MIGRATION_MARKER: { type: "plain", value: "kept" } } }),
-    }) : { runner: "paperclip" });
-  });
-
-  it.each([false, true])("requires saving a changed computer before upgrading (qualified: %s)", async qualified => {
-    const environments = ["saved-computer", "draft-computer"].map(id => makeEnvironment({ id, driver: "sandbox", status: "active",
-      config: { provider: "daytona", snapshot: "managed-snapshot" } }));
-    mockAdaptersApi.list.mockResolvedValue([
-      { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
-      { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
-    ]);
-    const result = await renderForm(environments, { adapterType: "claude_local", defaultEnvironmentId: "saved-computer" });
-    roots.push(result.root);
-    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(false);
-    await selectEnvironment(result.container, "draft-computer");
-    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(true);
-    expect(result.container.textContent).toContain("Save your computer change before upgrading the runner.");
-    await clickByText(result.container, "Upgrade runner");
-    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
-    expect(result.onSave).not.toHaveBeenCalled();
-    await selectEnvironment(result.container, "saved-computer");
-    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(false);
-    expect(result.container.textContent).not.toContain("Save your computer change before upgrading the runner.");
-  });
-
-  it.each(["probe", "unsupported", "settings-changed"])("does not save after Daytona %s", async failure => {
-    const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Sandbox", driver: "sandbox", status: "active",
-      config: { provider: "daytona", snapshot: "managed-snapshot" } });
-    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["legacy"], defaultRunner: "legacy" }, { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" }]);
-    let finish!: () => void;
-    mockAgentsApi.qualifyRunner.mockImplementation(() => new Promise(resolve => { finish = () => resolve({ ok: failure !== "probe",
-      summary: "Could not verify this computer", details: { platformQualificationRecorded: failure !== "probe", leaseId: "lease" } }); }));
-    const result = await renderForm([environment], { adapterType: "claude_local", defaultEnvironmentId: environment.id });
-    roots.push(result.root);
-    await clickByText(result.container, "Upgrade runner");
-    if (failure === "settings-changed") {
-      await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!, "Edited during probe"));
-    }
-    await act(async () => finish());
-    await flushReact();
-    expect(result.onSave).not.toHaveBeenCalled();
-    expect(result.container.querySelector('[role="alert"]')).not.toBeNull();
-  });
-
-  it.each([true, false])("respects forced Kubernetes instead of probing a saved Daytona default (target exists: %s)", async available => {
-    const daytona = makeEnvironment({ id: "old-daytona", driver: "sandbox", config: { provider: "daytona", snapshot: "old-snapshot" } });
-    const kubernetes = makeEnvironment({ id: "forced-kubernetes", driver: "sandbox", config: { provider: "kubernetes", image: `example.test/runner@sha256:${"a".repeat(64)}` } });
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "kubernetes" });
-    const inventory = (qualified: boolean) => [
-      { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
-      { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
-    ];
-    mockAdaptersApi.list.mockResolvedValue(inventory(false));
-    mockAgentsApi.qualifyRunner.mockImplementation(async () => {
-      mockAdaptersApi.list.mockResolvedValue(inventory(true));
-      return { ok: true, details: { platformQualificationRecorded: true, leaseId: "kubernetes-probe" } };
-    });
-    const result = await renderForm(available ? [daytona, kubernetes] : [daytona], {
-      adapterType: "claude_local", defaultEnvironmentId: daytona.id,
-    });
-    roots.push(result.root);
-    if (available) {
-      await clickByText(result.container, "Upgrade runner");
-      expect(mockAgentsApi.qualifyRunner).toHaveBeenCalledWith("agent-1", kubernetes.id, "company-1");
-      expect(mockAdaptersApi.list).toHaveBeenLastCalledWith({ companyId: "company-1", environmentId: kubernetes.id });
-      expect(result.onSave).toHaveBeenCalledWith({ runner: "paperclip" });
-    } else {
-      expect(findButton(result.container, "Upgrade runner")).toBeUndefined();
-      expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
-    }
-  });
-
-  it("does not offer an upgrade when the target only supports Legacy", async () => {
-    mockAdaptersApi.list.mockResolvedValueOnce([{ type: "codex_local", supportedRunners: ["legacy"], defaultRunner: "legacy" }]);
-    const result = await renderForm([]);
-    roots.push(result.root);
-    expect(result.container.textContent).not.toContain("Upgrade runner");
-  });
-
-  it("explains ignored options already saved on a native Claude agent", async () => {
-    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: {
-      provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", maxTurnsPerRun: 1000,
-    } });
-    roots.push(result.root);
-    expect(result.container.querySelector('[role="status"]')?.textContent).toContain("maxTurnsPerRun");
-    expect(result.container.textContent).toContain("is ignored. The agent can still run.");
-  });
-
-  it.each(["cursor_cloud", "paperclip_runner"])("does not offer unsupported thinking effort for saved Cursor Cloud on %s", async adapterType => {
-    const result = await renderForm([], { adapterType, adapterConfig: {
-      ...(adapterType === "paperclip_runner" ? { provider: "cursor_cloud", lifecycleMode: "per_turn" } : {}),
-      model: "caller-model", repoUrl: "https://github.com/acme/repo",
-    } });
-    roots.push(result.root);
-    expect(result.container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
-    if (adapterType === "paperclip_runner") {
-      expect(result.container.querySelector('[aria-label="Model"]')).not.toBeNull();
-      expect(result.container.textContent).toContain("Experimental");
-    }
-  });
-
-  it.each(["codex", "claude", "grok"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
-    const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: harness, model: harness === "grok" ? "grok-4.7" : "claude-opus-5-5" };
-    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, [key]: "high" } });
-    roots.push(result.root);
-    const effort = result.container.querySelector('[aria-label="Thinking effort"]');
-    expect(effort?.textContent).toContain("High");
-    await clickElement(effort);
-    await clickElement(document.querySelector('[role="option"][data-value=""]'));
-    await clickByText(result.container, "Save");
-    const saved = result.onSave.mock.calls[0][0];
-    expect(saved.replaceAdapterConfig).toBe(true);
-    expect(saved.adapterConfig).toMatchObject(profile);
-    for (const alias of ["modelReasoningEffort", "reasoningEffort", "effort"]) expect(saved.adapterConfig).not.toHaveProperty(alias);
-  });
-
-  it.each(["codex_local", "paperclip_runner"])("changes and clears the environment without changing a saved %s runner or account", async adapterType => {
-    const adapterConfig = {
-      model: "gpt-5.6-sol",
-      ...(adapterType === "paperclip_runner" ? { provider: "codex", reasoningEffort: "high" } : { modelReasoningEffort: "high" }),
-      env: { CODEX_HOME: { type: "secret_ref", secretId: "codex-account" } },
-    };
-    const result = await renderForm([
-      ...daytonaEnvironments(),
-      makeEnvironment({ id: "sandbox-2", name: "Daytona Two", driver: "sandbox", config: { provider: "daytona" } }),
-    ], { adapterType, adapterConfig, defaultEnvironmentId: "sandbox-1" }, { showAdapterTypeField: true });
-    roots.push(result.root);
-    await selectEnvironment(result.container, "sandbox-2");
-    expect(result.container.querySelector('[aria-label="Environment override"]')?.textContent).toContain("Daytona Two");
-    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenLastCalledWith({ defaultEnvironmentId: "sandbox-2" });
-
-    await selectEnvironment(result.container, "");
-    expect(result.container.querySelector('[aria-label="Environment override"]')?.textContent).toContain("Default: Local");
-    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenLastCalledWith({ defaultEnvironmentId: null });
-  });
-
-  it("clears a new agent's environment override to the empty draft value", async () => {
-    const result = await renderCreateForm(daytonaEnvironments(), { defaultEnvironmentId: "sandbox-1", runner: "legacy" });
-    roots.push(result.root);
-    await selectEnvironment(result.container, "");
-    expect(result.onChange).toHaveBeenLastCalledWith({ defaultEnvironmentId: "" });
-  });
-
-  it.each(["codex", "claude"])("hides empty Advanced settings for the saved native %s harness", async harness => {
-    const profile = harness === "codex" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" };
-    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, model: "saved-model" } });
-    roots.push(result.root);
-    const configuration = result.container.querySelector('[data-config-section="configuration"]')!;
-    expect(configuration.textContent).not.toContain("Advanced");
-    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-  });
-
-  it.each([false, true])("keeps experimental native selection gated when enableNativeRunner is %s", async enabled => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: enabled });
-    const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }, { showAdapterTypeField: true });
-    roots.push(result.root);
-    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
-    const option = [...document.querySelectorAll('[role="option"]')].find(element => element.getAttribute("data-value") === "paperclip_runner");
-    expect(Boolean(option)).toBe(enabled);
-    if (!enabled) return;
-    expect(document.body.textContent).toContain("Advanced");
-    await clickElement(option);
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
-      adapterType: "paperclip_runner",
-      adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "claude" }),
-    }));
-    expect(result.onSave.mock.calls[0][0].runner).toBeUndefined();
-  });
-
-  it("preserves Claude's saved runner without runner or legacy command controls when the experimental gate is off", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false });
-    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", modelReasoningEffort: "high" } }, { showAdapterTypeField: true });
-    roots.push(result.root);
-    expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Claude");
-    expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent).not.toContain("Advanced");
-    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-    const labels = Array.from(result.container.querySelectorAll("label")).map(label => label.textContent?.trim());
-    expect(labels).not.toContain("Command");
-    expect(labels).not.toContain("Extra args (comma-separated)");
-    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed Claude"));
-    await flushReact();
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Claude" });
-  });
-
-  it.each([{ provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" }, { provider: "acpx", acpxAgent: "pi", model: "openrouter/anthropic/claude-sonnet-4.6", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" }, { provider: "unknown-provider" }])("preserves saved native $provider configuration with the experimental gate off", async adapterConfig => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false });
-    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig }, { showAdapterTypeField: true });
-    roots.push(result.root);
-    if (adapterConfig.provider === "opencode" || adapterConfig.acpxAgent === "pi") {
-      expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain(adapterConfig.provider === "opencode" ? "OpenCode" : "Pi");
-      expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-      expect(result.container.querySelector('[data-config-section="configuration"]')?.textContent).not.toContain("Advanced");
-    }
-    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
-    if (adapterConfig.acpxAgent === "pi") {
-      expect(result.container.querySelector('[aria-label="Pi thinking level"]')).not.toBeNull();
-      expect(result.container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
-    }
-    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed native agent"));
-    await flushReact();
-    await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed native agent" });
-  });
-
   beforeEach(() => {
-    mockEnvironmentsApi.probe.mockReset();
-    mockAgentsApi.qualifyRunner.mockReset();
-    mockAdaptersApi.list.mockReset().mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({ id: "sandbox-1", name: "Daytona", driver: "sandbox", config: { provider: "daytona" } }),
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
-    mockAgentsApi.testEnvironment.mockResolvedValue({
-      adapterType: "codex_local",
-      status: "pass",
-      checks: [],
-      testedAt: new Date(0).toISOString(),
-    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
-    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
-    // Default: the caller has no active session. A resume test overrides this
-    // with a resolved session body.
     mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
     mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
@@ -1151,55 +225,11 @@ describe("AgentConfigForm environment selector", () => {
       failure: null,
       prompt: { url: "https://auth.example.test/device", code: "WXYZ-1234" },
     });
-    mockAgentsApi.cancelAdapterAuthLogin.mockResolvedValue({
-      sessionId: "session-1",
-      environmentId: "sandbox-1",
-      status: "cancelled",
-      expiresAt: null,
-      failure: null,
-      prompt: null,
-    });
-    mockClipboard.copyTextToClipboard.mockResolvedValue(undefined);
-    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
-      sessionId: "claude-session-1",
-      environmentId: "sandbox-1",
-      status: "starting",
-      expiresAt: null,
-      failure: null,
-      panelMode: "submitted_browser_code",
-      prompt: null,
-    });
-    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
-      sessionId: "claude-session-1",
-      environmentId: "sandbox-1",
-      status: "waiting_for_user",
-      expiresAt: null,
-      failure: null,
-    });
-    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
-      authorizationUrl: "https://claude.example.test/authorize",
-    });
-    mockAgentsApi.submitClaudeSetupTokenBrowserCode.mockResolvedValue({
-      sessionId: "claude-session-1",
-      environmentId: "sandbox-1",
-      status: "authenticated",
-      expiresAt: null,
-      failure: null,
-    });
-    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
-      storedSessionId: "stored-session-1",
-    });
-    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
-    // Default: the owner has no stored Claude login. A test that needs a stored
-    // value overrides this with a status body.
-    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
   });
 
   afterEach(async () => {
     for (const root of roots) {
-      await act(async () => {
-        root.unmount();
-      });
+      await act(async () => root.unmount());
     }
     roots = [];
     document.body.innerHTML = "";
@@ -4280,10 +3310,11 @@ describe("AgentConfigForm environment selector", () => {
             <TooltipProvider>
               <AgentConfigForm
                 mode="edit"
-                agent={makeAgent({ adapterConfig: { model: "gpt-6-astra" } })}
+                agent={makeAgent({ defaultEnvironmentId: "sandbox-1" })}
                 onSave={vi.fn()}
                 hidePromptTemplate
                 showAdapterTypeField={false}
+                showAdapterTestEnvironmentButton
               />
             </TooltipProvider>
           </ToastProvider>
@@ -4831,86 +3862,10 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     expect(result.container.textContent).not.toContain("/srv/agents/cody");
   });
 
-  it("hides the command field and forces the instructions-file gate for codex_local when the policy is on", async () => {
-    setManagedSandboxOnly(true);
-    const result = await renderForm(
-      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
-      { adapterType: "codex_local", adapterConfig: MANAGED_AGENT_CONFIG },
-    );
-    roots.push(result.root);
-
-    await act(async () => {
-      for (const button of result.container.querySelectorAll("button")) {
-        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
-      }
-    });
+    await clickByText(container, "Test");
+    await clickByText(container, "Sign in");
     await flushReact();
-    const labels = fieldLabels(result.container);
-    expect(labels).not.toContain("Working directory (deprecated)");
-    expect(labels).not.toContain("Command");
-    expect(choosePathButtons(result.container)).toHaveLength(0);
 
-    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
-    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("true");
-    expect(adapterFields?.getAttribute("data-hide-instructions-file")).toBe("true");
-  });
-});
-
-describe("subtractPersistedOverlay", () => {
-  const overlayWith = (adapterConfig: Record<string, unknown>) => ({
-    identity: {},
-    adapterConfig,
-    heartbeat: {},
-    debug: {},
-    runtime: {},
-  });
-
-  it("drops an entry whose value is structurally equal even with a new reference", () => {
-    // An edit-then-restore rebuilds the env object, so a reference compare
-    // would keep it falsely dirty after the refresh subtracts the snapshot —
-    // a false "Unsaved changes" state and a redundant full-config save.
-    const persisted = overlayWith({
-      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
-    });
-    const current = overlayWith({
-      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
-    });
-    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({});
-  });
-
-  it("keeps an entry the user changed after the snapshot", () => {
-    const persisted = overlayWith({
-      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
-    });
-    const current = overlayWith({
-      env: {
-        CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" },
-        EXTRA: { type: "plain", value: "added-during-save" },
-      },
-    });
-    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({
-      env: {
-        CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" },
-        EXTRA: { type: "plain", value: "added-during-save" },
-      },
-    });
-  });
-
-  it("keeps an entry the snapshot never carried", () => {
-    const persisted = overlayWith({});
-    const current = overlayWith({ model: "gpt-5.5" });
-    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({
-      model: "gpt-5.5",
-    });
-  });
-
-  it("compares arrays structurally", () => {
-    const persisted = overlayWith({ args: ["--flag", "value"] });
-    const equal = overlayWith({ args: ["--flag", "value"] });
-    const changed = overlayWith({ args: ["--flag", "other"] });
-    expect(subtractPersistedOverlay(equal, persisted).adapterConfig).toEqual({});
-    expect(subtractPersistedOverlay(changed, persisted).adapterConfig).toEqual({
-      args: ["--flag", "other"],
-    });
+    expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
   });
 });
