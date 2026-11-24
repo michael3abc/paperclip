@@ -167,7 +167,9 @@ describe("native ACPX execution closure", () => {
 
     const install = await verifyNativeAcpxInstallation({ ...pinned, helperExecutableEnvironment: { name: "ANTIGRAVITY_HARNESS_PATH", path: "helper" } });
     const [, exported] = (await output((await install.openCommand()).spawn([], { env: { ANTIGRAVITY_HARNESS_PATH: "/ambient/harness" } }))).text.split("|");
-    expect(exported).toMatch(/paperclip-acpx-native-.*\/distribution\/helper$/);
+    expect(exported).toBe(join(storeRoot, pinned.expectedClosureSha256, "distribution", "helper"));
+    expect(hash(await readFile(exported))).toBe(hash(helper));
+    expect((await stat(exported)).mode & 0o222).toBe(0);
     expect(exported).not.toContain(declaration.distributionRoot);
 
     await expect(verifyNativeAcpxInstallation({ ...pinned, helperExecutableEnvironment: { name: "ANTIGRAVITY_HARNESS_PATH", path: "absent" } }))
