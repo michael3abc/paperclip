@@ -1149,6 +1149,9 @@ importers:
       tar-stream:
         specifier: 3.2.0
         version: 3.2.0
+      tldts:
+        specifier: 7.4.10
+        version: 7.4.10
       web-push:
         specifier: 3.6.7
         version: 3.6.7
@@ -8387,6 +8390,7 @@ packages:
 
   opencode-ai@1.18.34:
     resolution: {integrity: sha512-9WUS2T0t4HHDVzXvuwTHF0nvhXvZ9mQ0r+ozCvKdJu0LVoQpOzqAW4qWTC3ygNc5Oedcc7j+Oct24JYlQYnySA==}
+    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 

@@ -152,6 +152,7 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 
 import { googleChatToolDescription } from "./google-chat-tool-policy.js";
 import { gmailArchiveToolDescription } from "./gmail-archive-tool-policy.js";
+import { googleWorkspaceCatalogToolTitle } from "./google-workspace-rest-dispatch.js";
 
 import { createToolRuntimeSupervisor } from "./tool-runtime-supervisor.js";
 
@@ -595,6 +596,7 @@ function toCatalogEntryForConnection(
   const rawCatalogEntry = toCatalogEntry(row);
   const catalogEntry = {
     ...rawCatalogEntry,
+    title: googleWorkspaceCatalogToolTitle(asRecord(connection.config).sourceTemplateKey, row.toolName, rawCatalogEntry.title),
     inputSchema: projectedConnectionToolInputSchema(
       connection,
       rawCatalogEntry.inputSchema ?? {},

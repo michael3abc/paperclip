@@ -2038,7 +2038,7 @@ preserved; snapshot pruning follows the five-newest-snapshots rule.
 
 ### LRH external waits
 
-Migration `0512_ordinary_stardust.sql` adds `issue_external_waits` and an
+Migration `0515_ordinary_stardust.sql` adds `issue_external_waits` and an
 `external-wait-completed:` partial unique wake index. The prefix is new, so prior
 releases cannot violate it. The large wake table index builds concurrently;
 this migration is registered for top-level execution and every statement is

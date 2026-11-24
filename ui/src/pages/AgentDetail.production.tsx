@@ -67,6 +67,7 @@ import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { ProviderLimitMessage } from "../components/ProviderLimitMessage";
+import { runFailureMessage } from "@paperclipai/shared";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -3048,9 +3049,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 )}
               </div>
             )}
-            {run.error && (
+            {runFailureMessage(run) && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400"><ProviderLimitMessage>{run.error}</ProviderLimitMessage></span>
+                <span className="text-destructive"><ProviderLimitMessage>{runFailureMessage(run)!}</ProviderLimitMessage></span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}

@@ -49,6 +49,7 @@ import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
+import { requestIssueConnectionContentDeletion } from "./tool-access/connections/issue-content-deletion.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { MENTION_SUBTASK_ORIGIN_KIND } from "./mention-subtasks.js";
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
@@ -12937,6 +12938,9 @@ export function issueService(db: Db) {
           }
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyRoutineExecutionStatus(tx, id);
+          if (owner) {
+            await requestIssueConnectionContentDeletion(tx as unknown as Db, { companyId: owner.companyId, issueId: id, actorAgentId });
+          }
           removedIssue = await tx
             .delete(issues)
             .where(eq(issues.id, id))

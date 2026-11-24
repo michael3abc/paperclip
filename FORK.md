@@ -33,8 +33,23 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651` (integrated for 2026-11-21; not deployed). Previous sync base: `806440d12cf3cc5b6e28f546a5e0f4fb625df48c`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `ff68490d03601cdced37e21d919affb079fafc61` (2026-11-24 integration; not deployed). Previous sync base: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
+
+## 2026-11-24 upstream merge (HOM-562; not deployed)
+
+Integrate 80 upstream commits through `ff68490d03`. Retain upstream migrations
+0500–0502 and renumber fork SQL 0500–0512 to 0503–0515 with identical bytes and
+original journal timestamps. Rebuild the combined snapshot from Drizzle schema.
+An owned empty database migrates successfully; an owned `cc06f5e1a7` database
+applies only the three upstream migrations (511 to 514 history rows).
+Upstream 0500 requires staging: Sunday release needs T4, a production-clone
+upgrade and confirmation that local Areas & Responsibilities has no active writers.
+Antigravity ACP uses upstream 1.5.2 with Linux executable/helper admission and
+fork browser paste-back. Preserve delegated external-write review alongside
+human direct-review policy, and retain fork Retry and agent-binding behavior.
+Decisions and verification: [sync-decisions](/HOM/issues/HOM-562#document-sync-decisions).
+Tuesday integration only; no deployment or restart.
 
 ## 2026-11-21 upstream merge (HOM-460; not deployed)
 

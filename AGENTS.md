@@ -204,6 +204,13 @@ Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` ali
 5. Keep repo plan docs dated and centralized.
 When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
 
+6. Keep deployment policy out of Core.
+Do not hardcode Cloud allowlists, provider choices, or deployment-specific
+defaults here. Core provides generic, documented configuration mechanisms;
+the deployment repository supplies and owns its policy. Changing a Cloud
+policy must not require a Core code change. See
+[harness availability](doc/harness-availability.md) for an example contract.
+
 7. Name the three data paths correctly.
 This repo has three separate data paths. Do not confuse them. Match a change to a path by its file path, not by the word "observability" or "telemetry" alone.
 
@@ -392,6 +399,13 @@ Only after queue admission may it lift its ancestry's system failure block;
 preserve human, declared, dependency and newer blocks.
 
 ## Native session bridge
+
+HOM-562 retains upstream migration numbers 0500–0502 and moves fork SQL to
+0503–0515 without changing SQL bytes or original journal timestamps. Keep the
+top-level migration execution registry aligned with renamed files. Antigravity
+ACP 1.5.2 uses one platform-aware admission source with Linux `/proc/self/exe`,
+per-distribution helper digests and the existing remote-browser paste-back;
+`agy_local` and Bridge remain separate. See doc/DATABASE.md and doc/DEVELOPING.md.
 
 HOM-458 main Chat compaction scope is rebuilt in task-context from the assigned ccpocket_bridge main. mainContextCompactThresholdTokens defaults to 150000, 0 disables. Keep maintenance at the adapter/Bridge idle boundary; never replay unknown maintenance or turn its failure into a user-input retry. Preserve canonical TODO/cards/decisions. See docs/agents/session-bridge.md.
 

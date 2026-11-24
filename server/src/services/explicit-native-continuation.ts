@@ -460,7 +460,9 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("delivery_unknown", "The original attempt's delivery state changed. Reconcile its receipt before retrying.");
     // Liveness-first (Owner 2026-11-13): Retry of a finished run with an unknown
     // delivery outcome resends; the adapter adds the check-current-state note.
-    if (!(await isFailedNativePreparation(db, source, coordinator, "admission") || await isPreDispatchExecutionWaitVerified(db, source))) return null;
+    if (!(await isFailedNativePreparation(db, source, coordinator, "admission")
+      || source.errorCode === "adapter_failed" && await isFailedNativePreparationRetryAncestor(db, source, coordinator)
+      || await isPreDispatchExecutionWaitVerified(db, source))) return null;
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
@@ -504,7 +506,9 @@ export async function admitExplicitNativeContinuation(input: {
     run = lockedRun;
     const stoppedAt = userStopBoundaryAt(run)!;
     const failedPreparation = recovery && input.workspaceRecoveryRequest?.phase === "repair" && run.id === recovery.state.failedRunId
-      ? true : await isFailedNativePreparation(db, run, coordinator, "admission");
+      ? true : await isFailedNativePreparation(db, run, coordinator, "admission")
+        || taskRetry?.sourceRunId === run.id && run.errorCode === "adapter_failed"
+          && await isFailedNativePreparationRetryAncestor(db, run, coordinator);
     if (recovery && input.workspaceRecoveryRequest?.phase !== "repair" && (
       run.resultJson?.workspaceRecoveryActionId !== recovery.action.id || run.resultJson?.interruptedByActorType !== "system"
     )) return blocked("unrelated_stop", "The system notice cannot override an unrelated Stop.");

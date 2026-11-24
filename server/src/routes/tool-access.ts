@@ -1069,9 +1069,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // client they registered themselves. Report that instead of a 4xx so
           // the wizard can ask for it rather than losing the draft.
           const code = error instanceof HttpError ? String((error.details as { code?: unknown })?.code ?? "") : "";
-          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required") throw error;
+          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required"
+            && code !== "oauth_instance_client_endpoint_mismatch") throw error;
+          const reason = (error as HttpError).details as { reason?: unknown } | undefined;
           result.auth.startUrl = null;
           result.auth.manualClientRequired = true;
+          result.auth.manualClientReason = typeof reason?.reason === "string"
+            ? reason.reason
+            : code === "oauth_instance_client_endpoint_mismatch" ? (error as HttpError).message : null;
         }
       }
       await logActivity(db, {
@@ -2686,6 +2691,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", await svc.listProfiles(companyId), row => ({ profileId: row.id })) });
+  });
+
+  router.get("/companies/:companyId/tools/profiles/summary", managementGuard("connections:profiles", "GET /companies/:companyId/tools/profiles/summary", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const profiles = await svc.listProfileSummaries(companyId);
+    res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", profiles, row => ({ profileId: row.id })) });
   });
 
   router.get("/tool-connections/:connectionId/profile-configuration", managementGuard("connections:profiles", "GET /tool-connections/:connectionId/profile-configuration", { personal: true }), async (req, res) => {

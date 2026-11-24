@@ -449,6 +449,7 @@ import {
 import {
   addressedHumanOnlyDenialMessage,
   evaluateIssueThreadInteractionResolverAudience,
+  conversationInteractionResponderAllowed,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
@@ -6561,7 +6562,7 @@ export function issueRoutes(
     interactionId: string,
     relayedHumanUserId?: string | null,
   ) {
-    if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+    if (req.actor.type === "board" && !conversationInteractionResponderAllowed(issue, req.actor.userId)) {
       throw forbidden("Only the conversation owner can respond to chat interactions");
     }
     // Actor-only gates deliberately precede the interaction lookup. An actor
@@ -16847,7 +16848,7 @@ export function issueRoutes(
                 }
               : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
-            ...(hasFieldChanges ? { updated: true } : {}),
+            ...(hasFieldChanges ? { updated: true, changes: issueChanges } : {}),
             ...summarizeIssueReferenceActivityDetails({
               addedReferencedIssues:
                 commentReferenceDiff.addedReferencedIssues.map(
@@ -17709,17 +17710,18 @@ export function issueRoutes(
       });
     }
     const [recent, human, firstInstruction] = await Promise.all([
-      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 7 }),
       svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 1, humanOnly: true }),
       issue.description?.trim()
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
     const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
       latestCommentId: recent[0]?.id ?? null,
-      hasMore: recent.length > 4,
+      hasMore: recent.slice(4).some((comment) => !included.has(comment.id)),
     });
   }
 

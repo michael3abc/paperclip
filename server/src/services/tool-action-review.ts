@@ -11,7 +11,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
-import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
+import { assertHumanToolReviewResolution, assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { assertDelegatedDecisionActor, decisionFingerprint, readDecisionAuthority } from "./delegated-decision-policy.js";
@@ -58,6 +58,8 @@ export async function commitToolActionReview(
     actor: ToolReviewActor;
   },
 ) {
+  if (!input.actor.agentId && !input.actor.userId)
+    throw forbidden("Only a human can resolve a direct tool review", { code: "human_review_required" });
   const [source] = await db
     .select()
     .from(toolActionRequests)
@@ -157,6 +159,10 @@ export async function commitToolActionReview(
         payload.toolAction.invocationId !== current.invocationId
       )
         throw conflict("Tool review context does not match");
+      if (!issue) throw conflict("Tool review context does not match");
+      if (!input.actor.agentId) {
+        assertHumanToolReviewResolution({ userId: input.actor.userId!, issue, interaction });
+      }
       assertIssueThreadInteractionResolverAudience({
         actor: input.actor.agentId ? { type: "agent", agentId: input.actor.agentId, runId: input.actor.runId }
           : { type: "user", userId: input.actor.userId ?? "board" },
@@ -192,7 +198,7 @@ export async function commitToolActionReview(
         companyId: input.companyId,
         actionRequestId: current.id,
         body: { approvalThreshold: 1, priority: 40, argumentMode: "action" },
-        actor: { userId: input.actor.userId ?? "board" },
+        actor: { userId: input.actor.userId! },
       });
     }
     await tx

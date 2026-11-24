@@ -2565,20 +2565,19 @@ CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 ## Adding a native Runner harness
 
-Google Antigravity's pending integration uses the official ACP server 1.4.3 with
+Google Antigravity's pending integration uses the official ACP server 1.5.2 with
 a pinned native admission patch. `paperclipai runtime setup antigravity` installs
 its verified assets on macOS ARM64 and Linux x64 as the OS user running Paperclip.
-The Linux x64 closure is the official `agy-acp-server-1.4.3-linux-x86_64.zip`
+The Linux x64 closure is the official `agy-acp-server-1.5.2-linux-x86_64.zip`
 from `dl.google.com/agy-extensions`; it is launched with `--uid=` because its
 hermetic launcher otherwise looks up a `nobody` group. It receives the owned
-admission patch in its ELF `.par_data` section, from its own Linux admission source
-(`patch-antigravity-runtime.admission.linux.py`): the macOS source and its
-digest stay byte-identical, and the Linux twin differs only in locating the owned
-executable through `/proc/self/exe` (instead of `libSystem._NSGetExecutablePath`) and
-in pinning the Linux `localharness_external` digest. Admission stays fail-closed on
-both platforms: a sibling helper that is not the immutable, digest-pinned file refuses the
+admission patch in its ELF `.par_data` section. The platform-aware source
+(`patch-antigravity-runtime.admission.py`) locates the Linux executable through
+`/proc/self/exe` and the macOS executable through `libSystem._NSGetExecutablePath`.
+The generated native identity pins each distribution's `localharness_external`
+digest. A sibling helper that is not the immutable, digest-pinned file refuses the
 session. A trusted-startup candidate (`PAPERCLIP_ACPX_CANDIDATE_ADMISSION`) can bind
-either `darwin-arm64` or `linux-x64`, each to its own pinned closure and exact host.
+`darwin-arm64`, `linux-x64` or `linux-arm64`, each to its own pinned closure and exact host.
 Linux agent sessions therefore admit like macOS ones. Setup does
 not enable global execution: qualification remains pending and admission is
 closed by default. An isolated company can use a finite trusted server-startup

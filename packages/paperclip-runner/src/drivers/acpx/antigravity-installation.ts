@@ -37,7 +37,7 @@ export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = pr
     distributionRoot = antigravityRuntimeCachePath(pin.closureSha256, platform, architecture);
   }
   return { distributionRoot, manifestPath: join(distributionRoot, ".paperclip-antigravity-closure.json"), expectedClosureSha256: pin.closureSha256,
-    executable: pin.executable, fixedArguments: [...pin.args],
+    executable: pin.executable, fixedArguments: [...pin.args], storeFamily: "antigravity",
     // The pinned ACP server's SDK resolves its harness in a constructor that runs
     // before Paperclip's admission patch; give it the verified snapshot sibling.
     helperExecutableEnvironment: { name: "ANTIGRAVITY_HARNESS_PATH", path: "localharness_external" } };
