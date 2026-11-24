@@ -52,6 +52,7 @@ import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { currentPmCoordinationScope } from "../services/pm-coordination-policy.js";
 import { assertMainContinuation, assertPmContinuation, issueContinuationService, resolveMainContinuationWorkerSelection } from "../services/issue-continuations.js";
 import { mainAgentProjectId } from "../services/main-agent-workers.js";
+import { supersedePendingIssueAutomaticRetry } from "../services/automatic-retry-authority.js";
 import {
   childCreatedByRequest,
   loadCreationSourceAgent,
@@ -6084,10 +6085,33 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean; intent?: "document_write" } = {},
+    options: { allowVisibleIssueWrite?: boolean; intent?: "document_write"; supersedeAutomaticRetry?: boolean;
+      onAutomaticRetrySuperseded?: (lock: { executionRunId: string | null; checkoutRunId: string | null }) => void } = {},
   ) {
     if (!(await assertIssueReadAllowed(req, res, issue))) return false;
-    if (req.actor.type !== "agent") return true;
+    const supersedeAutomaticRetry = async () => {
+      if (!options.supersedeAutomaticRetry) return false;
+      const cancelled = await supersedePendingIssueAutomaticRetry(db, {
+        companyId: issue.companyId, issueId: issue.id, actor: req.actor,
+      }, (id, reason, cancelOptions) => heartbeat.cancelRun(id, reason, cancelOptions));
+      if (!cancelled) return false;
+      const actor = getActorInfo(req);
+      await logActivity(db, { companyId: issue.companyId, ...actor,
+        action: "heartbeat.cancelled", entityType: "heartbeat_run", entityId: cancelled.id, issueId: issue.id,
+        details: { source: "issue_update_automatic_retry_superseded", issueId: issue.id } });
+      const refreshed = await svc.getById(issue.id);
+      if (!refreshed) throw notFound("Issue not found");
+      if (refreshed.executionRunId && refreshed.executionRunId !== req.actor.runId) {
+        throw conflict("Issue execution changed after retry cancellation", { code: "issue_retry_supersession_conflict" });
+      }
+      Object.assign(issue, refreshed);
+      options.onAutomaticRetrySuperseded?.({ executionRunId: refreshed.executionRunId, checkoutRunId: refreshed.checkoutRunId });
+      return true;
+    };
+    if (req.actor.type !== "agent") {
+      await supersedeAutomaticRetry();
+      return true;
+    }
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
@@ -6143,6 +6167,7 @@ export function issueRoutes(
         issueWriteDenialCodeForDecision(boundaryDecision),
       );
     }
+    if (await supersedeAutomaticRetry()) return true;
     if (issue.assigneeAgentId === null) {
       return true;
     }
@@ -15009,11 +15034,20 @@ export function issueRoutes(
       }
       const commentOnlyUpdate = Boolean(req.body.comment) && Object.keys(req.body).every(key =>
         ["comment", "commentClientRequestId", "attachmentIds", "onBehalfOfUserId"].includes(key));
+      let supersededRetryExecutionLock: { executionRunId: string | null; checkoutRunId: string | null } | null = null;
+      const assertSupersededRetryControlTarget = (run: { id: string } | null) => {
+        if (supersededRetryExecutionLock && run && run.id !== req.actor.runId) {
+          throw conflict("Issue execution changed after retry cancellation", { code: "issue_retry_supersession_conflict" });
+        }
+      };
       const issueMutationAccess = commentOnlyUpdate ? await assertAgentIssueCommentAllowed(req, res, existing) : await assertAgentIssueMutationAllowed(
         req,
         res,
         existing,
-        { allowVisibleIssueWrite: true },
+        { allowVisibleIssueWrite: true, supersedeAutomaticRetry:
+          ["status", "assigneeAgentId", "assigneeUserId"].some(key => req.body[key] !== undefined &&
+            req.body[key] !== existing[key as "status" | "assigneeAgentId" | "assigneeUserId"]),
+          onAutomaticRetrySuperseded: lock => { supersededRetryExecutionLock = lock; } },
       );
       if (!issueMutationAccess) return;
       if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
@@ -15420,6 +15454,7 @@ export function issueRoutes(
         shouldCancelActiveRunForCancelledStatus
           ? await resolveActiveIssueRun(existing)
           : null;
+      assertSupersededRetryControlTarget(runToCancelForCancelledStatus);
 
       if (hiddenAtRaw !== undefined) {
         updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
@@ -15779,6 +15814,7 @@ export function issueRoutes(
         });
         const runToStopForReassignment = await resolveActiveIssueRun(existing) ??
           await resolveQueuedOutgoingAssigneeRun(existing);
+        assertSupersededRetryControlTarget(runToStopForReassignment);
         // The run handing its own task to a person finishes its turn instead of
         // cancelling itself. Native and legacy alike: the reassignment clears
         // the execution lock, the native tool binding and finalizer stop acting
@@ -15876,6 +15912,7 @@ export function issueRoutes(
           (req.actor.type === "board" && existing.executionRunId)
           ? await resolveActiveIssueRun(existing)
           : null;
+        assertSupersededRetryControlTarget(runToStopForTerminalization);
         // Closing a native task revokes its tool binding. Retire the board's
         // active executor before releasing that binding, even without a goal.
         const mustStopNativeRun = req.actor.type === "board" &&
@@ -15949,7 +15986,8 @@ export function issueRoutes(
         workspaceSelectionActor: req.actor,
         expectedExecutionPolicy,
         expectedStatusVersion,
-        ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
+        ...(checkedExecutionLock || supersededRetryExecutionLock
+          ? { expectedExecutionLock: checkedExecutionLock ?? supersededRetryExecutionLock! } : {}),
         actorAgentId: actor.agentId ?? null,
         actorRunId: actor.agentId ? actor.runId : null,
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,

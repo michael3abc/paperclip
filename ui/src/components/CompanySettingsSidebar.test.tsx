@@ -8,6 +8,9 @@ import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsSidebar as ProductionCompanySettingsSidebar } from "./CompanySettingsSidebar.production";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
 
+const terminalAccess = vi.hoisted(() => ({ allowed: false }));
+vi.mock("@/hooks/useHostTerminalAccess", () => ({ useHostTerminalAccess: () => terminalAccess }));
+
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -107,6 +110,7 @@ describe("CompanySettingsSidebar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    terminalAccess.allowed = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     mockSidebarBadgesApi.get.mockResolvedValue({
@@ -279,6 +283,20 @@ describe("CompanySettingsSidebar", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows host terminals only to a signed-in human admin in both sidebar variants", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    for (const Sidebar of [CompanySettingsSidebar, ProductionCompanySettingsSidebar]) {
+      terminalAccess.allowed = false;
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Sidebar /></QueryClientProvider>));
+      await flushReact(); expect(container.textContent).not.toContain("主機終端");
+      terminalAccess.allowed = true;
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><Sidebar /></QueryClientProvider>));
+      await flushReact(); expect(container.textContent).toContain("主機終端");
+    }
+    await act(async () => root.unmount());
+  });
+
   it("renders company settings pages contributed by ready plugins", async () => {
     mockUsePluginSlots.mockReturnValue({
       slots: [
@@ -390,6 +408,7 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    terminalAccess.allowed = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     mockSidebarBadgesApi.get.mockResolvedValue({

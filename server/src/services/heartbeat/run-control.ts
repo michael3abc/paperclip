@@ -296,8 +296,8 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 export type CancelRunOptions = {
-    /** Return null if a parked retry was promoted or settled before this cancellation. */
-    expectedStatus?: "scheduled_retry";
+    /** Return null if a pending retry changed status before this cancellation. */
+    expectedStatus?: "scheduled_retry" | "queued";
     budgetEnforcement?: BudgetEnforcementScope;
     /** Optional board request identity, atomically reserved for native Stop. */
     cancellationRequestId?: string;

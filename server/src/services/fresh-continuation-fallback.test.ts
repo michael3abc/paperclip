@@ -1107,6 +1107,7 @@ suite("fresh-continuation fallback", () => {
     { title: "a pending approval", setup: "approval" as const, errorCode: "native_continuation_requires_reconciliation" },
     { title: "a credential the person has not shared", setup: "none" as const, errorCode: "configuration_incomplete" },
     { title: "a budget stop", setup: "none" as const, errorCode: "budget_blocked" },
+    { title: "a model/provider mismatch", setup: "none" as const, errorCode: "model_provider_mismatch" },
   ])("leaves a task waiting on $title for the person", async ({ setup, errorCode }) => {
     expect(PERSON_OWNED_FAILURE_CODES).toContain("configuration_incomplete");
     const f = await unfinishedRun({ runtime: "native", errorCode });
@@ -1117,6 +1118,7 @@ suite("fresh-continuation fallback", () => {
     }
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "person_owned" });
+    expect(await runsAwaitingSystemContinuation(db, companyId, [f.issueId], [f.runId])).toEqual(new Set());
     await settleUnrecoverableExecutions(db);
     expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
     await deliver();

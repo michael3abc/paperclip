@@ -595,9 +595,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // three transient attempts (counted over consecutive same-code failures),
     // deterministic codes get none. Explicit caps remain for resource-wait and
     // productive-continuation lanes (AI subscription waits, max-turn).
-    const failureClassBudget =
-      opts?.maxAttempts == null &&
-      retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON;
     // A persisted transient error family (provider transient or quota) is
     // transient even when the adapter recorded a generic or unknown code.
     // A run the system itself cancelled (controller lease lost, watchdog,
@@ -605,8 +602,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // Owner/agent stop is final. System stops retry as transient.
     const systemCancelled = run.errorCode === "cancelled" && !isDeliberateRunCancellation(run)
       && (parseObject(parseObject(run.resultJson).cancellation).initiator as { type?: unknown } | undefined)?.type === "system";
+    const staticFailureClass = systemCancelled ? "transient" : classifyRunFailure(run.errorCode);
+    // Configuration failures cannot be repaired by retry metadata or a caller's
+    // explicit budget. Keep the system-cancellation exception above intact.
+    const failureClassBudget = staticFailureClass === "deterministic" ||
+      opts?.maxAttempts == null && retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON;
     const failureClass = failureClassBudget
-      ? (readTransientRecoveryContractFromRun(run) || systemCancelled ? "transient" : classifyRunFailure(run.errorCode))
+      ? (staticFailureClass === "deterministic" ? "deterministic"
+        : readTransientRecoveryContractFromRun(run) || systemCancelled ? "transient" : staticFailureClass)
       : null;
     const maxAttempts = !failureClassBudget
       ? Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS))

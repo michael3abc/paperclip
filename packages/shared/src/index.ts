@@ -3212,3 +3212,4 @@ export * from "./mcp-apps.js";
 export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
+export type { HostTerminalHost, HostTerminalSession, HostTerminalClientFrame, HostTerminalServerFrame } from "./types/host-terminal.js";

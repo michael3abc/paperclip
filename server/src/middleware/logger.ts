@@ -11,6 +11,7 @@ import {
   isPrivateAgentObservabilityHttpRequest,
   isPrivateMuseHttpRequest,
   isPrivateHostClaudeHttpRequest,
+  isPrivateHostTerminalHttpRequest,
   isPrivateDotPrincipalHttpRequest,
   isPrivateToolCallHttpRequest,
   shouldSilenceHttpSuccessLog,
@@ -19,6 +20,15 @@ import {
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
+
+function isPrivateHostHttpRequest(url: string | undefined) {
+  return isPrivateHostClaudeHttpRequest(url) || isPrivateHostTerminalHttpRequest(url);
+}
+function privateHostLogUrl(url: string | undefined) {
+  return isPrivateHostTerminalHttpRequest(url)
+    ? "/api/companies/:companyId/host-terminals"
+    : "/api/companies/:companyId/dashboard/host-claude";
+}
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -81,10 +91,10 @@ function requestLogUrl(req: {
   originalUrl?: unknown;
   url?: unknown;
 }) {
-  if (isPrivateHostClaudeHttpRequest(requestClassificationUrl(req))) return "/api/companies/:companyId/dashboard/host-claude";
+  if (isPrivateHostHttpRequest(requestClassificationUrl(req))) return privateHostLogUrl(requestClassificationUrl(req));
   if(isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)))return "/mcp/runner/oauth/cloud-principal";
   if(isPrivateMuseHttpRequest(requestClassificationUrl(req)))return "/api/muse/:protocol";
-  if ((isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req)) || isPrivateHostClaudeHttpRequest(requestClassificationUrl(req)))) return "/api/companies/:companyId/observability";
+  if ((isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req)) || isPrivateHostHttpRequest(requestClassificationUrl(req)))) return "/api/companies/:companyId/observability";
   return isPrivateWebhook(req)
     ? privateWebhookLogUrl(requestClassificationUrl(req))
     : stripSecretBearingUrlParts(typeof req.url === "string" ? req.url : "");
@@ -100,7 +110,7 @@ export function createHttpLogger(baseLogger: Logger) {
     logger: baseLogger,
     serializers: {
       req(req: Record<string, unknown> & { url?: unknown }) {
-        if (isPrivateHostClaudeHttpRequest(typeof req.url === "string" ? req.url : undefined)) return { id: req.id, method: req.method, url: "/api/companies/:companyId/dashboard/host-claude" };
+        if (isPrivateHostHttpRequest(typeof req.url === "string" ? req.url : undefined)) return { id: req.id, method: req.method, url: privateHostLogUrl(typeof req.url === "string" ? req.url : undefined) };
         if (isPrivateAgentObservabilityHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: "/api/companies/:companyId/observability" };
         }
@@ -151,7 +161,7 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateHostClaudeHttpRequest(requestClassificationUrl(res.raw.req))))
+        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateHostHttpRequest(requestClassificationUrl(res.raw.req))))
           ? { statusCode: res.statusCode }
           : res;
       },
@@ -185,7 +195,7 @@ export function createHttpLogger(baseLogger: Logger) {
       return `${req.method} ${stripSecretBearingUrlParts(req.url ?? "")} ${res.statusCode} — ${errMsg}`;
     },
     customErrorObject(req, _res, _err, value) {
-      if ((isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req)) || isPrivateHostClaudeHttpRequest(requestClassificationUrl(req)))) {
+      if ((isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req)) || isPrivateHostHttpRequest(requestClassificationUrl(req)))) {
         return { ...value, err: { type: "Error", message: "Agent observability request failed" } };
       }
       if(isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"Dot principal request failed"}};
@@ -208,7 +218,7 @@ export function createHttpLogger(baseLogger: Logger) {
         if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
           return { reqBody: "[REDACTED]", ...(ctx ? { errorContext: { name: "Error" } } : {}) };
         }
-        if (isPrivateWebPushHttpRequest(requestClassificationUrl(req)) || isPrivateWebhook(req) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req)) || isPrivateHostClaudeHttpRequest(requestClassificationUrl(req)))) {
+        if (isPrivateWebPushHttpRequest(requestClassificationUrl(req)) || isPrivateWebhook(req) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req)) || isPrivateHostHttpRequest(requestClassificationUrl(req)))) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {

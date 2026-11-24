@@ -159,6 +159,7 @@ import {
   type ManagedInstanceConfig,
 } from "./services/managed-config.js";
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
+import { setupHostTerminalWebSocketServer } from "./realtime/host-terminal-ws.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import { setupLocalVoiceRelayWebSocketServer } from "./realtime/local-voice-relay-ws.js";
@@ -1117,6 +1118,9 @@ async function startServerWithDatabaseTeardown(
     pluginWorkerManager,
   });
   // Must precede the live-events listener, which destroys upgrades it does not own.
+  const hostTerminalWs = setupHostTerminalWebSocketServer(server, db as any, app.locals.hostTerminals, {
+    resolveSessionFromHeaders, publicUrl: config.authPublicBaseUrl ?? process.env.PAPERCLIP_PUBLIC_URL,
+  });
   const localVoiceRelay = setupLocalVoiceRelayWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
@@ -2306,6 +2310,7 @@ async function startServerWithDatabaseTeardown(
       }, err => { logger.warn({ err, signal }, "early native run hand-off failed; the graceful drain hands them off"); })
       : null;
     setStartupRecoveryPhase("draining");
+    await hostTerminalWs.close().catch(() => logger.error("Host terminal shutdown failed"));
     await localVoiceRelay.close().catch((err) => logger.warn({ err }, "local voice relay shutdown failed"));
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();

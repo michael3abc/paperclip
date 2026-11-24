@@ -1,9 +1,56 @@
 import { and, eq, isNull, notInArray, or, sql } from "drizzle-orm";
-import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { agents, heartbeatRuns, issueComments, issues, projects, type Db } from "@paperclipai/db";
+import { conflict } from "../errors.js";
+import { mainAgentProjectId } from "./main-agent-workers.js";
+import type { CancelRunOptions } from "./heartbeat/run-control.js";
 import { ABANDONED_LIVENESS_RESET_ERROR_CODE, ABANDONED_PRIOR_ERROR_CODE, INACTIVITY_TIMEOUT_ERROR_CODE,
   PROCESS_LOST_ERROR_CODE, SERVER_SHUTDOWN_INTERRUPTED_ERROR_CODE } from "./recovery/failure-classification.js";
 
 const ACTOR_TYPES = new Set(["user", "board", "agent"]);
+
+/** Explicit task control supersedes an automatic retry only before dispatch.
+ * The normal cancellation path fences promotion under issue -> run locks and
+ * releases all ownership. A status CAS prevents cancelling a concurrent start.
+ * Call only after the route has established issue mutation access. */
+export async function supersedePendingIssueAutomaticRetry(db: Db, input: {
+  companyId: string; issueId: string;
+  actor: { type: string; source?: string; agentId?: string | null; userId?: string | null };
+}, cancelRun: (id: string, reason: string,
+  options: Pick<CancelRunOptions, "expectedStatus" | "errorCode" | "resultJson" | "suppressImmediateRecovery">,
+) => Promise<typeof heartbeatRuns.$inferSelect | null>) {
+  if (input.actor.source === "mcp_oauth") return null;
+  const [issue] = await db.select().from(issues).where(and(
+    eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)));
+  if (!issue) return null;
+  if (input.actor.type !== "board") {
+    if (input.actor.type !== "agent" || !input.actor.agentId || !issue.projectId) return null;
+    const [main] = await db.select().from(agents).where(and(
+      eq(agents.companyId, input.companyId), eq(agents.id, input.actor.agentId)));
+    if (!main || mainAgentProjectId(main) !== issue.projectId) return null;
+    const [project] = await db.select({ lead: projects.leadAgentId }).from(projects).where(and(
+      eq(projects.companyId, input.companyId), eq(projects.id, issue.projectId)));
+    if (project?.lead !== main.id) return null;
+  }
+  const runId = issue.executionRunId ?? issue.checkoutRunId;
+  if (!runId) return null;
+  const [run] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)));
+  if (!run || !run.retryOfRunId || run.invocationSource !== "automation"
+    || (run.status !== "scheduled_retry" && run.status !== "queued")
+    || run.startedAt != null || run.agentId !== issue.assigneeAgentId
+    || (run.issueId ?? run.contextSnapshot?.issueId) !== issue.id) return null;
+  const cancelled = await cancelRun(run.id, "Automatic retry superseded by explicit task control", {
+    expectedStatus: run.status,
+    errorCode: "retry_input_superseded",
+    suppressImmediateRecovery: true,
+    resultJson: { cancelledByActorType: input.actor.type === "board" ? "user" : "agent",
+      ...(input.actor.agentId ? { cancelledByAgentId: input.actor.agentId } : {}),
+      ...(input.actor.userId ? { cancelledByUserId: input.actor.userId } : {}) },
+  });
+  if (cancelled?.status !== "cancelled") throw conflict("Automatic retry changed before task control", {
+    code: "issue_retry_supersession_conflict", runId: run.id });
+  return cancelled;
+}
 /** Error codes that only a person's (or an agent actor's) deliberate action produces. */
 const DELIBERATE_CANCELLATION_CODES = new Set(["operator_interrupted", "issue_reassigned", "issue_cancelled"]);
 

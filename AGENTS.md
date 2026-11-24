@@ -43,7 +43,11 @@ else a new one, prefixed 「上一次可能已部分執行，先檢查現況再�
 releases every gate; stop evidence is background best-effort. Failures are
 transient (30s×2ⁿ backoff capped at 30 min, unlimited, one notice at the 5th
 consecutive failure), deterministic (no auto retry, one notice per issue and code)
-or unknown (3 transient retries, then deterministic). Shutdown/process-loss retries
+or unknown (3 transient retries, then deterministic). Bridge model_provider_mismatch
+is deterministic. Board/project-main assignee or status changes supersede only
+not-started automatic retries; running and ordinary queued ownership stay protected.
+Main Bridge runs use their own adapter/AI settings despite retained task worker
+selections. Shutdown/process-loss retries
 retain the durable backoff counter instead of opening a fresh restart window; see
 `server/src/services/recovery/failure-classification.ts`. Owner Stop/cancel and
 manual pause still apply and revoke automatic retry. New human or project-main
@@ -54,6 +58,11 @@ agent_interaction_delivery_denied are deterministic in the unified classifier.
 Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
 require system interruption, process loss or controller loss. Ordinary failures keep
 their failure counter and provider retry deadline.
+
+Host terminals require a signed-in human instance-admin session, active company access
+and registry `terminal.enabled: true`; never accept client commands, cwd, SSH targets
+or env. Keep the PTY environment allowlisted, tokens single-use, and terminal contents
+out of logs/storage; see `docs/agents/platform-notes.md`.
 
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
 Compass receipts optionally carry usage.cacheWrite1hTokens as a subset of cacheWriteTokens.

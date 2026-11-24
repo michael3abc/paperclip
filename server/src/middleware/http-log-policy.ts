@@ -44,6 +44,7 @@ function normalizePath(url: string): string {
  */
 export type SecretSensitiveRouteFamily =
   | "host_claude_login"
+  | "host_terminal"
   | "web_push"
   | "ephemeral_enrollment"
   | "provider_webhook"
@@ -171,6 +172,10 @@ export function isPrivateDotPrincipalHttpRequest(url: string | undefined): boole
  * error metadata for the whole route. Webhook failures also use generic error
  * metadata: raw provider text/files/credentials cannot be named-field redacted.
  */
+export function isPrivateHostTerminalHttpRequest(url: string | undefined): boolean {
+  return !!url && /^\/api\/companies\/[^/]+\/host-terminals(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""));
+}
+
 export function isPrivateHostClaudeHttpRequest(url: string | undefined): boolean {
   return !!url && /^\/api\/companies\/[^/]+\/dashboard\/host-(?:claude|codex)(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""));
 }
@@ -187,6 +192,7 @@ export function secretSensitiveRouteFamily(
   method: string | undefined,
   url: string | undefined,
 ): SecretSensitiveRouteFamily | null {
+  if (isPrivateHostTerminalHttpRequest(url)) return "host_terminal";
   if (isPrivateHostClaudeHttpRequest(url)) return "host_claude_login";
   if (isPrivateWebPushHttpRequest(url)) return "web_push";
   if (url && /^\/api\/instance\/ephemeral-enrollment(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return "ephemeral_enrollment";

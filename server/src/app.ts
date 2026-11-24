@@ -171,6 +171,9 @@ import { costRoutes } from "./routes/costs.js";
 import { agentCommentaryRoutes } from "./routes/agent-commentary.js";
 import { agentChatMessageRoutes } from "./routes/agent-chat-messages.js";
 import { activityRoutes } from "./routes/activity.js";
+import { hostTerminalRoutes } from "./routes/host-terminals.js";
+import { HostTerminalSessions } from "./services/host-terminal-sessions.js";
+import { logActivity } from "./services/activity-log.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
@@ -527,6 +530,12 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const hostTerminals = new HostTerminalSessions(async event => {
+    const { companyId, userId, sessionId, event: phase, ...details } = event;
+    await logActivity(db, { companyId, actorType: "user", actorId: userId,
+      action: `host_terminal.${phase}`, entityType: "host_terminal", entityId: sessionId, details });
+  }, { onError: sessionId => logger.error({ sessionId }, "Host terminal audit failed") });
+  app.locals.hostTerminals = hostTerminals;
   const serverMetrics = (opts.serverMetricsEnabled ?? serverMetricsEnabledFromEnv(process.env)) ? startServerMetrics(() => dedicatedDbConnectionStats(db)) : null;
   if (serverMetrics) app.use("/api", serverMetricsArrival());
   // First, so the reported server time includes admission and database waits.
@@ -934,6 +943,7 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(hostTerminalRoutes(db, hostTerminals));
   api.use(attentionRoutes(db, {
     pluginWorkerManager: workerManager,
     decisionServiceOptions: opts.decisionServiceOptions,
@@ -1507,6 +1517,7 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
+      await hostTerminals.shutdown().catch(() => logger.error("Host terminal shutdown failed"));
       await loader.stopActivationTimeoutRecovery();
       await agentLifecycle.stop();
       unregisterMcpOwners();

@@ -255,6 +255,18 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }
 
 
+  it("never schedules a model/provider mismatch even with transient retry metadata", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "model_provider_mismatch",
+      errorFamily: "transient_upstream" });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await heartbeat.scheduleBoundedRetry(runId, { now, retryReason: "transient_failure", maxAttempts: 9 }))
+        .toMatchObject({ outcome: "retry_exhausted", maxAttempts: 0 });
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
   it("never schedules invalid provider definitions even when a caller supplies a retry policy", async () => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
     const now = new Date("2026-04-20T12:00:00.000Z");
