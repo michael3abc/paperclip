@@ -6042,7 +6042,7 @@ rl.on("line", (line) => {
 
     await db.update(toolActionRequests).set({ status: "approved" }).where(eq(toolActionRequests.id, settled.id));
     await expect(gateway.approveActionRequest({
-      companyId: company.id, actionRequestId: settled.id, actor: { userId: "alice" }, recoveringApprovedReview: true,
+      companyId: company.id, actionRequestId: settled.id, actor: { userId: "alice" }, recoverCommittedDecision: true,
     })).resolves.toBeDefined();
 
     const unverifiable = await requestReview();
