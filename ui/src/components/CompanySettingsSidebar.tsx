@@ -1,3 +1,4 @@
+import { useHostTerminalAccess } from "@/hooks/useHostTerminalAccess";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -7,6 +8,7 @@ import {
   KeyRound,
   Link2,
   MonitorCog,
+  TerminalSquare,
   Puzzle,
   Shield,
   SlidersHorizontal,
@@ -44,6 +46,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 
 export function CompanySettingsSidebar() {
   const { selectedCompanyId } = useCompany();
+  const terminalAccess = useHostTerminalAccess(selectedCompanyId);
   const { hidden: hiddenSettings } = useHiddenSettings();
   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
   const showPlugins = showPage("instance.plugins");
@@ -103,6 +106,7 @@ export function CompanySettingsSidebar() {
       >
         <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          {terminalAccess.allowed && <SidebarNavItem to="/company/settings/host-terminals" label="主機終端" icon={TerminalSquare} end />}
           {showPage("instance.profile") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}

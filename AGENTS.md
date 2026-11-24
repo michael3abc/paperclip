@@ -55,6 +55,11 @@ Bootstrap non-delivery alone does not select interrupted-preparation retry accou
 require system interruption, process loss or controller loss. Ordinary failures keep
 their failure counter and provider retry deadline.
 
+Host terminals require a signed-in human instance-admin session, active company access
+and registry `terminal.enabled: true`; never accept client commands, cwd, SSH targets
+or env. Keep the PTY environment allowlisted, tokens single-use, and terminal contents
+out of logs/storage; see `docs/agents/platform-notes.md`.
+
 Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
 Compass receipts optionally carry usage.cacheWrite1hTokens as a subset of cacheWriteTokens.
 Price the remainder at 5m and unknown TTL at 1h with the versioned Compass card;

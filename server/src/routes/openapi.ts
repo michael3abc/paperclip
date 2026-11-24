@@ -1753,6 +1753,7 @@ function resolveOperationAuthLevel(
   path: string,
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
+  if (path.startsWith("/api/companies/{companyId}/host-terminals")) return "instance_admin";
   if (path.startsWith("/api/companies/{companyId}/dashboard/host-claude") || path.startsWith("/api/companies/{companyId}/dashboard/host-codex")) return "instance_admin";
   if (key === "GET /api/mcp/requests/{id}" || key === "GET /api/mcp/device"
       || key === "POST /api/mcp/requests/{id}/dot-pairing"
@@ -6829,6 +6830,25 @@ registry.registerPath({
   description: "Instance administrators only, with company access. Explicit PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1 opt-in; otherwise returns an empty list. Uses the company-selected host's Codex, Claude and Antigravity CLI logins, independently of managed AI connections. Operator configuration selects local or remote SSH collection; client host parameters cannot override it. Remote credentials stay on their host, without local fallback. No inference or credit overage is started. Results are cached for 60 seconds per company and source; unavailable quotas remain explicit failures.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/host-terminals", tags: ["dashboard"],
+  summary: "List opt-in company host terminals",
+  description: "Signed-in human instance administrators with company access only. No terminal contents are retained.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/host-terminals/{hostId}/sessions", tags: ["dashboard"],
+  summary: "Mint a single-use host terminal token",
+  description: "Human session only. The token binds company, user and registered host, expires after 60 seconds, and is sent in the first same-origin WebSocket frame. No client commands, paths, SSH targets or environment variables are accepted.",
+  "x-paperclip-authorization": { actor: "board", humanOnly: true },
+  "x-paperclip-transport": "protocol",
+  request: { params: z.object({ companyId: z.string(), hostId: z.string() }), body: { content: { "application/json": { schema: z.object({}).strict() } } } },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({

@@ -5888,3 +5888,10 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 }
 .routine-table { min-width: max-content; }
 .routine-table-grid { display: grid; align-items: center; gap: calc(var(--spacing) * 3); }
+
+/* Browser host terminal: xterm consumes these same token values. */
+:root {
+  --host-terminal-background: #0a0a0a;
+  --host-terminal-foreground: #f5f5f5;
+  --host-terminal-height: min(60dvh, 40rem);
+}
