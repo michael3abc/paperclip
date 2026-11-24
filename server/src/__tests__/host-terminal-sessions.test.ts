@@ -157,3 +157,17 @@ it("ends and reaps background jobs when the login shell exits before its PTY clo
   const pid = /BACKGROUND:(\d+)/.exec(output)![1]!;
   await vi.waitFor(() => expect(() => process.kill(Number(pid), 0)).toThrow());
 });
+
+it("stops every session before surfacing a failed shutdown audit", async () => {
+  const { service, audit } = store();
+  audit.mockImplementation(async event => { if (event.event === "ended") throw new Error("audit unavailable"); });
+  const closed = vi.fn();
+  for (let index = 0; index < 2; index++) {
+    const minted = await service.create(scope); service.consume(minted.id, minted.token, scope);
+    await service.open(minted.id, { output: () => {}, closed });
+  }
+  await expect(service.shutdown()).rejects.toThrow("Host terminal shutdown audit failed");
+  expect(closed).toHaveBeenCalledTimes(2);
+  expect(audit.mock.calls.filter(([event]) => event.event === "ended")).toHaveLength(2);
+  stores.splice(stores.indexOf(service), 1); // Its completed shutdown intentionally retains the rejection.
+});
