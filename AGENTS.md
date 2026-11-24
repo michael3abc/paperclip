@@ -43,7 +43,11 @@ else a new one, prefixed 「上一次可能已部分執行，先檢查現況再�
 releases every gate; stop evidence is background best-effort. Failures are
 transient (30s×2ⁿ backoff capped at 30 min, unlimited, one notice at the 5th
 consecutive failure), deterministic (no auto retry, one notice per issue and code)
-or unknown (3 transient retries, then deterministic). Shutdown/process-loss retries
+or unknown (3 transient retries, then deterministic). Bridge model_provider_mismatch
+is deterministic. Board/project-main assignee or status changes supersede only
+not-started automatic retries; running and ordinary queued ownership stay protected.
+Main Bridge runs use their own adapter/AI settings despite retained task worker
+selections. Shutdown/process-loss retries
 retain the durable backoff counter instead of opening a fresh restart window; see
 `server/src/services/recovery/failure-classification.ts`. Owner Stop/cancel and
 manual pause still apply and revoke automatic retry. New human or project-main

@@ -173,6 +173,24 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     }
   });
 
+  it("does not cancel a queued retry promoted after lookup but before the cancellation fence", async () => {
+    const { company, agent } = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "queued", runtimeMode: "legacy", runtimeModeResolvedAt: new Date() }).returning();
+    const deps = callbacks(db);
+    const originalGetRun = deps.getRun.getMockImplementation()!;
+    deps.getRun.mockImplementationOnce(async id => {
+      const snapshot = await originalGetRun(id);
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, id));
+      return snapshot;
+    });
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, undefined, { expectedStatus: "queued" })).toBeNull();
+    expect(await originalGetRun(run.id)).toMatchObject({ status: "running", resultJson: null });
+    expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
+    expect(deps.options.closeWarmNativeSessionsForRun).not.toHaveBeenCalled();
+    expect(deps.appendRunEvent).not.toHaveBeenCalled();
+  });
+
   it("can supersede a retry that is still scheduled", async () => {
     const { company, agent } = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({

@@ -31,7 +31,7 @@ describe("liveness-first run failure classification", () => {
     for (const code of [
       "project_access_denied", "native_provider_model_rejected", "provider_tool_definition_invalid",
       "adapter_engine_unavailable", "configuration_incomplete", "agent_not_invokable", "budget_blocked",
-      "native_sandbox_disk_full", "sandbox_disk_full", "agent_interaction_delivery_denied",
+      "native_sandbox_disk_full", "sandbox_disk_full", "agent_interaction_delivery_denied", "model_provider_mismatch",
     ]) {
       expect(classifyRunFailure(code), code).toBe("deterministic");
     }
@@ -55,6 +55,12 @@ describe("liveness-first run failure classification", () => {
       expect(classifyRunFailure(code), code).toBe("deterministic");
     }
     expect(shouldAutoRetryRunFailure("cancelled", 1)).toBe(false);
+  });
+
+  it("never retries a Bridge model/provider mismatch, including the first failure", () => {
+    for (const attempt of [1, 2, 3, 4, 500]) {
+      expect(shouldAutoRetryRunFailure("model_provider_mismatch", attempt)).toBe(false);
+    }
   });
 
   it("treats missing and unrecognized codes as unknown", () => {

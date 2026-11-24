@@ -69,6 +69,33 @@ suite("task project repository provisioning", () => {
     });
   });
 
+  it.each(["main", "worker"] as const)("uses the %s adapter configuration when a task retains worker overrides", async role => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+    const cwd = path.join(root, issueId);
+    await mkdir(cwd, { recursive: true });
+    await db.insert(companies).values({ id: companyId, name: "Override company", issuePrefix: `M${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "owner" });
+    const config = { cwd, provider: role === "main" ? "claude" : "codex", model: "main-model", ...(role === "main" ? { role, projectId } : {}) };
+    await db.insert(agents).values({ id: agentId, companyId, name: "Override agent", role: "engineer", status: "idle",
+      adapterType: "ccpocket_bridge", adapterConfig: config, runtimeConfig: {}, permissions: {} });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Override project", leadAgentId: role === "main" ? agentId : null });
+    const overrides = { workerSelectionId: randomUUID(), adapterConfig: { model: "michael-server/codex/worker-model", modelReasoningEffort: "high" },
+      ...(role === "main" ? { aiConnection: { mode: "delegated" as const, provider: "anthropic" as const, method: "api_key" as const,
+        connectionId: randomUUID(), grantId: randomUUID() } } : {}) };
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Returned worker review", status: "todo",
+      assigneeAgentId: agentId, assigneeAdapterOverrides: overrides });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => {
+      const saved = await heartbeat.getRun(run!.id);
+      expect({ status: saved?.status, error: saved?.error }).toEqual({ status: "succeeded", error: null });
+    }, { timeout: 15_000 });
+    const call = execute.mock.calls.find(([input]) => input.runId === run!.id)![0];
+    expect(call.config.model).toBe(role === "main" ? "main-model" : overrides.adapterConfig.model);
+    expect(call.config.provider).toBe(config.provider);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.assigneeAdapterOverrides).toEqual(overrides);
+  });
+
   it.each(["agent", "organization"] as const)("isolates repository-free low-trust tasks while preserving reassignment and authorized referenced projects (%s policy)", async policyOwner => {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), environmentId = randomUUID();
     const referencedProjectId = randomUUID(), deniedProjectId = randomUUID();

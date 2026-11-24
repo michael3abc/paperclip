@@ -1,4 +1,5 @@
 import { prepareBridgeWorkerRoute } from "./heartbeat/bridge-worker-routing.js";
+import { isMainAgent } from "./main-agent-workers.js";
 import { expandStoredWorkerSelection } from "./worker-selection-expansion.js";
 import { notifyRunStopSettlement } from "./run-stop-settlement-notifications.js";
 import { registerWorkspaceCreatorRecovery, workspaceCreatorDelivery } from "./recovery/workspace-creator-delivery.js";
@@ -2530,14 +2531,17 @@ export function heartbeatService(
         context[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY] = true;
       }
       const wakeCommentId = deriveCommentId(context, null);
+      // Review handoff retains the task's worker selection for reassignment.
+      // A main executes using its own provider/model and AI connection.
+      const useAssigneeOverrides = issueContext?.assigneeAgentId === agent.id
+        && !isMainAgent(agent) && !isPendingExecutionReviewForAgent(issueContext, agent.id);
       let issueAssigneeOverrides =
-        issueContext && issueContext.assigneeAgentId === agent.id && !isPendingExecutionReviewForAgent(issueContext, agent.id)
+        issueContext && useAssigneeOverrides
           ? parseIssueAssigneeAdapterOverrides(
               issueContext.assigneeAdapterOverrides,
             )
           : null;
-      if (!issueAssigneeOverrides?.adapterConfig && issueContext && issueContext.assigneeAgentId === agent.id
-          && !isPendingExecutionReviewForAgent(issueContext, agent.id)) {
+      if (!issueAssigneeOverrides?.adapterConfig && issueContext && useAssigneeOverrides) {
         const expanded = await expandStoredWorkerSelection(db, agent, issueContext.assigneeAdapterOverrides).catch(() => null);
         if (expanded) {
           issueAssigneeOverrides = {

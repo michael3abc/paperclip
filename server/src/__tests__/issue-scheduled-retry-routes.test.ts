@@ -25,6 +25,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  projects,
   issueRelations,
   issueTreeHolds,
   issues,
@@ -37,6 +38,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { supersedePendingIssueAutomaticRetry } from "../services/automatic-retry-authority.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RETRY_CANCELLATION_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -75,6 +77,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -231,6 +234,133 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
     return { companyId, agentId, issueId, sourceRunId, retryRunId, scheduledRetryAt };
   }
+
+  async function seedMainRetry(retryStatus: "scheduled_retry" | "queued" | "running") {
+    const fixture = await seedIssueWithRetry({ retryStatus });
+    const projectId = randomUUID();
+    await db.update(agents).set({ adapterType: "ccpocket_bridge",
+      adapterConfig: { role: "main", provider: "claude", projectId },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
+    }).where(eq(agents.id, fixture.agentId));
+    await db.insert(projects).values({ id: projectId, companyId: fixture.companyId, name: "Main project", leadAgentId: fixture.agentId });
+    await db.update(issues).set({ projectId }).where(eq(issues.id, fixture.issueId));
+    const actor = agentActor(fixture.companyId, fixture.agentId);
+    await db.insert(heartbeatRuns).values({ id: actor.runId!, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", invocationSource: "on_demand", contextSnapshot: { issueId: fixture.issueId } });
+    return { ...fixture, actor };
+  }
+
+  it.each(["scheduled_retry", "queued"] as const)("lets project main reassign a task held by a %s automatic retry", async retryStatus => {
+    const f = await seedMainRetry(retryStatus);
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`)
+      .send({ assigneeAgentId: null, assigneeUserId: "board-user" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "retry_input_superseded" });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(issue).toMatchObject({ assigneeAgentId: null, assigneeUserId: "board-user", executionRunId: null });
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(source).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+  });
+
+  it.each(["scheduled_retry", "queued"] as const)("lets project main change task status despite a %s automatic retry", async retryStatus => {
+    const f = await seedMainRetry(retryStatus);
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`).send({ status: "todo" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("cancelled");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "todo", executionRunId: null });
+  });
+
+  it("keeps a running retry protected from another run of the main", async () => {
+    const f = await seedMainRetry("running");
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`)
+      .send({ assigneeAgentId: null, assigneeUserId: "board-user" });
+    expect(response.status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("running");
+  });
+
+  it("keeps an ordinary queued assignment protected", async () => {
+    const f = await seedMainRetry("queued");
+    await db.update(heartbeatRuns).set({ retryOfRunId: null, scheduledRetryReason: null })
+      .where(eq(heartbeatRuns.id, f.retryRunId));
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`).send({ status: "todo" });
+    expect(response.status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("queued");
+  });
+
+  it.each(["scheduled_retry", "queued"] as const)("lets board status changes supersede a %s automatic retry", async retryStatus => {
+    const f = await seedIssueWithRetry({ retryStatus, agentStatus: "paused" });
+    const response = await request(createApp(boardActor(f.companyId))).patch(`/api/issues/${f.issueId}`).send({ status: "todo" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("cancelled");
+  });
+
+  it("lets project main control a worker's not-started automatic retry", async () => {
+    const f = await seedMainRetry("queued");
+    const workerId = randomUUID();
+    await db.insert(agents).values({ id: workerId, companyId: f.companyId, name: "Worker", role: "engineer", status: "paused", adapterType: "codex_local" });
+    await db.update(issues).set({ assigneeAgentId: workerId }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({ agentId: workerId }).where(inArray(heartbeatRuns.id, [f.retryRunId, f.sourceRunId]));
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`)
+      .send({ assigneeAgentId: null, assigneeUserId: "board-user" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("cancelled");
+  });
+
+  it("does not let an ordinary worker supersede its automatic retry", async () => {
+    const f = await seedMainRetry("queued");
+    await db.update(agents).set({ adapterType: "codex_local", adapterConfig: {} }).where(eq(agents.id, f.agentId));
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`).send({ status: "todo" });
+    expect(response.status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("queued");
+  });
+
+  it("does not supersede another company's retry", async () => {
+    const f = await seedIssueWithRetry();
+    const response = await request(createApp(boardActor(randomUUID()))).patch(`/api/issues/${f.issueId}`).send({ status: "todo" });
+    expect(response.status).toBe(404);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("scheduled_retry");
+  });
+
+  it("does not cancel a retry that starts before the status-guarded cancellation", async () => {
+    const f = await seedMainRetry("queued");
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    await expect(supersedePendingIssueAutomaticRetry(db, {
+      companyId: f.companyId, issueId: f.issueId, actor: f.actor,
+    }, async (id, reason, options) => {
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, id));
+      return heartbeat.cancelRun(id, reason, options);
+    })).rejects.toMatchObject({ status: 409, details: { code: "issue_retry_supersession_conflict" } });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("running");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.executionRunId).toBe(f.retryRunId);
+  });
+
+  it.each([{ title: "Metadata edit" }, { status: "in_progress" }])("does not supersede a retry without a task-control change: %j", async patch => {
+    const f = await seedMainRetry("scheduled_retry");
+    const response = await request(createApp(f.actor)).patch(`/api/issues/${f.issueId}`).send(patch);
+    expect(response.status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("scheduled_retry");
+  });
+
+  it("notifies once per issue/code for model/provider mismatch across recovery sweeps", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, f.retryRunId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.runId, f.retryRunId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    await db.update(heartbeatRuns).set({ errorCode: "model_provider_mismatch", error: "Model must match the selected Bridge host and execution engine",
+      scopeKind: "issue", issueId: f.issueId, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    for (let index = 0; index < 2; index++) await heartbeat.reconcileStrandedAssignedIssues();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.insert(heartbeatRuns).values({ ...source!, id: randomUUID(), createdAt: new Date(), finishedAt: new Date() });
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId));
+    expect(comments).toHaveLength(1);
+    expect(JSON.stringify(comments[0]?.metadata)).toContain("model_provider_mismatch");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId))).toHaveLength(0);
+  });
 
   describe("scheduled retry cancellation worker", () => {
     afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });

@@ -116,6 +116,7 @@ export const DETERMINISTIC_RUN_FAILURE_CODES: ReadonlySet<string> = new Set<stri
   "workspace_not_allowed",
   "invalid_config",
   "model_unavailable",
+  "model_provider_mismatch",
   "project_pm_out_of_bounds",
   "worker_workspace_out_of_bounds",
   "session_authority_unsupported",

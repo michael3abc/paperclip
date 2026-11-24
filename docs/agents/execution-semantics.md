@@ -64,7 +64,13 @@ recovery, stranded-issue reconciliation).
   notice per (issue, code). Notices never block dispatch.
   This includes sandbox disk exhaustion (native_sandbox_disk_full and
   sandbox_disk_full) and permanently denied agent-interaction delivery
-  (agent_interaction_delivery_denied); all recovery paths use this same table.
+  (agent_interaction_delivery_denied), and Bridge model/provider configuration
+  mismatch (`model_provider_mismatch`); all recovery paths use this same table.
+  Explicit retry budgets and persisted transient metadata cannot override a
+  deterministic code. Attributed system cancellation keeps its transient policy.
+  Bridge model/provider mismatch is also a configuration choice in
+  `continuation-cause.ts`; fresh-continuation JS and SQL reads must not treat it
+  as system-owned work to resend.
 - Unknown codes: retry 3 times as transient, then treat as deterministic.
 
 An authorized Retry of a verified pre-dispatch cancellation uses that saved
@@ -125,6 +131,15 @@ retain the fork failure scheduler and never restore automatic blocked recovery.
 - New human or project-main input supersedes automatic retry of a failed
   predecessor. Fresh explicit comments keep their own input receipt and never merge
   into a retry/continuation envelope. Save comments and reopen under the issue lock.
+- A board actor or the task project's main may supersede an issue-bound automatic
+  retry with an explicit assignee/status change while it is `scheduled_retry` or
+  `queued`. Cancel that retry with a status guard and release its execution lock
+  before applying ordinary mutation checks. A retry already `running`, or an
+  ordinary queued assignment, retains the existing ownership protection.
+- Main Bridge agents execute with their own adapter and AI connection even when
+  review handoff leaves worker selections on the task. Preserve those selections
+  for subsequent worker reassignment; rejecting a confirmation keeps the current
+  assignee and does not convert the worker configuration into main configuration.
 - Worker output and interaction answers are not new execution intent.
 - Ordinary agent comments keep their verified agent-author namespace; saved-user
   recovery remains human-only.
