@@ -2362,6 +2362,7 @@ export function agentRoutes(
       {
         strictMode: strictSecretsMode,
         adapterType: input.adapterType ?? null,
+        previousAdapterConfig: input.previous?.adapterConfig,
       },
     );
     const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"

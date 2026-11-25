@@ -414,6 +414,93 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(persistedAgents).toHaveLength(0);
   });
 
+  it("HOM-629: usage lists an API access ref, and an unchanged ref to a deleted secret does not block unrelated updates", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `cloudflare-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "cf-test-token",
+    });
+    const ref = { type: "secret_ref", secretId: secret.id, version: "latest" };
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
+      name: "LLM gateway",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: { model: "model-a", "access.CLOUDFLARE_DNS_TOKEN": ref },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    const usage = await secrets.listBindingReferences(companyId, secret.id);
+    expect(usage).toEqual([
+      expect.objectContaining({ configPath: "access.CLOUDFLARE_DNS_TOKEN", target: expect.objectContaining({ id: created.id }) }),
+    ]);
+
+    await secrets.remove(secret.id);
+
+    const updated = await agentService(db).update(created.id, {
+      adapterConfig: { model: "model-b", "access.CLOUDFLARE_DNS_TOKEN": ref },
+    });
+    expect(updated?.adapterConfig).toMatchObject({ model: "model-b", "access.CLOUDFLARE_DNS_TOKEN": ref });
+    const bindings = await db.select().from(companySecretBindings).where(and(
+      eq(companySecretBindings.companyId, companyId),
+      eq(companySecretBindings.targetId, created.id),
+    ));
+    expect(bindings).toHaveLength(0);
+  });
+
+  it("HOM-629: a newly added ref to a missing secret fails with the config path", async () => {
+    const companyId = await seedCompany();
+    const created = await createAgentLifecycle(db).requestHire(companyId, {
+      name: "New Missing Ref",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: { model: "model-a" },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+    const missingId = randomUUID();
+    await expect(agentService(db).update(created.id, {
+      adapterConfig: { model: "model-a", "access.NEW_TOKEN": { type: "secret_ref", secretId: missingId, version: "latest" } },
+    })).rejects.toMatchObject({
+      status: 404,
+      message: expect.stringContaining("adapterConfig.access.NEW_TOKEN"),
+      details: expect.objectContaining({ code: "secret_reference_missing", configPath: "access.NEW_TOKEN" }),
+    });
+    expect((await agentService(db).getById(created.id))?.adapterConfig).not.toHaveProperty("access.NEW_TOKEN");
+  });
+
+  it("HOM-629: env normalization carries over an unchanged ref to a deleted secret and names a new one", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `deleted-env-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "env-value",
+    });
+    const ref = { type: "secret_ref", secretId: secret.id, version: "latest" };
+    await secrets.remove(secret.id);
+
+    await expect(secrets.normalizeAdapterConfigForPersistence(
+      companyId,
+      { model: "model-b", env: { API_KEY: ref } },
+      { adapterType: "codex_local", previousAdapterConfig: { model: "model-a", env: { API_KEY: ref } } },
+    )).resolves.toMatchObject({ model: "model-b", env: { API_KEY: ref } });
+
+    await expect(secrets.normalizeAdapterConfigForPersistence(
+      companyId,
+      { env: { OTHER_KEY: ref } },
+      { adapterType: "codex_local", previousAdapterConfig: { env: { API_KEY: ref } } },
+    )).rejects.toMatchObject({
+      status: 404,
+      message: expect.stringContaining("env.OTHER_KEY"),
+      details: expect.objectContaining({ code: "secret_reference_missing" }),
+    });
+  });
+
   it("rolls back adapterConfig updates when binding sync fails", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);

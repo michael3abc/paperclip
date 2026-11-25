@@ -786,6 +786,37 @@ describe("Secrets page layout", () => {
     expect(elsewhere.textContent).not.toContain("project-1");
   });
 
+  it("HOM-629: lists remaining uses, including API access aliases, before deleting a secret", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
+    mockSecretsApi.usage.mockResolvedValue({
+      secretId: "secret-openai",
+      bindings: [{
+        companyId: "company-1",
+        secretId: "secret-openai",
+        versionSelector: "latest",
+        required: true,
+        label: null,
+        createdAt: new Date("2026-05-06T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+        id: "binding-access",
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "access.CLOUDFLARE_DNS_TOKEN",
+        target: { type: "agent", id: "agent-1", label: "LLM gateway", href: "/agents/llm-gateway", status: "idle" },
+      }],
+    });
+    await renderSecrets(container);
+
+    await click(container.querySelector('button[aria-label="Actions for OPENAI_API_KEY"]'));
+    await click([...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent?.includes("Delete secret")) ?? null);
+    await waitForReact(() => document.querySelector('[data-testid="secret-delete-usage"]')?.textContent?.includes("LLM gateway") === true);
+
+    const usage = document.querySelector('[data-testid="secret-delete-usage"]')!;
+    expect(mockSecretsApi.usage).toHaveBeenCalledWith("secret-openai");
+    expect(usage.textContent).toContain("Still used in 1 place:");
+    expect(usage.textContent).toContain("CLOUDFLARE_DNS_TOKEN");
+  });
+
   it("caps activity at five entries until asked for the rest", async () => {
     mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
     mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-coder", name: "CodexCoder" })]);

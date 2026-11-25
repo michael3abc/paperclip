@@ -995,11 +995,15 @@ export function secretService(db: Db | DbTransaction) {
   type NormalizeEnvOptions = {
     strictMode?: boolean;
     fieldPath?: string;
+    /** The saved env; an unchanged reference to a deleted secret is carried over (HOM-629). */
+    previousEnv?: unknown;
   };
   type NormalizeAdapterConfigOptions = {
     strictMode?: boolean;
     adapterType?: string | null;
     actor?: { userId?: string | null; agentId?: string | null };
+    /** The saved adapterConfig; see NormalizeEnvOptions.previousEnv. */
+    previousAdapterConfig?: unknown;
   };
 
   async function getById(id: string, source: Pick<Db | DbTransaction, "select"> = db) {
@@ -2003,7 +2007,21 @@ export function secretService(db: Db | DbTransaction) {
         continue;
       }
 
-      await assertSecretInCompany(companyId, binding.secretId);
+      const fieldPath = `${opts?.fieldPath ?? "env"}.${key}`;
+      const secret = await getById(binding.secretId);
+      if (!secret || secret.status === "deleted") {
+        const previous = asRecord(asRecord(opts?.previousEnv)?.[key]);
+        // An unchanged reference to a deleted secret is kept so unrelated edits succeed.
+        if (previous?.type !== "secret_ref" || previous.secretId !== binding.secretId) {
+          throw new HttpError(
+            404,
+            `Secret not found: ${fieldPath} references a secret that was deleted or does not exist. Remove or replace this reference.`,
+            { code: "secret_reference_missing", configPath: fieldPath, secretId: binding.secretId },
+          );
+        }
+      } else {
+        await assertSecretInCompany(companyId, binding.secretId);
+      }
       normalized[key] = {
         type: "secret_ref",
         secretId: binding.secretId,
@@ -2022,7 +2040,10 @@ export function secretService(db: Db | DbTransaction) {
   ) {
     const normalized = { ...adapterConfig };
     if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
-      normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
+      normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, {
+        ...opts,
+        previousEnv: asRecord(opts?.previousAdapterConfig)?.env,
+      });
     }
     const secretFieldKeys = await listAdapterSchemaSecretFieldKeys(opts?.adapterType);
     for (const key of secretFieldKeys) {

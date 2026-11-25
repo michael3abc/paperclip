@@ -1173,6 +1173,12 @@ export function Secrets() {
     queryFn: () => secretsApi.usage(selectedSecret!.id),
     enabled: Boolean(selectedSecret),
   });
+  // HOM-629: show every remaining use before a delete, so a referenced secret is never removed blind.
+  const deleteUsageQuery = useQuery({
+    queryKey: deleteConfirm ? queryKeys.secrets.usage(deleteConfirm.id) : ["secrets", "usage", "__delete_disabled__"],
+    queryFn: () => secretsApi.usage(deleteConfirm!.id),
+    enabled: Boolean(deleteConfirm),
+  });
   const eventsQuery = useQuery({
     queryKey: selectedSecret
       ? queryKeys.secrets.accessEvents(selectedSecret.id)
@@ -3517,6 +3523,20 @@ export function Secrets() {
               Permanently removes <strong>{deleteConfirm?.name}</strong>. Agents and projects that use it will fail until you give them another secret.
             </DialogDescription>
           </DialogHeader>
+          {deleteUsageQuery.isError ? (
+            <p className="text-sm text-destructive" role="alert">Could not load where this secret is used.</p>
+          ) : (deleteUsageQuery.data?.bindings.length ?? 0) > 0 || deleteUsageQuery.isLoading ? (
+            <div className="flex flex-col gap-1" data-testid="secret-delete-usage">
+              <p className="text-sm font-medium">
+                {deleteUsageQuery.isLoading ? "Checking where this secret is used…" : `Still used in ${deleteUsageQuery.data!.bindings.length} place${deleteUsageQuery.data!.bindings.length === 1 ? "" : "s"}:`}
+              </p>
+              {deleteUsageQuery.data ? (
+                <div className="max-h-48 overflow-y-auto">
+                  <SecretUsageTab loading={false} bindings={deleteUsageQuery.data.bindings} />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" className="sm:mr-auto" onClick={() => setDeleteConfirm(null)}>Cancel</Button>
             <Button
