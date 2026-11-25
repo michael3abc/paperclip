@@ -24,10 +24,12 @@ export function hoistModuleGraph<T>(
 ): { readonly value: T } {
   let graph: T | undefined;
 
+  // A cold transform of a large route graph can exceed the 30 s default hook
+  // timeout on a loaded host; the one-time load gets its own bound.
   beforeAll(async () => {
     registerMocks();
     graph = await loadGraph();
-  });
+  }, 120_000);
 
   return {
     get value(): T {
