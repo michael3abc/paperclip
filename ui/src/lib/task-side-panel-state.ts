@@ -37,6 +37,7 @@ export type TaskSidePanelTabPayload =
   | { kind: "artifacts" }
   | { kind: "agent-tasks" }
   | { kind: "todo" }
+  | { kind: "terminal"; terminalId: string; hostId: string }
   | { kind: "attachment"; attachmentId: string }
   | { kind: "skill"; skillId: string }
   | { kind: "issue-document"; documentKey: string; revisionId?: string; documentIssueId?: string }
@@ -101,6 +102,8 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   if (kind === "artifacts") return { kind };
   if (kind === "agent-tasks") return { kind };
   if (kind === "todo") return { kind };
+  if (kind === "terminal") return typeof input.terminalId === "string" && input.terminalId.length > 0 && typeof input.hostId === "string" && input.hostId.length > 0
+    ? { kind, terminalId: input.terminalId, hostId: input.hostId } : null;
   if (kind === "attachment") {
     return typeof input.attachmentId === "string" && input.attachmentId.length > 0 ? { kind, attachmentId: input.attachmentId } : null;
   }
@@ -240,6 +243,11 @@ export function taskPanelAgentTasksTab(): SidePanelTabRecord<TaskSidePanelTabPay
 /** The conversation's TODO: the agent's goal and checklist (fork feature, see lib/todo-document.ts). */
 export function taskPanelTodoTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: "todo", type: "todo", label: "TODO", closable: true, contentMode: "padded", payload: { kind: "todo" } };
+}
+
+/** A host shell (see lib/host-terminal-store.ts). Only the reference is stored, never tokens or contents. */
+export function taskPanelTerminalTab(terminal: { id: string; hostId: string; label: string }): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: `terminal:${terminal.id}`, type: "terminal", label: terminal.label, ariaLabel: `Terminal: ${terminal.label}`, closable: true, contentMode: "full-bleed", payload: { kind: "terminal", terminalId: terminal.id, hostId: terminal.hostId } };
 }
 
 export function taskPanelArtifactsTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {

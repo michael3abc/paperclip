@@ -1,88 +1,33 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
-import type { HostTerminalClientFrame, HostTerminalServerFrame, HostTerminalSession } from "@paperclipai/shared";
+import type { HostTerminalSession } from "@paperclipai/shared";
 import { hostTerminalsApi } from "@/api/host-terminals";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useHostTerminalAccess } from "@/hooks/useHostTerminalAccess";
 import { Button } from "@/components/ui/button";
+import { HostTerminalKeys } from "@/components/host-terminal/HostTerminalKeys";
+import { HostTerminalConnection, type HostTerminalStatus } from "@/lib/host-terminal-connection";
 
-const reasons: Record<string, string> = {
-  idle_timeout: "閒置 30 分鐘，已關閉。", max_duration: "已達 12 小時上限。",
-  shell_exit: "Shell 已結束。", client_closed: "連線已關閉。", client_error: "連線中斷。",
-  server_shutdown: "伺服器已關閉連線。", invalid_frame: "連線授權或訊框無效。",
-  auth_timeout: "連線授權逾時。", startup_failed: "終端啟動失敗。請檢查主機設定。",
-  process_error: "終端程序失敗。", input_overflow: "輸入超過連線容量。", output_overflow: "輸出超過連線容量。",
-};
-const keys = [["Esc", "\x1b"], ["Tab", "\t"], ["Ctrl+C", "\x03"], ["Ctrl+D", "\x04"],
-  ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["←", "\x1b[D"], ["→", "\x1b[C"]];
 type Tab = { session: HostTerminalSession; hostId: string; label: string };
 
 function TerminalPane({ tab, active, reconnect }: { tab: Tab; active: boolean; reconnect: () => void }) {
   const element = useRef<HTMLDivElement>(null);
-  const terminal = useRef<Terminal | null>(null);
-  const socket = useRef<WebSocket | null>(null);
-  const fit = useRef<() => void>(() => {});
-  const [state, setState] = useState("連線中…");
-  const [closed, setClosed] = useState(false);
-  const send = (frame: HostTerminalClientFrame) => {
-    if (socket.current?.readyState === WebSocket.OPEN) socket.current.send(JSON.stringify(frame));
-  };
+  const connection = useRef<HostTerminalConnection | null>(null);
+  const [status, setStatus] = useState<HostTerminalStatus>({ phase: "connecting", message: "連線中…" });
   useEffect(() => {
-    const node = element.current!;
-    const style = getComputedStyle(node);
-    const term = new Terminal({ cursorBlink: true, scrollback: 1000,
-      fontFamily: style.fontFamily, theme: {
-        background: style.getPropertyValue("--host-terminal-background").trim(),
-        foreground: style.getPropertyValue("--host-terminal-foreground").trim(),
-        cursor: style.getPropertyValue("--host-terminal-foreground").trim(),
-      } });
-    term.options.fontSize = Number.parseFloat(style.fontSize);
-    const addon = new FitAddon(); term.loadAddon(addon); term.open(node);
-    terminal.current = term;
-    const url = new URL(tab.session.wsPath, window.location.href);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(url); socket.current = ws;
-    let mounted = true, ready = false, reasonReceived = false;
-    fit.current = () => {
-      if (!node.clientWidth || !node.clientHeight) return;
-      addon.fit();
-      if (ready) send({ type: "resize", cols: Math.min(500, Math.max(2, term.cols)), rows: Math.min(300, Math.max(1, term.rows)) });
-    };
-    const observer = new ResizeObserver(() => fit.current()); observer.observe(node);
-    const input = term.onData(data => { if (ready) send({ type: "input", data }); });
-    ws.onopen = () => send({ type: "auth", sessionId: tab.session.id, token: tab.session.token });
-    ws.onmessage = event => {
-      if (!mounted) return;
-      try {
-        const frame: HostTerminalServerFrame = JSON.parse(event.data);
-        if (frame.type === "ready") { ready = true; setState("已連線"); fit.current(); if (node.clientWidth && node.clientHeight) term.focus(); }
-        else if (frame.type === "output") term.write(frame.data);
-        else if (frame.type === "closed") {
-          ready = false; reasonReceived = true; setClosed(true);
-          setState(`${reasons[frame.reason] ?? "終端已關閉。"}${frame.exitCode !== null ? ` (exit ${frame.exitCode})` : ""}`);
-        }
-      } catch { ready = false; reasonReceived = true; setClosed(true); setState("終端傳回無效訊框。"); ws.close(); }
-    };
-    ws.onerror = () => { if (mounted && !reasonReceived) { setClosed(true); setState("連線失敗，請重新連線。"); } };
-    ws.onclose = () => { ready = false; if (mounted && !reasonReceived) { setClosed(true); setState("連線已中斷；重新連線會開啟新 shell。"); } };
-    return () => {
-      mounted = false; observer.disconnect(); input.dispose(); ws.close(1000, "operator_closed");
-      term.dispose(); terminal.current = null; socket.current = null;
-    };
+    const current = new HostTerminalConnection(tab.session, setStatus);
+    connection.current = current;
+    current.attach(element.current!);
+    return () => { current.dispose(); connection.current = null; };
   }, [tab.session]);
-  useEffect(() => { if (active) { fit.current(); terminal.current?.focus(); } }, [active]);
+  useEffect(() => { if (active) connection.current?.focus(); }, [active]);
+  const closed = status.phase === "closed";
   return <section hidden={!active} aria-label={tab.label} className="space-y-3">
-    <div className="flex items-center gap-3"><p role="status" className="text-sm text-muted-foreground">{state}</p>
+    <div className="flex items-center gap-3"><p role="status" className="text-sm text-muted-foreground">{status.message}</p>
       {closed && <Button variant="outline" size="sm" onClick={reconnect}>重新連線</Button>}</div>
     <div ref={element} className="h-(--host-terminal-height) w-full overflow-hidden rounded-md bg-(--host-terminal-background) p-2 font-mono text-base" />
-    <div className="flex gap-1 overflow-x-auto sm:hidden" aria-label="終端快捷鍵">
-      {keys.map(([label, data]) => <Button key={label} variant="outline" size="sm" disabled={closed}
-        onPointerDown={event => event.preventDefault()} onClick={() => { send({ type: "input", data }); terminal.current?.focus(); }}>{label}</Button>)}
-    </div>
+    <HostTerminalKeys disabled={closed} onKey={data => { connection.current?.input(data); connection.current?.focus(); }} />
   </section>;
 }
 
