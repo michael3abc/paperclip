@@ -508,3 +508,8 @@ Liveness-first (`/home/michael/services/docs/agents/liveness-first.md`) supersed
   preserves unknown-TTL one-hour estimates and historical prices. Lost final
   receipts can price saved Compass counters as a lower bound. Source-only;
   deployment and the external usage-ledger card update remain separate.
+
+HOM-624 (`michael/chat-picker-host`, trailer HOM-411): agent-pinned host model
+discovery and same-host saves use server-verified catalog context without
+widening company host membership. Requires paired CC Pocket adapter change.
+Development branches only; no merge or deployment in this task.

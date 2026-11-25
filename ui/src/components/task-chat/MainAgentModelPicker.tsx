@@ -75,9 +75,9 @@ export function MainAgentModelPicker({ agent, companyId, mobile = false }: Props
   // Same scoped Bridge catalog query (and cache identity) as the Agent settings model picker.
   const catalogQuery = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, BRIDGE_ADAPTER_TYPE, agent.defaultEnvironmentId ?? null,
-      JSON.stringify([saved.hostId, saved.provider])),
+      JSON.stringify([saved.hostId, saved.provider, saved.hostId ? agent.id : undefined])),
     queryFn: () => agentsApi.adapterModels(companyId, BRIDGE_ADAPTER_TYPE, {
-      environmentId: agent.defaultEnvironmentId ?? null, hostId: saved.hostId || undefined, provider: saved.provider,
+      environmentId: agent.defaultEnvironmentId ?? null, hostId: saved.hostId || undefined, provider: saved.provider, agentId: saved.hostId ? agent.id : undefined,
     }),
     ...ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS,
     enabled: open && canEdit,

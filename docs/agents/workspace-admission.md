@@ -73,7 +73,7 @@ worktree creation or retirement.
 - Warm sandbox adoption requires the exported source digest to equal the final host
   digest; missing export proof makes a new turn seed the current host.
 
-## Company-scoped adapter catalogs (unchanged)
+## Company-scoped adapter catalogs
 
 Company-scoped adapter catalogs declare catalogScope=company. Model discovery and
 config-schema requests require authorized companyId plus the unsaved host/provider
@@ -82,3 +82,19 @@ Keep qualified model IDs in persistence; names and source badges are display onl
 Bridge host companyIds live in the external host registry. See doc/DEVELOPING.md.
 Bind manual refresh feedback to the exact selection/request and reject forbidden
 schema hosts before probing; never substitute another host on an invalid query.
+
+For model discovery only, `GET /api/companies/:companyId/adapters/:type/models`
+accepts optional `agentId`. The server verifies company and adapter membership
+(404 if unavailable), and requires an explicit `hostId` equal to that agent's
+saved host (422 `catalog_host_mismatch` otherwise). It then supplies the internal
+`AdapterCatalogContext.serverVerifiedHostId` for exactly that lookup, including
+refresh. Never copy this field from request queries or adapter configuration.
+The adapter may read that registered host even without company membership; it
+must not add it to company host choices, schema choices, terminals or quotas.
+Existing-agent model saves use trusted previous configuration only when adapter
+and host remain unchanged; new agents and host changes retain company checks.
+Picker cache identities include the agent whenever this exception is requested;
+unsaved host changes in settings use ordinary company discovery. Company catalog
+failures retain safe machine codes in the 422 body's `code` field while hiding
+raw transport details; `catalog_host_forbidden` has specific user-facing copy.
+Paperclip and the external CC Pocket adapter changes must ship together.

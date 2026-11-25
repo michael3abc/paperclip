@@ -501,3 +501,10 @@ through a current-turn token. Keep main-answer provenance, replay/deduplication,
 barge-in and voice approval restrictions. Do not restore legacy latest-reply
 routing. Changes require both engine regressions and a real routing smoke; see
 `doc/connections/LOCAL-VOICE.md`. Existing call policies are not rewritten.
+
+Agent-pinned company catalog reads accept agentId only after company/adapter and
+explicit hostId match the saved agent. Pass serverVerifiedHostId internally, never
+from query/config. Include agent identity in picker caches; keep company host
+choices, terminals and quota scope unchanged. Same-host model saves may use the
+trusted previous config. Preserve safe adapter failure codes in 422 responses.
+See docs/agents/workspace-admission.md.

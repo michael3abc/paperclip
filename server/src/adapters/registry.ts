@@ -1241,13 +1241,22 @@ function declaredModelsForAdapter(type: string): { id: string; label: string }[]
     : null;
 }
 
+function companyCatalogError(error: unknown, message: string): HttpError {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  // Preserve machine-readable reasons, never raw transport messages or details.
+  const safeCode = typeof code === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(code) ? code : undefined;
+  return new HttpError(422, safeCode === "catalog_host_forbidden"
+    ? "此主機未配置給這家公司；請從指定代理的 Chat 選擇模型，或選擇公司的主機。" : message,
+    safeCode ? { code: safeCode } : undefined);
+}
+
 export async function listAdapterModels(type: string, context?: AdapterCatalogContext): Promise<AdapterModel[]> {
   const scoped = findActiveServerAdapter(type);
   if (scoped?.catalogScope === "company") {
     if (!context?.companyId) throw new HttpError(400, "Select a company for this adapter catalog");
     const discover = scoped.listModels;
     try { return discover ? await discover.call(scoped, context) : []; }
-    catch { throw new HttpError(422, "無法載入公司模型清單；請確認公司已配置主機、執行器及 Bridge 連線。"); }
+    catch (error) { throw companyCatalogError(error, "無法載入公司模型清單；請確認公司已配置主機、執行器及 Bridge 連線。"); }
   }
   const declaredModels = declaredModelsForAdapter(type);
   if (declaredModels) return declaredModels;
@@ -1270,7 +1279,7 @@ export async function refreshAdapterModels(type: string, context?: AdapterCatalo
     if (!context?.companyId) throw new HttpError(400, "Select a company for this adapter catalog");
     const discover = scoped.refreshModels ?? scoped.listModels;
     try { return discover ? await discover.call(scoped, context) : []; }
-    catch { throw new HttpError(422, "無法更新公司模型清單；請確認主機、執行器及 Bridge 連線。"); }
+    catch (error) { throw companyCatalogError(error, "無法更新公司模型清單；請確認主機、執行器及 Bridge 連線。"); }
   }
   const declaredModels = declaredModelsForAdapter(type);
   if (declaredModels) return declaredModels;

@@ -550,7 +550,7 @@ describe("agent routes adapter validation", () => {
 
   it("keeps an unchanged company-catalog model saveable after the host stops offering it", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
-    const listModels = vi.fn(async () => [{ id: "host-e/claude/family:opus-5.5[1m]", label: "Opus 1M" }]);
+    const listModels = vi.fn(async (_context?: import("@paperclipai/adapter-utils").AdapterCatalogContext) => [{ id: "host-e/claude/family:opus-5.5[1m]", label: "Opus 1M" }]);
     registerServerAdapter({ ...externalAdapter, catalogScope: "company", listModels });
     const existing = { ...(await mockAgentService.getById()), adapterType: "external_test",
       adapterConfig: { model: "host-e/claude/family:opus-5.5", hostId: "host-e", provider: "claude" } };
@@ -571,6 +571,8 @@ describe("agent routes adapter validation", () => {
     expect(moved.status).toBe(422);
     const offered = await patch({ ...existing.adapterConfig, model: "host-e/claude/family:opus-5.5[1m]" });
     expect(offered.status, JSON.stringify(offered.body)).toBe(200);
+    expect(listModels).toHaveBeenLastCalledWith({ companyId: 'company-1', hostId: 'host-e', provider: 'claude', serverVerifiedHostId: 'host-e' });
+    expect(listModels.mock.calls.some(([context]) => context?.hostId === 'host-d' && context.serverVerifiedHostId !== undefined)).toBe(false);
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {

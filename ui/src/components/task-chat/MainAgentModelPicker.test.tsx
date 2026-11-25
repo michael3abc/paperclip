@@ -142,11 +142,31 @@ describe("MainAgentModelPicker", () => {
     expect(agentsApi.adapterModels).not.toHaveBeenCalled();
   });
 
+  it("keeps catalog data separate for two agents pinned to the same host", async () => {
+    const queryClient = await render();
+    await click(pill());
+    expect(agentsApi.adapterModels).toHaveBeenCalledTimes(1);
+    await act(async () => queryClient.setQueryData(queryKeys.agents.list("company-1"), [{ ...agent, id: "another-agent" }]));
+    await settle();
+    expect(agentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "ccpocket_bridge",
+      { environmentId: null, hostId: "michael-server", provider: "codex", agentId: "another-agent" });
+    const catalogs = queryClient.getQueryCache().findAll().filter(query => query.queryKey.includes("adapter-models"));
+    expect(catalogs).toHaveLength(2);
+  });
+
+  it("keeps ordinary company discovery for an agent without an explicit saved host", async () => {
+    serverAgent = { ...agent, adapterConfig: { ...agent.adapterConfig, hostId: undefined } };
+    await render();
+    await click(pill());
+    expect(agentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "ccpocket_bridge",
+      { environmentId: null, hostId: undefined, provider: "codex", agentId: undefined });
+  });
+
   it("opens a compact English panel with a slider, a model link and no Apply button", async () => {
     await render();
     await click(pill());
     expect(agentsApi.adapterModels).toHaveBeenCalledWith("company-1", "ccpocket_bridge",
-      { environmentId: null, hostId: "michael-server", provider: "codex" });
+      { environmentId: null, hostId: "michael-server", provider: "codex", agentId: "agent-main" });
     const panel = byTestId("main-agent-model-popover")!;
     expect(byTestId("main-agent-model-effort")!.textContent).toBe("High");
     expect(byTestId("main-agent-model-current")!.textContent).toBe("GPT-6.1 Sol");

@@ -2567,9 +2567,12 @@ export function agentRoutes(
       // change of model, host or executor still requires a currently offered model.
       if (previous?.adapterType === adapterType
         && (["model", "hostId", "provider"] as const).every(key => previous.adapterConfig[key] === adapterConfig[key])) return;
-      const models = await listAdapterModels(adapterType, { companyId,
-        hostId: asNonEmptyString(adapterConfig.hostId) ?? undefined,
-        provider: asNonEmptyString(adapterConfig.provider) ?? undefined });
+      const hostId = asNonEmptyString(adapterConfig.hostId) ?? undefined;
+      const savedHostId = previous?.adapterType === adapterType
+        ? asNonEmptyString(previous.adapterConfig.hostId) : null;
+      const models = await listAdapterModels(adapterType, { companyId, hostId,
+        provider: asNonEmptyString(adapterConfig.provider) ?? undefined,
+        ...(hostId && hostId === savedHostId ? { serverVerifiedHostId: hostId } : {}) });
       if (!models.some(model => model.id === adapterConfig.model)) {
         throw unprocessable("Select a model available to this company, host and executor");
       }
@@ -3247,8 +3250,21 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
     if (requireServerAdapter(type).catalogScope === "company") {
-      const context = { companyId, hostId: asNonEmptyString(req.query.hostId) ?? undefined,
+      const hostId = asNonEmptyString(req.query.hostId) ?? undefined;
+      const context: import("../adapters/types.js").AdapterCatalogContext = { companyId, hostId,
         provider: asNonEmptyString(req.query.provider) ?? undefined };
+      const agentId = asNonEmptyString(req.query.agentId);
+      if (agentId) {
+        const agent = await svc.getById(agentId);
+        if (!agent || agent.companyId !== companyId || agent.adapterType !== type) {
+          throw notFound("Agent not found", { code: "catalog_agent_not_found" });
+        }
+        const savedHostId = asNonEmptyString((agent.adapterConfig as Record<string, unknown>).hostId);
+        if (!hostId || hostId !== savedHostId) {
+          throw unprocessable("Select the agent's saved host for its model catalog", { code: "catalog_host_mismatch" });
+        }
+        context.serverVerifiedHostId = savedHostId;
+      }
       res.setHeader("Cache-Control", "no-store");
       res.json(req.query.refresh === "1" || req.query.refresh === "true"
         ? await refreshAdapterModels(type, context) : await listAdapterModels(type, context));

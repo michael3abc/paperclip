@@ -318,6 +318,8 @@ export interface AdapterModel {
 /** Authorized company plus the current, possibly unsaved catalog selection. */
 export interface AdapterCatalogContext {
   companyId: string;
+  /** Server-only: the exact saved host of an agent verified in this company and adapter. Never accept from query/config. */
+  serverVerifiedHostId?: string;
   hostId?: string;
   provider?: string;
 }
