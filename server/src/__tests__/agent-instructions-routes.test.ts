@@ -115,7 +115,10 @@ const routeModules = hoistModuleGraph(() => {
   return { agentRoutes, errorHandler };
 });
 
-async function createApp(actor: Record<string, unknown> = boardActor(), db: Record<string, unknown> = {}) {
+// PATCH reads waiting scheduled retries after an adapter or model change; no run waits here.
+const noWaitingRetriesDb = { select: () => ({ from: () => ({ where: async () => [] }) }) };
+
+async function createApp(actor: Record<string, unknown> = boardActor(), db: Record<string, unknown> = noWaitingRetriesDb) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
