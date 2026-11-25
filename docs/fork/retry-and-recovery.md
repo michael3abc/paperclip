@@ -62,6 +62,18 @@ PostgreSQL tests cover the scheduler, retry writer and original notice lifecycle
   Preserve permissions, holds, recovery budgets and historical actions. This is
   part of the staged shared-worktree feature, not a standalone rollout.
 
+- Liveness-first original-main blocker turns (HOM-612, 2026-11-25): a main turn
+  that ends without finishing the notice no longer asks Owner by default. Owner
+  Chat input that interrupts it (`cancellation.source = queued_message`) and
+  transient or the first three unknown failures send a new wake and a new notice
+  comment prefixed 「上一次可能已部分執行，先檢查現況再做」, using the shared
+  30s×2ⁿ backoff and waiting while main is busy. Owner Stop, deterministic codes,
+  exhausted unknown retries and non-transient failures after accepted input still
+  ask Owner once. A later `issue.comment_added`/`issue.updated` by the original
+  main on the source task supersedes a pending resend and withdraws its Owner card.
+  Case: Shopee SHO-188, where the Owner's own Chat message interrupted the blocker
+  turn and produced a 26-second Owner card. See `server/src/services/recovery/main-blocker.ts`.
+
 - Suppressed disposition repair settlement (2026-11-12): verify the full original
   server trace for a prepared repair rejected before provider dispatch. Retained
   instruction copies use normal collection/cleanup; the original workspace wait

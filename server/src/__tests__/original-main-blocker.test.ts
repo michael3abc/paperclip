@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, heartbeatRuns,
+import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, heartbeatRuns,
   issueComments, issueRecoveryActions, issues, issueThreadInteractions, projects } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { MAIN_BLOCKER_REASON, mainBlockerKey, originalMainBlockerService, readMainBlockerNotice,
@@ -161,6 +161,96 @@ describe("original main blocker delivery", () => {
         companyId: f.companyId, runId: run.id, expectedStatus: "queued", now: new Date(),
       })).toMatchObject({ outcome: fault === "valid" ? "not_stale" : "cancelled" });
     });
+  async function endNoticeRun(f: Awaited<ReturnType<typeof fixture>>, patch: Partial<typeof heartbeatRuns.$inferInsert>) {
+    const notice = readMainBlockerNotice(await f.read())!;
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(), ...patch }).where(eq(heartbeatRuns.id, notice.runId!));
+    return notice;
+  }
+  async function expireRetry(f: Awaited<ReturnType<typeof fixture>>) {
+    const action = await f.read(), notice = readMainBlockerNotice(action)!;
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, mainBlockerNotices: {
+      [notice.key]: { ...notice, retryAt: new Date(Date.now() - 1000).toISOString() } } } }).where(eq(issueRecoveryActions.id, f.action.id));
+  }
+  it("HOM-612: Owner Chat input that interrupts the blocker turn resends after main is idle, never an Owner card", async () => {
+    const f = await fixture(); await f.service.check(f.action.id);
+    const first = await endNoticeRun(f, { status: "cancelled", errorCode: "operator_interrupted", resultJson: { errorCode: "cancelled",
+      cancellation: { source: "queued_message", reason: "Interrupted to send queued messages", initiator: { type: "user", id: f.ownerId } } } });
+    // The Owner's own Chat turn is running when the notice is checked again.
+    const [ownerTurn] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.mainId, issueId: f.conversationId,
+      status: "running", contextSnapshot: { issueId: f.conversationId } }).returning();
+    await f.service.check(f.action.id); await f.service.check(f.action.id);
+    expect(await f.cards()).toHaveLength(0); expect(f.wakeup).toHaveBeenCalledTimes(1);
+    expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "waiting_main", attempt: 2, failures: 0,
+      previousAttempts: [{ wakeId: first.wakeId, runId: first.runId, reason: "superseded_by_queued_input" }] });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ownerTurn.id));
+    await f.service.check(f.action.id);
+    expect(f.wakeup).toHaveBeenCalledTimes(2);
+    const second = readMainBlockerNotice(await f.read())!;
+    expect(second).toMatchObject({ status: "queued", attempt: 2 }); expect(second.wakeId).not.toBe(first.wakeId);
+    const [resent] = await db.select().from(issueComments).where(eq(issueComments.id, second.commentId));
+    expect(resent.body.startsWith("上一次可能已部分執行，先檢查現況再做")).toBe(true);
+    expect(await f.cards()).toHaveLength(0);
+  });
+  it("HOM-612: a transient main failure is resent after backoff instead of asking Owner", async () => {
+    const f = await fixture(); await f.service.check(f.action.id);
+    await endNoticeRun(f, { status: "failed", errorCode: "provider_quota" });
+    const due = await f.service.check(f.action.id);
+    expect(due).toBeTypeOf("number"); expect(due as number).toBeGreaterThan(Date.now() + 20_000);
+    expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "pending", failures: 1, reason: "provider_quota" });
+    expect(await f.service.check(f.action.id)).toBeTypeOf("number"); expect(f.wakeup).toHaveBeenCalledTimes(1);
+    await expireRetry(f); await f.service.check(f.action.id);
+    expect(f.wakeup).toHaveBeenCalledTimes(2); expect(await f.cards()).toHaveLength(0);
+    expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "queued", attempt: 2, failures: 1 });
+  });
+  it.each([
+    ["deterministic", { status: "failed" as const, errorCode: "model_provider_mismatch" }],
+    ["owner_stop", { status: "cancelled" as const, errorCode: "operator_interrupted", resultJson: { cancellation: { source: "stop", initiator: { type: "user" } } } }],
+  ])("HOM-612: %s main failure still asks Owner once", async (_name, patch) => {
+    const f = await fixture(); await f.service.check(f.action.id);
+    await endNoticeRun(f, patch);
+    await f.service.check(f.action.id); await f.service.check(f.action.id);
+    expect(readMainBlockerNotice(await f.read())?.status).toBe("needs_owner");
+    expect(f.wakeup).toHaveBeenCalledTimes(1); expect(await f.cards()).toHaveLength(1);
+  });
+  it("HOM-612: unknown failures retry three times, then ask Owner", async () => {
+    const f = await fixture(); await f.service.check(f.action.id);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await endNoticeRun(f, { status: "failed", errorCode: "adapter_error" });
+      await f.service.check(f.action.id);
+      expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "pending", failures: attempt });
+      await expireRetry(f); await f.service.check(f.action.id);
+    }
+    expect(f.wakeup).toHaveBeenCalledTimes(4);
+    await endNoticeRun(f, { status: "failed", errorCode: "adapter_error" });
+    await f.service.check(f.action.id);
+    expect(readMainBlockerNotice(await f.read())?.status).toBe("needs_owner"); expect(await f.cards()).toHaveLength(1);
+  });
+  it("HOM-612: main taking over the source task withdraws a stale Owner card and stops redelivery", async () => {
+    const f = await fixture(); await f.service.check(f.action.id);
+    await endNoticeRun(f, { status: "failed", errorCode: "model_provider_mismatch" });
+    await f.service.check(f.action.id);
+    expect((await f.cards())[0].status).toBe("pending");
+    // A read by main is not a takeover.
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: f.mainId, agentId: f.mainId,
+      action: "issue.cross_issue_influence_observed", entityType: "issue", entityId: f.taskId });
+    await f.service.check(f.action.id); expect((await f.cards())[0].status).toBe("pending");
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: f.mainId, agentId: f.mainId,
+      action: "issue.comment_added", entityType: "issue", entityId: f.taskId });
+    await f.service.check(f.action.id);
+    expect((await f.cards())[0]).toMatchObject({ status: "cancelled", result: { outcome: "withdrawn" } });
+    expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "superseded", reason: "main_engaged_source" });
+    await f.service.check(f.action.id); expect(f.wakeup).toHaveBeenCalledTimes(1);
+  });
+  it("HOM-612: main taking over before a pending redelivery cancels the resend", async () => {
+    const f = await fixture(); await f.service.check(f.action.id);
+    await endNoticeRun(f, { status: "failed", errorCode: "provider_quota" });
+    await f.service.check(f.action.id);
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "agent", actorId: f.mainId, agentId: f.mainId,
+      action: "issue.comment_added", entityType: "issue", entityId: f.taskId });
+    await expireRetry(f); await f.service.check(f.action.id);
+    expect(f.wakeup).toHaveBeenCalledTimes(1); expect(await f.cards()).toHaveLength(0);
+    expect(readMainBlockerNotice(await f.read())?.status).toBe("superseded");
+  });
   it("lost wake response and restart reconcile the same receipt without resending", async () => {
     const f = await fixture(); const original = f.owner.wakeup;
     const wakeup = vi.fn(async (agentId: string, opts: WakeupOptions) => { await original(agentId, opts); throw new Error("lost response"); });
