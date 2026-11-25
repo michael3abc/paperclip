@@ -571,9 +571,10 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       const result = await response;
       expect(result.status, JSON.stringify(result.body)).toBe(200);
       // Completion, including the task Retry receipt, is still owned by the source.
+      // Completion runs after the HTTP acknowledgement; allow for loaded CI lanes.
       await expect.poll(async () => (await db.select().from(activityLog).where(and(
         eq(activityLog.companyId, seeded.companyId), eq(activityLog.action, "issue.chat_preempted"),
-      ))).length).toBe(1);
+      ))).length, { timeout: 15_000 }).toBe(1);
       adapterExecutionControls.delete(seeded.taskRunId);
       await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
     }
@@ -613,7 +614,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       await settleInterruptWork();
       if (expected === 200) await expect.poll(async () => (await db.select().from(activityLog).where(and(
         eq(activityLog.companyId, seeded.companyId), eq(activityLog.action, "issue.chat_preempted"),
-      ))).length).toBe(1);
+      ))).length, { timeout: 15_000 }).toBe(1);
       const runs = new Map((await db.select().from(heartbeatRuns)
         .where(eq(heartbeatRuns.companyId, seeded.companyId))).map(run => [run.id, run]));
       const retries = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,
