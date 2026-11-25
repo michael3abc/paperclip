@@ -4952,6 +4952,7 @@ export function heartbeatService(
       // A terminal run only rechecks its original obligations. Never Stop a successor.
       if (run && isHeartbeatRunTerminalStatus(run.status) && !options?.cancellationRequestId) {
         await runControl.cancelTerminalRunHandoffs(run.id, reason ?? "Cancelled by control plane", options);
+        options?.onCancellationRecorded?.();
         return await stopSettlement.reconcile(run.id, run.companyId, { manual: true }) ?? run;
       }
       return cancelRunInternal(runId, reason, options);

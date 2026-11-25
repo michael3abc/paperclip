@@ -296,6 +296,8 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 export type CancelRunOptions = {
+    /** Internal HTTP acknowledgement after the durable fence, before provider Stop. */
+    onCancellationRecorded?: () => void;
     /** Return null if a pending retry changed status before this cancellation. */
     expectedStatus?: "scheduled_retry" | "queued";
     budgetEnforcement?: BudgetEnforcementScope;
@@ -1485,6 +1487,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       run.id,
     );
     if (pendingProcessCancellation) {
+      options.onCancellationRecorded?.();
       await pendingProcessCancellation.settled;
       if (pendingProcessCancellation.failed)
         throw pendingProcessCancellation.error;
@@ -1502,7 +1505,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // Established legacy processes must still be stopped if the database is
     // unavailable. Only native or not-yet-dispatched preparation needs this
     // additional durable fence before its existing cancellation path.
-    if (!committedBudgetCancellation && (options.expectedStatus || options.budgetEnforcement || (!options.cancellationRequestId && (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control))))) {
+    if (!committedBudgetCancellation && (options.onCancellationRecorded || options.expectedStatus || options.budgetEnforcement || (!options.cancellationRequestId && (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control))))) {
       const fence = async (tx: Db) => {
         await notifyScheduledRetryCancellation(tx, { companyId: run!.companyId, runId });
         const [fenced] = await tx.update(heartbeatRuns).set({
@@ -1590,6 +1593,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               );
             control.controller.abort(new Error(reason));
           }
+          // This is acceptance of the persisted request, never proof of Stop.
+          // Keep the original cancellation owner and all settlement work alive.
+          if (control || running || run.runtimeMode === "native") options.onCancellationRecorded?.();
           let terminationSettled = false;
           try {
             const startupCleanupRun = run.runtimeMode === "native" ? await getRun(run.id) : null;

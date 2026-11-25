@@ -36,6 +36,14 @@ cache keys include company and source, without local fallback. See doc/DEVELOPIN
 Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651` (integrated for 2026-11-21; not deployed). Previous sync base: `806440d12cf3cc5b6e28f546a5e0f4fb625df48c`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
+## 2026-11-25 Chat interrupt latency (HOM-625 / HOM-411; not deployed)
+
+`michael/chat-interrupt-latency` acknowledges durable queue/cancellation intent
+before waiting for Bridge/native/process Stop, including main Chat task preemption.
+The original cancellation and continuation paths retain their ordering and input
+receipts. Attention reads overlap independent authorization/config/dismissal queries.
+See `docs/agents/session-bridge.md`. Branch handoff only; no merge or deployment.
+
 ## 2026-11-21 upstream merge (HOM-460; not deployed)
 
 Merge 52 upstream commits through `2898acee`; preserve fork failure classification,
