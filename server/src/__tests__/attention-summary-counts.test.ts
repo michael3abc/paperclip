@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   approvals, companies, createDb, decisionQueueItems, decisionRetention, inboxDismissals, issues, type Db,
 } from "@paperclipai/db";
@@ -110,6 +110,46 @@ describeEmbeddedPostgres("attention summary: the counts of the full feed", () =>
     for (const [name, id] of Object.entries(fixture.notCards)) expect(cardIds.has(id), name).toBe(false);
     for (const id of [...Object.values(fixture.cards.unreadablePrivate), ...Object.values(fixture.cards.hidden),
       ...Object.values(fixture.foreign)]) expect(cardIds.has(id)).toBe(false);
+  }, 120_000);
+
+  it("shares overlapping full reads with a summary without changing the audience-view totals", async () => {
+    const owner = reader("board owner");
+    const service = attentionService(db);
+    const expectedSummary = await service.summary(fixture.companyId, owner);
+    const select = vi.spyOn(db, "select");
+    try {
+      for (const view of VIEWS) {
+        const options = { ...owner, all: true, allowUnscopedAll: true, view };
+        select.mockClear();
+        const expectedFeed = await service.list(fixture.companyId, options);
+        const calls = select.mock.calls.length;
+        select.mockClear();
+        const [feed, summary, duplicate] = await Promise.all([
+          service.list(fixture.companyId, options),
+          service.summary(fixture.companyId, owner),
+          service.list(fixture.companyId, options),
+        ]);
+        expect(select.mock.calls.length).toBe(calls);
+        expect(counts(summary)).toEqual(counts(expectedSummary));
+        expect(counts(feed)).toEqual(counts(expectedFeed));
+        expect(feed.items).toEqual(expectedFeed.items);
+        expect(duplicate.items).toEqual(feed.items);
+        expect(duplicate).not.toBe(feed);
+      }
+      // A time-filtered feed cannot replace the default counts, even when
+      // the company, person and authorization context are identical.
+      const [filtered, unfiltered] = await Promise.all([
+        service.list(fixture.companyId, { ...owner, all: true, allowUnscopedAll: true,
+          activitySince: "2099-01-01T00:00:00.000Z" }),
+        service.summary(fixture.companyId, owner),
+      ]);
+      expect(filtered.items).toEqual([]);
+      expect(counts(unfiltered)).toEqual(counts(expectedSummary));
+      // Completed reads do not hide a new database read or a changed source.
+      select.mockClear();
+      await service.summary(fixture.companyId, owner);
+      expect(select.mock.calls.length).toBeGreaterThan(0);
+    } finally { select.mockRestore(); }
   }, 120_000);
 
   it("gives every board actor the counts and the tasks of their own feed", async () => {

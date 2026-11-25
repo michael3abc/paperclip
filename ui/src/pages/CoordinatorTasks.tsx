@@ -29,7 +29,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSha
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { formatUserLabel } from "@/lib/assignees";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
-import { coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
+import { ATTENTION_STALE_TIME_MS, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
@@ -139,6 +139,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     enabled: !!companyId && !needsAttention && (!archivedView || !!userId),
   });
   const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!, userId),
+    staleTime: ATTENTION_STALE_TIME_MS,
     queryFn: () => attentionApi.taskIndex(companyId!), enabled: !!companyId && !!userId && needsAttention });
   // Resolve every pending task in bounded index batches, including tasks outside
   // the first list page. Keep full task enrichment out of the collection read.

@@ -1,3 +1,4 @@
+import { attentionReaderKey, attentionReadCoalescer } from "./attention-read-coalescer.js";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -1714,7 +1715,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
     OPEN_DECISION_MAX_LIMIT,
   );
-  async function list(companyId: string, options: AttentionListOptions = {}, questionIssueIds?: readonly string[]): Promise<AttentionFeed> {
+  type ReadResult = { feed: AttentionFeed; summary: AttentionSummary };
+  const reads = attentionReadCoalescer<ReadResult>();
+  const fullReads = new Map<string, Promise<ReadResult>>();
+  async function buildFeed(companyId: string, options: AttentionListOptions = {}, questionIssueIds?: readonly string[]): Promise<ReadResult> {
       if (options.all && !options.queue && !options.allowUnscopedAll) {
         throw badRequest("all requires a queue filter");
       }
@@ -2763,16 +2767,16 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const enrichedById = new Map(enrichedItems.map((item) => [item.id, item]));
       const obligationLeadOf = (item: AttentionItem) =>
         isObligationEvidence(item) ? enrichedById.get(item.obligationLeadId!) ?? item : item;
-      const visibleItems = enrichedItems.filter((member) => {
+      const visibleInView = (member: AttentionItem, selectedView: AttentionFeedView) => {
         const item = obligationLeadOf(member);
-        if (view === "archived") {
+        if (selectedView === "archived") {
           // The person's own Archived view (PAP-749 plan §3): open cards they
           // archived or snoozed, and nothing else.
           if (!hiddenForViewer(item)) return false;
         } else {
           // `all` (the default) keeps the pre-PAP-749 superset; the other views
           // partition by resolved audience (PAP-749 plan §1, Rule 3).
-          if (view !== "all" && !audienceMatchesView(item.audience, view, options.userId)) return false;
+          if (selectedView !== "all" && !audienceMatchesView(item.audience, selectedView, options.userId)) return false;
           if (!includeDismissed && hiddenForViewer(item)) return false;
         }
         if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
@@ -2782,7 +2786,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         if (activityUntil != null && activity > activityUntil) return false;
         if (queueKey && !item.queues.some((queue) => queue.key === queueKey)) return false;
         return true;
-      });
+      };
+      const visibleItems = enrichedItems.filter(member => visibleInView(member, view));
 
       const countsBySourceKind = emptyCounts();
       for (const item of visibleItems) countsBySourceKind[item.sourceKind] += 1;
@@ -2808,7 +2813,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const summary: AttentionSummary = { companyId, generatedAt: new Date().toISOString(), totalCount: visibleItems.length, deskBadgeCount: viewCounts.mine, viewCounts, countsBySourceKind };
-      if (summaryOnly) return { ...summary, nextCursor: null, items: visibleItems };
+      if (summaryOnly) return { feed: { ...summary, nextCursor: null, items: visibleItems }, summary };
+      // A concurrent summary may join a full read of any audience view. Its
+      // totals describe the default unfiltered feed, while viewCounts already
+      // describe every view. Only unfiltered full reads are registered below.
+      let companySummary = summary;
+      if (view !== "all") {
+        const allVisible = enrichedItems.filter(member => visibleInView(member, "all"));
+        const allCounts = emptyCounts();
+        for (const item of allVisible) allCounts[item.sourceKind] += 1;
+        companySummary = { ...summary, totalCount: allVisible.length, countsBySourceKind: allCounts };
+      }
 
       const sort = options.sort ?? "activity";
       if (sort !== "activity" && sort !== "decide") throw badRequest("sort must be 'activity' or 'decide'");
@@ -2881,7 +2896,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }
         }
       }
-      return {
+      return { summary: companySummary, feed: {
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
@@ -2892,26 +2907,42 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         nextCursor,
         countsBySourceKind,
         items,
-      };
+      } };
 
   }
+  function readFeed(companyId: string, options: AttentionListOptions) {
+    const readerKey = attentionReaderKey(companyId, options.userId, options.actor);
+    const key = `${readerKey}:${JSON.stringify({ ...options, actor: undefined })}`;
+    const result = reads.run(key, () => buildFeed(companyId, options));
+    if (options.all && options.allowUnscopedAll && !options.includeDismissed && !options.archived && !options.queue
+      && !options.activitySince && !options.activityUntil && !options.excludeSources?.length
+      && !options.countsOnly && !options.summaryOnly && !fullReads.has(readerKey)) {
+      fullReads.set(readerKey, result);
+      const clear = () => { if (fullReads.get(readerKey) === result) fullReads.delete(readerKey); };
+      void result.then(clear, clear);
+    }
+    return result;
+  }
   return {
-    list: (companyId: string, options: AttentionListOptions = {}) => list(companyId, options),
+    list: async (companyId: string, options: AttentionListOptions = {}) => ({ ...(await readFeed(companyId, options)).feed }),
     taskQuestions: async (companyId: string, issueIds: readonly string[], options: { actor: AuthorizationActor; userId: string }): Promise<AttentionItem[]> => {
       if (issueIds.length === 0) return [];
-      const feed = await list(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
+      const { feed } = await buildFeed(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
       return feed.items;
     },
     summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
-      const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
+      const readerKey = attentionReaderKey(companyId, options.userId, options.actor);
+      const pendingFull = fullReads.get(readerKey);
+      if (pendingFull) return (await pendingFull).summary;
+      return (await readFeed(companyId, {
         ...options, all: true, allowUnscopedAll: true, countsOnly: true,
-      });
-      return summary;
+      })).summary;
     },
     taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionTaskIndex> => {
-      const { items, nextCursor: _cursor, ...summary } = await list(companyId, {
+      const { feed } = await readFeed(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });
+      const { items, nextCursor: _cursor, ...summary } = feed;
       return { ...summary, taskIds: [...new Set(items.flatMap(item => item.relatedIssue
         ? [item.relatedIssue.id] : item.subject.kind === "issue" ? [item.subject.id] : []))] };
     },

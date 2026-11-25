@@ -9,7 +9,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { attentionAlreadyClosedText, attentionUserLabel, readAttentionAlreadyClosed } from "@/lib/attention-close";
 import { EMPTY_ATTENTION_VIEW_COUNTS, attentionEveryoneViewAllowed } from "@/lib/attention-views";
 import { invalidateAttentionRecordViews } from "@/lib/attention-record-views";
-import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
+import { ATTENTION_STALE_TIME_MS, coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
 interface AttentionViewFeedOptions {
@@ -32,6 +32,7 @@ export function useAttentionViewFeed(
     queryKey: coordinatorAttentionQueryKey(companyId ?? "", userId, view),
     queryFn: () => attentionApi.list(companyId!, { all: true, view }),
     enabled: !!companyId && !!userId && (options.enabled ?? true),
+    staleTime: ATTENTION_STALE_TIME_MS,
     refetchOnWindowFocus: true,
     refetchInterval: options.refetchInterval,
   });

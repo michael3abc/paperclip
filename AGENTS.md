@@ -78,6 +78,16 @@ Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host I
 
 Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`.
 
+Attention feed/summary/task-index queries reuse fresh data for 30 seconds across
+navigation. Preserve live-event/mutation invalidation and company/person/view
+cache scoping; see `docs/agents/ui-features.md`. Server read coalescing is limited
+to overlapping reads of the same company/viewer/authorization context; never
+reuse a completed result or supply default summary totals from a filtered read.
+See `docs/api/attention.md`.
+Conversation ownership reads use the existing origin-issue index only as a
+prefilter; preserve exact native/legacy matching and empty-ID behavior, and do
+not admit taskId/taskKey aliases. See `docs/api/issues.md`.
+
 Local voice timbre is one browser-wide preference, changed only on the Voice page and used by every agent on the next call. Do not restore per-agent overrides or mutate live call bindings. See `doc/connections/LOCAL-VOICE.md`.
 
 Local voice media belongs to the company/user-scoped provider above routes; navigating chats must neither dispose it nor retarget the active agent. See `docs/agents/ui-features.md`.
