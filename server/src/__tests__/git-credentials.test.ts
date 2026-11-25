@@ -13,6 +13,7 @@ import {
   describeGitAuthFailure,
   isGitHubHttpsRemoteUrl,
   resolveGitHubApiCredential,
+  resolveManagedGitHubIdentitySelection,
   scrubGitCredentialText,
 } from "../services/git-credentials.ts";
 
@@ -441,5 +442,62 @@ describe("createIssueGitRemoteAuthProvider", () => {
     const create = vi.fn(() => vi.fn(async () => null)) as unknown as typeof createGitRemoteAuthProvider;
     await createIssueGitRemoteAuthProvider(db, "company-1", "issue-1", create)(githubUrl);
     expect(create).toHaveBeenCalledWith(db, "company-1", { issueId: "issue-1", responsibleUserId: null, agentId: null });
+  });
+});
+
+describe("resolveManagedGitHubIdentitySelection", () => {
+  const query = (rows: unknown[]) => ({ from: () => ({ where: async () => rows }) });
+  const connection = (id: string) => ({
+    id, companyId: "company-1", enabled: true, status: "active", healthStatus: "ok",
+    config: { sourceTemplateKey: "github" },
+  });
+  const userGrant = (id: string, connectionId: string, githubUserId: string) => ({
+    id, companyId: "company-1", connectionId, kind: "user", status: "active", subjectUserId: "owner-1",
+    subjectAgentId: null, credentialSecretRefs: [], createdAt: new Date("2026-11-22T00:00:00Z"),
+    providerTenant: { github: { userId: githubUserId } },
+  });
+  const bothGrants = [userGrant("grant-personal", "personal", "1"), userGrant("grant-project", "project", "2")];
+  // The grant query is limited to connections eligible for the run's agent.
+  const dbWith = (installs: unknown[], grants: unknown[] = bothGrants) => ({
+    select: vi.fn()
+      .mockReturnValueOnce(query([connection("personal"), connection("project")]))
+      .mockReturnValueOnce(query(installs))
+      .mockReturnValueOnce(query(grants))
+      .mockReturnValue(query([])),
+  } as unknown as Db);
+
+  it("prefers the identity installed for this agent over a company-wide account of the same person", async () => {
+    const db = dbWith([
+      { connectionId: "personal", targetType: "company", targetId: "company-1" },
+      { connectionId: "project", targetType: "agent", targetId: "agent-gateway" },
+    ]);
+    const selection = await resolveManagedGitHubIdentitySelection(db, "company-1", {
+      agentId: "agent-gateway", responsibleUserId: "owner-1",
+    });
+    expect(selection.error).toBeUndefined();
+    expect(selection.grant?.id).toBe("grant-project");
+  });
+
+  it("still fails closed when two different accounts are installed at the same level", async () => {
+    const db = dbWith([
+      { connectionId: "personal", targetType: "company", targetId: "company-1" },
+      { connectionId: "project", targetType: "company", targetId: "company-1" },
+    ]);
+    const selection = await resolveManagedGitHubIdentitySelection(db, "company-1", {
+      agentId: "agent-gateway", responsibleUserId: "owner-1",
+    });
+    expect(selection.grant).toBeUndefined();
+    expect(selection.error).toBe("More than one managed GitHub identity matches this run");
+  });
+
+  it("keeps the company-wide account for agents without their own install", async () => {
+    const db = dbWith([
+      { connectionId: "personal", targetType: "company", targetId: "company-1" },
+      { connectionId: "project", targetType: "agent", targetId: "agent-gateway" },
+    ], [bothGrants[0]]);
+    const selection = await resolveManagedGitHubIdentitySelection(db, "company-1", {
+      agentId: "agent-other", responsibleUserId: "owner-1",
+    });
+    expect(selection.grant?.id).toBe("grant-personal");
   });
 });
