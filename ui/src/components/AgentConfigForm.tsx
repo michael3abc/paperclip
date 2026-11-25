@@ -1101,7 +1101,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [isCreate, adapterType, runnerProvider, runnerAcpxAgent, props, selectedHarness, selectedConnectionModel, currentAiConnection, aiAccounts.data, selectedCompanyId, runtimeConfig]);
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const antigravityPickerGroup = useMemo(() => antigravityModelGroup(modelAiBinding?.method), [modelAiBinding?.method]);
-  const modelCacheIdentity = isBridgeCatalog ? JSON.stringify([catalogHostId, modelProvider]) : accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
+  const bridgeCatalogAgentId = isBridgeCatalog && !isCreate && catalogHostId === props.agent.adapterConfig.hostId
+    ? props.agent.id : undefined;
+  const modelCacheIdentity = isBridgeCatalog ? JSON.stringify([catalogHostId, modelProvider, bridgeCatalogAgentId]) : accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner || !cloudHarnessAllowed ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   // ACPX providers host several agents (Claude, Grok, Copilot, ...); the models
@@ -1118,7 +1120,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       hostId: catalogHostId,
       acpxAgent: runnerAcpxAgent,
       aiConnection: modelAiBinding,
-      agentId: isCreate ? undefined : props.agent.id,
+      agentId: isBridgeCatalog ? bridgeCatalogAgentId : isCreate ? undefined : props.agent.id,
     }),
     ...(accountBoundCatalog || isBridgeCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(selectedCompanyId) && cloudHarnessAllowed && !isExternalRunner && !connectionModels,
@@ -1499,7 +1501,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     const scope = modelRefreshScope;
     setModelRefresh({ scope, request, error: null, pending: true });
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, hostId: catalogHostId, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, hostId: catalogHostId, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent ? { acpxAgent: runnerAcpxAgent } : {}), ...(isBridgeCatalog ? { agentId: bridgeCatalogAgentId } : accountBoundCatalog ? { aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setModelRefresh(current => current.scope === scope && current.request === request

@@ -61,6 +61,13 @@ fork browser paste-back. Preserve delegated external-write review alongside
 human direct-review policy, and retain fork Retry and agent-binding behavior.
 Decisions and verification: [sync-decisions](/HOM/issues/HOM-562#document-sync-decisions).
 Tuesday integration only; no deployment or restart.
+## 2026-11-25 Chat interrupt latency (HOM-625 / HOM-411; not deployed)
+
+`michael/chat-interrupt-latency` acknowledges durable queue/cancellation intent
+before waiting for Bridge/native/process Stop, including main Chat task preemption.
+The original cancellation and continuation paths retain their ordering and input
+receipts. Attention reads overlap independent authorization/config/dismissal queries.
+See `docs/agents/session-bridge.md`. Branch handoff only; no merge or deployment.
 
 ## 2026-11-21 upstream merge (HOM-460; not deployed)
 
@@ -534,3 +541,8 @@ Liveness-first (`/home/michael/services/docs/agents/liveness-first.md`) supersed
   preserves unknown-TTL one-hour estimates and historical prices. Lost final
   receipts can price saved Compass counters as a lower bound. Source-only;
   deployment and the external usage-ledger card update remain separate.
+
+HOM-624 (`michael/chat-picker-host`, trailer HOM-411): agent-pinned host model
+discovery and same-host saves use server-verified catalog context without
+widening company host membership. Requires paired CC Pocket adapter change.
+Development branches only; no merge or deployment in this task.

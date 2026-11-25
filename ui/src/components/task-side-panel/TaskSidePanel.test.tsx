@@ -16,6 +16,7 @@ import {
   writeTaskSidePanelState,
 } from "@/lib/task-side-panel-state";
 import type { TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
+import { closeHostTerminal, getHostTerminals, retainHostTerminalsOf } from "@/lib/host-terminal-store";
 import { TaskSidePanel } from "./TaskSidePanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -117,6 +118,22 @@ vi.mock("@/components/WorkspaceFileBrowser", () => ({
 
 vi.mock("./TaskAttachmentPanel", () => ({ TaskAttachmentPanel: ({ attachmentId }: { attachmentId: string }) => <div>Text file {attachmentId}</div> }));
 vi.mock("./TaskTodoPanel", () => ({ TaskTodoPanel: ({ issue }: { issue: { id: string } }) => <div>TODO content {issue.id}</div> }));
+
+const terminalFixture = vi.hoisted(() => ({
+  allowed: false,
+  list: vi.fn(async () => [{ id: "local", label: "Local" }, { id: "remote", label: "Remote" }]),
+  create: vi.fn(async () => ({ id: "session", token: "token", expiresAt: "later", wsPath: "/ws" })),
+  connections: [] as { attach: ReturnType<typeof vi.fn>; detach: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }[],
+}));
+vi.mock("@/hooks/useHostTerminalAccess", () => ({ useHostTerminalAccess: () => ({ allowed: terminalFixture.allowed, userId: "owner" }) }));
+vi.mock("@/api/host-terminals", () => ({ hostTerminalsApi: terminalFixture }));
+vi.mock("@/lib/host-terminal-connection", () => ({ HostTerminalConnection: class {
+  attach = vi.fn(); detach = vi.fn(); dispose = vi.fn(); input = vi.fn(); focus = vi.fn();
+  constructor(_session: unknown, onStatus: (status: { phase: string; message: string }) => void) {
+    terminalFixture.connections.push(this);
+    queueMicrotask(() => onStatus({ phase: "ready", message: "已連線" }));
+  }
+} }));
 
 vi.mock("./TaskDocumentPanel", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./TaskDocumentPanel")>()),
@@ -538,6 +555,103 @@ describe("TaskSidePanel", () => {
     await act(async () => options.find((item) => item.textContent?.startsWith("TODO"))?.click());
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.getAttribute("data-side-panel-tab-target")).toBe("todo");
     expect(container.textContent).toContain("TODO content task-1");
+  });
+
+  describe("host terminals", () => {
+    const chat = (id: string) => issue({ id, conversationAgentId: "agent-1" });
+    const options = () => Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
+    const option = (text: string) => options().find((item) => item.textContent?.includes(text));
+    async function openLauncher() {
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    }
+    async function choose(text: string) {
+      await act(async () => option(text)!.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    }
+    beforeEach(() => {
+      terminalFixture.allowed = true;
+      terminalFixture.connections.length = 0;
+      terminalFixture.list.mockClear();
+      terminalFixture.create.mockReset();
+      terminalFixture.create.mockResolvedValue({ id: "session", token: "token", expiresAt: "later", wsPath: "/ws" });
+    });
+    afterEach(() => {
+      terminalFixture.allowed = false;
+      for (const terminal of getHostTerminals()) closeHostTerminal(terminal.id);
+    });
+
+    it("opens a shell on the chosen host and closing the tab ends it", async () => {
+      await render(panel({ issue: chat("task-1"), streamlinedTabs: true }));
+      await openLauncher();
+      expect(option("Terminal: Remote")).toBeTruthy();
+      await choose("Terminal: Local");
+      expect(terminalFixture.create).toHaveBeenCalledWith("company-1", "local");
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Local");
+      const connection = terminalFixture.connections[0]!;
+      expect(connection.attach).toHaveBeenCalledTimes(1);
+      // The saved layout holds a reference, never the token.
+      expect(Object.values({ ...window.localStorage }).join()).not.toContain("wsPath");
+      await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label^="Close Terminal: Local"], button[aria-label^="Close Local"]')!.click());
+      expect(connection.dispose).toHaveBeenCalledTimes(1);
+      expect(getHostTerminals()).toHaveLength(0);
+    });
+
+    it("keeps the shell across conversations and offers it there", async () => {
+      await render(panel({ issue: chat("task-1"), streamlinedTabs: true }));
+      await openLauncher();
+      await choose("Terminal: Local");
+      const connection = terminalFixture.connections[0]!;
+      await render(panel({ issue: chat("task-2"), streamlinedTabs: true }));
+      expect(connection.detach).toHaveBeenCalled();
+      expect(connection.dispose).not.toHaveBeenCalled();
+      await openLauncher();
+      await choose("Running shell from another conversation");
+      expect(connection.attach).toHaveBeenCalledTimes(2);
+      expect(terminalFixture.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not open a shell by itself after a reload", async () => {
+      await render(panel({ issue: chat("task-1"), streamlinedTabs: true }));
+      await openLauncher();
+      await choose("Terminal: Local");
+      act(() => { for (const terminal of getHostTerminals()) closeHostTerminal(terminal.id); });
+      expect(container.textContent).toContain("這個終端已結束");
+      expect(terminalFixture.create).toHaveBeenCalledTimes(1);
+      const reopen = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "開啟新 shell")!;
+      await act(async () => reopen.click());
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+      expect(terminalFixture.create).toHaveBeenCalledTimes(2);
+      expect(terminalFixture.connections[1]!.attach).toHaveBeenCalled();
+    });
+
+    it("shows why a shell could not be opened", async () => {
+      terminalFixture.create.mockRejectedValue(new Error("At most four host terminals may be open per user"));
+      await render(panel({ issue: chat("task-1"), streamlinedTabs: true }));
+      await openLauncher();
+      await choose("Terminal: Local");
+      expect(container.textContent).toContain("At most four host terminals");
+    });
+
+    it("ends a shell when another account signs in, including one still opening", async () => {
+      let finish!: (value: { id: string; token: string; expiresAt: string; wsPath: string }) => void;
+      terminalFixture.create.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+      await render(panel({ issue: chat("task-1"), streamlinedTabs: true }));
+      await openLauncher();
+      await choose("Terminal: Local");
+      act(() => retainHostTerminalsOf("someone-else"));
+      await act(async () => finish({ id: "session", token: "token", expiresAt: "later", wsPath: "/ws" }));
+      expect(getHostTerminals()).toHaveLength(0);
+      expect(terminalFixture.connections).toHaveLength(0);
+    });
+
+    it("offers nothing to people who are not signed-in instance admins", async () => {
+      terminalFixture.allowed = false;
+      await render(panel({ issue: chat("task-1"), streamlinedTabs: true }));
+      await openLauncher();
+      expect(option("Terminal")).toBeUndefined();
+      expect(terminalFixture.list).not.toHaveBeenCalled();
+    });
   });
 
   it("offers the TODO on a task only once its agent has written one", async () => {

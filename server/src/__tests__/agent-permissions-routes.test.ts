@@ -2306,7 +2306,7 @@ describe("agent permission routes", () => {
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
       canCreateAgents: false,
       canAssignTasks: true,
-    }, { actorAgentId: null });
+    }, { actorAgentId: null, allowFixedWorkspaceGrantChange: true });
     expect(res.body.permissions.canCreateSkills).toBe(false);
   });
 
@@ -2347,7 +2347,7 @@ describe("agent permission routes", () => {
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
       canCreateAgents: false,
       ceoHiringDeniedBy: expect.objectContaining({ actorType: "user", actorId: "board-user", at: expect.any(String) }),
-    }), { actorAgentId: null });
+    }), { actorAgentId: null, allowFixedWorkspaceGrantChange: true });
 
     // The toggle is authoritative: turning it off also removes an explicit agents:create grant.
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(companyId, "agent", agentId, "agents:create", false, null);
@@ -2360,7 +2360,7 @@ describe("agent permission routes", () => {
       .send({ canCreateAgents: false, canAssignTasks: true, trustPreset: "standard" }));
     expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({
       trustPreset: "standard", canCreateAgents: false, ceoHiringDeniedBy: expect.objectContaining({ actorId: "board-user" }),
-    }), { actorAgentId: null });
+    }), { actorAgentId: null, allowFixedWorkspaceGrantChange: true });
 
     // An earlier record is kept rather than restamped.
     const earlier = { actorType: "user", actorId: "first-board-user", at: "2026-11-01T00:00:00.000Z" };
@@ -2369,7 +2369,7 @@ describe("agent permission routes", () => {
     await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
       .send({ canCreateAgents: false, canCreateSkills: false, canAssignTasks: true }));
-    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ ceoHiringDeniedBy: earlier }), { actorAgentId: null });
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ ceoHiringDeniedBy: earlier }), { actorAgentId: null, allowFixedWorkspaceGrantChange: true });
 
     // Other roles get no record.
     mockAgentService.updatePermissions.mockClear();
@@ -2377,7 +2377,7 @@ describe("agent permission routes", () => {
     await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}/permissions`)
       .send({ canCreateAgents: false, canAssignTasks: true }));
-    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, { canCreateAgents: false, canAssignTasks: true }, { actorAgentId: null });
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, { canCreateAgents: false, canAssignTasks: true }, { actorAgentId: null, allowFixedWorkspaceGrantChange: true });
   });
 
   it("rejects CEO permission updates outside the caller company scope", async () => {

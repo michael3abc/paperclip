@@ -12,6 +12,8 @@ import { latestFailedRunsByAgent } from "@paperclipai/shared";
 import { agentConfigurationSpec } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
 import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
+import { holdsFixedWorkspacePermission } from "../lib/agent-fixed-workspace-permission.js";
+import { listCompanyBridgeHostIds } from "../services/bridge-host-registry.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -2271,6 +2273,81 @@ export function agentRoutes(
     return { ...runtimeConfig, workspaceBinding: resolved };
   }
 
+  /**
+   * HOM-611: an agent may set another agent's fixed working directory only when
+   * the board granted it canConfigureFixedWorkspace. Checks the grant, the
+   * target and the binding shape before any canonicalization.
+   */
+  async function assertAgentMayChangeFixedWorkspace(
+    req: Request,
+    input: { companyId: string; targetAgentId: string; binding: unknown },
+  ) {
+    if (req.actor.type !== "agent") return;
+    const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+    if (!actorAgent || actorAgent.companyId !== input.companyId || !holdsFixedWorkspacePermission(actorAgent.permissions)) {
+      throw forbidden(
+        "Only an operator, or an agent the board allowed to set fixed working directories, can configure a fixed working directory.",
+        { code: "agent_fixed_workspace_permission_required" },
+      );
+    }
+    if (input.targetAgentId === actorAgent.id) {
+      throw forbidden("An agent cannot change its own fixed working directory.", { code: "agent_fixed_workspace_self" });
+    }
+    const binding = asRecord(input.binding);
+    if (binding?.mode !== "fixed" || typeof binding.cwd !== "string" || !path.posix.isAbsolute(binding.cwd.trim())) {
+      throw forbidden("Agents can only set a fixed working directory {mode: \"fixed\", cwd: <absolute path>}.", {
+        code: "agent_fixed_workspace_mode",
+      });
+    }
+  }
+
+  /**
+   * HOM-611: the directory an agent sets must be a CC Pocket session cwd on a
+   * Bridge host of this company, inside that Bridge's allowed directories. The
+   * Bridge adapter's own environment check is the authority for the last part.
+   */
+  async function assertAgentFixedWorkspacePlacement(
+    req: Request,
+    input: { companyId: string; adapterType: string; adapterConfig: Record<string, unknown>; binding: unknown },
+  ) {
+    if (req.actor.type !== "agent") return;
+    const binding = asRecord(input.binding) ?? {};
+    if (input.adapterType !== "ccpocket_bridge") {
+      throw forbidden("Agents can set a fixed working directory only on a CC Pocket agent.", { code: "agent_fixed_workspace_adapter" });
+    }
+    const cwd = asNonEmptyString(input.adapterConfig.cwd);
+    if (!cwd || bridgeFixedBindingConflict({ adapterType: input.adapterType, adapterConfig: input.adapterConfig,
+      runtimeConfig: { workspaceBinding: binding } })) {
+      throw unprocessable("adapterConfig.cwd and the fixed working directory must name the same directory.", {
+        code: "agent_fixed_workspace_cwd_mismatch",
+      });
+    }
+    const model = asNonEmptyString(input.adapterConfig.model);
+    const modelHostId = model?.includes("/") ? model.split("/")[0] : undefined;
+    const hostId = asNonEmptyString(input.adapterConfig.hostId) ?? modelHostId;
+    if (!hostId || (modelHostId && modelHostId !== hostId)
+      || (binding.hostId !== undefined && binding.hostId !== hostId)) {
+      throw unprocessable("The fixed working directory, adapterConfig.hostId and the model must name the same CC Pocket host.", {
+        code: "agent_fixed_workspace_host_mismatch",
+      });
+    }
+    if (!(await listCompanyBridgeHostIds(input.companyId)).includes(hostId)) {
+      throw forbidden("This CC Pocket host is not available to this company.", { code: "agent_fixed_workspace_host_forbidden" });
+    }
+    const adapter = findServerAdapter(input.adapterType);
+    if (!adapter?.testEnvironment) {
+      throw unprocessable("The CC Pocket adapter cannot verify this working directory.", { code: "agent_fixed_workspace_unverified" });
+    }
+    const result = await adapter.testEnvironment({ companyId: input.companyId, adapterType: input.adapterType, config: input.adapterConfig });
+    const errors = result.checks.filter((check) => check.level === "error");
+    if (result.status === "fail" || errors.length > 0) {
+      throw unprocessable(`The CC Pocket Bridge did not accept this working directory: ${errors.map((check) => check.message).join("; ") || "environment check failed"}`, {
+        code: "agent_fixed_workspace_unverified",
+        checks: errors.map((check) => ({ code: check.code, message: check.message })),
+      });
+    }
+  }
+
   async function normalizeCreatedAgentRuntimeConfig(
     req: Request,
     companyId: string,
@@ -2280,11 +2357,15 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     let normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
-    if (req.actor.type === "agent" && normalized.workspaceBinding !== undefined) {
-      throw forbidden("Only an operator can configure a fixed working directory.");
+    const agentSetsBinding = req.actor.type === "agent" && normalized.workspaceBinding !== undefined;
+    if (agentSetsBinding) {
+      await assertAgentMayChangeFixedWorkspace(req, { companyId, targetAgentId: agentId, binding: normalized.workspaceBinding });
     }
     normalized = await canonicalizeProjectPmRuntimeConfig(companyId, agentId, normalized, adapterType);
     assertBridgeFixedBinding({ adapterType, adapterConfig, runtimeConfig: normalized });
+    if (agentSetsBinding) {
+      await assertAgentFixedWorkspacePlacement(req, { companyId, adapterType, adapterConfig, binding: normalized.workspaceBinding });
+    }
     if (normalized.aiConnection) return normalized;
     if (req.actor.type === "agent") {
       const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -2316,6 +2397,7 @@ export function agentRoutes(
       {
         strictMode: strictSecretsMode,
         adapterType: input.adapterType ?? null,
+        previousAdapterConfig: input.previous?.adapterConfig,
       },
     );
     const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"
@@ -2521,9 +2603,12 @@ export function agentRoutes(
       // change of model, host or executor still requires a currently offered model.
       if (previous?.adapterType === adapterType
         && (["model", "hostId", "provider"] as const).every(key => previous.adapterConfig[key] === adapterConfig[key])) return;
-      const models = await listAdapterModels(adapterType, { companyId,
-        hostId: asNonEmptyString(adapterConfig.hostId) ?? undefined,
-        provider: asNonEmptyString(adapterConfig.provider) ?? undefined });
+      const hostId = asNonEmptyString(adapterConfig.hostId) ?? undefined;
+      const savedHostId = previous?.adapterType === adapterType
+        ? asNonEmptyString(previous.adapterConfig.hostId) : null;
+      const models = await listAdapterModels(adapterType, { companyId, hostId,
+        provider: asNonEmptyString(adapterConfig.provider) ?? undefined,
+        ...(hostId && hostId === savedHostId ? { serverVerifiedHostId: hostId } : {}) });
       if (!models.some(model => model.id === adapterConfig.model)) {
         throw unprocessable("Select a model available to this company, host and executor");
       }
@@ -3201,8 +3286,21 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
     if (requireServerAdapter(type).catalogScope === "company") {
-      const context = { companyId, hostId: asNonEmptyString(req.query.hostId) ?? undefined,
+      const hostId = asNonEmptyString(req.query.hostId) ?? undefined;
+      const context: import("../adapters/types.js").AdapterCatalogContext = { companyId, hostId,
         provider: asNonEmptyString(req.query.provider) ?? undefined };
+      const agentId = asNonEmptyString(req.query.agentId);
+      if (agentId) {
+        const agent = await svc.getById(agentId);
+        if (!agent || agent.companyId !== companyId || agent.adapterType !== type) {
+          throw notFound("Agent not found", { code: "catalog_agent_not_found" });
+        }
+        const savedHostId = asNonEmptyString((agent.adapterConfig as Record<string, unknown>).hostId);
+        if (!hostId || hostId !== savedHostId) {
+          throw unprocessable("Select the agent's saved host for its model catalog", { code: "catalog_host_mismatch" });
+        }
+        context.serverVerifiedHostId = savedHostId;
+      }
       res.setHeader("Cache-Control", "no-store");
       res.json(req.query.refresh === "1" || req.query.refresh === "true"
         ? await refreshAdapterModels(type, context) : await listAdapterModels(type, context));
@@ -4544,6 +4642,9 @@ export function agentRoutes(
     if (!rollbackConfig) {
       throw unprocessable("Invalid revision snapshot");
     }
+    // HOM-611: rollback stays operator-only even for agents with the fixed-workspace
+    // grant. It restores a whole historical snapshot (host, cwd, adapter) without
+    // the placement check that create and PATCH apply; an agent re-sets the binding by PATCH.
     if (req.actor.type === "agent" && !isDeepStrictEqual(asRecord(rollbackConfig.runtimeConfig)?.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
       throw forbidden("Only an operator can change a fixed working directory.");
     }
@@ -5296,6 +5397,13 @@ export function agentRoutes(
       if (typeof req.body.canCreateAgents === "boolean" && req.body.canCreateAgents !== savedCanCreateAgents) {
         await assertCanCreateAgentsForCompany(req, existing.companyId, { hiring: true });
       }
+      // HOM-611: only the board grants or revokes the fixed-workspace permission.
+      if (typeof req.body.canConfigureFixedWorkspace === "boolean"
+        && req.body.canConfigureFixedWorkspace !== holdsFixedWorkspacePermission(existing.permissions)) {
+        throw forbidden("Only the board can change whether an agent may set fixed working directories.", {
+          code: "agent_fixed_workspace_permission_board_only",
+        });
+      }
     } else {
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
@@ -5310,7 +5418,10 @@ export function agentRoutes(
           at: new Date().toISOString(),
         } }
       : req.body;
-    const agent = await svc.updatePermissions(id, permissionsPatch, { actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null });
+    const agent = await svc.updatePermissions(id, permissionsPatch, {
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      allowFixedWorkspaceGrantChange: req.actor.type === "board",
+    });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5347,6 +5458,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canCreateSkills: agent.permissions?.canCreateSkills ?? true,
+        canConfigureFixedWorkspace: holdsFixedWorkspacePermission(agent.permissions),
         canAssignTasks: effectiveCanAssignTasks,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
@@ -5911,6 +6023,7 @@ export function agentRoutes(
       ? nextAdapterType
       : await assertSelectableAdapterType(nextAdapterType, patchData.adapterConfig, existing.companyId);
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
+    let agentChangesFixedWorkspace = false;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
       if (!runtimeConfig) {
@@ -5926,10 +6039,10 @@ export function agentRoutes(
       if (req.actor.type === "agent" && (requestedRuntimeConfig.requireTaskWorktree !== existing.runtimeConfig.requireTaskWorktree || requestedRuntimeConfig.requireProjectWorkspace !== existing.runtimeConfig.requireProjectWorkspace)) {
         throw forbidden("Only an operator can change the task worktree requirement.");
       }
-      if (req.actor.type === "agent" && !isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
-        throw forbidden("Only an operator can change a fixed working directory.");
-      }
       if (!isDeepStrictEqual(requestedRuntimeConfig.workspaceBinding, existing.runtimeConfig.workspaceBinding)) {
+        agentChangesFixedWorkspace = req.actor.type === "agent";
+        await assertAgentMayChangeFixedWorkspace(req, { companyId: existing.companyId, targetAgentId: existing.id,
+          binding: requestedRuntimeConfig.workspaceBinding });
         requestedRuntimeConfig = await canonicalizeProjectPmRuntimeConfig(existing.companyId, existing.id, requestedRuntimeConfig, nextAdapterType);
       }
     }
@@ -6125,6 +6238,11 @@ export function agentRoutes(
       assertBridgeFixedBinding({ adapterType: requestedAdapterType,
         adapterConfig: hasOwn(patchData, "adapterConfig") ? patchData.adapterConfig : existing.adapterConfig,
         runtimeConfig: requestedRuntimeConfig ?? existing.runtimeConfig });
+    }
+    if (agentChangesFixedWorkspace) {
+      await assertAgentFixedWorkspacePlacement(req, { companyId: existing.companyId, adapterType: requestedAdapterType,
+        adapterConfig: (hasOwn(patchData, "adapterConfig") ? patchData.adapterConfig : existing.adapterConfig) as Record<string, unknown>,
+        binding: (requestedRuntimeConfig ?? existing.runtimeConfig).workspaceBinding });
     }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       const nextDefaultEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")

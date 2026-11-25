@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { attentionApi } from "@/api/attention";
 import { useCoordinatorWorkspaceEnabled } from "./useCoordinatorWorkspaceEnabled";
-import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
+import { ATTENTION_STALE_TIME_MS, coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { useLocation } from "@/lib/router";
 
 /** This count hook never starts a full-feed read. Bound project PM status is
@@ -16,6 +16,7 @@ export function useCoordinatorAttentionCount(companyId: string | null | undefine
   const attention = useQuery({ queryKey: coordinatorAttentionQueryKey(companyId!, userId, "mine"),
     queryFn: () => attentionApi.list(companyId!, { all: true, view: "mine" }), enabled: false });
   const summary = useQuery({ queryKey: coordinatorAttentionSummaryQueryKey(companyId!, userId),
+    staleTime: ATTENTION_STALE_TIME_MS,
     queryFn: () => attentionApi.summary(companyId!), enabled: canRead && !feedPage && !taskPage });
   const tasks = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!, userId),
     queryFn: () => attentionApi.taskIndex(companyId!), enabled: false });

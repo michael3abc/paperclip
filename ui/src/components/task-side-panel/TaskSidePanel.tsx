@@ -36,6 +36,7 @@ import {
   ListTree,
   Plus,
   SlidersHorizontal,
+  SquareTerminal,
   X,
 } from "lucide-react";
 import { fileResourcesApi } from "@/api/file-resources";
@@ -44,6 +45,9 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { AgentArtifactsPanel, AgentTasksPanel } from "@/components/chat/AgentWorkPanels";
 import { MainAgentLiveWorkPanel } from "@/components/chat/MainAgentLiveWorkPanel";
+import { useHostTerminalAccess } from "@/hooks/useHostTerminalAccess";
+import { hostTerminalsApi } from "@/api/host-terminals";
+import { closeHostTerminal, openHostTerminal, useHostTerminals } from "@/lib/host-terminal-store";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { ArtifactDropzone } from "@/components/artifacts/ArtifactDropzone";
@@ -94,6 +98,7 @@ import {
   taskPanelPropertiesTab,
   taskPanelSkillTab,
   taskPanelSubtasksTab,
+  taskPanelTerminalTab,
   taskPanelTodoTab,
   taskPanelWorkspaceFileTab,
   writeTaskSidePanelState,
@@ -104,6 +109,7 @@ import { TaskDocumentPanel, TaskDocumentSourceLink } from "./TaskDocumentPanel";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { TaskWorkspaceFilePanel } from "./TaskWorkspaceFilePanel";
 import { TaskSkillPanel } from "./TaskSkillPanel";
+import { TaskTerminalPanel } from "./TaskTerminalPanel";
 import { TaskTodoPanel } from "./TaskTodoPanel";
 
 export interface TaskSidePanelProps {
@@ -160,6 +166,7 @@ function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
     case "artifacts": return <Box />;
     case "agent-tasks": return <ListChecks />;
     case "todo": return <ListTodo />;
+    case "terminal": return <SquareTerminal />;
     case "attachment": return <FileText />;
     case "files-browser": return <FolderOpen />;
     case "workspace-file": return <FileCode2 />;
@@ -575,6 +582,18 @@ function TaskSidePanelForScope({
 
   const recentFilesView = useQueryView(recentFilesQuery);
 
+  // Host shells: signed-in human instance admins only; the server checks again.
+  const terminalAccess = useHostTerminalAccess(issue.companyId);
+  const terminalUserId = terminalAccess.allowed ? terminalAccess.userId : null;
+  const terminalHosts = useQuery({
+    queryKey: ["host-terminals", issue.companyId],
+    queryFn: () => hostTerminalsApi.list(issue.companyId),
+    enabled: terminalUserId !== null && (launcherOpen || !activeTab),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const openTerminals = useHostTerminals();
+
   function markInteracted() {
     userInteractedRef.current = true;
   }
@@ -620,6 +639,7 @@ function TaskSidePanelForScope({
       const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === tabId);
       if (panel) dismissedPluginPanels.add(pluginPanelKey(panel));
     }
+    if (tab?.payload.kind === "terminal") closeHostTerminal(tab.payload.terminalId);
     controller.closeTab(tabId);
     if (tabId === controller.activeTabId && (tab?.payload.kind === "workspace-file" || tab?.payload.kind === "files-browser")) {
       viewer.close();
@@ -681,6 +701,18 @@ function TaskSidePanelForScope({
       ...(subtasksAvailable ? [{ id: "subtasks", label: taskLabel, description: tasksTab?.hasError ? "Could not load all tasks" : `${taskCount} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
       { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
+    if (terminalUserId) {
+      for (const host of terminalHosts.data ?? []) {
+        primary.push({ id: `terminal-host:${host.id}`, label: `Terminal: ${host.label}`, description: "Open a shell on this host", icon: <SquareTerminal /> });
+      }
+      // A failed lookup stays selectable, so choosing it retries.
+      if (terminalHosts.error) primary.push({ id: "terminal-retry", label: "Terminal", description: `${terminalHosts.error.message} — select to retry`, icon: <SquareTerminal /> });
+      for (const terminal of openTerminals) {
+        if (terminal.companyId !== issue.companyId || terminal.userId !== terminalUserId || terminal.phase === "closed"
+          || controller.tabs.some((tab) => tab.id === `terminal:${terminal.id}`)) continue;
+        primary.push({ id: `terminal-open:${terminal.id}`, label: `Terminal: ${terminal.label}`, description: "Running shell from another conversation", searchText: terminal.id, icon: <SquareTerminal /> });
+      }
+    }
     for (const [index, browser] of (browsersQuery.data ?? []).entries()) {
       primary.push({ id: `browser:${browser.id}`, label: (browsersQuery.data?.length ?? 0) > 1 ? `Browser ${index + 1}` : "Browser", description: browser.status, icon: <Globe />, alreadyOpen: controller.tabs.some(tab => tab.id === `browser:${browser.id}`) });
     }
@@ -732,7 +764,7 @@ function TaskSidePanelForScope({
       });
     }
     return sections;
-  }, [pluginPanels, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [terminalUserId, terminalHosts.data, terminalHosts.error, openTerminals, issue.companyId, pluginPanels, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesView.kind, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
@@ -744,6 +776,18 @@ function TaskSidePanelForScope({
         controller.openTab(taskPanelPluginTab(panel));
       }
     }
+    else if (item.id.startsWith("terminal-host:")) {
+      const host = terminalHosts.data?.find((candidate) => candidate.id === item.id.slice("terminal-host:".length));
+      if (!host || !terminalUserId) return;
+      const id = openHostTerminal({ companyId: issue.companyId, userId: terminalUserId, hostId: host.id, label: host.label });
+      controller.openTab(taskPanelTerminalTab({ id, hostId: host.id, label: host.label }));
+      if (viewer.state || viewer.browse) viewer.close();
+    } else if (item.id.startsWith("terminal-open:")) {
+      const terminal = openTerminals.find((candidate) => candidate.id === item.id.slice("terminal-open:".length));
+      if (!terminal) return;
+      controller.openTab(taskPanelTerminalTab(terminal));
+      if (viewer.state || viewer.browse) viewer.close();
+    } else if (item.id === "terminal-retry") void terminalHosts.refetch();
     else if (item.id === "properties") controller.openTab(taskPanelPropertiesTab());
     else if (item.id === "subtasks") {
       subtasksDismissedRef.current = false;
@@ -861,6 +905,18 @@ function TaskSidePanelForScope({
         items={childIssues}
         onAddSubtask={onAddSubIssue}
         issueLinkState={issueLinkState}
+      />
+    );
+  } else if (activeTab.payload.kind === "terminal") {
+    content = (
+      <TaskTerminalPanel
+        key={activeTab.payload.terminalId}
+        terminalId={activeTab.payload.terminalId}
+        companyId={issue.companyId}
+        userId={terminalAccess.userId}
+        canOpen={terminalAccess.allowed}
+        hostId={activeTab.payload.hostId}
+        label={activeTab.label}
       />
     );
   } else if (activeTab.payload.kind === "todo") {

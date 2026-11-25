@@ -23,6 +23,13 @@ import type { AgentInteractionPermissions } from "../agent-interaction-permissio
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   canCreateSkills?: boolean;
+  /**
+   * Board-granted, default off: this agent may set another agent's fixed CC
+   * Pocket working directory (runtimeConfig.workspaceBinding). Only
+   * PATCH /agents/:id/permissions by a board actor changes it; new agents never
+   * start with it.
+   */
+  canConfigureFixedWorkspace?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
   interactions?: AgentInteractionPermissions;

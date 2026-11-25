@@ -18,6 +18,7 @@ export const agentPermissionsSchema = z.object({
   // permissions record marks the agent low-trust) when the field is omitted.
   canCreateAgents: z.boolean().optional(),
   canCreateSkills: z.boolean().optional().default(true),
+  canConfigureFixedWorkspace: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   interactions: agentInteractionPermissionsSchema.optional(),
@@ -426,6 +427,8 @@ export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
+  /** Board only; omitted keeps the saved value. */
+  canConfigureFixedWorkspace: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
   interactions: z.never({ error: "Use /api/agents/:id/interaction-permissions to change interaction permissions" }).optional(),

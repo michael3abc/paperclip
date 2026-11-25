@@ -73,6 +73,11 @@ GET /api/issues/{issueId}
 
 Returns the issue with `project`, `goal`, and `ancestors` (parent chain with their projects and goals).
 
+Execution ownership lookup uses the existing company/origin-issue index as a
+prefilter, then applies the original native-ID/legacy-issue-ID predicate. This
+keeps native-ID precedence and exact legacy spelling; `taskId`/`taskKey` aliases
+do not become ownership evidence. Empty legacy issue IDs keep their prior path.
+
 The response also includes:
 
 - `planDocument`: the full text of the issue document with key `plan`, when present

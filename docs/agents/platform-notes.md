@@ -109,3 +109,9 @@ SHELL、固定 PATH、LANG、TERM；不繼承 server 的 DATABASE_URL、provider
 server shutdown 都終止 PTY session 的 shell／job-control process groups，並回收程序。
 大量輸入或輸出超出有界連線緩衝會明確關閉。重連會取得新 token、開新 shell，
 不重播任何輸入；長駐工作請使用 tmux。UI 提供分頁與手機 Esc／Tab／Ctrl+C／Ctrl+D／方向鍵。
+
+Chat／task 右側面板的「+」選單也列出可用主機（`Terminal: <label>`），每次選取開一個新分頁。
+這些終端由 `ui/src/lib/host-terminal-store.ts` 持有、位於 routes 之上：切換對話、公司或收起
+面板不結束 shell，其他對話的「+」可接回執行中的終端；關閉分頁、重新整理或換帳號才結束。
+面板只儲存終端參照，不儲存 token 或內容；重新整理後不自動開新 shell。有執行中的終端時，
+Service Worker 更新不自動重新整理頁面。設定頁的終端仍在離開頁面時結束。

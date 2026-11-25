@@ -78,6 +78,16 @@ Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host I
 
 Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`. Coordinator project pins coexist independently; their project rows expand tasks in place via aria-expanded, without changing chat membership.
 
+Attention feed/summary/task-index queries reuse fresh data for 30 seconds across
+navigation. Preserve live-event/mutation invalidation and company/person/view
+cache scoping; see `docs/agents/ui-features.md`. Server read coalescing is limited
+to overlapping reads of the same company/viewer/authorization context; never
+reuse a completed result or supply default summary totals from a filtered read.
+See `docs/api/attention.md`.
+Conversation ownership reads use the existing origin-issue index only as a
+prefilter; preserve exact native/legacy matching and empty-ID behavior, and do
+not admit taskId/taskKey aliases. See `docs/api/issues.md`.
+
 Local voice timbre is one browser-wide preference, changed only on the Voice page and used by every agent on the next call. Do not restore per-agent overrides or mutate live call bindings. See `doc/connections/LOCAL-VOICE.md`.
 
 Local voice media belongs to the company/user-scoped provider above routes; navigating chats must neither dispose it nor retarget the active agent. See `docs/agents/ui-features.md`.
@@ -452,6 +462,10 @@ docs/agents/session-bridge.md.
 
 Saved input behind a terminal native run must not wait for finalization to become
 committed; retain the original evidence. See docs/agents/execution-semantics.md.
+Queued-message Interrupt returns after durable intent and cancellation fencing;
+Stop and ordered queue promotion continue under their original owner in the
+background. A 200 is acceptance, not process-stop proof, including main Chat task
+preemption. See docs/agents/session-bridge.md.
 Preparation Retry fixtures must promote an actually due durable retry. Preserve
 saved directory identity and content; do not assert placement from adapter config.
 
@@ -518,3 +532,10 @@ through a current-turn token. Keep main-answer provenance, replay/deduplication,
 barge-in and voice approval restrictions. Do not restore legacy latest-reply
 routing. Changes require both engine regressions and a real routing smoke; see
 `doc/connections/LOCAL-VOICE.md`. Existing call policies are not rewritten.
+
+Agent-pinned company catalog reads accept agentId only after company/adapter and
+explicit hostId match the saved agent. Pass serverVerifiedHostId internally, never
+from query/config. Include agent identity in picker caches; keep company host
+choices, terminals and quota scope unchanged. Same-host model saves may use the
+trusted previous config. Preserve safe adapter failure codes in 422 responses.
+See docs/agents/workspace-admission.md.

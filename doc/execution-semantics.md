@@ -4124,6 +4124,10 @@ and exact scheduler wake again at claim. Failed original-main blocker turns and
 their same-company/agent/issue automatic retry descendants cannot obtain a new
 generic continuation or transient retry budget. The original notification owns
 the Owner question even when its input was accepted before the run failed.
+That notification itself resends liveness-first (HOM-612): Owner Chat interruption,
+transient codes and the first three unknown failures get a new prefixed notice after
+backoff; Owner Stop and deterministic failures ask Owner, and a later source-task
+mutation by the original main withdraws the stale question.
 Ancestry checks are bounded, event-triggered and stop at independent Owner input;
 they never replay input, cancel user intent or settle historical stop evidence.
 Cancellation also revokes generic automatic retry authority: the scheduler,

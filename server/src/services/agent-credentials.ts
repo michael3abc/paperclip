@@ -15,6 +15,7 @@ export function agentCredentialService(db: Db) {
     dbClient: Db = db,
     previousAdapterConfig: unknown = null,
     actor: RevisionMetadata = {},
+    options: { carryOverMissingSecretRefs?: boolean } = {},
   ) {
     const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
     await syncAgentAdapterEnvBindings({
@@ -22,6 +23,13 @@ export function agentCredentialService(db: Db) {
       companyId: agent.companyId,
       agentId: agent.id,
       adapterConfig: agent.adapterConfig,
+      // Configuration edits only (HOM-629); create and hire activation never carry a missing ref over.
+      previousAdapterConfig: options.carryOverMissingSecretRefs ? previousAdapterConfig : null,
+      secretAvailable: async (secretId) => {
+        const secret = await scopedSecretsSvc.getById(secretId, dbClient);
+        // Cross-company and inactive references keep their existing validation errors.
+        return Boolean(secret && secret.status !== "deleted");
+      },
     });
     const previousRefs = new Set([
       ...collectSecretRefs(previousAdapterConfig).map((ref) => `secret:${ref.secretId}:${ref.configPath}`),

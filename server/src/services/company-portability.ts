@@ -123,6 +123,7 @@ import {
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial } from "../lib/agent-permissions.js";
+import { withoutInitialFixedWorkspacePermission } from "../lib/agent-fixed-workspace-permission.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
@@ -4276,6 +4277,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           },
         ) as Record<string, unknown>;
         const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
+        // HOM-611: the fixed-workspace grant is a board choice for this agent only; packages never carry it.
+        delete portablePermissions.canConfigureFixedWorkspace;
         if (Object.hasOwn(agent.permissions ?? {}, "interactions")) {
           delete portablePermissions.interactions;
           warnings.push(`Agent ${slug} interaction restrictions are not copied by company packages; configure them through the interaction-permissions CLI after import.`);
@@ -5763,7 +5766,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             adapterConfig: normalizedAdapter.adapterConfig,
             runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
-            permissions: manifestAgent.permissions,
+            // HOM-611: an import never grants or revokes the board's fixed-workspace grant.
+            permissions: withoutInitialFixedWorkspacePermission(manifestAgent.permissions),
             metadata: manifestAgent.metadata,
           };
           // "import", not "system": the UI reads this to explain that the

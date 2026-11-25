@@ -11,7 +11,7 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompan
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
   cols = 80; rows = 24; options = {};
-  loadAddon() {} open() {} focus() {} write() {} dispose = mocks.dispose;
+  attachCustomKeyEventHandler() {} hasSelection() { return false; } loadAddon() {} open() {} focus() {} write() {} dispose = mocks.dispose;
   onData(callback: (data: string) => void) { mocks.input = callback; return { dispose() {} }; }
 } }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));

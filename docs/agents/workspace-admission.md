@@ -28,6 +28,17 @@ worktree creation or retirement.
   the next run instead of failing; they never reinterpret an in-flight run.
 - Bridge main-agent configuration records the same session cwd in adapter settings
   and `runtimeConfig.workspaceBinding`.
+- Setting a fixed working directory is operator-only, except for an agent whose
+  permissions carry the board-granted `canConfigureFixedWorkspace` (HOM-611, default
+  off, Permissions page toggle "Paperclip management", HOM-617; formerly "Can set fixed working directories"). Only a board
+  `PATCH /api/agents/:id/permissions` changes it; other permission writers keep the
+  saved value, and new or imported agents never start with it. Such an agent may set
+  `{mode: "fixed", cwd}` on another CC Pocket agent at create or PATCH, still subject
+  to agents:create/agents:configure. The host (adapter `hostId`, model prefix and any
+  binding `hostId`) must agree and be in the company's host registry, `adapterConfig.cwd`
+  must match, and the Bridge adapter's `testEnvironment` (allowed directories) must
+  pass. Its own binding, `project_pm` bindings, config-revision rollback and
+  `requireTaskWorktree`/`requireProjectWorkspace` stay operator-only.
 
 ## Worktrees created by main agents
 
@@ -62,7 +73,7 @@ worktree creation or retirement.
 - Warm sandbox adoption requires the exported source digest to equal the final host
   digest; missing export proof makes a new turn seed the current host.
 
-## Company-scoped adapter catalogs (unchanged)
+## Company-scoped adapter catalogs
 
 Company-scoped adapter catalogs declare catalogScope=company. Model discovery and
 config-schema requests require authorized companyId plus the unsaved host/provider
@@ -71,3 +82,19 @@ Keep qualified model IDs in persistence; names and source badges are display onl
 Bridge host companyIds live in the external host registry. See doc/DEVELOPING.md.
 Bind manual refresh feedback to the exact selection/request and reject forbidden
 schema hosts before probing; never substitute another host on an invalid query.
+
+For model discovery only, `GET /api/companies/:companyId/adapters/:type/models`
+accepts optional `agentId`. The server verifies company and adapter membership
+(404 if unavailable), and requires an explicit `hostId` equal to that agent's
+saved host (422 `catalog_host_mismatch` otherwise). It then supplies the internal
+`AdapterCatalogContext.serverVerifiedHostId` for exactly that lookup, including
+refresh. Never copy this field from request queries or adapter configuration.
+The adapter may read that registered host even without company membership; it
+must not add it to company host choices, schema choices, terminals or quotas.
+Existing-agent model saves use trusted previous configuration only when adapter
+and host remain unchanged; new agents and host changes retain company checks.
+Picker cache identities include the agent whenever this exception is requested;
+unsaved host changes in settings use ordinary company discovery. Company catalog
+failures retain safe machine codes in the 422 body's `code` field while hiding
+raw transport details; `catalog_host_forbidden` has specific user-facing copy.
+Paperclip and the external CC Pocket adapter changes must ship together.

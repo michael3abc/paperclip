@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isUuidLike } from "@paperclipai/shared";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
-import { agents, agentWakeupRequests, heartbeatRuns, issueComments, issueRecoveryActions, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, heartbeatRuns, issueComments, issueRecoveryActions, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
 import { conflict, forbidden } from "../../errors.js";
 import { mainAgentProjectId } from "../main-agent-workers.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -15,14 +15,46 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import type { WakeupOptions } from "../heartbeat/run-preparation.js";
 import { isOriginalMainBlockerRetry } from "./main-blocker-run.js";
+import { isTransientRunFailureCode, runFailureRetryAt, shouldAutoRetryRunFailure } from "./failure-classification.js";
 
 export const MAIN_BLOCKER_REASON = "original_main_blocker";
+export const MAIN_BLOCKER_RESEND_PREFIX = "上一次可能已部分執行，先檢查現況再做";
 type Action = typeof issueRecoveryActions.$inferSelect;
+type NoticeAttempt = { wakeId: string; commentId: string; runId: string | null; reason: string; at: string };
 type Notice = { key: string; mainAgentId: string | null; conversationIssueId: string | null; conversationGeneration: number | null;
   wakeId: string; commentId: string; requestedAt: string; sourceRunId: string | null;
   status: "pending" | "waiting_main" | "held" | "sending" | "queued" | "acknowledged" | "needs_owner" | "uncertain" | "superseded";
   recheck?: Record<string, unknown>;
-  reason?: string; runId?: string; receiptDeadlineAt?: string };
+  reason?: string; runId?: string; receiptDeadlineAt?: string;
+  /** Liveness-first redelivery (HOM-612): delivery number, consecutive main-run failures, next allowed send. */
+  attempt?: number; failures?: number; retryAt?: string; firstRequestedAt?: string; previousAttempts?: NoticeAttempt[];
+  engagement?: Record<string, unknown> };
+/** Main mutations on the source task that prove the original main took the blocker over. Reads do not count. */
+const MAIN_ENGAGEMENT_ACTIONS = ["issue.comment_added", "issue.updated"];
+const MAX_RECORDED_ATTEMPTS = 10;
+
+/**
+ * Liveness-first handling of a main turn that ended without finishing the
+ * blocker notice (HOM-612). Owner Chat input that interrupts the turn
+ * supersedes it and the notice is sent again once main is idle; transient and
+ * the first unknown failures are retried with the shared backoff. Only an
+ * Owner stop, a deterministic failure or exhausted unknown retries ask Owner.
+ * Accepted input that then fails retries only for statically transient codes.
+ */
+export function mainBlockerRetryDecision(run: typeof heartbeatRuns.$inferSelect, notice: Pick<Notice, "failures">, accepted: boolean):
+  { kind: "superseded_by_input" | "transient"; reason: string; failures: number; retryAt: Date } | null {
+  const result = object(run.resultJson), cancellation = object(result.cancellation);
+  const failures = notice.failures ?? 0;
+  if (run.status === "cancelled" && cancellation.source === "queued_message" && object(cancellation.initiator).type === "user")
+    // Let the human's own queued turn start first; main is then busy and the resend waits for it.
+    return { kind: "superseded_by_input", reason: "superseded_by_queued_input", failures, retryAt: runFailureRetryAt(1) };
+  // Owner Stop/cancel revokes automatic retry.
+  if (run.status === "cancelled" && object(cancellation.initiator).type === "user") return null;
+  const code = run.errorCode ?? (run.status === "timed_out" ? "timed_out" : null);
+  const next = failures + 1;
+  const retry = accepted ? isTransientRunFailureCode(code) : shouldAutoRetryRunFailure(code, next);
+  return retry ? { kind: "transient", reason: code ?? "main_run_failed", failures: next, retryAt: runFailureRetryAt(next) } : null;
+}
 export type MainBlockerWake = { id: string; actionId: string; noticeKey: string; requestedAt: Date };
 const object = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const sameNotice = (a: unknown, b: unknown) => isDeepStrictEqual(JSON.parse(JSON.stringify(a)), JSON.parse(JSON.stringify(b)));
@@ -229,6 +261,15 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
       if (current?.status === "pending") throw error;
     }
   }
+  async function mainEngagedSource(action: Action, notice: Notice) {
+    const since = Date.parse(notice.firstRequestedAt ?? notice.requestedAt);
+    if (!notice.mainAgentId || !Number.isFinite(since)) return null;
+    const [row] = await db.select({ id: activityLog.id, action: activityLog.action, createdAt: activityLog.createdAt }).from(activityLog).where(and(
+      eq(activityLog.companyId, action.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, action.sourceIssueId),
+      eq(activityLog.actorType, "agent"), eq(activityLog.actorId, notice.mainAgentId), inArray(activityLog.action, MAIN_ENGAGEMENT_ACTIONS),
+      gt(activityLog.createdAt, new Date(since)))).orderBy(asc(activityLog.createdAt)).limit(1);
+    return row ?? null;
+  }
   async function reconcile(action: Action, notice: Notice) {
     const [wake] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, notice.wakeId), eq(agentWakeupRequests.companyId, action.companyId)));
     const deadline = Date.parse(notice.receiptDeadlineAt ?? "");
@@ -243,7 +284,21 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
       && proof.runId === run.id && typeof proof.clientMessageId === "string" && typeof proof.nativeSessionId === "string"
       && proof.nativeSessionId === run.resultJson?.nativeSessionId && proof.bridgeSessionId === run.resultJson?.bridgeSessionId
       && Number.isSafeInteger(proof.acceptedSeq) && Number(proof.acceptedSeq) >= 0;
-    const status = run && ["failed", "cancelled", "timed_out"].includes(run.status) ? "needs_owner"
+    const terminal = run && ["failed", "cancelled", "timed_out"].includes(run.status);
+    const retry = terminal && identity ? mainBlockerRetryDecision(run, notice, Boolean(accepted)) : null;
+    if (run && retry) {
+      // Never a silent replay: the next delivery is a new wake and a new notice
+      // comment carrying the liveness-first resend prefix.
+      const previous: NoticeAttempt = { wakeId: notice.wakeId, commentId: notice.commentId, runId: run.id, reason: retry.reason, at: new Date().toISOString() };
+      const next: Notice = { ...notice, status: "pending", reason: retry.reason, runId: undefined, receiptDeadlineAt: undefined,
+        wakeId: randomUUID(), commentId: randomUUID(), requestedAt: new Date().toISOString(),
+        firstRequestedAt: notice.firstRequestedAt ?? notice.requestedAt, attempt: (notice.attempt ?? 1) + 1,
+        failures: retry.failures, retryAt: retry.retryAt.toISOString(),
+        previousAttempts: [...(notice.previousAttempts ?? []), previous].slice(-MAX_RECORDED_ATTEMPTS) };
+      if (!await save(action, next, notice)) return;
+      return retry.retryAt.getTime();
+    }
+    const status = terminal ? "needs_owner"
       : accepted ? "acknowledged" : identity && run && ["running", "queued"].includes(run.status) ? "queued"
       : run ? "needs_owner" : "uncertain";
     const next: Notice = { ...notice, status, ...(run ? { runId: run.id } : {}),
@@ -263,12 +318,26 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
     }
     if (!["active", "escalated"].includes(action.status)) return;
     let notice = readMainBlockerNotice(action);
+    if (notice && ["pending", "waiting_main", "needs_owner", "uncertain"].includes(notice.status)) {
+      // A later mutation of the source task by the original main proves it took
+      // the blocker over (for example after an Owner Chat message); a pending
+      // redelivery or Owner question is then stale.
+      const engaged = await mainEngagedSource(action, notice);
+      if (engaged) {
+        const next: Notice = { ...notice, status: "superseded", reason: "main_engaged_source", retryAt: undefined,
+          engagement: { activityId: engaged.id, action: engaged.action, at: engaged.createdAt.toISOString() } };
+        if (await save(action, next, notice)) await withdrawOwnerQuestion(action, next, "原 main 已在原任務上接手處理；撤回過時的系統問題，未重送輸入。");
+        return;
+      }
+    }
     if (notice && ["sending", "queued", "uncertain"].includes(notice.status)) return reconcile(action, notice);
     if (notice?.status === "superseded") return;
     // Input acceptance is not successful repair. A later failed handling turn
-    // belongs to this notice and must ask Owner rather than resume itself.
+    // belongs to this notice; only a statically transient failure is resent.
     if (notice?.status === "acknowledged") return reconcile(action, notice);
     if (notice?.status === "needs_owner") return askOwner(action, notice);
+    const retryAt = Date.parse(notice?.retryAt ?? "");
+    if (notice?.status === "pending" && Number.isFinite(retryAt) && retryAt > Date.now()) return retryAt;
     const failedId = sourceRunId(action);
     const [failed] = failedId ? await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, failedId), eq(heartbeatRuns.companyId, action.companyId))) : [];
     const context = await inspectOriginalMain(db, action);
@@ -304,9 +373,11 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
       if (fresh.reason || fresh.conversation.id !== saved.conversationIssueId
           || fresh.conversation.conversationSessionGeneration !== saved.conversationGeneration) return false;
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.originalMainBlockers, JSON.stringify({ companyId: action.companyId }));
+      const resend = (saved.attempt ?? 1) > 1;
       await tx.insert(issueComments).values({ id: saved.commentId, companyId: action.companyId, issueId: context.conversation.id,
         authorType: "system", origin: "workspace_recovery", conversationSessionGeneration: saved.conversationGeneration,
-        body: ["[Paperclip 系統通知：原任務受阻，交回原 main 處理]",
+        body: [...(resend ? [MAIN_BLOCKER_RESEND_PREFIX + `（第 ${saved.attempt} 次送達；上一次 main 執行未完成：${saved.previousAttempts?.at(-1)?.reason ?? "unknown"}）`] : []),
+          "[Paperclip 系統通知：原任務受阻，交回原 main 處理]",
           `原任務 ${context.source.identifier ?? context.source.id}；recovery action ${action.id}；原因 ${action.cause}。`,
           `請以現有讀取權限查看 /api/issues/${context.source.id} 與原 recovery receipt。`,
           "能在既有授權內修復就直接修復，並用正式的重新檢查／恢復 API 核對結果。",
@@ -315,7 +386,7 @@ export function originalMainBlockerService(db: Db, owner: Owner) {
           "本通知不轉移任務／workspace 占用，也不授予額外權限。同一阻擋只送一次；處理完接續原工作。"].join("\n"),
         presentation: { kind: "system_notice", tone: "info", title: "請 main 處理阻擋", detailsDefaultOpen: false, density: "compact" },
       }).onConflictDoNothing();
-      const sending: Notice = { ...saved, status: "sending", receiptDeadlineAt: new Date(Date.now() + 30_000).toISOString() };
+      const sending: Notice = { ...saved, status: "sending", retryAt: undefined, receiptDeadlineAt: new Date(Date.now() + 30_000).toISOString() };
       await tx.update(issueRecoveryActions).set({ evidence: { ...current.evidence, mainBlockerNotices: {
         ...object(current.evidence.mainBlockerNotices), [saved.key]: sending,
       } }, updatedAt: new Date() }).where(eq(issueRecoveryActions.id, action.id));

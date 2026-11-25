@@ -115,6 +115,10 @@ import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoveryS
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { agentRouteRef } from "../lib/utils";
 import {
+  PAPERCLIP_MANAGEMENT_PERMISSION_DESCRIPTION,
+  PAPERCLIP_MANAGEMENT_PERMISSION_LABEL,
+} from "../lib/paperclip-management-permission";
+import {
   isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
@@ -1706,6 +1710,7 @@ export function ConfigurationTab({
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canCreateSkills = agent.permissions?.canCreateSkills !== false;
+  const canConfigureFixedWorkspace = agent.permissions?.canConfigureFixedWorkspace === true;
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
@@ -1804,6 +1809,27 @@ export function ConfigurationTab({
                   canCreateAgents,
                   canCreateSkills: !canCreateSkills,
                   canAssignTasks,
+                })
+              }
+              disabled={updatePermissions.isPending}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>{PAPERCLIP_MANAGEMENT_PERMISSION_LABEL}</div>
+              <p className="text-xs text-muted-foreground">
+                {PAPERCLIP_MANAGEMENT_PERMISSION_DESCRIPTION}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canConfigureFixedWorkspace}
+              aria-label={PAPERCLIP_MANAGEMENT_PERMISSION_LABEL}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canCreateSkills,
+                  canAssignTasks,
+                  canConfigureFixedWorkspace: !canConfigureFixedWorkspace,
                 })
               }
               disabled={updatePermissions.isPending}

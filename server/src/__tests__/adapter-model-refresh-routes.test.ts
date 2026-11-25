@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as openCodeFallbackModels } from "@paperclipai/adapter-opencode-local";
+import type { AdapterCatalogContext } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -30,6 +31,7 @@ const mockSecretService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
+const mockAgentService = vi.hoisted(() => ({ getById: vi.fn() }));
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -76,7 +78,7 @@ function registerModuleMocks() {
   });
 
   vi.doMock("../services/index.js", () => ({
-    agentService: () => ({}),
+    agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
@@ -162,6 +164,7 @@ async function unregisterTestAdapter(type: string) {
 describe("adapter model refresh route", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockAgentService.getById.mockReset();
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -275,6 +278,41 @@ describe("adapter model refresh route", () => {
   });
 
 describe('company scoped model discovery', () => {
+  it.each(["", "&refresh=1"])("loads an agent-pinned foreign host with server verification (%s)", async suffix => {
+    const { registerServerAdapter } = await import('../adapters/registry.js');
+    const discover = vi.fn(async (context?: AdapterCatalogContext) => {
+      if (context?.serverVerifiedHostId !== 'foreign') throw Object.assign(new Error('private detail'), { code: 'catalog_host_forbidden' });
+      return [{ id: 'foreign/codex/model', label: 'model' }];
+    });
+    registerServerAdapter({ type: refreshableAdapterType, catalogScope: 'company', listModels: discover, refreshModels: discover,
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({ adapterType: refreshableAdapterType, status: 'pass', checks: [], testedAt: new Date().toISOString() }) });
+    mockAgentService.getById.mockResolvedValue({ companyId: 'company-1', adapterType: refreshableAdapterType, adapterConfig: { hostId: 'foreign' } });
+    const app = await createApp();
+    const get = (query: string) => requestApp(app, base => request(base).get('/api/companies/company-1/adapters/' + refreshableAdapterType + '/models?' + query + suffix));
+    const allowed = await get('agentId=agent-1&hostId=foreign&provider=codex');
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(allowed.body).toEqual([{ id: 'foreign/codex/model', label: 'model' }]);
+    expect(allowed.headers['cache-control']).toBe('no-store');
+    expect(discover).toHaveBeenLastCalledWith({ companyId: 'company-1', hostId: 'foreign', provider: 'codex', serverVerifiedHostId: 'foreign' });
+    discover.mockClear();
+    for (const agent of [null, { companyId: 'company-2', adapterType: refreshableAdapterType, adapterConfig: { hostId: 'foreign' } },
+      { companyId: 'company-1', adapterType: 'other', adapterConfig: { hostId: 'foreign' } }]) {
+      mockAgentService.getById.mockResolvedValue(agent);
+      expect((await get('agentId=agent-1&hostId=foreign')).status).toBe(404);
+    }
+    mockAgentService.getById.mockResolvedValue({ companyId: 'company-1', adapterType: refreshableAdapterType, adapterConfig: { hostId: 'foreign' } });
+    for (const query of ['agentId=agent-1&hostId=other', 'agentId=agent-1']) {
+      expect((await get(query)).status).toBe(422);
+    }
+    expect(discover).not.toHaveBeenCalled();
+    const denied = await get('hostId=foreign&serverVerifiedHostId=foreign');
+    expect(denied.status).toBe(422);
+    expect(denied.body).toMatchObject({ code: 'catalog_host_forbidden' });
+    expect(denied.body.error).not.toContain('private detail');
+    expect(discover).toHaveBeenLastCalledWith({ companyId: 'company-1', hostId: 'foreign', provider: undefined });
+  });
+
   it('passes only the authorized scope and does not replace empty or failed catalogs', async () => {
     const { registerServerAdapter, listAdapterModels, refreshAdapterModels } = await import('../adapters/registry.js');
     const listModels = vi.fn(async () => []);

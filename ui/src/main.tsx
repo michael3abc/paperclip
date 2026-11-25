@@ -1,5 +1,6 @@
 import { PdfPreviewProvider } from "./components/PdfPreviewProvider";
 import { ArtifactPreviewProvider } from "./components/artifacts/ArtifactPreviewProvider";
+import { hasLiveHostTerminal, retainHostTerminalsOf, subscribeHostTerminals } from "./lib/host-terminal-store";
 import { LocalVoiceCallProvider } from "./components/voice/LocalVoiceCallProvider";
 import { VoiceCallProvider } from "./components/voice/VoiceCallProvider";
 import { useAccountIdentity } from "./api/companies-query";
@@ -103,9 +104,10 @@ adoptHardLoadChatBootstrap(queryClient);
 window.addEventListener("load", () => {
   startServiceWorkerUpdates({
     canReload: () => connectivity.getSnapshot().status === "online"
-      && connectivity.getSnapshot().pendingWrites === 0 && queryClient.isMutating() === 0 && !hasPendingWrites(),
+      && connectivity.getSnapshot().pendingWrites === 0 && queryClient.isMutating() === 0 && !hasPendingWrites()
+      && !hasLiveHostTerminal(), // A reload would end the person's shell.
     subscribeReloadSafety: listener => {
-      const cleanups = [connectivity.subscribe(listener), queryClient.getMutationCache().subscribe(listener), subscribePendingWrites(listener)];
+      const cleanups = [connectivity.subscribe(listener), queryClient.getMutationCache().subscribe(listener), subscribePendingWrites(listener), subscribeHostTerminals(listener)];
       return () => { for (const cleanup of cleanups) cleanup(); };
     },
   });
@@ -118,7 +120,8 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
 
 function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
   const { selectedCompanyId } = useCompany();
-  const { userId } = useAccountIdentity();
+  const { userId, settled } = useAccountIdentity();
+  useEffect(() => { if (settled) retainHostTerminalsOf(userId); }, [settled, userId]);
   return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}><LocalVoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</LocalVoiceCallProvider></VoiceCallProvider>;
 }
 

@@ -428,7 +428,21 @@ export async function resolveManagedGitHubIdentitySelection(
         return grants.filter((grant) => grant.kind === "user" && delegatedIds.has(grant.id));
       })
     : [];
-  const candidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
+  const tierCandidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
+  // One person may hold several GitHub accounts (for example a personal account
+  // installed company-wide and a project account installed for one agent). An
+  // install that names this agent is the owner's more specific choice, so it
+  // wins over company-wide installs before ambiguity is judged. Both identities
+  // were already within this agent's consent boundary; nothing new is granted.
+  const identityKey = (grant: typeof connectionGrants.$inferSelect) =>
+    grant.providerTenant?.github?.userId?.trim() || `grant:${grant.id}`;
+  const agentInstalledConnectionIds = new Set(installs.filter((install) =>
+    install.targetType === "agent" && Boolean(context.agentId) && install.targetId === context.agentId
+  ).map((install) => install.connectionId));
+  const agentSpecific = new Set(tierCandidates.map(identityKey)).size > 1
+    ? tierCandidates.filter((grant) => agentInstalledConnectionIds.has(grant.connectionId))
+    : [];
+  const candidates = agentSpecific.length > 0 ? agentSpecific : tierCandidates;
   const identitySource = dedicated.length > 0 ? "dedicated" as const : "personal" as const;
   // Reconnecting can create another connection/grant for the same GitHub
   // account. Ambiguity is about provider identities, not the number of rows.
