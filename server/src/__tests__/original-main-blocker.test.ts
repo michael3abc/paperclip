@@ -16,6 +16,7 @@ import { notifyIssueRecovery } from "../services/issue-recovery-notifications.js
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import type { WakeupOptions } from "../services/heartbeat/run-preparation.js";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { hasQueuedRunInputAuthority } from "../services/issue-queued-comment-authority.js";
 
 describe("original main blocker delivery", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: ReturnType<typeof createDb>;
@@ -157,9 +158,14 @@ describe("original main blocker delivery", () => {
         await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot,
           wakeCommentIds: [notice.commentId, comment.id] } }).where(eq(heartbeatRuns.id, run.id));
       }
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(await db.transaction(tx => hasQueuedRunInputAuthority(tx as unknown as typeof db, current, f.conversationId)))
+        .toBe(fault === "valid");
+      // Liveness-first (Owner 2026-11-13): unverifiable input authority is logged,
+      // not cancelled, at the stale-queued gate; the claim-time check refuses it.
       expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
         companyId: f.companyId, runId: run.id, expectedStatus: "queued", now: new Date(),
-      })).toMatchObject({ outcome: fault === "valid" ? "not_stale" : "cancelled" });
+      })).toMatchObject({ outcome: "not_stale" });
     });
   async function endNoticeRun(f: Awaited<ReturnType<typeof fixture>>, patch: Partial<typeof heartbeatRuns.$inferInsert>) {
     const notice = readMainBlockerNotice(await f.read())!;
