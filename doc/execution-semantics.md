@@ -840,6 +840,15 @@ are limited to one per five minutes, except the final exhaustion receipt.
 Diagnostics never authorize execution. Deferred wakes whose saved schedule no
 longer matches remain discarded and are never replayed.
 
+Every scheduled deferral uses exponential backoff from 30 seconds to a maximum
+of 60 minutes, including unclassified null admissions and unchanged recovery
+holds. A hold never parks a monitor indefinitely: admission rechecks it when the
+deadline arrives. Claim eligibility and `nextIssueMonitorAt` share that deadline;
+a changed hold invalidates its prior backoff. Deferral does not change issue
+`updatedAt` unless the attempt limit clears the monitor. Named waits do not
+consume attempts; unclassified nulls still clear at the smaller of three attempts
+and the configured limit.
+
 A native run's terminal provider status does not release its timer while
 finalization is unfinished. Scheduled and manual monitor dispatch wait for that
 finalization to settle. For an already-dispatched timer, recovery can settle the

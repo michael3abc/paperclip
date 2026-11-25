@@ -29,7 +29,10 @@ excluded: terminal cleanup remains background work under liveness-first.
 Due monitors and claimed wake_owner recovery can wake a waiting main Chat only through their persisted schedule
 and claim guard. Named admission waits retain the monitor; unclassified null
 admissions consume the existing attempt ledger and clear at three total attempts
-or the smaller configured limit. Record static refusal reasons; preserve stale
+or the smaller configured limit. Deferred monitors, including unchanged recovery
+holds, recheck with exponential backoff from 30 seconds to at most 60 minutes;
+claim eligibility and the next scheduler wake use the same deadline. Deferrals
+preserve issue updatedAt until the monitor clears. Record static refusal reasons; preserve stale
 wake rejection and the agent scheduling API switch. See doc/execution-semantics.md.
 
 Execution is liveness-first (Owner 2026-11-13). The binding source is

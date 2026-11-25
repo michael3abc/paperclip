@@ -187,7 +187,7 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
   it.each([
     { cause: "provider_failure_meaning_unverified" as const, runtimeMode: "native" as const, status: "failed" as const },
     { cause: "legacy_execution_requires_reconciliation" as const, runtimeMode: "legacy" as const, status: "interrupted" as const },
-  ])("parks a monitor deferred by $cause without bumping updatedAt or spamming activity_log, and fires once reconciliation clears", async ({ cause, runtimeMode, status }) => {
+  ])("rechecks a monitor deferred by $cause with bounded backoff and fires when reconciliation clears", async ({ cause, runtimeMode, status }) => {
     const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
     const sourceRunId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -224,7 +224,7 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
     expect(parked!.monitorNextCheckAt).toEqual(nextCheckAt);
     expect(parked!.monitorWakeRequestedAt).toBeNull();
     expect(parked!.monitorAttemptCount).toBe(0);
-    expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+    expect(await heartbeat.nextIssueMonitorAt()).toBe(firstTickAt.getTime() + 30_000);
 
     const firstEvents = (await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
       .filter((row) => row.action === "issue.monitor_deferred");
@@ -239,20 +239,17 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
       .set({ createdAt: new Date(Date.now() - 10 * 60_000) })
       .where(eq(activityLog.entityId, issueId));
 
-    for (const offsetMs of [5 * 60_000, 10 * 60_000, 30 * 60_000, 6 * 60 * 60_000]) {
-      expect(await heartbeat.tickTimers(new Date(firstTickAt.getTime() + offsetMs))).toEqual({
-        checked: 0,
-        enqueued: 0,
-        skipped: 0,
-      });
-    }
+    expect(await heartbeat.tickTimers(new Date(firstTickAt.getTime() + 29_999))).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await heartbeat.tickTimers(new Date(firstTickAt.getTime() + 30_000))).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
+    expect(await heartbeat.nextIssueMonitorAt()).toBe(firstTickAt.getTime() + 90_000);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0]!.updatedAt).toEqual(hold!.updatedAt);
 
     const [stillParked] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(stillParked!.updatedAt).toEqual(seededUpdatedAt);
     expect(stillParked!.monitorAttemptCount).toBe(0);
     const deferredEventsAfterHours = (await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
       .filter((row) => row.action === "issue.monitor_deferred");
-    expect(deferredEventsAfterHours).toHaveLength(1);
+    expect(deferredEventsAfterHours).toHaveLength(2);
 
     const notified: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, (event) => {
@@ -285,7 +282,7 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
     expect(dispatched!.updatedAt.getTime()).toBeGreaterThan(seededUpdatedAt.getTime());
   });
 
-  it("parks a monitor deferred by a resolved no-replay hold until its blocking evidence is retired", async () => {
+  it("does not turn resolved historical no-replay evidence into a monitor admission gate", async () => {
     const { companyId, issueId, agentId, nextCheckAt } = await seedFixture();
     const sourceRunId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -316,34 +313,16 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
 
     const heartbeat = heartbeatService(db);
     const firstTickAt = new Date(nextCheckAt.getTime() + 60_000);
-    expect(await heartbeat.tickTimers(firstTickAt)).toMatchObject({ checked: 1, enqueued: 0, skipped: 1 });
-    expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
-
-    // Even after hours, the resolved no-replay hold stays parked with zero retries or updatedAt churn.
-    expect(await heartbeat.tickTimers(new Date(firstTickAt.getTime() + 2 * 60 * 60_000))).toEqual({
-      checked: 0,
-      enqueued: 0,
-      skipped: 0,
-    });
-    const [parked] = await db.select().from(issues).where(eq(issues.id, issueId));
-    expect(parked!.updatedAt).toEqual(seededUpdatedAt);
-    expect(
-      (await db.select().from(activityLog).where(eq(activityLog.entityId, issueId)))
-        .filter((row) => row.action === "issue.monitor_deferred"),
-    ).toHaveLength(1);
-
-    // Retiring the blocking evidence immediately unparks and dispatches the monitor.
-    await db.update(issueRecoveryActions).set({
-      evidence: { runId: sourceRunId, executionReconciliation: { action: "continue" } },
-      updatedAt: new Date(hold!.updatedAt.getTime() + 1_000),
-    }).where(eq(issueRecoveryActions.id, hold!.id));
-
-    expect(await heartbeat.nextIssueMonitorAt()).toBe(nextCheckAt.getTime());
-    expect(await heartbeat.tickTimers(new Date(firstTickAt.getTime() + 2 * 60 * 60_000 + 60_000)))
-      .toMatchObject({ checked: 1, enqueued: 1, skipped: 0 });
+    // Resolved historical replay evidence cannot add a system-owned execution
+    // gate under the fork's liveness-first policy (AGENTS.md section 5).
+    expect(await heartbeat.tickTimers(firstTickAt)).toMatchObject({ checked: 1, enqueued: 1, skipped: 0 });
+    const [dispatched] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(dispatched).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1 });
+    const [historical] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id));
+    expect(historical).toMatchObject({ status: "resolved", evidence: { automaticRecovery: { replay: "blocked" } } });
   });
 
-  it("respects timeoutAt on a parked escalate_to_board monitor and keeps wake_owner parked until reconciliation clears", async () => {
+  it("respects timeoutAt while bounded backoff keeps rechecking a wake_owner recovery hold", async () => {
     const timeoutAt = new Date("2026-04-11T14:30:00.000Z");
     const { companyId, issueId, agentId, nextCheckAt } = await seedFixture({
       monitor: { timeoutAt: timeoutAt.toISOString(), recoveryPolicy: "escalate_to_board" },
@@ -375,12 +354,9 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
     const heartbeat = heartbeatService(db);
     const firstTickAt = new Date(nextCheckAt.getTime() + 60_000);
     expect(await heartbeat.tickTimers(firstTickAt)).toMatchObject({ checked: 1, enqueued: 0, skipped: 1 });
+    expect(await heartbeat.nextIssueMonitorAt()).toBe(firstTickAt.getTime() + 30_000);
+    expect(await heartbeat.tickTimers(new Date(timeoutAt.getTime() - 1_000))).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
     expect(await heartbeat.nextIssueMonitorAt()).toBe(timeoutAt.getTime());
-    expect(await heartbeat.tickTimers(new Date(timeoutAt.getTime() - 1_000))).toEqual({
-      checked: 0,
-      enqueued: 0,
-      skipped: 0,
-    });
 
     expect(await heartbeat.tickTimers(timeoutAt)).toMatchObject({ checked: 1, enqueued: 0, skipped: 1 });
     const [escalated] = await db.select().from(issues).where(eq(issues.id, issueId));
@@ -421,12 +397,8 @@ describeEmbeddedPostgres("issue monitor deferral parking", () => {
 
     const pastTimeout = new Date(timeoutAt.getTime() + 60_000);
     expect(await heartbeat.tickTimers(pastTimeout)).toMatchObject({ checked: 1, enqueued: 0, skipped: 1 });
-    expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
-    expect(await heartbeat.tickTimers(new Date(pastTimeout.getTime() + 30 * 60_000))).toEqual({
-      checked: 0,
-      enqueued: 0,
-      skipped: 0,
-    });
+    expect(await heartbeat.nextIssueMonitorAt()).toBe(pastTimeout.getTime() + 30_000);
+    expect(await heartbeat.tickTimers(new Date(pastTimeout.getTime() + 30 * 60_000))).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
     const [parkedWakeOwner] = await db.select().from(issues).where(eq(issues.id, wakeOwnerFixture.issueId));
     expect(parkedWakeOwner!.updatedAt).toEqual(wakeSeededUpdatedAt);
     expect(parkedWakeOwner!.monitorNextCheckAt).toEqual(wakeOwnerFixture.nextCheckAt);

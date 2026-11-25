@@ -44,7 +44,7 @@ describe("issue monitor deferral state", () => {
     expect(quietWindowMs).toBe(ISSUE_MONITOR_DIAGNOSTIC_MIN_QUIET_MS);
   });
 
-  it("parks on an active recovery hold with null retryAt and ignores deferral state after monitor replacement", () => {
+  it("backs off an active recovery hold and ignores deferral state after monitor replacement", () => {
     const { state } = buildIssueMonitorDeferralState({
       existing: null,
       scheduledAtIso,
@@ -56,7 +56,7 @@ describe("issue monitor deferral state", () => {
         updatedAtIso: "2026-04-11T12:00:00.123456Z",
       },
     });
-    expect(state.retryAt).toBeNull();
+    expect(state.retryAt).toBe(new Date(now.getTime() + 30_000).toISOString());
     expect(state.recoveryActionId).toBe("11111111-1111-4111-8111-111111111111");
     expect(readIssueMonitorDeferral({ monitorDeferral: state }, scheduledAtIso)).toEqual(state);
     expect(readIssueMonitorDeferral({ monitorDeferral: state }, "2026-04-11T12:45:00.000Z")).toBeNull();

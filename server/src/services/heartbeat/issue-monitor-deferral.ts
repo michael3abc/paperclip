@@ -92,20 +92,6 @@ export function buildIssueMonitorDeferralState(input: {
   recoveryHold: { id: string; updatedAtIso: string } | null;
 }): { state: IssueMonitorDeferralState; quietWindowMs: number } {
   const deferredCount = (input.existing?.deferredCount ?? 0) + 1;
-  if (input.recoveryHold) {
-    return {
-      state: {
-        nextCheckAt: input.scheduledAtIso,
-        deferredCount,
-        retryAt: null,
-        recoveryActionId: input.recoveryHold.id,
-        recoveryActionUpdatedAt: input.recoveryHold.updatedAtIso,
-        reason: input.reason,
-      },
-      quietWindowMs: ISSUE_MONITOR_DIAGNOSTIC_MIN_QUIET_MS,
-    };
-  }
-
   const delayMs = issueMonitorDeferralDelayMs(deferredCount);
   let retryAtMs = input.now.getTime() + delayMs;
   if (
@@ -120,8 +106,8 @@ export function buildIssueMonitorDeferralState(input: {
       nextCheckAt: input.scheduledAtIso,
       deferredCount,
       retryAt: new Date(retryAtMs).toISOString(),
-      recoveryActionId: null,
-      recoveryActionUpdatedAt: null,
+      recoveryActionId: input.recoveryHold?.id ?? null,
+      recoveryActionUpdatedAt: input.recoveryHold?.updatedAtIso ?? null,
       reason: input.reason,
     },
     quietWindowMs: Math.max(ISSUE_MONITOR_DIAGNOSTIC_MIN_QUIET_MS, delayMs),
@@ -211,22 +197,24 @@ function matchingDeferredRetryAtSql() {
   end)`;
 }
 
-/**
- * Excludes scheduled monitors that are either parked on an unchanged active
- * execution-reconciliation hold (unless a non-wake_owner timeoutAt is now due)
- * or waiting out their exponential deferral backoff window.
+/** One deadline for both row admission and the scheduler's next wake. A changed
+ * hold invalidates its backoff; an unchanged hold is rechecked within 60 minutes.
+ * Historical null deadlines are immediately eligible rather than parked forever.
  */
-export function eligibleDeferredMonitorCondition(now: Date) {
-  const nowIso = now.toISOString();
-  const parked = parkedOnUnchangedRecoveryHoldSql();
-  const nonWakeTimeout = nonWakeOwnerTimeoutAtSql();
+function deferredMonitorDeadlineSql() {
   const retryAt = matchingDeferredRetryAtSql();
-  return sql`((not ${parked} and (${retryAt} is null or ${retryAt} <= ${nowIso}::timestamptz))
-    or (${parked} and ${nonWakeTimeout} is not null and ${nonWakeTimeout} <= ${nowIso}::timestamptz))`;
+  return sql`(case
+    when ${parkedOnUnchangedRecoveryHoldSql()}
+      then least(coalesce(${retryAt}, ${issues.monitorNextCheckAt}), ${nonWakeOwnerTimeoutAtSql()})
+    when ${deferralMatchesMonitorSql()}
+      and ${issues.executionState}->'monitorDeferral'->>'recoveryActionId' is not null
+      then ${issues.monitorNextCheckAt}
+    else greatest(${issues.monitorNextCheckAt}, ${retryAt})
+  end)`;
 }
 
-export function nextIssueMonitorWhereCondition() {
-  return sql`(not ${parkedOnUnchangedRecoveryHoldSql()} or ${nonWakeOwnerTimeoutAtSql()} is not null)`;
+export function eligibleDeferredMonitorCondition(now: Date) {
+  return sql`${deferredMonitorDeadlineSql()} <= ${now.toISOString()}::timestamptz`;
 }
 
 export async function resolveScheduledMonitorDeferralUpdate(
@@ -280,12 +268,6 @@ export async function resolveScheduledMonitorDeferralUpdate(
 }
 
 export function nextIssueMonitorAtSelectSql() {
-  const parked = parkedOnUnchangedRecoveryHoldSql();
-  const nonWakeTimeout = nonWakeOwnerTimeoutAtSql();
-  const retryAt = matchingDeferredRetryAtSql();
-  return sql<string | null>`min(case
-    when ${parked}
-    then greatest(${nonWakeTimeout}, ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond')
-    else greatest(${issues.monitorNextCheckAt}, ${retryAt}, ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond')
-  end)`;
+  return sql<string | null>`min(greatest(${deferredMonitorDeadlineSql()},
+    ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond'))`;
 }

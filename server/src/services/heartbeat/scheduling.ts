@@ -68,7 +68,6 @@ import type { NativeSessionGoalControl } from "../../vendor/paperclip-runner/ind
 import {
   eligibleDeferredMonitorCondition,
   nextIssueMonitorAtSelectSql,
-  nextIssueMonitorWhereCondition,
   resolveScheduledMonitorDeferralUpdate,
 } from "./issue-monitor-deferral.js";
 
@@ -648,20 +647,18 @@ export function createHeartbeatScheduling(
       await db.transaction(async (tx) => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyStatusCardIssueChange(tx, claimed.companyId);
-        const { patch, quietWindowMs } = diagnostic.countUnclassifiedAttempt
-          ? { patch: { monitorWakeRequestedAt: null }, quietWindowMs: 5 * 60_000 }
-          : await resolveReleaseUpdate(tx as unknown as Db);
+        const { patch, quietWindowMs } = await resolveReleaseUpdate(tx as unknown as Db);
         const released = await tx.update(issues)
           .set({
             ...patch,
             ...(exhausted ? monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({ issue: countedIssue,
               policy: normalizeIssueExecutionPolicy(claimed.executionPolicy), clearReason: "dispatch_skipped", clearedAt: input.now,
             })) : diagnostic.countUnclassifiedAttempt ? {
-              executionState: sql`jsonb_set(coalesce(${issues.executionState}, '{}'::jsonb), '{monitor}',
+              executionState: sql`jsonb_set(coalesce(${patch.executionState ?? issues.executionState}, '{}'::jsonb), '{monitor}',
                 coalesce(${issues.executionState}->'monitor', '{}'::jsonb) || ${JSON.stringify({ attemptCount })}::jsonb)`,
             } : {}),
             ...(diagnostic.countUnclassifiedAttempt ? { monitorAttemptCount: attemptCount } : {}),
-            monitorWakeRequestedAt: null, updatedAt: input.now,
+            monitorWakeRequestedAt: null, ...(exhausted ? { updatedAt: input.now } : {}),
           })
           .where(issueMonitorClaimCondition(claimed)).returning({ id: issues.id });
         if (released.length === 0) return;
@@ -1207,7 +1204,7 @@ export function createHeartbeatScheduling(
     const [row] = await db.select({ at: nextIssueMonitorAtSelectSql() })
       .from(issues).innerJoin(companies, eq(companies.id, issues.companyId))
       .where(and(eq(companies.status, "active"), noActiveNativeMonitorRun(),
-        sql`${issues.monitorNextCheckAt} is not null`, nextIssueMonitorWhereCondition(),
+        sql`${issues.monitorNextCheckAt} is not null`,
         isNull(issues.assigneeUserId),
         sql`${issues.assigneeAgentId} is not null`, inArray(issues.status, ["in_progress", "in_review"])));
 

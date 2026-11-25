@@ -3,8 +3,7 @@ import { activityLog, heartbeatRunEvents, heartbeatRuns, issueComments, type Db 
 import { ANTIGRAVITY_SWARM_REQUESTED_ACTION } from "./antigravity-swarm-refusal.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
-/** The wake reason an inbound chat message records (see chat inbound wakeups). */
-export const EXTERNAL_CHAT_MESSAGE_WAKE_REASON = "External chat message received";
+export { EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "./queued-comment-wake-reason.js";
 /** The mutation an inbound chat message wake records. */
 export const EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION = "chat_message_received";
 

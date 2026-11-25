@@ -47,6 +47,10 @@ liveness-first, native Chat, host and agy_local contracts. Decisions and the cur
 verification status: [sync-decisions](/HOM/issues/HOM-638#document-sync-decisions).
 Check now keeps queued/running retry idempotency and promotes a separate scheduled
 retry while retaining upstream board/read/mutate checks and gate-suppressed refusals.
+Repair verification retains monitor attempt limits alongside 30s–60m deferral
+backoff, including unchanged recovery holds. Person wake reasons come from a
+dependency-free module so delivery-first imports cannot lose the chat reason.
+Fork connector tests use the upstream Plugins Add, Installed and search surfaces.
 Thursday integration only; no deployment, restart or merge into michael/main.
 
 ## 2026-11-25 upstream merge (HOM-604; not deployed)

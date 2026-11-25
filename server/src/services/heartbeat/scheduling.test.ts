@@ -3,7 +3,7 @@ import { setTimeout as realDelay } from "node:timers/promises";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
-  completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
+  completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -189,11 +189,34 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: replacement, monitorAttemptCount: 0 });
   });
 
+  it("rechecks an unchanged recovery hold when its bounded backoff expires", async () => {
+    const f = await fixture();
+    const initialUpdatedAt = new Date(now.getTime() - 120_000);
+    await db.update(issues).set({ updatedAt: initialUpdatedAt }).where(eq(issues.id, f.issue.id));
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.company.id,
+      sourceIssueId: f.issue.id, kind: "active_run_watchdog", status: "active",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: randomUUID(), nextAction: "Recheck admission" }).returning();
+    f.deps.enqueueWakeup.mockImplementation(async (_agentId, options) => {
+      options?.issueStateGuard?.onExecutionDeferred?.("legacy_execution_requires_reconciliation", hold!.id);
+      return null;
+    });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
+    expect(await f.scheduler.nextIssueMonitorAt()).toBe(now.getTime() + 30_000);
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
+    expect(await f.scheduler.nextIssueMonitorAt()).toBe(now.getTime() + 90_000);
+    expect(await readIssue(f.issue.id)).toMatchObject({ updatedAt: initialUpdatedAt, monitorAttemptCount: 0 });
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0]!.updatedAt).toEqual(hold!.updatedAt);
+  });
+
   it("backs off non-hold deferred monitors exponentially without bumping updatedAt or starving tied monitors", async () => {
     const f = await fixture();
     const initialUpdatedAt = new Date(now.getTime() - 120_000);
     await db.update(issues).set({ updatedAt: initialUpdatedAt }).where(eq(issues.id, f.issue.id));
-    f.deps.enqueueWakeup.mockResolvedValue(null);
+    f.deps.enqueueWakeup.mockImplementation(async (_agentId, options) => {
+      options?.issueStateGuard?.onDispatchDeferred?.("monitor_run_active");
+      return null;
+    });
 
     // Tick 1: defers with 30s backoff, preserves updatedAt and attemptCount.
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
@@ -238,7 +261,11 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const deferredSet = new Set(deferredIds.map((row) => row.id));
     f.deps.enqueueWakeup.mockImplementation(async (_agentId, options) => {
       const issueId = (options?.payload as { issueId?: string } | undefined)?.issueId;
-      return issueId && deferredSet.has(issueId) ? null : admitted;
+      if (issueId && deferredSet.has(issueId)) {
+        options?.issueStateGuard?.onDispatchDeferred?.("monitor_run_active");
+        return null;
+      }
+      return admitted;
     });
 
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 50, enqueued: 0, skipped: 50 });
@@ -252,7 +279,8 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     f.deps.enqueueWakeup.mockResolvedValueOnce(null);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 1 });
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
     const calls = f.deps.enqueueWakeup.mock.calls;
     expect(calls[0]![1]!.idempotencyKey).toBe(calls[1]![1]!.idempotencyKey);
     expect(calls[0]![1]!.issueStateGuard).toMatchObject({
@@ -355,7 +383,9 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
     expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id)))
       .toMatchObject([{ details: { reason, attemptCount: 0 } }]);
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 30_000))).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect((await readIssue(f.issue.id)).monitorAttemptCount).toBe(1);
   });
 
   it("never logs an unrecognized admission reason and respects the monitor's smaller limit", async () => {
