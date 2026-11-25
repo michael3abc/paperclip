@@ -1705,6 +1705,7 @@ export function ConfigurationTab({
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canCreateSkills = agent.permissions?.canCreateSkills !== false;
+  const canConfigureFixedWorkspace = agent.permissions?.canConfigureFixedWorkspace === true;
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
@@ -1803,6 +1804,26 @@ export function ConfigurationTab({
                   canCreateAgents,
                   canCreateSkills: !canCreateSkills,
                   canAssignTasks,
+                })
+              }
+              disabled={updatePermissions.isPending}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>Can set fixed working directories</div>
+              <p className="text-xs text-muted-foreground">
+                Lets this agent set another CC Pocket agent&apos;s fixed working directory on this company&apos;s Bridge hosts, for example when it creates a project main. Only the board can change this. New agents never start with it.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canConfigureFixedWorkspace}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canCreateSkills,
+                  canAssignTasks,
+                  canConfigureFixedWorkspace: !canConfigureFixedWorkspace,
                 })
               }
               disabled={updatePermissions.isPending}

@@ -88,6 +88,7 @@ export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canCreateSkills: boolean;
   canAssignTasks: boolean;
+  canConfigureFixedWorkspace?: boolean;
   trustPreset?: AgentPermissions["trustPreset"];
   authorizationPolicy?: AgentPermissions["authorizationPolicy"];
 }
