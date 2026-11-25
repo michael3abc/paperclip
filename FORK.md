@@ -45,6 +45,8 @@ journal timestamps. Owned empty/main/HOM-604 migrations pass (521 / 511→521 /
 517→521), fork replay 0. Retain upstream test splits with fork assertions and
 liveness-first, native Chat, host and agy_local contracts. Decisions and the current
 verification status: [sync-decisions](/HOM/issues/HOM-638#document-sync-decisions).
+Check now keeps queued/running retry idempotency and promotes a separate scheduled
+retry while retaining upstream board/read/mutate checks and gate-suppressed refusals.
 Thursday integration only; no deployment, restart or merge into michael/main.
 
 ## 2026-11-25 upstream merge (HOM-604; not deployed)

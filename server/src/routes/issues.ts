@@ -12,7 +12,6 @@ import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
-import { DELIVERY_QUEUES, notifyDeliveryWork } from "../services/delivery-work-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../services/unsafe-workspace-export-notifications.js";
@@ -14439,7 +14438,7 @@ export function issueRoutes(
     const waitingRetry = issue.monitorNextCheckAt
       ? null
       : await svc.getCurrentScheduledRetry?.(issue.id, { companyId: issue.companyId });
-    if (waitingRetry?.status === "scheduled_retry") {
+    if (waitingRetry) {
       // The banner also shows "Check now" for a scheduled retry, such as a
       // usage wait. With no monitor, the check is that retry: it starts now
       // and rechecks availability before any work. It needs the same access

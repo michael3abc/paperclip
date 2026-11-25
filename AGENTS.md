@@ -462,6 +462,11 @@ Human Chat wake requesters must be the conversation owner before queue admission
 an owner-authored saved message never grants another requester's authority. See
 docs/agents/session-bridge.md.
 
+Check now without a monitor delegates any current retry to retryScheduledRetryNow:
+queued/running retries succeed idempotently, and another running retry does not
+hide a separately scheduled retry. Preserve board/read/mutate access and the
+409 response for gate_suppressed. See docs/api/issues.md.
+
 Saved input behind a terminal native run must not wait for finalization to become
 committed; retain the original evidence. See docs/agents/execution-semantics.md.
 Queued-message Interrupt returns after durable intent and cancellation fencing;

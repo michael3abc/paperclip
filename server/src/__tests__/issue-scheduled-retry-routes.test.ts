@@ -976,6 +976,36 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(run!.status).toBe("queued");
   });
 
+  it.each(["queued", "running"] as const)("returns success from Check now for an already-promoted %s retry", async retryStatus => {
+    const f = await seedIssueWithRetry({ retryStatus });
+    const response = await request(createApp(boardActor(f.companyId)))
+      .post(`/api/issues/${f.issueId}/monitor/check-now`).send({});
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ ok: true, outcome: "already_promoted" });
+    const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ id: f.retryRunId, status: retryStatus });
+  });
+
+  it("promotes a waiting retry from Check now while another retry is running", async () => {
+    const f = await seedIssueWithRetry();
+    const [scheduled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    const runningId = randomUUID();
+    await db.insert(heartbeatRuns).values({ ...scheduled!, id: runningId, status: "running", wakeupRequestId: null });
+    await db.update(issues).set({ executionRunId: runningId }).where(eq(issues.id, f.issueId));
+
+    const response = await request(createApp(boardActor(f.companyId)))
+      .post(`/api/issues/${f.issueId}/monitor/check-now`).send({});
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ ok: true, outcome: "promoted" });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.sourceRunId));
+    expect(runs).toHaveLength(2);
+    expect(runs.find(run => run.id === f.retryRunId)).toMatchObject({ status: "queued" });
+    expect(runs.find(run => run.id === runningId)).toMatchObject({ status: "running" });
+  });
+
   it("promotes the existing scheduled retry and treats duplicate clicks as idempotent", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithRetry();
     const app = createApp(boardActor(companyId));
