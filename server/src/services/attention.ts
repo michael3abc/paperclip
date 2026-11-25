@@ -1718,10 +1718,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       if (options.all && !options.queue && !options.allowUnscopedAll) {
         throw badRequest("all requires a queue filter");
       }
-      const readCondition = options.actor
-        ? await issueReadSqlCondition(db, options.actor)
-        : sql<boolean>`true`;
-      const [companyConfig, dismissals] = await Promise.all([
+      const [readCondition, companyConfig, dismissals] = await Promise.all([
+        options.actor ? issueReadSqlCondition(db, options.actor) : sql<boolean>`true`,
         loadCompanyAttentionConfig(db, companyId),
         dismissalByKey(db, companyId, options.userId),
       ]);

@@ -17998,6 +17998,19 @@ export function issueRoutes(
     return run;
   }
 
+  async function acknowledgeInterruptBeforeStop(
+    context: { issueId: string; runId: string | null; queueId: string },
+    complete: (onCancellationRecorded: () => void) => Promise<void>,
+  ) {
+    let cancellationRecorded!: () => void;
+    const recorded = new Promise<void>(resolve => { cancellationRecorded = resolve; });
+    const completion = complete(cancellationRecorded);
+    // Acceptance means durable intent, never a process-stop acknowledgement.
+    // Retain the original owner and ordering through Stop and queue promotion.
+    void completion.catch(err => logger.error({ err, ...context }, "Queued comment interrupt completion failed"));
+    await Promise.race([recorded, completion]);
+  }
+
   /**
    * Stop the agent's task turn with the chat-interrupt semantics, start the
    * marked chat run next, then continue the task behind it through one task
@@ -18055,54 +18068,57 @@ export function issueRoutes(
       return { taskIssueId: taskIssueId!, running: Boolean(running), commentIds };
     });
 
-    // Never hold the issue lock while joining the adapter.
-    let cancelError: unknown = null;
-    if (preemption.running) {
-      const options = operatorInterruptCancelOptions({ issueId: preemption.taskIssueId, actor });
-      try {
-        await heartbeat.cancelRun(taskRunId, "Interrupted by the owner's chat message", {
-          ...options,
-          suppressImmediateRecovery: true,
-          resultJson: { ...options.resultJson, interruptionSource: CHAT_PREEMPTION_INTERRUPTION_SOURCE,
-            chatPreemption: { conversationIssueId: issue.id, chatQueueId: queueId,
-              commentIds: preemption.commentIds, actorId: actor.actorId } },
-        });
-      } catch (error) {
-        cancelError = error;
+    await acknowledgeInterruptBeforeStop({ issueId: issue.id, runId: taskRunId, queueId }, async onCancellationRecorded => {
+      // Never hold the issue lock while joining the adapter.
+      let cancelError: unknown = null;
+      if (preemption.running) {
+        const options = operatorInterruptCancelOptions({ issueId: preemption.taskIssueId, actor });
+        try {
+          await heartbeat.cancelRun(taskRunId, "Interrupted by the owner's chat message", {
+            ...options,
+            onCancellationRecorded,
+            suppressImmediateRecovery: true,
+            resultJson: { ...options.resultJson, interruptionSource: CHAT_PREEMPTION_INTERRUPTION_SOURCE,
+              chatPreemption: { conversationIssueId: issue.id, chatQueueId: queueId,
+                commentIds: preemption.commentIds, actorId: actor.actorId } },
+          });
+        } catch (error) {
+          cancelError = error;
+        }
       }
-    }
-    const stopped = await heartbeat.getRun(taskRunId);
-    // The marked chat run is first in line for the freed slot.
-    await heartbeat.resumeQueuedRunsForAgent(issue.companyId, agentId);
-    const cancellation = readObject(readObject(stopped?.resultJson).executionCancellation);
-    // "handoff": the bridge turn is still finishing; an explicit user continuation may take over the
-    // same session and settle it from bridge evidence. It is not an acknowledged stop.
-    const stop = stopped && bridgeSessionStopAcknowledged(stopped) ? "acknowledged"
-      : cancellation.forced === true ? "forced" : stopped && bridgeSessionHandoffFor(stopped) ? "handoff" : "unverified";
-    let continuation: { requestId: string | null; accepted: boolean; stale: boolean; chatActionId?: string } | null = null;
-    if (stop === "acknowledged") {
-      const { requestTaskRetry } = await import("../services/task-retry.js");
-      continuation = await requestTaskRetry({ db, companyId: issue.companyId, issueId: preemption.taskIssueId,
-        actorId: actor.actorId, actorSource: req.actor.source, idempotencyKey: `chat-preempt:${taskRunId}`,
-        observedRunId: taskRunId, prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
-      if (continuation.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(continuation.chatActionId)
-        .catch(err => logger.warn({ err, issueId: preemption.taskIssueId }, "Preempted task continuation remains queued"));
-      else if (continuation.accepted && continuation.requestId) {
-        await heartbeat.resumeTaskRetry(issue.companyId, continuation.requestId).catch(err =>
-          logger.warn({ err, issueId: preemption.taskIssueId }, "Preempted task continuation remains queued"));
+      const stopped = await heartbeat.getRun(taskRunId);
+      // The marked chat run is first in line for the freed slot.
+      await heartbeat.resumeQueuedRunsForAgent(issue.companyId, agentId);
+      const cancellation = readObject(readObject(stopped?.resultJson).executionCancellation);
+      // "handoff": the bridge turn is still finishing; an explicit user continuation may take over the
+      // same session and settle it from bridge evidence. It is not an acknowledged stop.
+      const stop = stopped && bridgeSessionStopAcknowledged(stopped) ? "acknowledged"
+        : cancellation.forced === true ? "forced" : stopped && bridgeSessionHandoffFor(stopped) ? "handoff" : "unverified";
+      let continuation: { requestId: string | null; accepted: boolean; stale: boolean; chatActionId?: string } | null = null;
+      if (stop === "acknowledged") {
+        const { requestTaskRetry } = await import("../services/task-retry.js");
+        continuation = await requestTaskRetry({ db, companyId: issue.companyId, issueId: preemption.taskIssueId,
+          actorId: actor.actorId, actorSource: req.actor.source, idempotencyKey: `chat-preempt:${taskRunId}`,
+          observedRunId: taskRunId, prepareChatRetry: opts.chatRunRetries?.prepareFailedChatRunRetry });
+        if (continuation.chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(continuation.chatActionId)
+          .catch(err => logger.warn({ err, issueId: preemption.taskIssueId }, "Preempted task continuation remains queued"));
+        else if (continuation.accepted && continuation.requestId) {
+          await heartbeat.resumeTaskRetry(issue.companyId, continuation.requestId).catch(err =>
+            logger.warn({ err, issueId: preemption.taskIssueId }, "Preempted task continuation remains queued"));
+        }
       }
-    }
-    await logActivity(db, {
-      companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
-      agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.chat_preempted", entityType: "issue", entityId: preemption.taskIssueId,
-      details: {
-        preemptedRunId: taskRunId, preemptedAgentId: agentId, conversationIssueId: issue.id, chatQueueId: queueId,
-        commentIds: preemption.commentIds, stop, continuationRequestId: continuation?.requestId ?? null,
-        outcome: continuation?.accepted ? "continued" : continuation ? "stale" : "held",
-      },
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.chat_preempted", entityType: "issue", entityId: preemption.taskIssueId,
+        details: {
+          preemptedRunId: taskRunId, preemptedAgentId: agentId, conversationIssueId: issue.id, chatQueueId: queueId,
+          commentIds: preemption.commentIds, stop, continuationRequestId: continuation?.requestId ?? null,
+          outcome: continuation?.accepted ? "continued" : continuation ? "stale" : "held",
+        },
+      });
+      if (cancelError) throw cancelError;
     });
-    if (cancelError) throw cancelError;
   }
 
   router.post(
@@ -18182,12 +18198,17 @@ export function issueRoutes(
       // Never hold the issue lock while joining the adapter. Queue edits and
       // discards stay authoritative until the dispatcher claims the successor.
       const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
-      if (runToInterrupt) await heartbeat.cancelRun(runToInterrupt, "Interrupted to send queued messages", {
-        ...options,
-        suppressImmediateRecovery: true,
-        resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
+      if (!firstTurnRunId) await acknowledgeInterruptBeforeStop({ issueId: issue.id,
+        runId: runToInterrupt, queueId: req.body.queueId }, async onCancellationRecorded => {
+        if (runToInterrupt) await heartbeat.cancelRun(runToInterrupt, "Interrupted to send queued messages", {
+          ...options,
+          onCancellationRecorded,
+          suppressImmediateRecovery: true,
+          resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
+        });
+        else onCancellationRecorded(); // The queue intent is already committed; no live run needs fencing.
+        await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       });
-      if (!firstTurnRunId) await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,

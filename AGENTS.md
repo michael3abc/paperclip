@@ -435,6 +435,10 @@ docs/agents/session-bridge.md.
 
 Saved input behind a terminal native run must not wait for finalization to become
 committed; retain the original evidence. See docs/agents/execution-semantics.md.
+Queued-message Interrupt returns after durable intent and cancellation fencing;
+Stop and ordered queue promotion continue under their original owner in the
+background. A 200 is acceptance, not process-stop proof, including main Chat task
+preemption. See docs/agents/session-bridge.md.
 Preparation Retry fixtures must promote an actually due durable retry. Preserve
 saved directory identity and content; do not assert placement from adapter config.
 

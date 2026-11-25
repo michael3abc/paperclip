@@ -59,6 +59,16 @@ the nested duplicate card and generic Retry banner.
 
 ## Codex steering
 
+Queued-message Interrupt acknowledges the durable queue intent and cancellation
+fence before waiting for Bridge/native/process Stop. This also applies when the
+owner's Chat preempts the same main agent's task. A 200 response returns the current
+queue, which can still be waiting for the handoff; it is not a Stop receipt.
+The original cancellation owner continues Stop, evidence collection and ordered
+queue promotion in the background. Pre-acceptance failures still reject the HTTP
+request; later failures are logged and preserve the saved input for recovery.
+Queue revision/ownership checks, direct-input receipts and exact-run correlation
+remain authoritative; acceptance never replays unknown native input.
+
 Human Chat wakes must name the conversation owner as requester before queue
 admission. An owner-authored saved comment, including `/new`, does not authorize
 another human to enqueue a turn. Reject before persisting a run or wake receipt;
