@@ -65,6 +65,12 @@ import type { createHeartbeatQueue } from "./queue.js";
 import type { createHeartbeatRetries, HeartbeatRetryDependencies } from "./retries.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { NativeSessionGoalControl } from "../../vendor/paperclip-runner/index.js";
+import {
+  eligibleDeferredMonitorCondition,
+  nextIssueMonitorAtSelectSql,
+  nextIssueMonitorWhereCondition,
+  resolveScheduledMonitorDeferralUpdate,
+} from "./issue-monitor-deferral.js";
 
 type HeartbeatQueue = ReturnType<typeof createHeartbeatQueue>;
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
@@ -296,6 +302,7 @@ export function createHeartbeatScheduling(
     agentId: string | null;
     runId: string | null;
     activitySource: "manual" | "scheduled";
+    onExecutionDeferred?: (cause: string, recoveryActionId?: string | null) => void;
   }) {
     const reviewPathLost =
       input.claimed.status === "in_review" &&
@@ -417,7 +424,8 @@ export function createHeartbeatScheduling(
     const wake = accepted ?? await enqueueWakeup(input.claimed.assigneeAgentId!, {
       issueStateGuard: { statuses: [input.claimed.status], assigneeAgentId: input.claimed.assigneeAgentId!,
         monitorNextCheckAt: input.scheduledAtIso,
-        monitorWakeRequestedAt: input.claimed.monitorWakeRequestedAt!.toISOString() },
+        monitorWakeRequestedAt: input.claimed.monitorWakeRequestedAt!.toISOString(),
+        onExecutionDeferred: input.onExecutionDeferred },
       source: "automation",
       triggerDetail: "system",
       reason: "issue_monitor_recovery",
@@ -485,18 +493,35 @@ export function createHeartbeatScheduling(
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
-    const recover = () => performIssueMonitorRecovery(input);
+    let recoveryDeferredCause: string | null = null;
+    let recoveryDeferredActionId: string | null = null;
+    const recover = () => performIssueMonitorRecovery({
+      ...input,
+      onExecutionDeferred: (cause, recoveryActionId) => {
+        recoveryDeferredCause = cause;
+        recoveryDeferredActionId = recoveryActionId ?? null;
+      },
+    });
     if (input.recoveryPolicy === "wake_owner") {
       try {
         if (!await recover()) {
+          const blockerCause = recoveryDeferredCause &&
+            ([...EXECUTION_RECONCILIATION_CAUSES, "execution_owner_active"] as readonly string[]).includes(recoveryDeferredCause)
+            ? recoveryDeferredCause : undefined;
           await releaseIssueMonitorWithDiagnostic(input.claimed, input, {
-            action: "issue.monitor_deferred", reason: "monitor_recovery_deferred",
+            action: "issue.monitor_deferred",
+            reason: "monitor_recovery_deferred",
+            ...(blockerCause ? { blockerCause } : {}),
+            blockerRecoveryActionId: recoveryDeferredActionId,
+            timeoutAt: parseMonitorDate(input.monitor?.timeoutAt ?? null),
           });
           return { outcome: "skipped" as const, reason: "monitor_recovery_deferred" };
         }
       } catch (error) {
         await releaseIssueMonitorWithDiagnostic(input.claimed, input, {
-          action: "issue.monitor_dispatch_failed", reason: "monitor_recovery_failed",
+          action: "issue.monitor_dispatch_failed",
+          reason: "monitor_recovery_failed",
+          timeoutAt: parseMonitorDate(input.monitor?.timeoutAt ?? null),
         });
         throw error;
       }
@@ -575,7 +600,7 @@ export function createHeartbeatScheduling(
     return {
       ...patch,
       executionPolicy: sql`nullif(${issues.executionPolicy} - 'monitor', '{}'::jsonb)`,
-      executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
+      executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb) - 'monitorDeferral',
         '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
     };
   }
@@ -594,9 +619,24 @@ export function createHeartbeatScheduling(
     input: Pick<Parameters<typeof dispatchClaimedIssueMonitor>[1],
       "now" | "actorType" | "actorId" | "agentId" | "runId" | "activitySource">,
     diagnostic: { action: "issue.monitor_deferred" | "issue.monitor_dispatch_failed";
-      reason: string; blockerCause?: string; httpStatus?: number; countUnclassifiedAttempt?: boolean },
+      reason: string; blockerCause?: string; blockerRecoveryActionId?: string | null;
+      httpStatus?: number; timeoutAt?: Date | null; countUnclassifiedAttempt?: boolean },
   ) {
     const publications: ActivityPublication[] = [];
+    const scheduledAtIso = claimed.monitorNextCheckAt!.toISOString();
+    const resolveReleaseUpdate = (tx: Pick<Db, "select">) =>
+      resolveScheduledMonitorDeferralUpdate(tx, {
+        companyId: claimed.companyId,
+        issueId: claimed.id,
+        executionState: claimed.executionState,
+        scheduledAtIso,
+        now: input.now,
+        activitySource: input.activitySource,
+        reason: diagnostic.reason,
+        blockerRecoveryActionId: diagnostic.blockerRecoveryActionId,
+        timeoutAt: diagnostic.timeoutAt,
+      });
+
     const attemptCount = (claimed.monitorAttemptCount ?? 0) + (diagnostic.countUnclassifiedAttempt ? 1 : 0);
     // A null without a named wait is an unknown admission failure, not a
     // durable waiting path. Bound it using the existing monitor attempt ledger.
@@ -608,8 +648,12 @@ export function createHeartbeatScheduling(
       await db.transaction(async (tx) => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyStatusCardIssueChange(tx, claimed.companyId);
+        const { patch, quietWindowMs } = diagnostic.countUnclassifiedAttempt
+          ? { patch: { monitorWakeRequestedAt: null }, quietWindowMs: 5 * 60_000 }
+          : await resolveReleaseUpdate(tx as unknown as Db);
         const released = await tx.update(issues)
           .set({
+            ...patch,
             ...(exhausted ? monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({ issue: countedIssue,
               policy: normalizeIssueExecutionPolicy(claimed.executionPolicy), clearReason: "dispatch_skipped", clearedAt: input.now,
             })) : diagnostic.countUnclassifiedAttempt ? {
@@ -626,8 +670,8 @@ export function createHeartbeatScheduling(
         const [recent] = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
           eq(activityLog.companyId, claimed.companyId), eq(activityLog.entityType, "issue"),
           eq(activityLog.entityId, claimed.id), eq(activityLog.action, diagnostic.action),
-          gte(activityLog.createdAt, new Date(Date.now() - 5 * 60_000)),
-          sql`${activityLog.details}->>'nextCheckAt' = ${claimed.monitorNextCheckAt!.toISOString()}`,
+          gte(activityLog.createdAt, new Date(Date.now() - quietWindowMs)),
+          sql`${activityLog.details}->>'nextCheckAt' = ${scheduledAtIso}`,
           sql`${activityLog.details}->>'reason' = ${diagnostic.reason}`,
           sql`coalesce(${activityLog.details}->>'blockerCause', '') = ${diagnostic.blockerCause ?? ""}`,
         )).limit(1);
@@ -636,7 +680,7 @@ export function createHeartbeatScheduling(
           companyId: claimed.companyId, actorType: input.actorType, actorId: input.actorId,
           agentId: input.agentId, runId: input.runId, action: diagnostic.action,
           entityType: "issue", entityId: claimed.id,
-          details: { nextCheckAt: claimed.monitorNextCheckAt!.toISOString(),
+          details: { nextCheckAt: scheduledAtIso,
             checkedAt: input.now.toISOString(), attemptCount,
             reason: diagnostic.reason, source: input.activitySource,
             ...(diagnostic.countUnclassifiedAttempt ? { attemptLimit, cleared: Boolean(exhausted) } : {}),
@@ -652,7 +696,8 @@ export function createHeartbeatScheduling(
       await db.transaction(async tx => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         await notifyStatusCardIssueChange(tx, claimed.companyId);
-        await tx.update(issues).set({ monitorWakeRequestedAt: null, updatedAt: input.now })
+        const { patch } = await resolveReleaseUpdate(tx as unknown as Db);
+        await tx.update(issues).set(patch)
           .where(issueMonitorClaimCondition(claimed));
       });
       logger.warn({ err, issueId: claimed.id }, "issue monitor diagnostic could not be recorded");
@@ -805,11 +850,12 @@ export function createHeartbeatScheduling(
         }
       } else {
         let executionDeferredCause: string | null = null;
+        let executionDeferredRecoveryActionId: string | null = null;
         let dispatchDeferredReason: string | null = null;
         const wake = await enqueueWakeup(targetAgentId, {
           issueStateGuard: { statuses: [claimed.status], assigneeAgentId: claimed.assigneeAgentId,
             monitorNextCheckAt: scheduledAtIso, monitorWakeRequestedAt: claimed.monitorWakeRequestedAt!.toISOString(),
-            onExecutionDeferred: cause => { executionDeferredCause = cause; },
+            onExecutionDeferred: (cause, recoveryActionId) => { executionDeferredCause = cause; executionDeferredRecoveryActionId = recoveryActionId ?? null; },
             onDispatchDeferred: reason => {
               // Static codes only; never copy provider text into activity.
               if (["interaction_delivery_pending", "case_handoff_pending", "conversation_wake_ineligible",
@@ -857,6 +903,8 @@ export function createHeartbeatScheduling(
           await releaseIssueMonitorWithDiagnostic(claimed, input, {
             action: "issue.monitor_deferred", reason, ...(blockerCause ? { blockerCause } : {}),
             countUnclassifiedAttempt: !executionDeferredCause && !dispatchDeferredReason,
+            blockerRecoveryActionId: executionDeferredRecoveryActionId,
+            timeoutAt: parseMonitorDate(monitor?.timeoutAt ?? null),
           });
           return { outcome: "skipped" as const, reason };
         }
@@ -942,8 +990,10 @@ export function createHeartbeatScheduling(
         }
       }
       await releaseIssueMonitorWithDiagnostic(claimed, input, {
-        action: "issue.monitor_dispatch_failed", reason: "monitor_dispatch_failed",
+        action: "issue.monitor_dispatch_failed",
+        reason: "monitor_dispatch_failed",
         ...(err instanceof HttpError ? { httpStatus: err.status } : {}),
+        timeoutAt: parseMonitorDate(monitor?.timeoutAt ?? null),
       });
       throw err;
     }
@@ -1020,7 +1070,6 @@ export function createHeartbeatScheduling(
         .update(issues)
         .set({
           monitorWakeRequestedAt: now,
-          updatedAt: now,
         })
         .where(
           and(
@@ -1070,6 +1119,7 @@ export function createHeartbeatScheduling(
           noActiveNativeMonitorRun(),
           sql`${issues.monitorNextCheckAt} is not null`,
           lte(issues.monitorNextCheckAt, now),
+          eligibleDeferredMonitorCondition(now),
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review"]),
@@ -1094,7 +1144,6 @@ export function createHeartbeatScheduling(
           .update(issues)
           .set({
             monitorWakeRequestedAt: now,
-            updatedAt: now,
           })
           .where(
             and(
@@ -1102,6 +1151,7 @@ export function createHeartbeatScheduling(
               noActiveNativeMonitorRun(),
               sql`${issues.monitorNextCheckAt} is not null`,
               lte(issues.monitorNextCheckAt, now),
+              eligibleDeferredMonitorCondition(now),
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review"]),
@@ -1154,13 +1204,12 @@ export function createHeartbeatScheduling(
 
   async function nextIssueMonitorAt(): Promise<number | null> {
     if ((await getSchedulingSuppression(true)).suppressed) return null;
-    const [row] = await db.select({ at: sql<string | null>`min(greatest(${issues.monitorNextCheckAt},
-      ${issues.monitorWakeRequestedAt} + interval '5 minutes' + interval '1 millisecond'))` })
+    const [row] = await db.select({ at: nextIssueMonitorAtSelectSql() })
       .from(issues).innerJoin(companies, eq(companies.id, issues.companyId))
       .where(and(eq(companies.status, "active"), noActiveNativeMonitorRun(),
-        sql`${issues.monitorNextCheckAt} is not null`, isNull(issues.assigneeUserId),
+        sql`${issues.monitorNextCheckAt} is not null`, nextIssueMonitorWhereCondition(),
+        isNull(issues.assigneeUserId),
         sql`${issues.assigneeAgentId} is not null`, inArray(issues.status, ["in_progress", "in_review"])));
-
 
     return row?.at == null ? null : new Date(row.at).getTime();
   }

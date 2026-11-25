@@ -33,8 +33,19 @@ Dashboard subscription quota sources are company-scoped operator configuration:
 Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `9502a12252208d314f61a23c30589b9f31dc82f2` (2026-11-25 integration; not deployed). Previous sync base: `ff68490d03601cdced37e21d919affb079fafc61`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `331e1a9fd3891b5be21d6bb1cd7edab58cd29fce` (2026-11-26 integration; not deployed). Previous sync base: `9502a12252208d314f61a23c30589b9f31dc82f2`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
+
+## 2026-11-26 upstream merge (HOM-638; not deployed)
+
+Accumulate 89 upstream commits through `331e1a9fd3891b5be21d6bb1cd7edab58cd29fce`
+on HOM-604 `bcebb0f9d2`, with main `68c5c4b284` merged first. Preserve upstream
+0506–0509 and move fork SQL 0506–0518 to 0510–0522 byte-for-byte, with original
+journal timestamps. Owned empty/main/HOM-604 migrations pass (521 / 511→521 /
+517→521), fork replay 0. Retain upstream test splits with fork assertions and
+liveness-first, native Chat, host and agy_local contracts. Decisions and the current
+verification status: [sync-decisions](/HOM/issues/HOM-638#document-sync-decisions).
+Thursday integration only; no deployment, restart or merge into michael/main.
 
 ## 2026-11-25 upstream merge (HOM-604; not deployed)
 

@@ -749,11 +749,13 @@ export const issuesApi = {
     clientRequestId?: string,
     voiceSessionId?: string,
     deliveryMode?: "steer" | "queue",
+    nativeCommand?: "swarm",
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
         ...(deliveryMode ? { deliveryMode } : {}),
+        ...(nativeCommand ? { nativeCommand } : {}),
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(voiceSessionId ? { metadata: { version: 1, voiceInput: { sessionId: voiceSessionId },
           sections: [{ title: "Voice input", rows: [{ type: "key_value", label: "Source", value: "Speech recognition; not an approval" }] }] } } : {}),

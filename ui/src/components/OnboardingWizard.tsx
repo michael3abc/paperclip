@@ -3,7 +3,7 @@ import { cancelAdapterLoginSession, cancelPendingAdapterLogin, matchesAdapterLog
 import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
-import { runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
+import { blocksAgentCreate, runOnboardingConnectionTest } from "../lib/onboarding-connection-test";
 import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { healthApi } from "@/api/health";
@@ -141,7 +141,11 @@ import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
-import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "@/lib/analytics/onboarding-analytics";
+import {
+  captureOnboardingStepCompleted,
+  captureOnboardingStepFailed,
+  useOnboardingAnalytics,
+} from "@/lib/analytics/onboarding-analytics";
 import {
   ArrowLeft,
   ArrowRight,
@@ -182,19 +186,6 @@ function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unkn
   return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
     ? savedAdapterType
     : "claude_local";
-}
-
-/**
- * True when an adapter-test result blocks a hire. A `fail` status always
- * blocks. A `warn` or a `pass` status blocks too when a check reports
- * `ADAPTER_AUTH_MISSING_CHECK_CODE`. That check means the agent has no
- * working authentication, so it cannot run. A `warn` with no such check
- * still lets the hire proceed. The wizard widened the gate for missing
- * authentication only, not for every other warning.
- */
-function blocksAgentCreate(result: AdapterEnvironmentTestResult): boolean {
-  if (result.status === "fail") return true;
-  return result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
 }
 
 /** True when `value` is a plain object, so callers can spread it as env config. */
@@ -802,7 +793,7 @@ function OnboardingWizardInner({
   // carried as an env user secret on the hired agent (see buildHermesConfig),
   // even though the config form maps it to OpenRouter AI connections.
   const managedProvider = adapterType === "hermes_local" ? undefined : aiProviderForAdapter(adapterType);
-  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" || managedProvider === "antigravity" ? managedProvider : undefined;
+  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" || (managedProvider === "antigravity" || (managedProvider === "google" && adapterType === "antigravity_runtime")) ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType) return gatewayConnection.binding;
     const restoredBinding = restoredSetup?.companyId === createdCompanyId
@@ -1191,7 +1182,16 @@ function OnboardingWizardInner({
   // input here, so this gate alone only decides whether the login mechanism
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && resolvedLoginEnvironment?.driver === "local" && (localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const localAiLoginSupported = Boolean(localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const hostedGoogleAiLoginSupported = Boolean(localLoginHealth.data?.hostedGoogleAiLoginSupported);
+  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && (
+    managedSubscriptionProvider === "google"
+      ? (hostedGoogleAiLoginSupported || (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported))
+      : (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported)
+  );
+  const googleHostedRedirect: boolean | "optional" = managedSubscriptionProvider === "google" && hostedGoogleAiLoginSupported
+    ? (localAiLoginSupported ? "optional" : true)
+    : false;
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
@@ -2006,6 +2006,7 @@ function OnboardingWizardInner({
       navigate(`${prefix ? `/${prefix}` : ""}/chats/${agentId}`);
     } catch (err) {
       captureOnboardingStepCompleted("launch", "failed");
+      captureOnboardingStepFailed({ step: "launch", reason: "launch_failed" });
       setError(err instanceof Error ? err.message : "Failed to open your chat. Please try again.");
     } finally {
       setLoading(false);
@@ -2052,11 +2053,19 @@ function OnboardingWizardInner({
       apiKeySecretRef.current = { key, companyId, envKey, binding: legacyStored.binding };
       return true;
     } catch (err) {
-      if (isCurrent()) setError(
-        err instanceof Error
-          ? `Could not store the API key: ${describeError(err).body}`
-          : "Could not store the API key.",
-      );
+      if (isCurrent()) {
+        captureOnboardingStepFailed({
+          step: "connect_model",
+          reason: "api_key_save_failed",
+          provider: managedProvider ?? adapterType,
+          method: "api_key",
+        });
+        setError(
+          err instanceof Error
+            ? `Could not store the API key: ${describeError(err).body}`
+            : "Could not store the API key.",
+        );
+      }
       return false;
     }
   }
@@ -2312,6 +2321,12 @@ function OnboardingWizardInner({
           managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
         } catch {
           if (!testIsCurrent()) return null;
+          captureOnboardingStepFailed({
+            step: "connect_model",
+            reason: "environment_test_failed",
+            provider: managedProvider ?? adapterType,
+            method: credentialMode === "api" ? "api_key" : "subscription",
+          });
           setAdapterEnvError(
             "Could not load environment settings to determine which environment to test in. Retry the test.",
           );
@@ -2402,12 +2417,26 @@ function OnboardingWizardInner({
           { signal },
         );
         if (!testIsCurrent()) return null;
+        if (blocksAgentCreate(result)) {
+          captureOnboardingStepFailed({
+            step: "connect_model",
+            reason: "environment_test_failed",
+            provider: managedProvider ?? adapterType,
+            method: credentialMode === "api" ? "api_key" : "subscription",
+          });
+        }
         setAdapterEnvResult(result);
         adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
         return result;
       });
     } catch (err) {
       if (!selectionIsCurrent()) return null;
+      captureOnboardingStepFailed({
+        step: "connect_model",
+        reason: "environment_test_failed",
+        provider: managedProvider ?? adapterType,
+        method: credentialMode === "api" ? "api_key" : "subscription",
+      });
       adapterEnvErrorSelectionRef.current = selection || null;
       setAdapterEnvError(
         err instanceof Error ? err.message : "Adapter environment test failed"
@@ -2728,6 +2757,12 @@ function OnboardingWizardInner({
       setStep(5);
     } catch (err) {
       if (!isCurrent()) return;
+      captureOnboardingStepFailed({
+        step: "connect_model",
+        reason: "agent_create_failed",
+        provider: managedProvider ?? adapterType,
+        method: credentialMode === "api" ? "api_key" : "subscription",
+      });
       setError(err instanceof Error ? err.message : "Failed to create agent");
     } finally {
       if (hiringAgentRef.current === attempt) hiringAgentRef.current = null;
@@ -3442,6 +3477,14 @@ function OnboardingWizardInner({
                             phaseBeforeSubmitRef.current === "ready" ? "ready" : "waiting",
                           );
                         }}
+                        onLoginFailed={() => {
+                          captureOnboardingStepFailed({
+                            step: "connect_model",
+                            reason: "subscription_login_failed",
+                            provider: managedProvider ?? adapterType,
+                            method: "subscription",
+                          });
+                        }}
                         onConnected={(sessionId) => {
                           if (managedSubscriptionProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedSubscriptionProvider, method: "subscription", mode: "responsible_user" }, sessionId };
                           setConnectAuthUrl(null);
@@ -3483,7 +3526,7 @@ function OnboardingWizardInner({
                       />
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
-                        <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
+                        <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
                       ) : adapterType === "agy_local" ? (
                         <p className="text-xs text-muted-foreground">Antigravity is not signed in on this machine. Run agy in your terminal to sign in, or connect with an API key.</p>
                       ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null

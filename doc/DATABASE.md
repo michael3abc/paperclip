@@ -742,13 +742,15 @@ ancestor merge bases with `origin/michael/main` and `upstream/master`. Otherwise
 it uses `origin/master`, then `master`. An explicit `--base` uses only that ref.
 This recognizes byte-preserving renumbering and inherited upstream SQL, while
 still checking edits under existing filenames and SQL from unmerged tips.
-HOM-604 preserves upstream 0500–0505 and moves the 13 fork SQL files to
-0506–0518 without changing SQL bytes or original journal timestamps. The
-top-level registry includes upstream 0505 and fork 0518. Owned migration
-qualification covers an empty database, d8b8658a53 (six upstream additions),
-and ea2bf05a9e (three additions), with no fork replay or history edits. This
-authorship guard is not production upgrade proof: all pending upstream SQL still
-needs release compatibility review and the mandatory isolated DB clone upgrade.
+HOM-638 preserves upstream 0500–0509 and moves the 13 fork SQL files to
+0510–0522 without changing SQL bytes or original journal timestamps. The
+top-level registry includes upstream 0505, 0507, 0508 and fork 0522. Owned migration
+qualification covers an empty database (521 entries), 68c5c4b284 (511→521, ten
+upstream additions) and bcebb0f9d2 (517→521, four additions), with no fork replay
+or history edits. The combined snapshot is rebuilt with Drizzle's schema serializer;
+`pnpm --filter @paperclipai/db generate` must then report no schema changes.
+This authorship guard is not production upgrade proof: all pending upstream SQL
+still needs release compatibility review and the mandatory isolated DB clone upgrade.
 The pull-request policy job uses `.github/scripts/check-pr-migration-order.mjs`. Migrations
 that were already on `master` when the classifier shipped are not annotated.
 
@@ -2046,7 +2048,7 @@ preserved; snapshot pruning follows the five-newest-snapshots rule.
 
 ### LRH external waits
 
-Migration `0518_ordinary_stardust.sql` adds `issue_external_waits` and an
+Migration `0522_ordinary_stardust.sql` adds `issue_external_waits` and an
 `external-wait-completed:` partial unique wake index. The prefix is new, so prior
 releases cannot violate it. The large wake table index builds concurrently;
 this migration is registered for top-level execution and every statement is

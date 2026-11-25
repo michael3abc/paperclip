@@ -62,6 +62,8 @@ recovery, stranded-issue reconciliation).
   at the 5th consecutive failure.
 - Deterministic: bad configuration a retry cannot fix. No automatic retry; one
   notice per (issue, code). Notices never block dispatch.
+  A refused Antigravity `/swarm` (`antigravity_swarm_unavailable`) is also
+  deterministic; automatic continuation never repeats a refused command.
   This includes sandbox disk exhaustion (native_sandbox_disk_full and
   sandbox_disk_full) and permanently denied agent-interaction delivery
   (agent_interaction_delivery_denied), and Bridge model/provider configuration

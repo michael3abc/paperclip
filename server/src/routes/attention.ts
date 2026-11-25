@@ -1,3 +1,5 @@
+import { attentionRunHistory } from "../services/attention-provider-limits.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { Router, type Request } from "express";
 import { and, eq } from "drizzle-orm";
 import { principalPermissionGrants, type Db } from "@paperclipai/db";
@@ -14,6 +16,7 @@ import {
   type AttentionTransferResult,
 } from "@paperclipai/shared";
 import { attentionService } from "../services/attention.js";
+import { createCompanySearchRateLimiter } from "../services/company-search-rate-limit.js";
 import {
   attentionHandledDetails,
   attentionHandledFor,
@@ -33,7 +36,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { cancelApprovalAndNotify } from "./approvals.js";
 import { withdrawIssueThreadInteractionAndNotify } from "./issues.js";
 
-const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "archived", "all"];
+const ATTENTION_FEED_VIEWS: readonly AttentionFeedView[] = ["mine", "unassigned", "company", "archived", "all", "waiting"];
 
 function optionalQueryString(value: unknown, field: string) {
   if (value === undefined) return undefined;
@@ -47,6 +50,7 @@ export function attentionRoutes(
 ) {
   const router = Router();
   const svc = attentionService(db);
+  const runHistoryRateLimiter = createCompanySearchRateLimiter();
   const heartbeat = heartbeatService(db, { pluginWorkerManager: options.pluginWorkerManager });
   const decisions = decisionService(db, options.decisionServiceOptions ?? {
     wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat.wakeup),
@@ -120,6 +124,25 @@ export function attentionRoutes(
     const companyId = req.params.companyId as string;
     const userId = await attentionReader(req, companyId);
     res.json(await svc.taskIndex(companyId, { userId: userId, actor: req.actor }));
+  });
+
+  router.get("/companies/:companyId/attention/run-history", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
+    const cursor = z.object({ at: z.string().datetime(), id: z.string().uuid() }).strict();
+    const before = Object.keys(req.query).length ? cursor.safeParse(req.query) : null;
+    if (before && !before.success) throw badRequest("Invalid run history cursor");
+    const rate = runHistoryRateLimiter.consume({ companyId, actorType: "board", actorId: req.actor.userId });
+    res.setHeader("X-RateLimit-Limit", String(rate.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rate.remaining));
+    if (!rate.allowed) {
+      res.setHeader("Retry-After", String(rate.retryAfterSeconds));
+      res.status(429).json({ error: "Run history rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds });
+      return;
+    }
+    res.json(await attentionRunHistory(db, companyId, await issueReadSqlCondition(db, req.actor), before?.data));
   });
 
   router.get("/companies/:companyId/attention/history", async (req, res) => {

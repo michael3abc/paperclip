@@ -12,9 +12,9 @@ export type LocalBrowserLoginState = {
   code?: string;
   outcome?: "success" | "failure";
   error?: string;
-  /** Claude: one-time code (fire and forget). Google: pasted redirect address, validated and replayed by the runner. */
   submitCode?: (code: string) => void | Promise<void>;
-  abort: () => void;
+  submitRedirect?: (rawRedirectUrl: string) => Promise<void>;
+  abort: () => void | Promise<void>;
 };
 
 // Node has no built-in PTY API. Python's standard-library pty module supplies

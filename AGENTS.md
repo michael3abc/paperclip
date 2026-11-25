@@ -54,7 +54,7 @@ manual pause still apply and revoke automatic retry. New human or project-main
 input supersedes automatic retry of a failed predecessor and keeps its own input
 receipt. See `docs/agents/execution-semantics.md`.
 Sandbox disk exhaustion (native_sandbox_disk_full, sandbox_disk_full) and permanent
-agent_interaction_delivery_denied are deterministic in the unified classifier.
+agent_interaction_delivery_denied and antigravity_swarm_unavailable are deterministic in the unified classifier.
 Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
 require system interruption, process loss or controller loss. Ordinary failures keep
 their failure counter and provider retry deadline.
@@ -419,10 +419,12 @@ preserve human, declared, dependency and newer blocks.
 
 ## Native session bridge
 
-HOM-604 retains upstream migration numbers 0500–0505 and moves fork SQL to
-0506–0518 without changing SQL bytes or original journal timestamps. Keep the
+HOM-638 retains upstream migration numbers 0500–0509 and moves fork SQL to
+0510–0522 without changing SQL bytes or original journal timestamps. Keep the
 top-level migration execution registry aligned with renamed files. Preserve upstream
-0505_nice_rawhide_kid.sql and fork 0518_ordinary_stardust.sql in that registry.
+0505_nice_rawhide_kid.sql, 0507_special_kang.sql, 0508_normal_riptide.sql and fork
+0522_ordinary_stardust.sql in that registry. Owned upgrade qualification covers
+empty, 68c5c4b284 (ten upstream additions) and bcebb0f9d2 (four additions), fork replay 0.
 Provider quota without a reported reset remains transient under the fork classifier;
 upstream account-action hints never gate automatic retry. Antigravity
 ACP 1.5.2 uses one platform-aware admission source with Linux `/proc/self/exe`,
