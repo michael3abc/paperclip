@@ -326,6 +326,9 @@ describeEmbeddedPostgres("issue queued-comment steering routes", () => {
       });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       expect(response.body.executionWait?.reason).not.toBe("first_turn_pending");
+      // The fork acknowledges durable Interrupt before background cancellation
+      // settles (see the shared harness and acknowledgeInterruptBeforeStop).
+      await settleInterruptWork();
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
       expect(wake!.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "queue-owner" });
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
