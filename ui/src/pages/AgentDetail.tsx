@@ -139,6 +139,10 @@ import {
 } from "../components/ProviderTraceStatusBadge";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { agentRouteRef } from "../lib/utils";
+import {
+  PAPERCLIP_MANAGEMENT_PERMISSION_DESCRIPTION,
+  PAPERCLIP_MANAGEMENT_PERMISSION_LABEL,
+} from "../lib/paperclip-management-permission";
 import { syncAgentRouteAfterRename } from "./agent-detail/agent-route";
 import { InstructionsBundleSettings } from "./agent-detail/InstructionsBundleSettings";
 import { AgentAllowedConnectors } from "./agent-detail/AgentAllowedConnectors";
@@ -1839,14 +1843,14 @@ export function ConfigurationTab({
           </div>
           <div className="flex min-h-11 items-center justify-between gap-4 px-(--agent-detail-module-inset) py-2 text-sm">
             <div className="space-y-1">
-              <div>Can set fixed working directories</div>
+              <div>{PAPERCLIP_MANAGEMENT_PERMISSION_LABEL}</div>
               <p className="text-xs text-muted-foreground">
-                Lets this agent set another CC Pocket agent&apos;s fixed working directory on this organization&apos;s Bridge hosts, for example when it creates a project main. Only the board can change this. New agents never start with it.
+                {PAPERCLIP_MANAGEMENT_PERMISSION_DESCRIPTION}
               </p>
             </div>
             <ToggleSwitch
               checked={canConfigureFixedWorkspace}
-              aria-label="Can set fixed working directories"
+              aria-label={PAPERCLIP_MANAGEMENT_PERMISSION_LABEL}
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents,

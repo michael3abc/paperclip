@@ -30,7 +30,7 @@ worktree creation or retirement.
   and `runtimeConfig.workspaceBinding`.
 - Setting a fixed working directory is operator-only, except for an agent whose
   permissions carry the board-granted `canConfigureFixedWorkspace` (HOM-611, default
-  off, Permissions page toggle "Can set fixed working directories"). Only a board
+  off, Permissions page toggle "Paperclip management", HOM-617; formerly "Can set fixed working directories"). Only a board
   `PATCH /api/agents/:id/permissions` changes it; other permission writers keep the
   saved value, and new or imported agents never start with it. Such an agent may set
   `{mode: "fixed", cwd}` on another CC Pocket agent at create or PATCH, still subject

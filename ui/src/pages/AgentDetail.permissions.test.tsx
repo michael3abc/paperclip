@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentPermissionUpdate } from "../api/agents";
 // The routed component: agents/:agentId/:tab → AgentDetailPage → ./AgentDetail.
 import { ConfigurationTab } from "./AgentDetail";
+import {
+  PAPERCLIP_MANAGEMENT_PERMISSION_DESCRIPTION,
+  PAPERCLIP_MANAGEMENT_PERMISSION_LABEL,
+} from "../lib/paperclip-management-permission";
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => vi.fn(),
@@ -77,15 +81,18 @@ describe("routed AgentDetail permissions tab", () => {
   const toggle = (label: string) =>
     container.querySelector<HTMLButtonElement>(`button[role="switch"][aria-label="${label}"]`);
 
-  it("shows the board-granted fixed working directory switch with its saved value", () => {
+  it("shows the board-granted Paperclip management switch with its saved value", () => {
     render({ canCreateAgents: false, canConfigureFixedWorkspace: true });
-    expect(container.textContent).toContain("Can set fixed working directories");
-    expect(toggle("Can set fixed working directories")?.getAttribute("aria-checked")).toBe("true");
+    expect(PAPERCLIP_MANAGEMENT_PERMISSION_LABEL).toBe("Paperclip management");
+    expect(container.textContent).toContain("Paperclip management");
+    expect(container.textContent).toContain(PAPERCLIP_MANAGEMENT_PERMISSION_DESCRIPTION);
+    expect(container.textContent).not.toContain("Can set fixed working directories");
+    expect(toggle(PAPERCLIP_MANAGEMENT_PERMISSION_LABEL)?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("shows the switch off when the grant is absent and sends only an explicit change", () => {
     const mutate = render({ canCreateAgents: false });
-    const fixed = toggle("Can set fixed working directories")!;
+    const fixed = toggle(PAPERCLIP_MANAGEMENT_PERMISSION_LABEL)!;
     expect(fixed.getAttribute("aria-checked")).toBe("false");
     act(() => fixed.click());
     expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ canConfigureFixedWorkspace: true }));
