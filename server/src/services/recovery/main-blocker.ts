@@ -45,8 +45,9 @@ export function mainBlockerRetryDecision(run: typeof heartbeatRuns.$inferSelect,
   { kind: "superseded_by_input" | "transient"; reason: string; failures: number; retryAt: Date } | null {
   const result = object(run.resultJson), cancellation = object(result.cancellation);
   const failures = notice.failures ?? 0;
-  if (run.status === "cancelled" && cancellation.source === "queued_message")
-    return { kind: "superseded_by_input", reason: "superseded_by_queued_input", failures, retryAt: new Date() };
+  if (run.status === "cancelled" && cancellation.source === "queued_message" && object(cancellation.initiator).type === "user")
+    // Let the human's own queued turn start first; main is then busy and the resend waits for it.
+    return { kind: "superseded_by_input", reason: "superseded_by_queued_input", failures, retryAt: runFailureRetryAt(1) };
   // Owner Stop/cancel revokes automatic retry.
   if (run.status === "cancelled" && object(cancellation.initiator).type === "user") return null;
   const code = run.errorCode ?? (run.status === "timed_out" ? "timed_out" : null);

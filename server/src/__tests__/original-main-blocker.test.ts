@@ -178,7 +178,8 @@ describe("original main blocker delivery", () => {
     // The Owner's own Chat turn is running when the notice is checked again.
     const [ownerTurn] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.mainId, issueId: f.conversationId,
       status: "running", contextSnapshot: { issueId: f.conversationId } }).returning();
-    await f.service.check(f.action.id); await f.service.check(f.action.id);
+    expect(await f.service.check(f.action.id)).toBeTypeOf("number");
+    await expireRetry(f); await f.service.check(f.action.id); await f.service.check(f.action.id);
     expect(await f.cards()).toHaveLength(0); expect(f.wakeup).toHaveBeenCalledTimes(1);
     expect(readMainBlockerNotice(await f.read())).toMatchObject({ status: "waiting_main", attempt: 2, failures: 0,
       previousAttempts: [{ wakeId: first.wakeId, runId: first.runId, reason: "superseded_by_queued_input" }] });
