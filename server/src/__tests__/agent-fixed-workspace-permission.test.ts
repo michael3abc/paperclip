@@ -189,7 +189,7 @@ describeEmbeddedPostgres("agent fixed working directory permission", () => {
   it("still refuses other hosts, disallowed directories, mismatches and the agent's own binding", async () => {
     const s = await seed();
     const app = asAgent(s.granted.id);
-    const post = (body: unknown) => request(app).post(`/api/companies/${companyId}/agents`).send(body);
+    const post = (body: object) => request(app).post(`/api/companies/${companyId}/agents`).send(body);
     const inside = path.join(allowedRoot, "inside");
 
     const otherHost = await post(mainBody(inside, { hostId: "host-b" }));
