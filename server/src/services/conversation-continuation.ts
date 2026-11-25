@@ -127,6 +127,16 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
   }, activeLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
+      // Match heartbeat_runs_company_origin_issue_idx before evaluating the
+      // expensive conversation/lease predicates. Keep the exact predicate
+      // below: taskId/taskKey fallback must not broaden legacy ownership.
+      // Empty legacy issueId values are intentionally not normalized here.
+      issueId ? sql`coalesce(
+        ${heartbeatRuns.nativeIssueId}::text,
+        nullif(${heartbeatRuns.contextSnapshot}->>'issueId', ''),
+        nullif(${heartbeatRuns.contextSnapshot}->>'taskId', ''),
+        nullif(${heartbeatRuns.contextSnapshot}->>'taskKey', '')
+      ) = ${issueId}` : undefined,
       conversationRunPredicate(),
       or(
         eq(heartbeatRuns.nativeIssueId, canonicalExecutionUuid(sql`${issueId}::text`)),

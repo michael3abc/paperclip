@@ -60,6 +60,15 @@ describePostgres("execution identity query contracts", () => {
     await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, legacy.id));
     expect(await getConversationOwnershipBlocker(db, f.companyId, f.issueId)).toBeNull();
   });
+  it("does not admit task aliases through the index prefilter, and preserves empty legacy issue IDs", async () => {
+    const f = await fixture();
+    await run(f, { taskId: f.issueId }, null, process.pid);
+    await run(f, { issueId: "", taskKey: f.issueId }, null, process.pid);
+    expect(await getConversationOwnershipBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const empty = await run(f, { issueId: "" }, null, process.pid);
+    expect(await getConversationOwnershipBlocker(db, f.companyId, "")).toMatchObject({ runId: empty.id });
+    expect(await getConversationOwnershipBlocker(db, randomUUID(), "")).toBeNull();
+  });
   it("delivers canonical same-company task IDs and keeps malformed IDs private", async () => {
     const f = await fixture(), foreign = await fixture();
     const contexts: unknown[] = [f.issueId, f.issueId.toUpperCase(), "bad", `{${f.issueId}}`, f.issueId.replaceAll("-", ""), null, 42, {}, [f.issueId], foreign.issueId];

@@ -1,3 +1,4 @@
+import { ATTENTION_STALE_TIME_MS } from "@/lib/coordinator-attention";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
@@ -198,6 +199,7 @@ function ClassicWhatNeedsMe() {
       ...activityBounds,
     }),
     enabled: !!selectedCompanyId && !!currentUserId,
+    staleTime: ATTENTION_STALE_TIME_MS,
     refetchOnWindowFocus: true,
   });
   const { data: feed, isLoading } = feedQuery;

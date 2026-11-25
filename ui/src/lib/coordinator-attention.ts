@@ -2,6 +2,9 @@ import { attentionReceiptText, type AttentionItem, type AttentionPersonalView, t
 import { queryKeys } from "./queryKeys";
 import { isInlineResolvable } from "./attention";
 
+// Route remounts reuse fresh data; live events and mutations still invalidate it.
+export const ATTENTION_STALE_TIME_MS = 30_000;
+
 /**
  * The pending feed for one person and one view (PAP-749 plan §1). The key
  * holds the user, so switching accounts never shows the previous person's

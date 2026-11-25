@@ -32,6 +32,13 @@ The feed accepts these query parameters:
 The response includes `items`, `totalCount`, `countsBySourceKind`, `viewCounts`,
 `deskBadgeCount`, and `nextCursor`. Related evidence shares one obligation lead
 and counts once. `deskBadgeCount` counts requests assigned to the viewer.
+Overlapping identical reads share work only within the same company, viewer and
+authorization context. A summary can join an in-progress, unfiltered complete
+feed, including a personal audience view; its totals still describe the default
+unfiltered feed. Otherwise it uses the counts-only projection. Completed results
+and failures are never cached by the server; filtered, archived and question-only
+reads cannot supply the default summary. Every route still authorizes its reader.
+
 Summary returns the same current counts without card bodies. Tasks also returns
 unique `taskIds` for visible requests. Neither endpoint returns card bodies.
 

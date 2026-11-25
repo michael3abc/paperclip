@@ -73,6 +73,11 @@ with the existing 60-second cadence. Bound PM status is the explicit full-feed
 navigation exception to upstream #18323; no bindings or listed Chat agents means no full-feed read. Keep
 the count-only summary separate and live-run/shared-polling ownership in callers.
 Do not restore the old Coordinator open-task query, chat inference or working ring.
+Attention feed, summary and task-index observers reuse fresh company/person/view
+queries for 30 seconds across route remounts and enabled-state changes. Live
+events and successful mutations still invalidate the attention prefix immediately;
+manual refresh remains available. PM sidebar status keeps its existing 60-second
+freshness and polling ownership.
 The status never changes dispatch,
 permissions, row order or agent configuration. Sidebar rows keep the neutral
 `ring-ring` keyboard focus ring; do not restore the browser default outline.
