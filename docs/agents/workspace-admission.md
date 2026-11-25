@@ -28,6 +28,17 @@ worktree creation or retirement.
   the next run instead of failing; they never reinterpret an in-flight run.
 - Bridge main-agent configuration records the same session cwd in adapter settings
   and `runtimeConfig.workspaceBinding`.
+- Setting a fixed working directory is operator-only, except for an agent whose
+  permissions carry the board-granted `canConfigureFixedWorkspace` (HOM-611, default
+  off, Permissions page toggle "Can set fixed working directories"). Only a board
+  `PATCH /api/agents/:id/permissions` changes it; other permission writers keep the
+  saved value, and new or imported agents never start with it. Such an agent may set
+  `{mode: "fixed", cwd}` on another CC Pocket agent at create or PATCH, still subject
+  to agents:create/agents:configure. The host (adapter `hostId`, model prefix and any
+  binding `hostId`) must agree and be in the company's host registry, `adapterConfig.cwd`
+  must match, and the Bridge adapter's `testEnvironment` (allowed directories) must
+  pass. Its own binding, `project_pm` bindings, config-revision rollback and
+  `requireTaskWorktree`/`requireProjectWorkspace` stay operator-only.
 
 ## Worktrees created by main agents
 

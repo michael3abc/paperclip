@@ -391,7 +391,7 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     const denied = await request(self).patch(`/api/agents/${s.agent.id}`)
       .send({ runtimeConfig: { workspaceBinding: { ...(await storedBinding()), allowCrossProject: true } } });
     expect(denied.status).toBe(403);
-    expect(denied.body.error).toMatch(/Only an operator can change a fixed working directory/);
+    expect(denied.body.error).toMatch(/Only an operator, or an agent the board allowed/);
     expect(await storedBinding()).not.toHaveProperty("allowCrossProject");
 
     const enabled = await request(operator).patch(`/api/agents/${s.agent.id}`)

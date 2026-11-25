@@ -44,7 +44,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
     getById,
 
-    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }, options?: { actorAgentId?: string | null }) => {
+    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }, options?: { actorAgentId?: string | null; allowFixedWorkspaceGrantChange?: boolean }) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "pending_approval") {
@@ -61,7 +61,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
         if (!current) return null;
         if (current.status === "pending_approval") throw conflict("Pending approval agent permissions cannot be changed before board approval");
-        const protectedPermissions = preserveAgentInteractionPermissions(current.permissions, permissions);
+        const protectedPermissions = preserveAgentInteractionPermissions(current.permissions, permissions, { allowFixedWorkspaceGrantChange: options?.allowFixedWorkspaceGrantChange === true });
         await notifyAttentionRetentionWork(tx, { companyId: current.companyId });
         return tx
         .update(agents)

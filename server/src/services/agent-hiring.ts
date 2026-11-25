@@ -1,5 +1,6 @@
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
+import { FIXED_WORKSPACE_PERMISSION_KEY, withoutInitialFixedWorkspacePermission } from "../lib/agent-fixed-workspace-permission.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
 import { initializeDurableAgentFiles } from "./agent-file-durability.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
@@ -50,8 +51,10 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
 
   const role = data.role ?? "general";
   // Only the permissions control records a CEO hiring restriction.
+  // HOM-611: the fixed-workspace grant is never part of a new agent; the board grants it afterwards.
   const requestedPermissions = data.permissions && typeof data.permissions === "object" && !Array.isArray(data.permissions)
-    ? Object.fromEntries(Object.entries(data.permissions).filter(([key]) => key !== CEO_HIRING_DENIAL_KEY)) : data.permissions;
+    ? Object.fromEntries(Object.entries(data.permissions).filter(([key]) => key !== CEO_HIRING_DENIAL_KEY
+      && key !== FIXED_WORKSPACE_PERMISSION_KEY)) : data.permissions;
   const normalizedPermissions = normalizeAgentPermissions(requestedPermissions, { context: "create" });
   const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
   const adapterType = data.adapterType ?? "process";
@@ -140,7 +143,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
   if (patch.permissions !== undefined) {
     // The pending-approval activation replays the original hire
     // request, so the new-agent creation default applies.
-    patch.permissions = normalizeAgentPermissions(preserveAgentInteractionPermissions(existing.permissions, patch.permissions), { context: "create" });
+    patch.permissions = normalizeAgentPermissions(preserveAgentInteractionPermissions(existing.permissions, withoutInitialFixedWorkspacePermission(patch.permissions)), { context: "create" });
   }
   if (hasApprovedAdapterConfig) {
     await agentCredentialService(txDb).enforceClaudeOAuthBindingClaim(txDb, {
