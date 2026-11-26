@@ -1,0 +1,49 @@
+@source "../agent-chat/portfolio-screens.stories.tsx";
+
+.portfolio-shell { display: flex; min-height: 100vh; }
+.portfolio-sidebar { display: flex; width: calc(var(--spacing) * 56); flex-shrink: 0; }
+.portfolio-main { max-width: calc(var(--spacing) * 264); }
+.portfolio-chat, .portfolio-todo, .portfolio-questions { max-width: calc(var(--spacing) * 200); }
+.portfolio-artifact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.portfolio-artifacts { max-width: calc(var(--spacing) * 240); }
+
+@media (max-width: 640px) {
+  .portfolio-sidebar { display: none; }
+  .portfolio-main { display: flex; flex-direction: column; padding: calc(var(--spacing) * 4); gap: calc(var(--spacing) * 4); }
+  .portfolio-main > * { margin-block: 0; }
+  .portfolio-main > div:first-child > p:last-child { font-size: var(--text-xs); }
+  .portfolio-todo > [data-testid="todo-panel"] { gap: calc(var(--spacing) * 3); }
+  .portfolio-todo [data-testid^="todo-open-"] { padding-block: calc(var(--spacing) * 2); }
+  .portfolio-conversation { gap: calc(var(--spacing) * 3); }
+  .portfolio-workers [aria-label="PM worker settings"] > fieldset > div { padding: calc(var(--spacing) * 3); }
+  .portfolio-workers [aria-label="PM worker settings"] .md\:grid-cols-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .portfolio-workers [aria-label="PM worker settings"], .portfolio-workers fieldset { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
+  .portfolio-workers [aria-label="PM worker settings"] > *, .portfolio-workers fieldset > * { margin-block: 0; }
+  .portfolio-workers fieldset > div { display: flex; flex-direction: column; gap: calc(var(--spacing) * 2); }
+  .portfolio-workers fieldset > div > * { margin-block: 0; }
+  .portfolio-workers label { font-size: var(--text-xs); }
+  .portfolio-workers { padding-bottom: calc(var(--spacing) * 2); }
+  .portfolio-costs > div:last-child { display: flex; flex-direction: column; gap: calc(var(--spacing) * 3); }
+  .portfolio-costs > div:last-child > * { margin-block: 0; }
+  .portfolio-costs > div:last-child > div:first-child { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--spacing) * 2); }
+  .portfolio-costs .text-2xl { font-size: var(--text-base); }
+  .portfolio-costs .pt-5 { padding: calc(var(--spacing) * 3); }
+  .portfolio-costs table th:nth-child(2), .portfolio-costs table td:nth-child(2),
+  .portfolio-costs table th:nth-child(3), .portfolio-costs table td:nth-child(3),
+  .portfolio-costs table th:nth-child(4), .portfolio-costs table td:nth-child(4) { display: none; }
+  .portfolio-costs .shrink-0.h-28 { width: calc(var(--spacing) * 20); height: calc(var(--spacing) * 20); }
+  .portfolio-costs [data-slot="card"] { padding-block: calc(var(--spacing) * 2); gap: calc(var(--spacing) * 2); }
+  .portfolio-costs > div:last-child > .md\:grid-cols-2 { gap: calc(var(--spacing) * 3); }
+  .portfolio-costs table th, .portfolio-costs table td { padding-block: calc(var(--spacing) * 1.5); }
+  .portfolio-costs > div:last-child > div:first-child [data-slot="card"] { padding-block: calc(var(--spacing) * 2); gap: calc(var(--spacing) * 2); }
+  .portfolio-costs [data-slot="card-header"], .portfolio-costs [data-slot="card-content"] { padding-inline: calc(var(--spacing) * 3); }
+  .portfolio-costs [data-slot="card-content"] > .flex.flex-col { flex-direction: row; align-items: center; }
+  .portfolio-artifact-grid { gap: calc(var(--spacing) * 3); }
+  .portfolio-artifact-grid .aspect-video { aspect-ratio: 1; }
+  .portfolio-artifact-grid img { object-fit: contain; }
+  .portfolio-artifact-grid h3 { overflow: visible; white-space: normal; line-height: var(--text-sm--line-height); }
+  .portfolio-artifact-grid h3 + div { display: none; }
+  .portfolio-artifact-grid h3[title] { font-size: var(--text-xs); }
+  .portfolio-artifact-grid .h-7 { height: auto; min-height: calc(var(--spacing) * 8); }
+  .portfolio-artifact-grid .mt-0\.5 { flex-wrap: wrap; }
+}

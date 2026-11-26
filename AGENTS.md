@@ -326,6 +326,12 @@ checks. See `/home/michael/services/README.md` for the deployment contract.
 
 ### Maps and Storybook
 
+Portfolio screenshots use the fictional component stories and bounded capture
+workflow in `doc/DEVELOPING.md` ("Fictional portfolio captures"). Keep their data
+under `ui/storybook/stories/portfolio/`; never connect them to a live database,
+agent runtime or provider. Scan source/DOM and review each final screenshot;
+component compositions must not be described as live-instance acceptance.
+
 The [feature map](maps/feature-map/README.md) and the sibling
 [agent access map](maps/agent-access-map/README.md) are optional references for
 user entry points, agent entry points, permission boundaries, verification

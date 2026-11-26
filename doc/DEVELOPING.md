@@ -2227,6 +2227,35 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+#### Fictional portfolio captures
+
+`ui/storybook/stories/agent-chat/portfolio-screens.stories.tsx` composes shipped
+components in a story-only shell. Its synthetic data and local PDF/image assets
+live in `ui/storybook/stories/portfolio/`; no dev database or provider is needed.
+These are component compositions, not acceptance evidence for a live application.
+
+Start an owned Storybook and capture all six scenes at desktop/mobile sizes in
+both themes:
+
+```sh
+pnpm --filter @paperclipai/ui storybook --host 127.0.0.1 --ci --no-open --disable-telemetry --exact-port --port 6017
+node scripts/portfolio-screens/capture.mjs http://127.0.0.1:6017 /absolute/output/screens
+```
+
+The capture script accepts only loopback Storybook, rejects production ports,
+blocks network API/external requests and external WebSockets, checks fixture and
+rendered DOM text, images, viewport overflow and unfinished content, and writes
+24 PNGs, quality-85 WebPs, bilingual captions, DOM text, a contact sheet and
+`verification.json`. The PDF thumbnail is rendered by the shipped pdf.js path
+from an in-memory, one-page synthetic PDF. When Tesseract is installed, each PNG
+also receives an OCR scan; otherwise review every screenshot manually. Review
+the contact sheet and individual files before packaging the output directory.
+The mobile story layout compacts worker fields and shows project totals without
+the desktop table's token breakdown. To redraw affected scenes in an existing
+output directory, pass their comma-separated filename prefixes as the optional
+third argument, for example `06-artifacts`. Existing unrelated receipts are kept.
+Stop the owned Storybook after capture.
+
 An issue's partial `workspaceStrategy` inherits omitted fields from the enabled project's strategy when both use the same type. For example, an issue can override `baseRef` without losing the project's provision, runtime provision, or teardown commands. An explicit value, including `null` or an empty string, replaces the project value. Clearing a command restores the runtime's usual default behavior; use `provisionCommand: "true"` for an explicit no-op. A different strategy type or a disabled project policy does not supply these defaults. An issue's `existingBranch` pin also excludes the project's `branchTemplate`.
 
 An issue can pin its isolated worktree to an exact pre-existing branch instead of a template-derived one — the contract PR-preparation tasks use. Set the issue's `executionWorkspaceSettings` to `{ "mode": "isolated_workspace", "workspaceStrategy": { "type": "git_worktree", "existingBranch": "<branch>" } }`. The validator requires isolated mode plus a `git_worktree` strategy and rejects `branchTemplate` alongside `existingBranch`. At dispatch the runtime attaches (never creates, renames, fast-forwards, or resets) that branch: it reuses a registered worktree that already has the branch checked out (including legacy `.worktrees/` paths), otherwise it attaches the branch under the managed worktree parent. A missing branch, an occupied worktree path on another branch, or a non-worktree strategy fails closed with a `workspace_validation_failed` error instead of falling back to the shared checkout or a derived branch, and an inherited `reuse_existing` workspace binding on a different branch is ignored in favor of realizing the pinned branch.
