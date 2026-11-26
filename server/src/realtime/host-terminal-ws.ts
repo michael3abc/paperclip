@@ -10,6 +10,7 @@ import type { HostTerminalSessions } from "../services/host-terminal-sessions.js
 interface TerminalSocket {
   readyState: number; bufferedAmount: number;
   send(data: string): void;
+  ping(): void;
   close(code?: number, reason?: string): void;
   terminate(): void;
   on(event: "message", handler: (data: Buffer, binary: boolean) => void): void;
@@ -38,6 +39,8 @@ export function hostTerminalOriginAllowed(req: IncomingMessage, publicUrl?: stri
 export function setupHostTerminalWebSocketServer(server: Server, db: Db, sessions: HostTerminalSessions, options: {
   publicUrl?: string;
   resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+  /** Protocol ping interval. Proxies such as Cloudflare drop sockets idle for 100 seconds. */
+  keepaliveMs?: number;
 }) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
   let stopped = false;
@@ -84,9 +87,12 @@ export function setupHostTerminalWebSocketServer(server: Server, db: Db, session
       ws.send(JSON.stringify(frame));
     };
     const timer = setTimeout(() => close("auth_timeout"), 5_000);
+    // A shell waiting for input sends nothing; ping so an idle prompt keeps its connection.
+    const keepalive = setInterval(() => { try { ws.ping(); } catch { /* closing */ } }, options.keepaliveMs ?? 25_000);
+    keepalive.unref();
     function close(reason: string, code: number | null = null) {
       if (ended) return;
-      ended = true; clearTimeout(timer);
+      ended = true; clearTimeout(timer); clearInterval(keepalive);
       send({ type: "closed", reason, exitCode: code });
       if (id) sessions.end(id, reason, code);
       // No unbounded closing handshake retaining an authenticated shell.

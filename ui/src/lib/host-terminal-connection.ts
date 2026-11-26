@@ -21,7 +21,7 @@ export type HostTerminalStatus = { phase: HostTerminalPhase; message: string };
  */
 export class HostTerminalConnection {
   private element = document.createElement("div");
-  private term = new Terminal({ cursorBlink: true, scrollback: 1000 });
+  private term = new Terminal({ cursorBlink: true, scrollback: 1000, rightClickSelectsWord: false });
   private addon = new FitAddon();
   private observer = new ResizeObserver(() => this.fit());
   private ws: WebSocket;
@@ -33,12 +33,20 @@ export class HostTerminalConnection {
     this.element.className = "h-full w-full";
     this.term.loadAddon(this.addon);
     this.term.onData(data => this.input(data));
-    // Let the browser handle paste, and copy when there is a selection.
+    // Ctrl+V is the browser's paste. Ctrl+C always reaches the shell as an interrupt;
+    // copy with the right mouse button instead.
     this.term.attachCustomKeyEventHandler(event => {
       if (event.type !== "keydown" || !event.ctrlKey || event.altKey || event.shiftKey) return true;
-      const key = event.key.toLowerCase();
-      return !(key === "v" || (key === "c" && this.term.hasSelection()));
+      return event.key.toLowerCase() !== "v";
     });
+    // Mouse right-click copies the selection, or pastes when nothing is selected.
+    // Touch long-press keeps the platform menu.
+    this.element.addEventListener("contextmenu", event => {
+      if ((event as PointerEvent).pointerType === "touch") return;
+      event.preventDefault();
+      event.stopPropagation();
+      void this.rightClick();
+    }, true);
     const url = new URL(session.wsPath, window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(url);
@@ -77,6 +85,21 @@ export class HostTerminalConnection {
     if (!this.opened || !this.element.clientWidth || !this.element.clientHeight) return;
     this.addon.fit();
     if (this.ready) this.send({ type: "resize", cols: Math.min(500, Math.max(2, this.term.cols)), rows: Math.min(300, Math.max(1, this.term.rows)) });
+  }
+
+  private async rightClick() {
+    try {
+      if (this.term.hasSelection()) {
+        await navigator.clipboard.writeText(this.term.getSelection());
+        this.term.clearSelection();
+      } else if (this.ready) {
+        const text = await navigator.clipboard.readText();
+        if (text) this.term.paste(text);
+      }
+    } catch {
+      // Clipboard access denied or unavailable; Ctrl+V still pastes.
+    }
+    this.focus();
   }
 
   input(data: string) { if (this.ready) this.send({ type: "input", data }); }
