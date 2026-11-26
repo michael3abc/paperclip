@@ -2102,13 +2102,20 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       string,
       { targetRunId: string; deliveryMode: string | null }
     >();
+    // A terminal delivery failure is settled evidence too: the answer is saved
+    // but nothing is waiting in a queue, so it must not keep a queued row.
+    const failedQuestionDeliveryIds = new Set<string>();
     for (const event of resolvedActivity) {
-      if (event.action !== "issue.question_response_delivered") continue;
       const details = event.details ?? {};
       const interactionId =
         typeof details["interactionId"] === "string"
           ? details["interactionId"]
           : null;
+      if (event.action === "issue.question_response_delivery_failed") {
+        if (interactionId) failedQuestionDeliveryIds.add(interactionId);
+        continue;
+      }
+      if (event.action !== "issue.question_response_delivered") continue;
       const targetRunId =
         typeof details["targetRunId"] === "string"
           ? details["targetRunId"]
@@ -2152,7 +2159,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           const delivery = answeredQuestions
             ? (questionDeliveryByInteractionId.get(interaction.id) ?? null)
             : null;
+          // Only a server-continued response waits for its source run to end.
+          // continuationPolicy "none" is caller-delivered: a native question or
+          // plan decision returns to the same waiting turn and never enters the
+          // queued-comments queue, so it has no queued state or Interrupt. The
+          // server holds no receipt for that delivery, so the row stays a saved
+          // answer rather than claiming delivery. Settled delivery evidence
+          // (delivered or failed) also ends the queued state.
           const queuedTargetRunId =
+            interaction.continuationPolicy !== "none" &&
+            !delivery &&
+            !failedQuestionDeliveryIds.has(interaction.id) &&
             interaction.sourceRunId &&
             interruptibleIssueRun?.id === interaction.sourceRunId &&
             interruptibleIssueRun.adapterType !== "paperclip_runner"
