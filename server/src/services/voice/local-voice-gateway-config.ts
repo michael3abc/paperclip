@@ -14,7 +14,7 @@ import { LOCAL_VOICE_OPENAI_VOICES } from "@paperclipai/shared";
 export type LocalVoiceEngine = "openai" | "gemini";
 
 export interface LocalVoiceGatewayConfig {
-  /** Base WebSocket URL of the realtime gateway, e.g. ws://192.168.66.11:8792 */
+  /** Base WebSocket URL of the realtime gateway, e.g. ws://gateway.example:8792 */
   url: string;
   keyFile: string;
   engine: LocalVoiceEngine;
