@@ -258,6 +258,16 @@ export async function readBoardQueuedComments(input: {
     actorType: input.actor.actorType,
     actorId: input.actor.actorId,
   });
+  // Bridge main Chats (Codex and Claude) steer follow-ups into the live turn;
+  // the browser only interrupts when the server selects "interrupt".
+  if (input.issue.conversationAgentId) queue.chatDeliveryMode = chatSteers ? "steer" : "interrupt";
+  if (pendingSteering) {
+    queue.steeringDelivery = { commentId: pendingSteering.commentId, status: pendingSteering.status };
+    queue.executionWait = { reason: "steering_unconfirmed", message: pendingSteering.status === "sending"
+      ? "Delivering supplementary input to the current turn…"
+      : "Supplementary input delivery is unconfirmed. It will not be sent again." };
+    queue.entries = queue.entries.map(entry => ({ ...entry, canEdit: false, canDiscard: false }));
+  }
   if (wake && queuedInteractionId(wake.payload)) {
     if (response?.source.requiresFreshSession) queue.steeringDisposition = "unsupported";
     queue.entries = response ? [{ comment: response.comment, source: response.source, position: 0, canEdit: false, canDiscard: false }] : [];
