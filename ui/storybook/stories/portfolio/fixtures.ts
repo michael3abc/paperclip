@@ -47,8 +47,8 @@ export const questions: IssueThreadInteraction[] = [
 export const workers: PmWorkerPolicyView = {
   documentPath: "WORKERS.md", document: "", revision: "demo-revision", documentHash: "demo-hash", warnings: [],
   policy: { version: 2, defaultSelectionId: "coding", workers: [
-    { agentId: "worker-a", harness: "codex_local", selections: [{ id: "coding", model: "Codex (GPT)", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "Implementation and focused checks" }] },
-    { agentId: "worker-b", harness: "claude_local", selections: [{ id: "review", model: "Claude Sonnet", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "Review and documentation" }] },
+    { agentId: "worker-a", harness: "codex_local", selections: [{ id: "coding", model: "Codex (GPT)", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "Implementation" }] },
+    { agentId: "worker-b", harness: "claude_local", selections: [{ id: "review", model: "Claude Sonnet", thinking: "high", permission: "approve-reads", speed: "standard", purpose: "Review & docs" }] },
   ] },
   catalog: [
     { agentId: "worker-a", name: "Worker A", harness: "codex_local", permissions: ["approve-reads"], models: [{ id: "Codex (GPT)", label: "Codex (GPT)", thinking: ["high"], speeds: ["standard"] }] },

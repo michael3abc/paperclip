@@ -29,7 +29,7 @@ const headings: Record<Screen, [string, string]> = {
   questions: ["Decisions", "Routine decisions move forward. People stay in control."], workers: ["Worker policy", "The right worker for each kind of work."],
   costs: ["Dashboard", "Understand usage across models and projects."], artifacts: ["Artifacts", "From agent work to something you can review."],
 };
-const agentMap = new Map([...["lead", "worker-a", "worker-b"].map((id, i) => [id, { id, name: ["Lead", "Worker A", "Worker B"][i] } as Agent] as const)]);
+const agentMap = new Map([...["lead", "worker-a", "worker-b"].map((id, i) => [id, { id, name: ["Main agent", "Worker A", "Worker B"][i] } as Agent] as const)]);
 
 function FixtureScope({ children }: { children: ReactNode }) {
   const client = useMemo(() => {
@@ -56,11 +56,11 @@ window.fetch = async (input, init) => {
 function Chat() {
   return <div className="portfolio-conversation space-y-5">
     <div className="flex justify-end"><p className="max-w-lg rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground">Prepare the product preview. Keep me posted on progress and decisions.</p></div>
-    <div className="flex items-center gap-2 text-sm font-medium"><Bot className="size-5" />Lead <span className="font-normal text-muted-foreground">· Claude Opus</span></div>
+    <div className="flex items-center gap-2 text-sm font-medium"><Bot className="size-5" />Main agent <span className="font-normal text-muted-foreground">· Claude Opus</span></div>
     <p className="text-sm leading-relaxed">The plan is ready. Worker A is building the workspace; Worker B has finished the data checks.</p>
     <div className="space-y-2">{tasks.map((task, i) => <div key={task.id}><div className="mb-1 flex justify-between text-xs text-muted-foreground"><span>{["Worker A · Codex (GPT)", "Worker B · Claude Sonnet"][i]}</span><span>{i ? "Completed" : "In progress"}</span></div><AgentTaskCard task={task} /></div>)}</div>
     <div className="space-y-2"><p className="text-xs font-medium text-muted-foreground">Native subagent</p><TaskChatSubagentCard defaultExpanded subagent={{ id: "accessibility-review", agentType: "Review", description: "Review keyboard navigation", model: "Claude Opus", status: "completed", activity: [], result: "Focus order and control labels are clear. Ready for the final review.", startedAtMs: Date.parse(now) - 42000, finishedAtMs: Date.parse(now) - 2000 }} /></div>
-    <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground"><span>Message Lead…</span><Button size="icon" aria-label="Send message"><ArrowUp /></Button></div>
+    <div className="flex items-center justify-between rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground"><span>Message Main agent…</span><Button size="icon" aria-label="Send message"><ArrowUp /></Button></div>
   </div>;
 }
 function Questions() {
@@ -68,7 +68,7 @@ function Questions() {
   const resolve = (outcome: "accepted" | "rejected") => setItems(current => current.map(item => item.kind === "request_confirmation"
     ? { ...item, status: outcome, resolvedByUserId: "demo-owner", resolvedAt: now, result: { version: 1, outcome } } : item));
   return <div className="space-y-6">
-    <div className="space-y-2 rounded-lg border border-border p-4"><p className="text-xs font-medium text-muted-foreground">Worker A → Lead · Answered by main</p><IssueThreadInteractionCard presentationVariant="coordinator-decision" interaction={items[0]} agentMap={agentMap} currentUserId="demo-owner" /></div>
+    <div className="space-y-2 rounded-lg border border-border p-4"><p className="text-xs font-medium text-muted-foreground">Worker A → Main agent · Answered by main</p><IssueThreadInteractionCard presentationVariant="coordinator-decision" interaction={items[0]} agentMap={agentMap} currentUserId="demo-owner" /></div>
     <div className="space-y-2 rounded-lg border border-border p-4"><p className="text-xs font-medium text-muted-foreground">Worker A → Owner · Human confirmation</p><IssueThreadInteractionCard presentationVariant="coordinator-decision" interaction={items[1]} agentMap={agentMap} currentUserId="demo-owner" onAcceptInteraction={() => resolve("accepted")} onRejectInteraction={() => resolve("rejected")} /></div>
   </div>;
 }

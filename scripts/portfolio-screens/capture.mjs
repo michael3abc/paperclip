@@ -19,9 +19,9 @@ const sharp = require(resolve(root, "node_modules/.pnpm", sharpPackage, "node_mo
 const fixtureFiles = ["ui/storybook/stories/agent-chat/portfolio-screens.stories.tsx", ...await readdir(resolve(root, "ui/storybook/stories/portfolio")).then(files => files.map(name => `ui/storybook/stories/portfolio/${name}`))];
 for (const file of fixtureFiles) assertSafe(await readFile(resolve(root, file), "utf8"), file);
 const scenes = [
-  ["01-agent-chat", "agent-chat", "chat", "Lead 對話、進行中與完成的 worker 任務，以及原生 subagent 卡。", "A lead conversation with active and completed worker tasks and a native subagent card."],
+  ["01-agent-chat", "agent-chat", "chat", "main agent 對話、進行中與完成的 worker 任務，以及原生 subagent 卡。", "A main agent conversation with active and completed worker tasks and a native subagent card."],
   ["02-todo", "todo", "todo", "目標、完成進度、需要人決定的事項、待辦與近期完成項目。", "A goal, completion progress, human input, open work and recently finished items."],
-  ["03-questions", "questions-and-approvals", "questions", "Worker 的問題由 Lead 代答；對外公開仍需人的確認。", "The lead answers a worker question; sharing a preview still requires human confirmation."],
+  ["03-questions", "questions-and-approvals", "questions", "Worker 的問題由 main agent 代答；對外公開仍需人的確認。", "The main agent answers a worker question; sharing a preview still requires human confirmation."],
   ["04-worker-policy", "worker-policy", "workers", "預設 Codex worker 與 Claude Sonnet worker 的模型、權限與用途設定。", "Model, permission and purpose settings for a default Codex worker and a Claude Sonnet worker."],
   ["05-dashboard-costs", "dashboard-costs", "costs", "虛構的模型成本占比、專案用量與訂閱剩餘額度。", "Fictional model cost shares, project usage and remaining subscription quotas."],
   ["06-artifacts", "artifacts-wall", "artifacts", "可檢視的工作成果，包含 PDF 第一頁縮圖與三張示意圖片。", "Reviewable work products with a first-page PDF thumbnail and three sample images."],
