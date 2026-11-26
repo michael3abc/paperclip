@@ -91,7 +91,7 @@ describePostgres("execution identity query contracts", () => {
     expect(await deliverExecutionStatuses(db, { publish: () => { throw new Error("duplicate delivery"); } })).toEqual({ scanned: 0, delivered: 0 });
   });
 
-  it("treats hermes_gateway as a conversation adapter and lets Retry and board comments clear timed-out or cancelled holds", async () => {
+  it("keeps terminal hermes_gateway turns unblocked for Retry and board comments without stop proof", async () => {
     expect(isConversationAdapter("hermes_gateway")).toBe(true);
 
     const f = await fixture();
@@ -115,7 +115,7 @@ describePostgres("execution identity query contracts", () => {
       runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
       resultJson: { run_id: "hermes-remote-1", status: "cancelled" },
     });
-    const [hold] = await db.insert(issueRecoveryActions).values({
+    await db.insert(issueRecoveryActions).values({
       companyId: f.companyId,
       sourceIssueId: f.issueId,
       kind: "active_run_watchdog",
@@ -128,8 +128,8 @@ describePostgres("execution identity query contracts", () => {
       nextAction: "Inspect the stopped run before continuing.",
     }).returning();
 
-    // Hold is currently blocking until user Retry or board comment arrives.
-    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold!.id });
+    // Terminal runs release system holds before another user turn arrives.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
 
     // (a) Board Retry clears the timed-out hermes_gateway hold (no local PID exists for gateway runs).
     const retryBlocked: string[] = [];
@@ -148,7 +148,7 @@ describePostgres("execution identity query contracts", () => {
       onBlocked: reason => retryBlocked.push(reason),
     });
     expect(retryBlocked).toEqual([]);
-    expect(retryAdmitted).toMatchObject({ previousRunId: timedOutRunId, failedRunId: timedOutRunId });
+    expect(retryAdmitted).toBeNull(); // Ordinary admission needs no hold-clearing continuation.
 
     // (b) Board comment also clears the timed-out hermes_gateway hold.
     const commentId = randomUUID();
@@ -175,7 +175,7 @@ describePostgres("execution identity query contracts", () => {
       onBlocked: reason => commentBlocked.push(reason),
     });
     expect(commentBlocked).toEqual([]);
-    expect(commentAdmitted).toMatchObject({ previousRunId: timedOutRunId, commentId });
+    expect(commentAdmitted).toBeNull();
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
 
     // (c) New hermes_gateway runs with conversationContinuation policy are retired by conversationRecoveryActionPredicate.
@@ -263,11 +263,11 @@ describePostgres("execution identity query contracts", () => {
       onBlocked: reason => cancelledBlocked.push(reason),
     });
     expect(cancelledBlocked).toEqual([]);
-    expect(cancelledAdmitted).toMatchObject({ previousRunId: cancelledRunId, commentId: followUpCommentId });
+    expect(cancelledAdmitted).toBeNull();
     expect(await getExecutionBlocker(db, f.companyId, cancelledIssueId)).toBeNull();
 
-    // (e) A timed-out hermes_gateway run whose remote stop was never confirmed (status: "timeout") fails closed
-    // across reconciliation classification, conversation hold retirement, execution blocking, and explicit Retry.
+    // (e) Unknown remote stop evidence stays historical; a terminal run cannot
+    // require reconciliation or hold a new turn behind process-stop proof.
     const unconfirmedIssueId = randomUUID();
     const unconfirmedRunId = randomUUID();
     await db.insert(issues).values({ id: unconfirmedIssueId, companyId: f.companyId, title: "Unconfirmed Hermes timeout", status: "blocked", assigneeAgentId: f.agentId });
@@ -286,7 +286,7 @@ describePostgres("execution identity query contracts", () => {
       runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
       resultJson: { run_id: "hermes-remote-3", status: "timeout" },
     }).returning();
-    expect(legacyExecutionNeedsReconciliation(unconfirmedRun!)).toBe(true);
+    expect(legacyExecutionNeedsReconciliation(unconfirmedRun!)).toBe(false);
     expect(await runUsedConversationAdapter(db, unconfirmedRun!)).toBe(false);
     const [unconfirmedHold] = await db.insert(issueRecoveryActions).values({
       companyId: f.companyId,
@@ -319,7 +319,7 @@ describePostgres("execution identity query contracts", () => {
       onBlocked: reason => unconfirmedBlocked.push(reason),
     });
     expect(unconfirmedAdmitted).toBeNull();
-    expect(unconfirmedBlocked).toEqual(["process_identity_missing"]);
-    expect(await getExecutionBlocker(db, f.companyId, unconfirmedIssueId)).toMatchObject({ recoveryActionId: unconfirmedHold!.id });
+    expect(unconfirmedBlocked).toEqual([]);
+    expect(await getExecutionBlocker(db, f.companyId, unconfirmedIssueId)).toBeNull();
   });
 });

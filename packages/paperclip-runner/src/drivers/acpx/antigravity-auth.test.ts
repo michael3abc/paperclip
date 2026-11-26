@@ -241,7 +241,7 @@ describe("Antigravity setup-only Google authentication", () => {
     const login = startAntigravityBrowserLogin(home, { onFailure });
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
     expect(onFailure).toHaveBeenCalledExactlyOnceWith("runtime_unavailable");
-    expect(login.error).toContain("does not have the current Google Antigravity runtime");
+    expect(login.error).toBe(UNSUPPORTED_PLATFORM_ERROR);
     expect(login.error).not.toContain("Start sign-in again");
   });
 

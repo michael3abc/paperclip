@@ -1734,7 +1734,7 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).toContain("Secret access");
     expect(result.container.textContent).toContain("No company secret references are bound to this agent yet.");
-    expect(result.container.textContent).not.toContain("Environment variables");
+    expect(result.container.querySelector('[data-config-section="environment-variables"]')).toBeNull();
   });
 
   it.each([

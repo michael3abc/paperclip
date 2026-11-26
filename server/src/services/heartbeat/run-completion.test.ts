@@ -2064,7 +2064,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     const unconfirmedPersisted = await read(fUnconfirmedTimeout.run.id);
     expect(unconfirmedPersisted?.status).toBe("timed_out");
     expect(hasConversationContinuationPolicy(unconfirmedPersisted?.resultJson)).toBe(false);
-    expect(legacyExecutionNeedsReconciliation(unconfirmedPersisted!)).toBe(true);
+    expect(legacyExecutionNeedsReconciliation(unconfirmedPersisted!)).toBe(false);
 
     const fConfirmedTimeout = await fixture({}, `HT${randomUUID().slice(0, 6)}`);
     const [hermesConfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
@@ -2087,9 +2087,9 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(hasConversationContinuationPolicy(confirmedPersisted?.resultJson)).toBe(true);
     expect(legacyExecutionNeedsReconciliation(confirmedPersisted!)).toBe(false);
 
-    // Ambiguous outbound POST /v1/runs HTTP 429/5xx responses do not prove non-dispatch
-    // (a proxy or redirect may have created the remote run), so they fail closed without
-    // stamping conversationContinuation and keep legacyExecutionNeedsReconciliation true.
+    // Ambiguous POST outcomes retain their original receipt without a stop-proof
+    // gate. Automatic retry can reach invokability checks; an Owner pause still
+    // prevents dispatch.
     for (const [tag, errorCode, reason] of [
       ["H4", "hermes_gateway_rate_limited", "rate_limited"],
       ["H5", "hermes_gateway_upstream_error", "remote_unavailable"],
@@ -2097,12 +2097,15 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       const fCreateErr = await fixture({}, `${tag}${randomUUID().slice(0, 6)}`);
       const [hermesCreateAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
         .where(eq(agents.id, fCreateErr.agent.id)).returning();
-      const unreachable = () => { throw new Error("retry scheduling passed the reconciliation gate"); };
+      const unreachable = () => { throw new Error("retry scheduling passed the Owner pause"); };
+      const getAgentInvokability = vi.fn(async () => ({
+        invokable: false as const, reason: "paused" as const, message: "Paused by Owner", details: {}, invalidOrgChain: false,
+      }));
       const realRetries = createHeartbeatRetries(db, {
         hasCaseHandoffForRun: async () => false,
         getAgent: unreachable, getRun: unreachable, resolveSessionBeforeForWakeup: unreachable,
-        resolveResponsibleUserIdForRunContext: unreachable, getAgentInvokability: unreachable,
-        appendRunEvent: unreachable, escalatePlanApprovalResumeFailureNeedsAttention: unreachable,
+        resolveResponsibleUserIdForRunContext: unreachable, getAgentInvokability,
+        appendRunEvent: fCreateErr.deps.appendRunEvent, escalatePlanApprovalResumeFailureNeedsAttention: unreachable,
         recordPlanApprovalResumeFailureRetry: unreachable, setRunStatusIfRunning: unreachable,
         setWakeupStatus: unreachable, releaseIssueExecutionAndPromote: unreachable, finalizeAgentStatus: unreachable,
         getWorktreeExecutionCutoff: unreachable, applyRunDispatchPostCommitEffects: unreachable,
@@ -2135,12 +2138,14 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       const createErrPersisted = await read(fCreateErr.run.id);
       expect(createErrPersisted?.status).toBe("failed");
       expect(hasConversationContinuationPolicy(createErrPersisted?.resultJson)).toBe(false);
-      expect(legacyExecutionNeedsReconciliation(createErrPersisted!)).toBe(true);
+      expect(legacyExecutionNeedsReconciliation(createErrPersisted!)).toBe(false);
       const retryOutcomes = await Promise.all(
         fCreateErr.deps.scheduleBoundedRetryForRun.mock.results.map(result => result.value),
       );
+      expect(getAgentInvokability).toHaveBeenCalledWith(hermesCreateAgent);
+      expect(retryOutcomes).toHaveLength(1);
       expect(retryOutcomes).toEqual(retryOutcomes.map(() => expect.objectContaining({
-        outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation",
+        outcome: "not_scheduled", errorCode: "agent_not_invokable",
       })));
       expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.retryOfRunId, fCreateErr.run.id))).toEqual([]);

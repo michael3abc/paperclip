@@ -8,7 +8,6 @@ import { StringDecoder } from "node:string_decoder";
 import { antigravityPrivateEnvironment, checkAntigravityPrivateHome, retireAntigravityProcess } from "./antigravity-process.js";
 import { antigravityNativeDistributionSpec } from "./antigravity-installation.js";
 import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
-import { AntigravityRuntimeUnavailableError } from "./antigravity-runtime-unavailable.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxCommandLease } from "./installation-integrity.js";
 
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -291,7 +290,7 @@ export function startAntigravityBrowserLogin(home: string, options: { onFailure?
     try {
       await checkAntigravityPrivateHome(home);
       const installation = await Promise.resolve().then(() => verifyNativeAcpxInstallation(antigravityNativeDistributionSpec()))
-        .catch(() => { throw new AntigravityRuntimeUnavailableError(); });
+        .catch(error => { pendingReason = "runtime_unavailable"; throw error; });
       lease = await installation.openCommand({ signal: controller.signal });
       const environment = await antigravityPrivateEnvironment(home);
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);

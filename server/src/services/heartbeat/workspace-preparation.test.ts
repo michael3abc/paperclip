@@ -2257,7 +2257,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.policy.useIsolatedTaskDirectory = turn2ExplicitGit.useIsolatedTaskDirectory;
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
       code: "workspace_validation_failed",
-      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+      resultJson: { workspaceValidation: { reason: "plugin_workspace_strategy_unsupported" } },
     });
     expect(acquire).toHaveBeenCalledTimes(2);
   });
