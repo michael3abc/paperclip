@@ -23,6 +23,7 @@ export type QueuedCommentMutationErrorCode =
   | "queued_comment_issue_not_found"
   | "queued_response_requires_fresh_session"
   | "steering_unsupported"
+  | "steering_uncertain"
   | "queued_comment_revision_conflict"
   | "queued_comment_order_mismatch";
 
@@ -45,6 +46,10 @@ export class QueuedCommentMutationForbiddenError extends Error {
 }
 
 export function requireQueuedCommentMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: string, revision: string): void {
+  // An unconfirmed Bridge steer may already be in the live turn; interrupting or resending could duplicate it.
+  if (queue.steeringDelivery) {
+    throw new QueuedCommentMutationError("steering_uncertain", "Supplementary input delivery is awaiting confirmation");
+  }
   if (queue.queueId !== queueId) {
     throw new QueuedCommentMutationError("queued_comment_stale_queue", "The queued message targets a stale queue");
   }
