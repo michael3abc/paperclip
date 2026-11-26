@@ -397,6 +397,8 @@ const apps = [
           label: "Use this connection as an agent tool",
           purpose: "tool",
           ownershipModes: ["customer"],
+          whenToUse: "Give agents Slack tools through Slack's hosted MCP server. Slack requires an OAuth app you create in Slack app settings.",
+          consoleLinks: { register: "https://api.slack.com/apps" },
           requiredResourceFilters: ["workspace", "channel"],
         },
       ),

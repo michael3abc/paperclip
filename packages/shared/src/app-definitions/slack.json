@@ -22,7 +22,7 @@
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Give agents Slack tools through Slack's hosted MCP server. Slack requires an OAuth app you create in Slack app settings.",
       "defaults": {
         "serverUrl": "https://mcp.slack.com/mcp",
         "authorizationEndpoint": "https://slack.com/oauth/v2_user/authorize",
@@ -64,6 +64,9 @@
       "riskTier": "S3",
       "label": "Use this connection as an agent tool",
       "purpose": "tool",
+      "consoleLinks": {
+        "register": "https://api.slack.com/apps"
+      },
       "requiredResourceFilters": [
         "workspace",
         "channel"
