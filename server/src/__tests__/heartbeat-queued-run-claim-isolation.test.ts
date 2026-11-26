@@ -506,7 +506,7 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
 
-  it("still holds a non-reset ordinary chat message behind an active ownership blocker without creating a doomed run", async () => {
+  it("delivers an ordinary chat message once despite a terminal run's unreleased lease", async () => {
     const { companyId, agentId } = await insertAgent();
     const userId = `chat-owner-${randomUUID()}`;
     await db.insert(authUsers).values({
@@ -553,13 +553,15 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
 
     const [receipt] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
-    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(receipt).toMatchObject({ status: "coalesced" });
+    expect(receipt?.runId).toBeTruthy();
+    expect(await runStatus(receipt!.runId!)).toMatchObject({ status: "succeeded", errorCode: null });
     const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
       .where(sql`${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.id} <> ${priorRunId}`);
-    expect(runs).toEqual([]);
-    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(runs).toEqual([{ id: receipt!.runId }]);
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
 
-    // Releasing the ownership blocker allows the interrupt to coalesce and succeed.
+    // Late lease cleanup must not redeliver an already completed turn.
     await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
       .where(sql`${environmentLeases.heartbeatRunId} = ${priorRunId}`);
     await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
@@ -567,7 +569,7 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
 
     const [delivered] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
-    expect(delivered).toMatchObject({ status: "coalesced" });
+    expect(delivered).toEqual(receipt);
     expect(await runStatus(delivered!.runId!)).toMatchObject({ status: "succeeded", errorCode: null });
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
