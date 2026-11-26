@@ -159,19 +159,19 @@ describe("heartbeat workspace module", () => {
   });
 
   it("anchors a remote Bridge worker on its host's source without touching the controller filesystem", async () => {
-    const remoteWorker = { ...agent(), adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", hostId: "shopee-e" }, runtimeConfig: {} } as typeof agents.$inferSelect;
-    const remoteSource = (id: string, hostId: string) => ({ ...workspace(id, "project-one", `/home/yoyo/Projects/${id}`),
+    const remoteWorker = { ...agent(), adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", hostId: "remote-host-a" }, runtimeConfig: {} } as typeof agents.$inferSelect;
+    const remoteSource = (id: string, hostId: string) => ({ ...workspace(id, "project-one", `/home/worker/Projects/${id}`),
       sourceType: "remote_managed", isPrimary: true, metadata: { hostId } }) as typeof projectWorkspaces.$inferSelect;
     const stat = vi.spyOn(fs, "stat"); const mkdir = vi.spyOn(fs, "mkdir");
     try {
-      const result = await createHeartbeatWorkspaceResolver(databaseWithResults([remoteSource("cctv", "shopee-e")]).db)
+      const result = await createHeartbeatWorkspaceResolver(databaseWithResults([remoteSource("cctv", "remote-host-a")]).db)
         .resolveWorkspaceForRun(remoteWorker, { projectId: "project-one" }, null);
-      expect(result).toMatchObject({ cwd: "/home/yoyo/Projects/cctv", projectId: "project-one", workspaceId: "cctv",
+      expect(result).toMatchObject({ cwd: "/home/worker/Projects/cctv", projectId: "project-one", workspaceId: "cctv",
         source: "project_primary", baseCwdFallback: false, additionalWorkspaces: [] });
       expect(stat).not.toHaveBeenCalled(); expect(mkdir).not.toHaveBeenCalled();
-      await expect(createHeartbeatWorkspaceResolver(databaseWithResults([remoteSource("video", "shopee-d")]).db)
+      await expect(createHeartbeatWorkspaceResolver(databaseWithResults([remoteSource("video", "remote-host-b")]).db)
         .resolveWorkspaceForRun(remoteWorker, { projectId: "project-one" }, null)).rejects.toMatchObject({
-        code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "remote_worker_host_mismatch", hostId: "shopee-e" } } });
+        code: "workspace_validation_failed", resultJson: { workspaceValidation: { reason: "remote_worker_host_mismatch", hostId: "remote-host-a" } } });
       await expect(createHeartbeatWorkspaceResolver(databaseWithResults().db)
         .resolveWorkspaceForRun(remoteWorker, {}, null)).rejects.toMatchObject({
         resultJson: { workspaceValidation: { reason: "remote_worker_project_required" } } });

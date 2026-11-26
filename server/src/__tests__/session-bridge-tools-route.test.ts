@@ -39,7 +39,7 @@ beforeEach(() => {
 
 describe("session bridge assigned connector HTTP contract", () => {
   it("retains upstream tool failure status and explanation without retry", async () => {
-    const message = "SeaTalk Web session expired. Sign in again.";
+    const message = "Connected service Web session expired. Sign in again.";
     executeTool.mockRejectedValue(new ToolGatewayHttpError(502, message, "tool_error",
       { execution: { request: { dispatched: true } } }));
     const response = await request(app()).post(`${prefix}/tools-call`).send(call);

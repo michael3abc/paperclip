@@ -37,8 +37,8 @@ Host subscription quotas are an explicit operator feature, enabled only with
 PAPERCLIP_HOST_SUBSCRIPTION_QUOTAS=1. The dashboard endpoint requires instance
 admin and existing company access before any host login is read. Keep these
 snapshots separate from company-managed AI connections and billing. Source selection
-is operator-owned and company-ID scoped: Home uses michael-server; Shopee uses
-shopee-e through its finite SSH collector, reading that host's CLI logins only.
+is operator-owned and company-ID scoped: for example, company A uses
+controller-host; company B uses remote-host-a through its finite SSH collector, reading that host's CLI logins only.
 Never accept a client-selected host or fall back to local accounts after remote
 failure. Cache and in-flight requests are keyed by company plus source. Poll only
 while the Dashboard is visible, cache for 60 seconds, track provider work through

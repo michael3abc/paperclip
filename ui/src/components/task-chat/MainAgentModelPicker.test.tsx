@@ -17,15 +17,15 @@ const agent = {
   id: "agent-main", companyId: "company-1", name: "Data-mining", urlKey: "data-mining",
   adapterType: "ccpocket_bridge", defaultEnvironmentId: null,
   adapterConfig: {
-    role: "main", hostId: "michael-server", provider: "codex",
-    model: "michael-server/codex/gpt-6-sol", effort: "high", cwd: "/srv/data-mining",
+    role: "main", hostId: "controller-host", provider: "codex",
+    model: "controller-host/codex/gpt-6-sol", effort: "high", cwd: "/srv/data-mining",
   },
 } as unknown as Agent;
 
 const catalog = [
-  { id: "michael-server/codex/gpt-6-sol", label: "GPT-6.1 Sol", source: "Subscription", efforts: ["low", "medium", "high", "xhigh"], serviceTiers: ["standard", "fast"] },
-  { id: "michael-server/codex/compass-6.1-sol", label: "compass-6.1-sol", source: "Compass", efforts: [], serviceTiers: ["standard"] },
-  { id: "michael-server/codex/gpt-6-astra", label: "gpt-6-astra", source: "Subscription", efforts: ["low", "medium"], serviceTiers: ["standard", "fast"] },
+  { id: "controller-host/codex/gpt-6-sol", label: "GPT-6.1 Sol", source: "Subscription", efforts: ["low", "medium", "high", "xhigh"], serviceTiers: ["standard", "fast"] },
+  { id: "controller-host/codex/compass-6.1-sol", label: "compass-6.1-sol", source: "Compass", efforts: [], serviceTiers: ["standard"] },
+  { id: "controller-host/codex/gpt-6-astra", label: "gpt-6-astra", source: "Subscription", efforts: ["low", "medium"], serviceTiers: ["standard", "fast"] },
 ];
 
 function boardAccess(role: "owner" | "operator" | "viewer"): CurrentBoardAccess {
@@ -149,7 +149,7 @@ describe("MainAgentModelPicker", () => {
     await act(async () => queryClient.setQueryData(queryKeys.agents.list("company-1"), [{ ...agent, id: "another-agent" }]));
     await settle();
     expect(agentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "ccpocket_bridge",
-      { environmentId: null, hostId: "michael-server", provider: "codex", agentId: "another-agent" });
+      { environmentId: null, hostId: "controller-host", provider: "codex", agentId: "another-agent" });
     const catalogs = queryClient.getQueryCache().findAll().filter(query => query.queryKey.includes("adapter-models"));
     expect(catalogs).toHaveLength(2);
   });
@@ -166,7 +166,7 @@ describe("MainAgentModelPicker", () => {
     await render();
     await click(pill());
     expect(agentsApi.adapterModels).toHaveBeenCalledWith("company-1", "ccpocket_bridge",
-      { environmentId: null, hostId: "michael-server", provider: "codex", agentId: "agent-main" });
+      { environmentId: null, hostId: "controller-host", provider: "codex", agentId: "agent-main" });
     const panel = byTestId("main-agent-model-popover")!;
     expect(byTestId("main-agent-model-effort")!.textContent).toBe("High");
     expect(byTestId("main-agent-model-current")!.textContent).toBe("GPT-6.1 Sol");
@@ -205,7 +205,7 @@ describe("MainAgentModelPicker", () => {
     expect(update).toHaveBeenCalledTimes(1);
     // The stored ID stays qualified; "high" is not offered by GPT-6 Astra, so effort falls back to the model default.
     expect(update).toHaveBeenCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-astra", effort: "" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-astra", effort: "" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(byTestId("main-agent-model-main-view")).not.toBeNull();
@@ -246,7 +246,7 @@ describe("MainAgentModelPicker", () => {
     await release(slider()!);
     expect(update).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "xhigh" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "xhigh" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(pillEffort()).toBe("Extra high");
@@ -266,7 +266,7 @@ describe("MainAgentModelPicker", () => {
     await settle();
     expect(update).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "low" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "low" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
   });
@@ -281,7 +281,7 @@ describe("MainAgentModelPicker", () => {
     expect(byTestId("main-agent-model-popover")).toBeNull();
     expect(document.activeElement).toBe(pill());
     expect(update).toHaveBeenCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "medium" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "medium" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
   });
@@ -296,7 +296,7 @@ describe("MainAgentModelPicker", () => {
 
     await click(resetButton());
     expect(update).toHaveBeenLastCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "high" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(slider()!.getAttribute("aria-valuetext")).toBe("High");
@@ -325,7 +325,7 @@ describe("MainAgentModelPicker", () => {
     await settle();
     expect(update).toHaveBeenCalledTimes(2);
     expect(update).toHaveBeenLastCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "medium" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "medium" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     await act(async () => { resolvers.shift()!(); });
@@ -362,7 +362,7 @@ describe("MainAgentModelPicker", () => {
     await click(toggle);
     expect(update).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "fast" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "high", serviceTier: "fast" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(fastToggle()!.getAttribute("aria-pressed")).toBe("true");
@@ -374,7 +374,7 @@ describe("MainAgentModelPicker", () => {
 
     await click(fastToggle());
     expect(update).toHaveBeenLastCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "standard" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "high", serviceTier: "standard" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(fastToggle()!.getAttribute("aria-pressed")).toBe("false");
@@ -410,14 +410,14 @@ describe("MainAgentModelPicker", () => {
     // A model that also offers fast keeps it; the tier is not rewritten.
     await click(option("GPT-6 Astra"));
     expect(update).toHaveBeenLastCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-astra", effort: "" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-astra", effort: "" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(pillFast()).toBe("Fast");
     await click(byTestId("main-agent-model-current"));
     await click(option("6.1 Sol"));
     expect(update).toHaveBeenLastCalledWith("agent-main", {
-      adapterConfig: { model: "michael-server/codex/compass-6.1-sol", effort: "", serviceTier: "standard" },
+      adapterConfig: { model: "controller-host/codex/compass-6.1-sol", effort: "", serviceTier: "standard" },
       expectedConfigurationRevision: "rev-1",
     }, "company-1");
     expect(fastToggle()!.getAttribute("aria-pressed")).toBe("false");
@@ -478,7 +478,7 @@ describe("MainAgentModelPicker", () => {
   it("does not save over a model changed elsewhere", async () => {
     const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
     vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
-      ...agent, adapterConfig: { ...agent.adapterConfig, model: "michael-server/codex/compass-6.1-sol" }, configurationRevision: "rev-2",
+      ...agent, adapterConfig: { ...agent.adapterConfig, model: "controller-host/codex/compass-6.1-sol" }, configurationRevision: "rev-2",
     } as never);
     await render();
     await click(pill());

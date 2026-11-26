@@ -277,11 +277,11 @@ suite("project PM role and workspace at claim", () => {
     await db.insert(companies).values({ id: companyId, name: "Shared remote company", issuePrefix: `S${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Shared Codex", status: "idle", adapterType: "ccpocket_bridge",
-      adapterConfig: { provider: "codex", hostId: "shopee-e", model: "shopee-e/codex/default" },
-      runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 1, "shopee-e": 1 },
+      adapterConfig: { provider: "codex", hostId: "remote-host-a", model: "remote-host-a/codex/default" },
+      runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "remote-host-b": 1, "remote-host-a": 1 },
         heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 2 } }, permissions: {} });
     const tasks: Array<{ id: string; hostId: string; cwd: string }> = [];
-    for (const hostId of ["shopee-d", "shopee-d", "shopee-e"]) {
+    for (const hostId of ["remote-host-b", "remote-host-b", "remote-host-a"]) {
       const id = randomUUID(), projectId = randomUUID(), sourceId = randomUUID(), cwd = `/remote-only/${companyId}/${projectId}`;
       await db.insert(projects).values({ id: projectId, companyId, name: id, status: "in_progress",
         executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", workspaceStrategy: { type: "project_primary" } } });
@@ -341,29 +341,29 @@ suite("project PM role and workspace at claim", () => {
     await db.insert(companies).values({ id: companyId, name: "Remote PM company", issuePrefix: `R${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Remote app", status: "in_progress" });
     await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Repo", sourceType: "remote_managed", cwd: workerRoot,
-      metadata: { hostId: "shopee-e" }, remoteWorkspaceRef: "shopee-e:" + workerRoot, isPrimary: true });
+      metadata: { hostId: "remote-host-a" }, remoteWorkspaceRef: "remote-host-a:" + workerRoot, isPrimary: true });
     await db.insert(agents).values({ id: agentId, companyId, name: "PM", role: "pm", status: "idle", adapterType: "ccpocket_bridge", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
     const binding = await resolveProjectPmBinding(db, {
       companyId, agentId, validateInbox: false,
-      binding: { mode: "project_pm", projectId, workerRoot, workerHostId: "shopee-e", pmHome, workerIsolation: "shared", workerSlots: 2 },
+      binding: { mode: "project_pm", projectId, workerRoot, workerHostId: "remote-host-a", pmHome, workerIsolation: "shared", workerSlots: 2 },
     });
     await db.update(agents).set({ runtimeConfig: { workspaceBinding: binding } }).where(eq(agents.id, agentId));
     const pmRun = await runToEnd(agentId, {});
     expect({ status: pmRun.run.status, error: pmRun.run.error }).toEqual({ status: "succeeded", error: null });
     const context = pmRun.calls[0]![0].context;
-    expect(context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pmHome, pmHome, workerHostId: "shopee-e", agentHome: binding.agentHome });
+    expect(context.paperclipPmWorkspace).toMatchObject({ role: "pm", cwd: pmHome, pmHome, workerHostId: "remote-host-a", agentHome: binding.agentHome });
     expect(context.paperclipWorkspace.cwd).toBe(pmHome);
   }, 60_000);
 
   it("runs a remote-host main agent's task in its fixed remote source without probing it locally", async () => {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
-    const cwd = "/remote-only/" + companyId + "/Product_Matching";
+    const cwd = "/remote-only/" + companyId + "/Example_Project";
     await db.insert(companies).values({ id: companyId, name: "Remote main company", issuePrefix: `Q${companyId.slice(0, 6)}`, defaultResponsibleUserId: "responsible-user" });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(projects).values({ id: projectId, companyId, name: "Remote main", status: "in_progress" });
     await db.insert(projectWorkspaces).values({ id: randomUUID(), companyId, projectId, name: "Repo", sourceType: "remote_managed", cwd, isPrimary: true });
     await db.insert(agents).values({ id: agentId, companyId, name: "Main", role: "engineer", status: "idle", adapterType: "ccpocket_bridge",
-      adapterConfig: { hostId: "shopee-e", role: "main", cwd }, runtimeConfig: { workspaceBinding: { mode: "fixed", cwd, hostId: "shopee-e" } }, permissions: {} });
+      adapterConfig: { hostId: "remote-host-a", role: "main", cwd }, runtimeConfig: { workspaceBinding: { mode: "fixed", cwd, hostId: "remote-host-a" } }, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Remote task", status: "todo", assigneeAgentId: agentId });
     const taskRun = await runToEnd(agentId, { issueId });
     expect({ status: taskRun.run.status, error: taskRun.run.error }).toEqual({ status: "succeeded", error: null });
@@ -372,7 +372,7 @@ suite("project PM role and workspace at claim", () => {
     expect({ status: chatRun.run.status, error: chatRun.run.error }).toEqual({ status: "succeeded", error: null });
     expect(chatRun.calls[0]![0].context.paperclipWorkspace.cwd).toBe(cwd);
     // Another host's adapter configuration is refused before the adapter starts.
-    await db.update(agents).set({ adapterConfig: { hostId: "shopee-d", role: "main", cwd } }).where(eq(agents.id, agentId));
+    await db.update(agents).set({ adapterConfig: { hostId: "remote-host-b", role: "main", cwd } }).where(eq(agents.id, agentId));
     const mismatched = await runToEnd(agentId, {});
     expect(mismatched.run.status).toBe("failed");
     expect(mismatched.calls).toHaveLength(0);

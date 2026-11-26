@@ -9,7 +9,7 @@ ccpocket adapter's SSH transport). Binding policy:
 ## Problem
 
 The server trusted only a host receipt. A host failure before the receipt existed
-(a missing parent directory on Shopee-D, op `cbdd1528`) left a permanent
+(a missing parent directory on remote-host-b, op `cbdd1528`) left a permanent
 `pendingOperationId`, every later operation failed
 `worktree_operation_reconciliation_required`, and host errors surfaced as HTTP 500.
 Retire never worked on a real host (`/proc` entries of non-dumpable same-uid
@@ -65,7 +65,7 @@ stopped at 30 s.
 - **Timeouts:** host git and tar passes 10 minutes each; the adapter's worktree SSH
   call 30 minutes (other SSH calls keep 30 s).
 - **No schema change, no migration.** Existing columns stay and stop gating. The
-  stuck Shopee row clears itself: the next operation supersedes it, or a recheck
+  stuck remote-host row clears itself: the next operation supersedes it, or a recheck
   finds the tree the main created with Git and completes it.
 
 ## Safety that stays

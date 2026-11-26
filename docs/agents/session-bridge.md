@@ -91,7 +91,7 @@ their normal turn boundaries.
 
 ## Session-bridge keys
 
-The Shopee-D pilot uses the explicit runtimeConfig.sessionBridge binding; Bridge
+The remote-host-b pilot uses the explicit runtimeConfig.sessionBridge binding; Bridge
 owns the pinned native session. New chat comments use a durable receipt inbox and
 never fall back to a heartbeat on disconnect or re-deliver historical comments as new
 input. Keep native MCP scope and the configured connector gateway separate.

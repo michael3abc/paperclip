@@ -10,6 +10,9 @@ maintainer's agent company. The release line is `michael/main`. If you only want
 Paperclip, use upstream; this fork is useful if you want the features below.
 Terms such as Owner, HOM-123, CC Pocket and `/home/michael` paths are explained
 in [docs/fork/host-operations.md](docs/fork/host-operations.md).
+Public host/company examples are fictional. Tip-only cleanup preserves executable
+default-host, model, billing and routing identifiers, canonical host policy paths
+and Git history; it does not certify the absence of private endpoints.
 
 ## Feature overview
 
@@ -30,7 +33,8 @@ The sections below are the maintainer's change log: upstream sync records, then
 one entry per custom branch with the Owner's decision.
 
 Dashboard subscription quota sources are company-scoped operator configuration:
-Shopee uses shopee-e through a finite SSH collector. Credentials remain remote;
+for example, a remote company uses remote-host-a through a finite SSH collector.
+Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
 Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651` (integrated for 2026-11-21; not deployed). Previous sync base: `806440d12cf3cc5b6e28f546a5e0f4fb625df48c`.
@@ -213,7 +217,7 @@ in sync-decisions; these fixes do not certify every historical test as passing.
   「好，一次發布」): the delegation sweep can wake an idle (waiting) main Chat; dropped deliveries retry with
   liveness-first backoff instead of stopping at `delegate_wake_not_admitted`, so pending legacy failures are
   redelivered once. Agent updates no longer re-validate an unchanged company-catalog model, so a host that stops
-  advertising it (Shopee `opus` → `opus[1m]`) does not block secret or permission edits. Server-only, no migration.
+  advertising it (`opus` → `opus[1m]` on a remote host) does not block secret or permission edits. Server-only, no migration.
 
 - Main agents read Owner attention (`michael/main-attention-read`, Owner 2026-11-19 「1.」 approving agent reads of
   the pending list): an agent with an explicit `inbox:manage` grant may read `GET /attention`, `/attention/summary`
@@ -292,7 +296,7 @@ in sync-decisions; these fixes do not certify every historical test as passing.
   Unattributed and separating subscription estimates/fees. UI-only overlay.
 
 - Custom MCP browser sign-in (`michael/connector-ui-login`): human-only, vault-backed
-  companion requests and an Apps login panel for the 104 browser and SeaTalk QR.
+  companion requests and an Apps login panel for browser and QR login services.
   Preserves grants, tools and company scope; no login material in tool receipts.
 
 - Connector browser voice boundary (`michael/connector-local-voice`): internal
@@ -480,9 +484,9 @@ The first-parent inventory below includes retained consolidation history; it is 
 
 ## Release
 
-Shopee shared worker consolidation adds opt-in per-host Bridge worker capacity,
-host-scoped discovery, and immutable task routes; implementation history is on
-`michael/shopee-shared-workers` for review; it is not deployed. Existing fixed workers
+Multi-host shared worker consolidation adds opt-in per-host Bridge worker capacity,
+host-scoped discovery, and immutable task routes. The feature branch is ready
+for review; it is not deployed. Existing fixed workers
 and Bridge task/session identities remain unchanged (docs/agents/pm-agents.md).
 
 Develop on `michael/<topic>` with exclusive use of the project development checkout; create an additional worktree only for parallel work or an independent version. Merge into `michael/main` before building.

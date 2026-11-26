@@ -81,7 +81,7 @@ describe("ModelDropdown", () => {
 });
 
 it('shows model name and source while selecting the original qualified ID', () => {
-  const model = { id: 'michael-server/claude/compass-opus5.5[1m]', label: 'compass-opus5.5[1m]', source: 'Compass' };
+  const model = { id: 'controller-host/claude/compass-opus5.5[1m]', label: 'compass-opus5.5[1m]', source: 'Compass' };
   const container = document.createElement('div'); document.body.appendChild(container);
   const root = createRoot(container); roots.push(root);
   let selected = '';
@@ -90,7 +90,7 @@ it('shows model name and source while selecting the original qualified ID', () =
   const option = document.body.querySelector('button[role="option"]') as HTMLButtonElement;
   expect(option.textContent).toContain(model.label);
   expect(option.textContent).toContain('Compass');
-  expect(option.textContent).not.toContain('michael-server');
+  expect(option.textContent).not.toContain('controller-host');
   act(() => option.click());
   expect(selected).toBe(model.id);
 });

@@ -70,7 +70,7 @@ describe("fixed workspace binding", () => {
     const agent = { adapterType: "ccpocket_bridge", adapterConfig: { cwd: "/projects/example" } };
     expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: binding } })).toBeNull();
     expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, cwd: "/projects/example/" } } })).toBeNull();
-    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, hostId: "shopee-e" } } })).toBeNull();
+    expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, hostId: "remote-host-a" } } })).toBeNull();
     expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: {} })).toMatchObject({ reason: "missing", cwd: "/projects/example" });
     expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: null })).toMatchObject({ reason: "missing" });
     expect(bridgeFixedBindingConflict({ ...agent, runtimeConfig: { workspaceBinding: { ...binding, cwd: "/projects/other" } } }))
@@ -98,9 +98,9 @@ describe("fixed workspace binding", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("keeps a remote-host fixed directory off the controller and on its CC Pocket host", () => {
-    const remote = { mode: "fixed" as const, cwd: "/home/yoyo/Projects/Product_Matching", hostId: "shopee-e" };
+    const remote = { mode: "fixed" as const, cwd: "/home/worker/Projects/Example_Project", hostId: "remote-host-a" };
     expect(agentRuntimeConfigSchema.parse({ workspaceBinding: remote }).workspaceBinding).toEqual(remote);
-    for (const hostId of ["", "Shopee-E", "../x", "a".repeat(65)]) expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...remote, hostId } })).toThrow();
+    for (const hostId of ["", "Remote-host-A", "../x", "a".repeat(65)]) expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...remote, hostId } })).toThrow();
     // The controller never probes the remote path; it uses the agent home.
     expect(controllerLocalCwd(remote, remote.cwd, "agent-1")).toBe(resolveDefaultAgentWorkspaceDir("agent-1"));
     expect(controllerLocalCwd(binding, binding.cwd, "agent-1")).toBe(binding.cwd);
@@ -109,19 +109,19 @@ describe("fixed workspace binding", () => {
     expect(assertFixedProjectWorkspace(remote, null, false)).toEqual([]);
     // Mismatches are logged only; the remote fixed directory is still used.
     for (const sourceType of ["local_path", undefined, null]) expect(assertFixedProjectWorkspace(remote, { cwd: remote.cwd, sourceType }, true)).toEqual(["fixed_workspace_project_conflict"]);
-    expect(assertFixedProjectWorkspace(remote, { cwd: "/home/yoyo/other", sourceType: "remote_managed" }, true)).toEqual(["fixed_workspace_project_conflict"]);
+    expect(assertFixedProjectWorkspace(remote, { cwd: "/home/worker/other", sourceType: "remote_managed" }, true)).toEqual(["fixed_workspace_project_conflict"]);
     // The run uses the local environment; the adapter reaches the host.
     const input = { binding: remote, environment: { driver: "local", config: {} }, trustPreset: "standard", mode: "shared_workspace", external: false, isDot: false, strategies: [] };
     expect(assertFixedWorkspacePolicy(input)).toEqual([]);
     expect(assertFixedWorkspacePolicy({ ...input, environment: { driver: "ssh", config: { workspaceMode: "in_place", remoteWorkspacePath: remote.cwd } } })).toEqual(["fixed_workspace_environment_conflict"]);
     // A CC Pocket agent on the same host with a canonical path matches; anything else is logged, never thrown.
-    const agent = { adapterType: "ccpocket_bridge", adapterConfig: { hostId: "shopee-e" } };
+    const agent = { adapterType: "ccpocket_bridge", adapterConfig: { hostId: "remote-host-a" } };
     expect(assertRemoteFixedBinding(remote, agent)).toEqual([]);
     expect(assertRemoteFixedBinding(binding, { adapterType: "codex_local", adapterConfig: {} })).toEqual([]);
     expect(() => assertRemoteFixedBinding(remote, { ...agent, adapterType: "codex_local" })).not.toThrow();
     expect(assertRemoteFixedBinding(remote, { ...agent, adapterType: "codex_local" })).toContain("fixed_workspace_environment_conflict");
-    expect(assertRemoteFixedBinding(remote, { ...agent, adapterConfig: { hostId: "shopee-d" } })).toEqual(["fixed_workspace_environment_conflict"]);
-    expect(assertRemoteFixedBinding({ ...remote, cwd: "/home/yoyo/Projects/../Projects/Product_Matching" }, agent)).toEqual(["fixed_workspace_path_alias"]);
+    expect(assertRemoteFixedBinding(remote, { ...agent, adapterConfig: { hostId: "remote-host-b" } })).toEqual(["fixed_workspace_environment_conflict"]);
+    expect(assertRemoteFixedBinding({ ...remote, cwd: "/home/worker/Projects/../Projects/Example_Project" }, agent)).toEqual(["fixed_workspace_path_alias"]);
   });
   it("matches the actual prior host and cwd, never just an environment ID", () => {
     const environment = { driver: "ssh", config: { host: "host", port: 22, username: "worker" } };

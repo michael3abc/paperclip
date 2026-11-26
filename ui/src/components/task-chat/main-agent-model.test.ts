@@ -8,7 +8,7 @@ import {
   MainAgentModelConflictError, readMainAgentModelScope, saveMainAgentModel, serviceTierForModel, unqualifiedBridgeModelId,
 } from "./main-agent-model";
 
-const scope = { hostId: "michael-server", provider: "codex" };
+const scope = { hostId: "controller-host", provider: "codex" };
 
 function access(overrides: Partial<CurrentBoardAccess>): CurrentBoardAccess {
   return { user: null, userId: "user-1", isInstanceAdmin: false, companyIds: ["company-1"], memberships: [],
@@ -26,8 +26,8 @@ describe("main agent model helpers", () => {
   });
 
   it("reads the saved scope with the Bridge's default executor", () => {
-    expect(readMainAgentModelScope({ hostId: "michael-server", model: "michael-server/codex/gpt-6-sol" }))
-      .toEqual({ hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-sol", effort: "", serviceTier: "standard" });
+    expect(readMainAgentModelScope({ hostId: "controller-host", model: "controller-host/codex/gpt-6-sol" }))
+      .toEqual({ hostId: "controller-host", provider: "codex", model: "controller-host/codex/gpt-6-sol", effort: "", serviceTier: "standard" });
   });
 
   it("reads the saved service tier: only fast is fast", () => {
@@ -54,30 +54,30 @@ describe("main agent model helpers", () => {
 
   it("keeps Bridge order and qualified IDs while fixing the host and executor", () => {
     const models = [
-      { id: "michael-server/codex/b", label: "b" },
-      { id: "michael-server/claude/c", label: "c" },
-      { id: "shopee-d/codex/a", label: "a" },
-      { id: "michael-server/codex/a", label: "a" },
+      { id: "controller-host/codex/b", label: "b" },
+      { id: "controller-host/claude/c", label: "c" },
+      { id: "remote-host-b/codex/a", label: "a" },
+      { id: "controller-host/codex/a", label: "a" },
     ];
     expect(bridgeCatalogForScope(models, scope).map((model) => model.id))
-      .toEqual(["michael-server/codex/b", "michael-server/codex/a"]);
+      .toEqual(["controller-host/codex/b", "controller-host/codex/a"]);
   });
 
   it("uses a human catalog label as the display name", () => {
     const catalog = [
-      { id: "michael-server/codex/gpt-6-sol", label: "GPT-6.1 Sol" },
-      { id: "michael-server/codex/gpt-6-luna", label: "GPT-6" },
-      { id: "michael-server/claude/opus", label: "opus" },
-      { id: "michael-server/claude/compass-opus5.5[1m]", label: "compass-opus5.5[1m]" },
-      { id: "michael-server/claude/Qwen3.8_RTX2080ti_Strata", label: "michael-server/claude/Qwen3.8_RTX2080ti_Strata" },
+      { id: "controller-host/codex/gpt-6-sol", label: "GPT-6.1 Sol" },
+      { id: "controller-host/codex/gpt-6-luna", label: "GPT-6" },
+      { id: "controller-host/claude/opus", label: "opus" },
+      { id: "controller-host/claude/compass-opus5.5[1m]", label: "compass-opus5.5[1m]" },
+      { id: "controller-host/claude/Qwen3.8_RTX2080ti_Strata", label: "controller-host/claude/Qwen3.8_RTX2080ti_Strata" },
     ];
-    const claude = { hostId: "michael-server", provider: "claude" };
-    expect(bridgeModelDisplayName("michael-server/codex/gpt-6-sol", catalog, scope)).toBe("GPT-6.1 Sol");
-    expect(bridgeModelDisplayName("michael-server/codex/gpt-6-luna", catalog, scope)).toBe("GPT-6");
+    const claude = { hostId: "controller-host", provider: "claude" };
+    expect(bridgeModelDisplayName("controller-host/codex/gpt-6-sol", catalog, scope)).toBe("GPT-6.1 Sol");
+    expect(bridgeModelDisplayName("controller-host/codex/gpt-6-luna", catalog, scope)).toBe("GPT-6");
     // Labels that only repeat the ID are humanized instead.
-    expect(bridgeModelDisplayName("michael-server/claude/opus", catalog, claude)).toBe("Claude Opus");
-    expect(bridgeModelDisplayName("michael-server/claude/compass-opus5.5[1m]", catalog, claude)).toBe("Opus 5.5 · 1M");
-    expect(bridgeModelDisplayName("michael-server/claude/Qwen3.8_RTX2080ti_Strata", catalog, claude)).toBe("Qwen3.8 Strata (RTX 2080 Ti)");
+    expect(bridgeModelDisplayName("controller-host/claude/opus", catalog, claude)).toBe("Claude Opus");
+    expect(bridgeModelDisplayName("controller-host/claude/compass-opus5.5[1m]", catalog, claude)).toBe("Opus 5.5 · 1M");
+    expect(bridgeModelDisplayName("controller-host/claude/Qwen3.8_RTX2080ti_Strata", catalog, claude)).toBe("Qwen3.8 Strata (RTX 2080 Ti)");
     expect(bridgeModelDisplayName("", catalog, scope)).toBe("");
   });
 
@@ -102,13 +102,13 @@ describe("main agent model helpers", () => {
     ["Qwen3.8_RTX2080ti_Strata", "Qwen3.8 Strata (RTX 2080 Ti)"],
   ])("humanizes the model ID %s as %s, with or without its host/provider prefix", (id, name) => {
     expect(humanizeBridgeModelId(id)).toBe(name);
-    expect(bridgeModelDisplayName(`michael-server/codex/${id}`, [], scope)).toBe(name);
-    expect(bridgeModelDisplayName(`shopee-d/claude/${id}`, [{ id: `shopee-d/claude/${id}`, label: id }], scope)).toBe(name);
+    expect(bridgeModelDisplayName(`controller-host/codex/${id}`, [], scope)).toBe(name);
+    expect(bridgeModelDisplayName(`remote-host-b/claude/${id}`, [{ id: `remote-host-b/claude/${id}`, label: id }], scope)).toBe(name);
   });
 
   it("keeps the stored ID unqualified only for display", () => {
-    expect(unqualifiedBridgeModelId("michael-server/codex/gpt-6-sol", scope)).toBe("gpt-6-sol");
-    expect(unqualifiedBridgeModelId("shopee-d/claude/opus", scope)).toBe("opus");
+    expect(unqualifiedBridgeModelId("controller-host/codex/gpt-6-sol", scope)).toBe("gpt-6-sol");
+    expect(unqualifiedBridgeModelId("remote-host-b/claude/opus", scope)).toBe("opus");
     expect(unqualifiedBridgeModelId("opus", scope)).toBe("opus");
     expect(compactBridgeModelName("Claude Opus")).toBe("Opus");
     expect(compactBridgeModelName("Claude Fable 5.1 · 1M")).toBe("Fable 5.1 · 1M");
@@ -116,23 +116,23 @@ describe("main agent model helpers", () => {
   });
 
   it("groups models by billing route in a fixed order and keeps Bridge order within each group", () => {
-    const claude = { hostId: "michael-server", provider: "claude" };
+    const claude = { hostId: "controller-host", provider: "claude" };
     const models = [
-      { id: "michael-server/claude/default", label: "default", source: "Subscription" },
-      { id: "michael-server/claude/Qwen3.8_RTX2080ti_Strata", label: "Qwen", source: "Local" },
-      { id: "michael-server/claude/opus", label: "opus", source: "Subscription" },
-      { id: "michael-server/claude/compass-fable5", label: "compass-fable5" },
-      { id: "michael-server/claude/compass-opus5.5", label: "compass-opus5.5", source: "compass" },
-      { id: "michael-server/claude/mystery", label: "mystery" },
-      { id: "michael-server/claude/sonnet", label: "sonnet", source: "Subscription" },
+      { id: "controller-host/claude/default", label: "default", source: "Subscription" },
+      { id: "controller-host/claude/Qwen3.8_RTX2080ti_Strata", label: "Qwen", source: "Local" },
+      { id: "controller-host/claude/opus", label: "opus", source: "Subscription" },
+      { id: "controller-host/claude/compass-fable5", label: "compass-fable5" },
+      { id: "controller-host/claude/compass-opus5.5", label: "compass-opus5.5", source: "compass" },
+      { id: "controller-host/claude/mystery", label: "mystery" },
+      { id: "controller-host/claude/sonnet", label: "sonnet", source: "Subscription" },
     ];
     const groups = groupBridgeCatalog(models, claude);
     expect(groups.map((group) => group.label)).toEqual(["Subscription", "Compass", "Local", "Other"]);
     expect(groups.map((group) => group.models.map((model) => model.id.split("/")[2]))).toEqual([
       ["default", "opus", "sonnet"], ["compass-fable5", "compass-opus5.5"], ["Qwen3.8_RTX2080ti_Strata"], ["mystery"],
     ]);
-    expect(groupBridgeCatalog([{ id: "michael-server/claude/opus", label: "opus" }], claude))
-      .toEqual([{ key: "", label: null, models: [{ id: "michael-server/claude/opus", label: "opus" }] }]);
+    expect(groupBridgeCatalog([{ id: "controller-host/claude/opus", label: "opus" }], claude))
+      .toEqual([{ key: "", label: null, models: [{ id: "controller-host/claude/opus", label: "opus" }] }]);
   });
 
   it("reads efforts from catalog metadata and labels them in English", () => {
@@ -158,7 +158,7 @@ describe("main agent model helpers", () => {
   });
 
   it("patches only model and effort, bound to the current configuration revision", async () => {
-    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "standard" as const };
+    const saved = { ...scope, model: "controller-host/codex/gpt-6-sol", effort: "high", serviceTier: "standard" as const };
     // A config without serviceTier reads as standard; an unchanged tier is not written.
     vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
       adapterConfig: { ...scope, model: saved.model, effort: saved.effort, role: "main", env: { TOKEN: "***REDACTED***" } },
@@ -166,9 +166,9 @@ describe("main agent model helpers", () => {
     } as never);
     const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
     await saveMainAgentModel({ agentId: "agent-1", companyId: "company-1", saved,
-      next: { model: "michael-server/codex/gpt-6-astra", effort: "low", serviceTier: "standard" } });
+      next: { model: "controller-host/codex/gpt-6-astra", effort: "low", serviceTier: "standard" } });
     expect(update).toHaveBeenCalledWith("agent-1", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-astra", effort: "low" },
+      adapterConfig: { model: "controller-host/codex/gpt-6-astra", effort: "low" },
       expectedConfigurationRevision: "rev-9",
     }, "company-1");
   });
@@ -177,7 +177,7 @@ describe("main agent model helpers", () => {
     { from: "standard", to: "fast", stored: {} },
     { from: "fast", to: "standard", stored: { serviceTier: "fast" } },
   ] as const)("writes serviceTier $to when fast mode changes from $from", async ({ from, to, stored }) => {
-    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: from };
+    const saved = { ...scope, model: "controller-host/codex/gpt-6-sol", effort: "high", serviceTier: from };
     vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
       adapterConfig: { hostId: saved.hostId, provider: saved.provider, model: saved.model, effort: saved.effort, ...stored },
       configurationRevision: "rev-9",
@@ -186,25 +186,25 @@ describe("main agent model helpers", () => {
     await saveMainAgentModel({ agentId: "agent-1", companyId: "company-1", saved,
       next: { model: saved.model, effort: "high", serviceTier: to } });
     expect(update).toHaveBeenCalledWith("agent-1", {
-      adapterConfig: { model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: to },
+      adapterConfig: { model: "controller-host/codex/gpt-6-sol", effort: "high", serviceTier: to },
       expectedConfigurationRevision: "rev-9",
     }, "company-1");
   });
 
   it.each([
-    { label: "model", change: { model: "michael-server/codex/other" } },
+    { label: "model", change: { model: "controller-host/codex/other" } },
     { label: "effort", change: { effort: "low" } },
     { label: "service tier", change: { serviceTier: "fast" } },
-    { label: "host", change: { hostId: "shopee-d" } },
+    { label: "host", change: { hostId: "remote-host-b" } },
     { label: "executor", change: { provider: "claude" } },
   ])("refuses to save when the $label changed elsewhere", async ({ change }) => {
-    const saved = { ...scope, model: "michael-server/codex/gpt-6-sol", effort: "high", serviceTier: "standard" as const };
+    const saved = { ...scope, model: "controller-host/codex/gpt-6-sol", effort: "high", serviceTier: "standard" as const };
     vi.spyOn(agentsApi, "getConfiguration").mockResolvedValue({
       adapterConfig: { ...saved, ...change }, configurationRevision: "rev-9",
     } as never);
     const update = vi.spyOn(agentsApi, "update").mockResolvedValue({} as never);
     await expect(saveMainAgentModel({ agentId: "agent-1", companyId: "company-1", saved,
-      next: { model: "michael-server/codex/gpt-6-astra", effort: "", serviceTier: "standard" } })).rejects.toBeInstanceOf(MainAgentModelConflictError);
+      next: { model: "controller-host/codex/gpt-6-astra", effort: "", serviceTier: "standard" } })).rejects.toBeInstanceOf(MainAgentModelConflictError);
     expect(update).not.toHaveBeenCalled();
   });
 });

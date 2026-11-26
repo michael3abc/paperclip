@@ -384,7 +384,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it.each(["register", "create"] as const)("a host refusal is a 409 with its code; retrying the same operation re-reads Git (%s)", async action => {
     const f = await fixture();
     const request = { ...f.registration, action, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };
-    // Shopee-D 2026-11-16: ENOENT for a missing parent was an opaque 500 and a permanent gate.
+    // Remote-host-B 2026-11-16: ENOENT for a missing parent was an opaque 500 and a permanent gate.
     f.host.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }));
     await expect(f.service.operate(f.scope, request)).rejects.toMatchObject({ status: 409, code: "ENOENT",
       details: { code: "ENOENT", retryable: true, detail: "ENOENT: no such file or directory" } });
@@ -405,7 +405,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.host).toHaveBeenCalledTimes(2);
   });
 
-  it("supersedes an earlier unknown operation with the next one and keeps its row (Shopee-D cbdd1528)", async () => {
+  it("supersedes an earlier unknown operation with the next one and keeps its row (Remote-host-B cbdd1528)", async () => {
     // The live stuck shape: a failed create whose pendingOperationId stayed set.
     const f = await fixture(true);
     const create = { ...f.registration, action: "create" as const, expectedHead: "a".repeat(40), expectedTargetHead: "a".repeat(40) };

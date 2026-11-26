@@ -1,6 +1,6 @@
 # Session-bridge key scope, mirror and control events
 
-Date: 2026-11-10. Owner superseding instruction: 「連同實作與相關驗證做完，然後直接上線，並壓縮整體開發時間」. Scope: bidirectional native chat, approved shared-worker dispatch, and assigned connectors. Pilot: AI_Video_Detection on Shopee-D.
+Date: 2026-11-10. Owner superseding instruction: 「連同實作與相關驗證做完，然後直接上線，並壓縮整體開發時間」. Scope: bidirectional native chat, approved shared-worker dispatch, and assigned connectors. Pilot: example video project on remote-host-b.
 Bridge-side counterpart: `docs/paperclip-session-link.md` in the CC Pocket repository.
 
 ## Problem
@@ -76,7 +76,7 @@ extended to `standard` or `task_bridge`.
 `GET /api/agents/me/session-bridge/events?after=<cursor>&wait=<sec>`, `session_bridge` keys only, event-driven long poll.
 Cursor is `<µs UTC>|<uuid>` over the existing activity log (no new table). Event types: `agent_paused`, `agent_resumed`,
 `hold_created`, `hold_released`, `issue_assigned`. A first call without a cursor returns the head cursor plus a snapshot
-of the current pause/holds. The Bridge pulls, so Paperclip never connects into the Shopee hosts.
+of the current pause/holds. The Bridge pulls, so Paperclip never connects into the remote hosts.
 
 ## Key lifecycle
 
@@ -97,7 +97,7 @@ failed install deletes the freshly created key. Rotation swaps the key file firs
 ## Release
 
 Additive only (no migration, `origin` is text), so the previous release keeps running on the new schema. Release order:
-Paperclip server, then the Shopee-D reverse tunnel and `provision.mjs create`, then the Bridge upgrade on D, then pilot
+Paperclip server, then the remote-host-b reverse tunnel and `provision.mjs create`, then the Bridge upgrade on that host, then pilot
 verification. Tests are the related files only (owned test DB, bounded lanes); never the full suite.
 
 ## Native chat and delivery contract (supersedes the Phase 0+1 exclusions)
@@ -106,7 +106,7 @@ The Owner-configured agent runtimeConfig.sessionBridge is a strict version 1 bin
 projectId, conversationIssueId, nativeSessionId. The private host link pins the same
 nativeSessionId. Connectivity does not select a route: a configured agent never
 falls back to adapter delivery. No historical comment or failed run is replayed.
-The pilot is Shopee-D AI_Video_Detection; other cards retain their existing routing.
+The pilot is the example video project on remote-host-b; other cards retain their existing routing.
 
 New authenticated text comments on the bound conversation are stored atomically
 with origin=session_bridge_input. They do not enqueue a fast response or heartbeat.
@@ -158,7 +158,7 @@ On-demand connector descriptors are searchable through the same policy. Executio
 reauthenticates before the external effect. Keys and upstream credentials never
 appear in MCP schemas or tool responses. The endpoint requires an idempotency key
 namespaced by company/agent/responsible user. Run-required providers keep rejecting
-non-run calls; no global relaxation. SeaTalk uses its existing assigned connection
+non-run calls; no global relaxation. The QR login service uses its existing assigned connection
 and configured gateway transport, not a new user credential or unrestricted proxy.
 Both connector routes preserve the gateway's typed HTTP status, reasonCode, message
 and public details, matching the existing gateway HTTP contract. Approval references

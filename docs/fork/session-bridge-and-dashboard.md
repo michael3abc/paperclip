@@ -31,7 +31,7 @@ Moved verbatim from `FORK.md` on 2026-11-13. These rules and records stay bindin
 - Session bridge connector errors (michael/session-bridge-errors, 2026-11-10):
   preserve the assigned gateway's typed status, reason and public receipts at
   the HTTP boundary; unknown failures remain redacted and calls are never retried.
-  Native SeaTalk acceptance exposed an expired upstream login and a masked 500.
+  Native QR service acceptance exposed an expired upstream login and a masked 500.
 
 
 - Dashboard cost-by-model pies (michael/model-cost-pie, HOM-265, 2026-11-15): a

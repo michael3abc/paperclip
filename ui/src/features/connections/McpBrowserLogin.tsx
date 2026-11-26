@@ -73,11 +73,11 @@ export function McpBrowserLogin({ connection, canConfigure }: { connection: Tool
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{connection.name} 帳號登入</DialogTitle>
-          <DialogDescription>{loggedIn ? "已確認登入成功，可以關閉此視窗。" : ticket?.mode === "qr" ? "使用手機 SeaTalk 掃描 QR Code，並在手機上確認登入。" : "請在開啟的瀏覽器視窗完成官方網站登入。"}</DialogDescription>
+          <DialogDescription>{loggedIn ? "已確認登入成功，可以關閉此視窗。" : ticket?.mode === "qr" ? "使用連線服務的手機 App 掃描 QR Code，並在手機上確認登入。" : "請在開啟的瀏覽器視窗完成官方網站登入。"}</DialogDescription>
         </DialogHeader>
         {busy && <p role="status">正在準備登入…</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-        {!loggedIn && ticket?.qrImage && <img className="mx-auto max-h-[55vh] max-w-full object-contain" src={ticket.qrImage} alt="SeaTalk 登入 QR Code" />}
+        {!loggedIn && ticket?.qrImage && <img className="mx-auto max-h-[55vh] max-w-full object-contain" src={ticket.qrImage} alt="連線服務登入 QR Code" />}
         {!loggedIn && ticket?.url && <Button asChild variant="outline"><a href={ticket.url} target="_blank" rel="noopener noreferrer">開啟登入視窗</a></Button>}
         {status.error && <p role="alert" className="text-sm text-destructive">{status.error.message}</p>}
         <div className="flex justify-end gap-2">

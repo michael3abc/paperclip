@@ -30,7 +30,7 @@ describe("modelFamily", () => {
     expect(modelFamily("gpt-6-astra").key).toBe("gpt-6-astra");
     expect(modelFamily("compass-6.1-sol").key).toBe("gpt-6.1-sol");
     expect(modelFamily("gpt-6-sol").key).toBe("gpt-6-sol");
-    expect(modelFamily("michael-server/antigravity/gemini-4-argon-high").key).toBe("gemini-4-argon");
+    expect(modelFamily("controller-host/antigravity/gemini-4-argon-high").key).toBe("gemini-4-argon");
     expect(modelFamily("vendor/some-model")).toEqual({ key: "some-model", label: "some-model" });
   });
 
