@@ -8,6 +8,7 @@ import { StringDecoder } from "node:string_decoder";
 import { antigravityPrivateEnvironment, checkAntigravityPrivateHome, retireAntigravityProcess } from "./antigravity-process.js";
 import { antigravityNativeDistributionSpec } from "./antigravity-installation.js";
 import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
+import { AntigravityRuntimeUnavailableError } from "./antigravity-runtime-unavailable.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxCommandLease } from "./installation-integrity.js";
 
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -105,6 +106,15 @@ function recordUsedRedirectCodeDigest(digest: string): void {
     usedRedirectCodeDigests.delete(oldest);
   }
 }
+
+export type AntigravityBrowserLoginFailureReason = "runtime_unavailable" | "start_failed" | "login_incomplete" | "aborted";
+
+const FAILURE_MESSAGES: Readonly<Record<AntigravityBrowserLoginFailureReason, string>> = {
+  runtime_unavailable: "This server does not have the current Google Antigravity runtime, so Google sign-in cannot start. Use a Google API key instead, or update Paperclip on this server.",
+  start_failed: "Google sign-in could not start on this server. Start sign-in again.",
+  login_incomplete: LOGIN_ERROR,
+  aborted: LOGIN_ERROR,
+};
 
 export type AntigravityBrowserLoginState = {
   authorizationUrl?: string;
@@ -256,7 +266,7 @@ function runtimeMissing(error: unknown): boolean {
  * initialize/authenticate; pending provider qualification remains enforced for
  * every session and prompt by the ordinary runtime installation path.
  */
-export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLoginState {
+export function startAntigravityBrowserLogin(home: string, options: { onFailure?: (reason: AntigravityBrowserLoginFailureReason) => void } = {}): AntigravityBrowserLoginState {
   const controller = new AbortController();
   activeBrowserHomes.add(home);
   let resolveStopped: () => void;
@@ -277,9 +287,11 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
     let lease: VerifiedAcpxCommandLease | undefined;
     let child: ChildProcessWithoutNullStreams | undefined, closed: Promise<void> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, failPending: ((error: Error) => void) | undefined;
+    let pendingReason: AntigravityBrowserLoginFailureReason = "start_failed";
     try {
       await checkAntigravityPrivateHome(home);
-      const installation = await verifyNativeAcpxInstallation(antigravityNativeDistributionSpec());
+      const installation = await Promise.resolve().then(() => verifyNativeAcpxInstallation(antigravityNativeDistributionSpec()))
+        .catch(() => { throw new AntigravityRuntimeUnavailableError(); });
       lease = await installation.openCommand({ signal: controller.signal });
       const environment = await antigravityPrivateEnvironment(home);
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
@@ -309,7 +321,7 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
               if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION
                 || record(record(record(initialized.agentCapabilities)._meta).antigravity).paperclipAdmission !== 1
                 || !Array.isArray(initialized.authMethods) || !initialized.authMethods.some(method => record(method).id === "oauth-personal")) { fail(); return; }
-              phase = 2; send(2);
+              phase = 2; pendingReason = "login_incomplete"; send(2);
             } else { phase = 3; state.submitRedirect = undefined; resolve(); }
           }
         });
@@ -445,8 +457,11 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
       state.outcome = "success";
     } catch (error) {
       state.outcome = "failure";
+      const reason: AntigravityBrowserLoginFailureReason = controller.signal.aborted ? "aborted"
+        : runtimeMissing(error) || (error instanceof Error && error.message.startsWith(UNSUPPORTED_PLATFORM_PREFIX)) ? "runtime_unavailable" : pendingReason;
       state.error = error instanceof Error && error.message.startsWith(UNSUPPORTED_PLATFORM_PREFIX) ? UNSUPPORTED_PLATFORM_ERROR
-        : runtimeMissing(error) ? RUNTIME_NOT_INSTALLED_ERROR : LOGIN_ERROR;
+        : runtimeMissing(error) ? RUNTIME_NOT_INSTALLED_ERROR : FAILURE_MESSAGES[reason];
+      try { options.onFailure?.(reason); } catch {}
     } finally {
       state.submitRedirect = undefined;
       if (timeout) clearTimeout(timeout);

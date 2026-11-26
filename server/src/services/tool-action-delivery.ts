@@ -25,7 +25,11 @@ import {
 } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
 import type { RequestConfirmationResult } from "@paperclipai/shared";
-import { githubAccessDeniedInstructions, projectGitHubActionResult } from "./tool-access/github-access-errors.js";
+import {
+  githubAccessErrorInstructions,
+  isGitHubAccessErrorCode,
+  projectGitHubActionResult,
+} from "./tool-access/github-access-errors.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 
 const terminalStatuses: Array<typeof toolActionRequests.$inferSelect.status> = [
@@ -252,8 +256,8 @@ export function toolActionDeliveryService(
                   : request.status === "expired" ||
                       request.status === "cancelled"
                     ? "The review is no longer available. Do not execute the stored request. Explain the recorded outcome before requesting another review."
-                    : errorCode === "github_access_denied"
-                      ? githubAccessDeniedInstructions(invocation.toolName, connectionMethodKey)
+                    : isGitHubAccessErrorCode(errorCode)
+                      ? githubAccessErrorInstructions(errorCode, invocation.toolName, connectionMethodKey)
                       : "The approved action did not complete successfully. Do not automatically replay it; inspect the recorded outcome first.";
             return {
               toolName: invocation.toolName.slice(0, 256),

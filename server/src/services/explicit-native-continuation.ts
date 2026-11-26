@@ -30,13 +30,14 @@ import {
   environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
-import { executionReconciliationPredicate, getExecutionBlocker, nativeExecutionRecoveryActionPredicate, executionBlockerPredicate, hasPendingRunCleanup, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
+import { executionReconciliationPredicate, getExecutionBlocker, nativeExecutionRecoveryActionPredicate, restoreHoldPredicate, executionBlockerPredicate, hasPendingRunCleanup, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
 import { executionObligationScope } from "./execution-obligations.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
+import { hasHermesGatewayTerminalStopProof } from "@paperclipai/hermes-paperclip-adapter/gateway/server";
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./queued-comment-delivery.js";
@@ -390,6 +391,7 @@ export async function admitExplicitNativeContinuation(input: {
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate(),
+      restoreHoldPredicate(),
       blocker?.recoveryActionId ? eq(issueRecoveryActions.id, blocker.recoveryActionId) : undefined) : undefined,
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     or(executionReconciliationPredicate(), and(

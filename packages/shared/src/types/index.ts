@@ -394,6 +394,8 @@ export type {
   DocumentAnnotationAnchorSelector,
   DocumentAnnotationAnchorSnapshot,
   DocumentAnnotationComment,
+  DocumentAnnotationCommentReactionActor,
+  DocumentAnnotationCommentReactionSummary,
   DocumentAnnotationTextPositionSelector,
   DocumentAnnotationTextQuoteSelector,
   DocumentAnnotationThread,

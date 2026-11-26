@@ -2273,9 +2273,18 @@ export function toolAccessService(
     const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
       : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
         : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
+    const preservedAccessMarkers = retainedConnection && retainedConnection.status !== "archived"
+      ? {
+          ...(asRecord(retainedConnection.config).agentAccessConfigured === true ? { agentAccessConfigured: true } : {}),
+          ...(transport === "mcp_remote" && asRecord(retainedConnection.config).mcpAgentAccessConfigured === true
+            ? { mcpAgentAccessConfigured: true }
+            : {}),
+        }
+      : {};
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...preservedAccessMarkers,
           ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
@@ -2317,6 +2326,7 @@ export function toolAccessService(
         }
       : {
           ...baseConfig,
+          ...preservedAccessMarkers,
           quarantineNewEntries: false,
           unverifiedServer: true,
           // Peer tool prefix, fixed when the identity is created. A retained
@@ -2995,13 +3005,25 @@ export function toolAccessService(
           allowUnauthenticatedProbe: unauthenticatedPersonalProbe,
         });
       } catch (error) {
+        const healthFailureCode =
+          error instanceof HttpError ? asRecord(error.details).code : null;
+        // A new personal OAuth draft has no user grant until the callback, so
+        // its probe stops at "needs the current user's authorization" before
+        // any request reaches the server. That is the same sign-in-required
+        // state as a 401 challenge, not a failed setup: keep the draft and
+        // start sign-in instead of deleting it and returning its dead link.
+        const personalOAuthDraftNeedsSignIn =
+          healthFailureCode === "user_authorization_required" &&
+          genericAuthKind === "oauth" &&
+          Boolean(personalIdentityUserId) &&
+          !retainedPersonalIdentity?.grant;
         if (
           (!galleryEntry || remoteMcpConnector) &&
           input.authMode !== "none" &&
           input.authMode !== "bearer" &&
           input.authMode !== "custom_headers" &&
           error instanceof HttpError &&
-          asRecord(error.details).code === "oauth_challenge"
+          (healthFailureCode === "oauth_challenge" || personalOAuthDraftNeedsSignIn)
         ) {
           const [oauthConnection] = await db
             .select()
@@ -3127,6 +3149,7 @@ export function toolAccessService(
     } catch (error) {
       if (personalPublicSetupEstablished) throw error;
       let identityRollbackError: unknown = null;
+      let removedConnectionId: string | null = null;
       let preserveConcurrentRevival = false;
       if (connectionRow && revivedConnectionPrevious) {
         const attemptedConnection = connectionRow;
@@ -3258,10 +3281,11 @@ export function toolAccessService(
         }
       } else if (connectionRow) {
         const failedConnectionId = connectionRow.id;
-        await writeToolConnectionHealthChange(db, { companyId, id: failedConnectionId }, tx => tx
+        const removed = await writeToolConnectionHealthChange(db, { companyId, id: failedConnectionId }, tx => tx
           .delete(toolConnections)
           .where(eq(toolConnections.id, failedConnectionId)))
-          .catch(() => undefined);
+          .then(() => true, () => false);
+        if (removed) removedConnectionId = failedConnectionId;
       }
       if (
         !preserveConcurrentRevival &&
@@ -3305,8 +3329,28 @@ export function toolAccessService(
           },
         );
       }
-      throw error;
+      throw withoutRemovedConnectionLinks(error, removedConnectionId);
     }
+  }
+
+  // A setup failure deletes its new draft, so a credential error raised while
+  // probing it must not hand the caller a link to that draft: the link would
+  // open a connection that no longer exists. Edit the error in place so its
+  // remote-failure classification, keyed by identity, still applies.
+  function withoutRemovedConnectionLinks(error: unknown, removedConnectionId: string | null): unknown {
+    if (!removedConnectionId || !(error instanceof HttpError)) return error;
+    const details = asRecord(error.details);
+    const removedPath = `/apps/${removedConnectionId}/permissions`;
+    if (details.setupUrl !== removedPath && details.reconnectUrl !== removedPath) return error;
+    const rest = { ...details };
+    delete rest.setupUrl;
+    delete rest.reconnectUrl;
+    error.details = {
+      ...rest,
+      connectionRemoved: true,
+      nextStep: "This setup was not saved. Start the connection again; do not send a link to this setup.",
+    };
+    return error;
   }
 
   async function assertCatalogEntriesForConnection(
@@ -3754,10 +3798,15 @@ export function toolAccessService(
         .update(toolConnections)
         .set({
           status: "active", enabled: true,
-          ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
-            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-          } : {}),
+          ...(connection.connectionPurpose === "tool" ? (() => {
+            const accessMarker = connection.transport === "mcp_remote"
+              ? '{"agentAccessConfigured":true,"mcpAgentAccessConfigured":true}'
+              : '{"agentAccessConfigured":true}';
+            return {
+              config: sql`${toolConnections.config} || ${accessMarker}::jsonb`,
+              transportConfig: sql`${toolConnections.transportConfig} || ${accessMarker}::jsonb`,
+            };
+          })() : {}),
           ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
           updatedAt: new Date(),
         })
@@ -4942,6 +4991,7 @@ export function toolAccessService(
 
     listConnectionInstalls,
     putConnectionInstalls: connectionInstalls.putConnectionInstalls,
+    ensureAgentConnectionInstalls: connectionInstalls.ensureAgentConnectionInstalls,
 
     updateConnection: async (
       connectionId: string,

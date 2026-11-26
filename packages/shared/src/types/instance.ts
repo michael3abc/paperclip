@@ -73,7 +73,7 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
-  /** Show GitHub review bot setup and management independently of chat connectors. */
+  /** @deprecated Compatibility key only. GitHub review bots are always enabled. */
   enableGitHubReviewBots: boolean;
   /** Allow the default-off local same-origin voice control plane (voice_task and agent_chat bindings). Requires chat connectors. */
   enableLocalVoice: boolean;
@@ -134,6 +134,13 @@ export interface InstanceExperimentalSettings {
    * flipping it later does not change an existing first task.
    */
   enableFirstTaskPlanProposal: boolean;
+  /**
+   * Experimental Paperclip Cloud onboarding starter inference: provides a
+   * Cloud-funded $1 OpenRouter allowance (defaulting to OpenCode / Luna) via
+   * the tenant server proxy so the user's first agent works out of the box,
+   * then prompts to connect their own subscription when exhausted.
+   */
+  enableCloudTrialInference: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;

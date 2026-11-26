@@ -155,6 +155,7 @@ export const agentRuntimeConfigSchema = z.object({
   requireTaskWorktree: z.boolean().optional(),
   /** Shared workers may use a configured project checkout with exclusive writer admission. */
   requireProjectWorkspace: z.boolean().optional(),
+  cloudTrialInference: z.boolean().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

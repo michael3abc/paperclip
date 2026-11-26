@@ -425,17 +425,20 @@ preserve human, declared, dependency and newer blocks.
 
 ## Native session bridge
 
-HOM-638 retains upstream migration numbers 0500–0509 and moves fork SQL to
-0510–0522 without changing SQL bytes or original journal timestamps. Keep the
+HOM-728 retains upstream migration numbers 0500–0510 and moves fork SQL to
+0511–0523 without changing SQL bytes or original journal timestamps. Keep the
 top-level migration execution registry aligned with renamed files. Preserve upstream
 0505_nice_rawhide_kid.sql, 0507_special_kang.sql, 0508_normal_riptide.sql and fork
-0522_ordinary_stardust.sql in that registry. Owned upgrade qualification covers
-empty, 68c5c4b284 (ten upstream additions) and bcebb0f9d2 (four additions), fork replay 0.
+0523_ordinary_stardust.sql in that registry. Owned upgrade qualification must cover
+empty, live 0f854195d8 (eleven upstream additions) and HOM-638 eff2c24c62
+(one upstream addition), with fork replay 0. See doc/DATABASE.md.
 Provider quota without a reported reset remains transient under the fork classifier;
 upstream account-action hints never gate automatic retry. Antigravity
 ACP 1.5.2 uses one platform-aware admission source with Linux `/proc/self/exe`,
 per-distribution helper digests and the existing remote-browser paste-back;
-`agy_local` and Bridge remain separate. See doc/DATABASE.md and doc/DEVELOPING.md.
+`agy_local` and Bridge remain separate. The agy-local catalog entry retains
+provider antigravity; upstream antigravity stores provider google. Keep account
+creation/reconnect and Cloud trial migration routes separate. See doc/DATABASE.md and doc/DEVELOPING.md.
 
 HOM-458 main Chat compaction scope is rebuilt in task-context from the assigned ccpocket_bridge main. mainContextCompactThresholdTokens defaults to 150000, 0 disables. Keep maintenance at the adapter/Bridge idle boundary; never replay unknown maintenance or turn its failure into a user-input retry. Preserve canonical TODO/cards/decisions. See docs/agents/session-bridge.md.
 

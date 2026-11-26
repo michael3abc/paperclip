@@ -6,6 +6,7 @@ import { useBrowserTimeZoneSync } from "@/hooks/useBrowserTimeZoneSync";
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
 import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
+import { CloudTrialGate } from "./CloudTrialGate";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -159,10 +160,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appsDeveloperTabs = useAppsDeveloperTabs();
-  const appDetailConnectionId =
-    isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
-      ? companyPathSegments[1]
-      : null;
   const appDetailApplicationId =
     isAppsRoute && companyPathSegments[1]?.toLowerCase() === "app" && companyPathSegments[2]
       ? companyPathSegments[2]
@@ -212,8 +209,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <CompanySettingsSidebar />
   ) : !streamlinedUiEnabled && shellRoute.builtInContextualSurface === "skills" ? (
     <SkillsContextualSidebar />
-  ) : appDetailConnectionId ? (
-    <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
     <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
   ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0) ? (
@@ -693,6 +688,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
       <BoardDialogs />
+      <CloudTrialGate />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
       {isMobile ? <AnnouncementWell health={health} placement="floating" /> : null}

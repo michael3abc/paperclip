@@ -69,3 +69,8 @@ Use the "Test Environment" button in the agent configuration UI to validate:
 - Working directory is resolvable and accessible
 - Authentication and credentials are valid
 - Live probe execution succeeds with the configured model and permissions, stream JSON input/output, and `--settings '{"useG1Credits":false}'`. Invalid worker authentication, permission and credit settings fail before probe execution.
+
+The Antigravity CLI catalog entry (agy-local) stores AI provider antigravity
+and reconnects to that entry. Upstream Antigravity (antigravity) stores provider
+google and uses Runner ACPX. Their accounts are not interchangeable. Cloud starter
+inference migration selects agy_local explicitly for CLI accounts.

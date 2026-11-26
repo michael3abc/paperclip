@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
@@ -55,7 +55,7 @@ export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   gemini_local: "Gemini",
   grok_local: "Grok",
   agy_local: "Antigravity",
-  antigravity_runtime: "Google",
+  antigravity_runtime: "Antigravity",
   cursor: "Cursor",
   hermes_local: "Hermes",
   kimi_local: "Kimi",
@@ -372,6 +372,7 @@ export function OnboardingCardField({
   onPaste,
   disabled,
   label = "Authorization code",
+  description,
   placeholder = "Paste authorization code here",
   masked = false,
   autoFocus = false,
@@ -383,6 +384,7 @@ export function OnboardingCardField({
   onPaste?: (event: ClipboardEvent<HTMLInputElement>) => void;
   disabled?: boolean;
   label?: string;
+  description?: string;
   placeholder?: string;
   /**
    * Dots instead of the value. The key card asks for it because a provider key
@@ -402,11 +404,13 @@ export function OnboardingCardField({
   autoFocus?: boolean;
   className?: string;
 }) {
-  return (
+  const descriptionId = useId();
+  const input = (
     <input
       // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
       autoFocus={autoFocus}
       aria-label={label}
+      aria-describedby={description ? descriptionId : undefined}
       type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
@@ -423,6 +427,14 @@ export function OnboardingCardField({
       }}
       className={className ? cn(onboardingCardInputClass, className) : onboardingCardInputClass}
     />
+  );
+  if (!description) return input;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {input}
+      <p id={descriptionId} className="px-5 text-xs text-muted-foreground">{description}</p>
+    </div>
   );
 }
 
@@ -523,7 +535,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
     setCodeSubmitted(false);
     setSubmitError(null);
   }, [login?.authorizationUrl, login?.preparing]);
-  const provider = adapterType === "antigravity_runtime" ? "Google Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : adapterType === "agy_local" ? "Antigravity (agy)" : "Codex CLI";
+  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : adapterType === "agy_local" ? "Antigravity (agy)" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local" || adapterType === "agy_local");
   const command = login?.command;
   const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
@@ -612,11 +624,11 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
       </div> : hostedGoogleRedirect ? <div className="flex flex-col gap-2">
         <p className="px-2 text-xs text-muted-foreground">
           {optionalHostedGoogleRedirect
-            ? <>Finish signing in in the Google browser window, then return here. If your browser is on another machine and the <code className="font-mono">127.0.0.1</code> redirect page won’t load, copy the full URL from your address bar and paste it below.</>
-            : <>After signing in with Google, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.</>}
+            ? <>Finish signing in in the Antigravity browser window, then return here. If your browser is on another machine and the <code className="font-mono">127.0.0.1</code> redirect page won’t load, copy the full URL from your address bar and paste it below.</>
+            : <>After signing in to Antigravity, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.</>}
         </p>
         <OnboardingCardField
-          label="Google redirect URL"
+          label="Antigravity redirect URL"
           placeholder="Paste http://127.0.0.1:... URL here"
           className={cn(ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS)}
           value={browserCode}
@@ -631,7 +643,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit redirect URL</Button>
         {submitError && <p role="alert" className="px-2 text-xs text-destructive">{submitError}</p>}
       </div> : adapterType === "antigravity_runtime" ? <div className="flex flex-col gap-2">
-        <p>Finish signing in in the Google browser window, then return here.</p>
+        <p>Finish signing in in the Antigravity browser window, then return here.</p>
         {login.submitRedirect && <details className="rounded-md border p-3">
           <summary className="cursor-pointer text-foreground">Signed in on a different computer than this server?</summary>
           <div className="mt-2 flex flex-col gap-2">

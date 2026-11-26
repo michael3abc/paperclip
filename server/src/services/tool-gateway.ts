@@ -39,7 +39,15 @@ import { currentConnectionToolDefinition } from "./connectors/paperclip-defined-
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
-import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
+import {
+  extractGitHubTarget,
+  findUnreachableManagedGitHubTarget,
+  githubAccessError,
+  githubAccessErrorInstructions,
+  isGitHubAccessErrorCode,
+  suspendedManagedGitHubOwner,
+  type GitHubAccessSnapshot,
+} from "./tool-access/github-access-errors.js";
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { usesClientCredentials } from "./tool-access/oauth/client-credentials.js";
@@ -1756,9 +1764,13 @@ export function createToolGatewayService(
     await connectionManagementService(database).authorize(actor, "connections:gateway", resource, { mutation: false });
     await connectionManagementService(database).authorize(actor, "connections:test", resource, { mutation: false });
   }
-  async function recordToolInvocation(input: ToolAccessDecisionInput, decision: ToolAccessDecision) {
+  async function recordToolInvocation(
+    input: ToolAccessDecisionInput,
+    decision: ToolAccessDecision,
+    recordOptions?: { claimIdempotencyKey?: boolean },
+  ) {
     try {
-      return await policyService.recordInvocation(input, decision);
+      return await policyService.recordInvocation(input, decision, recordOptions);
     } catch (error) {
       const details = error instanceof HttpError ? asRecord(error.details) : null;
       if (error instanceof HttpError && error.status === 409 && details?.reasonCode === "legacy_tool_idempotency_unverifiable") {
@@ -5910,19 +5922,61 @@ export function createToolGatewayService(
     return { entry, connection, sourceTemplateKey: connected?.sourceTemplateKey ?? null };
   }
 
+  type GovernedRemoteToolContext = {
+    connection: Awaited<ReturnType<typeof resolveConnectedRemoteTool>>["connection"];
+    entry: Awaited<ReturnType<typeof resolveConnectedRemoteTool>>["entry"];
+    sourceTemplateKey: string | null;
+    grant?: Awaited<ReturnType<typeof resolveConnectionGrant>> | null;
+  };
+
+  async function resolveGovernedToolCall(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    parameters: unknown,
+  ): Promise<{ parameters: unknown; remote: GovernedRemoteToolContext | null }> {
+    if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") {
+      return { parameters, remote: null };
+    }
+    const { connection, entry, sourceTemplateKey } = await resolveConnectedRemoteTool(session, tool);
+    const projected = projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
+    if (!githubDefaultOwnerApplies(connection, entry.toolName, entry.inputSchema, projected)) {
+      return { parameters: projected, remote: { connection, entry, sourceTemplateKey } };
+    }
+    // An unavailable credential keeps the call unchanged and fails with its own
+    // error at dispatch.
+    const grant = await resolveConnectionGrant(session, connection, false).catch(() => null);
+    return {
+      parameters: githubDefaultOwnerArguments(entry.toolName, projected, grant?.providerTenant?.github),
+      remote: { connection, entry, sourceTemplateKey, grant },
+    };
+  }
+
   async function governedToolArguments(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
     parameters: unknown,
   ): Promise<unknown> {
-    if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return parameters;
-    const { connection, entry } = await resolveConnectedRemoteTool(session, tool);
-    const projected = projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
-    if (!githubDefaultOwnerApplies(connection, entry.toolName, entry.inputSchema, projected)) return projected;
-    // An unavailable credential keeps the call unchanged and fails with its own
-    // error at dispatch.
-    const grant = await resolveConnectionGrant(session, connection, false).catch(() => null);
-    return githubDefaultOwnerArguments(entry.toolName, projected, grant?.providerTenant?.github);
+    return (await resolveGovernedToolCall(session, tool, parameters)).parameters;
+  }
+
+  async function checkManagedGitHubWriteReachability(
+    session: ToolGatewaySession,
+    remote: GovernedRemoteToolContext | null,
+    parameters: unknown,
+  ) {
+    if (!remote || remote.sourceTemplateKey !== "github") return null;
+    const connectionMethodKey = remote.connection.config.connectionMethodKey ?? remote.connection.transportConfig.connectionMethodKey;
+    if (connectionMethodKey !== "managed") return null;
+    const grant = remote.grant !== undefined
+      ? remote.grant
+      : await resolveConnectionGrant(session, remote.connection, false).catch(() => null);
+    return findUnreachableManagedGitHubTarget({
+      sourceTemplateKey: remote.sourceTemplateKey,
+      connectionMethodKey,
+      githubGrant: grant?.providerTenant?.github,
+      toolName: remote.entry.toolName,
+      parameters,
+    });
   }
 
   async function approvedManagedArgumentsRemainCurrent(
@@ -7661,12 +7715,18 @@ export function createToolGatewayService(
     transport: "mcp_http" | "local_stdio" | "cognee_cloud" = "mcp_http",
     spawnedLocalProcess = false,
     sourceTemplateKey?: string | null,
+    githubContext?: {
+      connectionMethodKey?: unknown;
+      githubGrant?: GitHubAccessSnapshot | null;
+      toolName?: string;
+      parameters?: unknown;
+    },
   ) {
     const record = asRecord(result);
     if (!record) throw malformedRemoteMcpResponse();
     const providerContent = normalizeMcpContent(record.content);
     const githubFailure = record.isError === true
-      ? githubAccessError(sourceTemplateKey, providerContent) : null;
+      ? githubAccessError(sourceTemplateKey, providerContent, githubContext) : null;
     const googleWorkspacePermissionDenied =
       record.isError === true &&
       (sourceTemplateKey === "gmail" ||
@@ -9248,14 +9308,39 @@ export function createToolGatewayService(
             request: resultElicitation,
           });
         }
+        const connectionMethodKey = connection.config.connectionMethodKey ?? connection.transportConfig.connectionMethodKey;
         const result = normalizeMcpToolResult(
           callResult,
           "mcp_http",
           false,
           sourceTemplateKey,
+          sourceTemplateKey === "github"
+            ? { connectionMethodKey, githubGrant: grant.providerTenant?.github, toolName: entry.toolName, parameters }
+            : undefined,
         );
-        const failureInstructions = result.errorCode === "github_access_denied"
-          ? githubAccessDeniedInstructions(entry.toolName, connection.config.connectionMethodKey ?? connection.transportConfig.connectionMethodKey)
+        const githubTarget = isGitHubAccessErrorCode(result.errorCode)
+          ? extractGitHubTarget(entry.toolName, parameters)
+          : null;
+        const suspendedOwner = result.errorCode === "github_app_installation_suspended"
+          && connectionMethodKey === "managed"
+          ? suspendedManagedGitHubOwner(
+              grant.providerTenant?.github,
+              githubTarget ?? extractGitHubTarget(entry.toolName, parameters, result.content),
+            )
+          : null;
+        const failureInstructions = isGitHubAccessErrorCode(result.errorCode)
+          ? githubAccessErrorInstructions(
+              result.errorCode,
+              entry.toolName,
+              connectionMethodKey,
+              result.errorCode === "github_repo_outside_app_installations"
+                ? githubTarget
+                : null,
+              result.errorCode === "github_repo_outside_app_installations"
+                ? grant.providerTenant?.github?.installationOwnerLogins
+                : undefined,
+              suspendedOwner ? { suspendedOwner } : undefined,
+            )
           : undefined;
         await markCallHealth(
           "ok",
@@ -10460,9 +10545,10 @@ export function createToolGatewayService(
       });
       const providerResult = asRecord(resultValidation.value);
       if (providerResult?.error) {
-        throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
+        const githubCode = isGitHubAccessErrorCode(providerResult.errorCode) ? providerResult.errorCode : null;
+        throw new ToolGatewayHttpError(githubCode ? 403 : 502,
           toolResultErrorMessage(providerResult, connectedMcpExecution.failureInstructions),
-          providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
+          githubCode ?? "tool_error",
           { execution: connectedMcpExecution.execution, ...connectedToolErrorDetails(connectedMcpExecution, providerResult) });
       }
     } catch (caught) {
@@ -11349,13 +11435,15 @@ export function createToolGatewayService(
         promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocation.id, { approvedAction: true }),
       });
       const resultRecord = asRecord(resultValidation.value);
-      if (resultRecord?.error)
+      if (resultRecord?.error) {
+        const githubCode = isGitHubAccessErrorCode(resultRecord.errorCode) ? resultRecord.errorCode : null;
         throw new ToolGatewayHttpError(
-          resultRecord.errorCode === "github_access_denied" ? 403 : 502,
+          githubCode ? 403 : 502,
           toolResultErrorMessage(resultRecord, connectedMcpExecution?.failureInstructions),
-          resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
+          githubCode ?? "tool_execution_failed",
           connectedToolErrorDetails(connectedMcpExecution, resultRecord),
         );
+      }
       const now = new Date();
       await db
         .update(toolInvocations)
@@ -13689,12 +13777,15 @@ export function createToolGatewayService(
       // approval signing, previews, and audit summaries. Approved retries
       // re-project only for a compatibility comparison and dispatch the
       // already-reviewed signed payload unchanged.
+      let governedRemote: GovernedRemoteToolContext | null = null;
       if (!input.approvedActionRequestId) {
-        requestedParameters = await governedToolArguments(
+        const governed = await resolveGovernedToolCall(
           session,
           tool,
           requestedParameters,
         );
+        requestedParameters = governed.parameters;
+        governedRemote = governed.remote;
       }
 
       const argumentValidation = await validateToolContent({
@@ -14149,9 +14240,24 @@ export function createToolGatewayService(
         if (accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && SLACK_TOOLS.some(t => t.name === tool.upstreamToolName && t.risk === "approval")) {
           accessDecision = { ...accessDecision, allowed: false, decision: "require_approval", reasonCode: "requires_approval_policy", explanation: "Slack destructive actions, channel creation and invitations require approval." };
         }
+        const unreachableGitHubTarget = accessDecision.decision === "require_approval" && tool.risk !== "read"
+          ? await checkManagedGitHubWriteReachability(session, governedRemote, effectiveParameters)
+          : null;
+        if (unreachableGitHubTarget) {
+          accessDecision = {
+            ...accessDecision,
+            allowed: false,
+            decision: "deny",
+            reasonCode: "github_repo_outside_app_installations",
+            explanation: unreachableGitHubTarget.message,
+          };
+        }
         const recorded = await recordToolInvocation(
           decisionInput,
           accessDecision,
+          accessDecision.reasonCode === "github_repo_outside_app_installations"
+            ? { claimIdempotencyKey: false }
+            : undefined,
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
@@ -14398,10 +14504,11 @@ export function createToolGatewayService(
           ? asRecord(resultValidation.value)
           : null;
         if (validatedMcpResult?.error) {
+          const githubCode = isGitHubAccessErrorCode(validatedMcpResult.errorCode) ? validatedMcpResult.errorCode : null;
           throw new ToolGatewayHttpError(
-            validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
+            githubCode ? 403 : 502,
             toolResultErrorMessage(validatedMcpResult, connectedMcpExecution?.failureInstructions),
-            validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
+            githubCode ?? "tool_error",
             { execution: connectedMcpExecution?.execution, ...connectedToolErrorDetails(connectedMcpExecution, validatedMcpResult) },
           );
         }

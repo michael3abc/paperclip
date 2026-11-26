@@ -142,12 +142,14 @@ export function aiConnectionCatalogSlug(provider: string, routing?: Pick<AiProvi
       : routing.protocol === "chat" ? "chat-completions-api" : "responses-api";
   }
   if (!routing && provider === "github") return "github-copilot";
+  if (!routing && provider === "antigravity") return "agy-local";
+  if (!routing && provider === "google") return "antigravity";
   return routing?.kind ?? provider;
 }
 
 /** Direct catalog setup presets; legacy gateway links still open their existing setup. */
 export function aiProviderSetupPreset(source: string | null): {
-  provider: "openrouter" | "bedrock" | "gateway" | "local" | "google";
+  provider: "openrouter" | "bedrock" | "gateway" | "local" | "google" | "antigravity";
   protocol?: AiProviderRouting["protocol"];
   label?: string;
 } | undefined {
@@ -155,8 +157,12 @@ export function aiProviderSetupPreset(source: string | null): {
     case "responses-api": return { provider: "gateway", protocol: "responses", label: "Responses API" };
     case "messages-api": return { provider: "gateway", protocol: "messages", label: "Messages API" };
     case "chat-completions-api": return { provider: "gateway", protocol: "chat", label: "Chat Completions API" };
-    case "google-ai": return { provider: "google" };
-    case "google": case "openrouter": case "bedrock": case "gateway": case "local": return { provider: source };
+    case "agy-local": return { provider: "antigravity", label: "Antigravity CLI" };
+    case "antigravity":
+    case "google":
+    case "google-ai":
+      return { provider: "google", label: "Antigravity" };
+    case "openrouter": case "bedrock": case "gateway": case "local": return { provider: source };
     default: return undefined;
   }
 }
