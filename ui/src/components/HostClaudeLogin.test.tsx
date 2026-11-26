@@ -9,9 +9,9 @@ vi.mock("@/api/dashboard", () => ({ dashboardApi: { ...api, codexHosts: async ()
 let root: ReturnType<typeof createRoot>, host: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.resetAllMocks();
-  api.claudeHosts.mockResolvedValue([{ id: "shopee-e", label: "Shopee-E", available: true }]);
+  api.claudeHosts.mockResolvedValue([{ id: "remote-host-a", label: "Remote-host-A", available: true }]);
   api.checkHostClaude.mockResolvedValue({ loggedIn: false });
-  api.startHostClaude.mockResolvedValue({ id: "s1", hostId: "shopee-e", status: "waiting", authorizationUrl: "https://claude.com/cai/oauth/authorize?state=fixture", expiresAt: "2099-01-01" });
+  api.startHostClaude.mockResolvedValue({ id: "s1", hostId: "remote-host-a", status: "waiting", authorizationUrl: "https://claude.com/cai/oauth/authorize?state=fixture", expiresAt: "2099-01-01" });
   api.hostClaudeSession.mockResolvedValue({ id: "s1", status: "authenticated" });
   api.hostClaudeAction.mockResolvedValue({ id: "s1", status: "verifying" });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -20,12 +20,12 @@ beforeEach(() => {
 afterEach(() => { flushSync(() => root.unmount()); client.clear(); host.remove(); vi.useRealTimers(); });
 function mount(companyId = "company") {
   flushSync(() => root.render(<QueryClientProvider client={client}>
-    <SubscriptionQuotaPanels companyId={companyId} accounts={[{ provider: "anthropic", ok: true, accountLabel: "shopee-e", windows: [{ label: "Current session", usedPercent: 20, resetsAt: null, valueLabel: null }] }]} refreshing={false} failed={false} onRefresh={vi.fn()} />
+    <SubscriptionQuotaPanels companyId={companyId} accounts={[{ provider: "anthropic", ok: true, accountLabel: "remote-host-a", windows: [{ label: "Current session", usedPercent: 20, resetsAt: null, valueLabel: null }] }]} refreshing={false} failed={false} onRefresh={vi.fn()} />
   </QueryClientProvider>));
 }
 function button(text: string) { return Array.from(host.querySelectorAll("button")).find(b => b.textContent === text)!; }
 async function checked() {
-  await vi.waitFor(() => expect(client.getQueryState(["host-claude-status", "company", "shopee-e"])?.fetchStatus).toBe("idle"));
+  await vi.waitFor(() => expect(client.getQueryState(["host-claude-status", "company", "remote-host-a"])?.fetchStatus).toBe("idle"));
 }
 it("replaces only the Claude card body after native status confirms logged out; login needs a human click", async () => {
   mount();
@@ -36,7 +36,7 @@ it("replaces only the Claude card body after native status confirms logged out; 
   expect(host.textContent).toContain("Codex");
   expect(host.textContent).toContain("Antigravity");
   expect(host.querySelector('[aria-label="主機 Claude 登入"]')).toBeNull();
-  expect(api.checkHostClaude).toHaveBeenCalledWith("company", "shopee-e");
+  expect(api.checkHostClaude).toHaveBeenCalledWith("company", "remote-host-a");
   expect(api.startHostClaude).not.toHaveBeenCalled();
 });
 it("keeps normal quotas and hides sign-in for an authenticated host", async () => {
@@ -65,17 +65,17 @@ it.each(["unknown", "error"])("does not treat %s status as a logged-out host", a
 });
 it("offers every logged-out company host and omits authenticated or unavailable hosts", async () => {
   api.claudeHosts.mockResolvedValue([
-    { id: "shopee-e", label: "Shopee-E", available: true },
-    { id: "shopee-d", label: "Shopee-D", available: true },
+    { id: "remote-host-a", label: "Remote-host-A", available: true },
+    { id: "remote-host-b", label: "Remote-host-B", available: true },
     { id: "offline", label: "Unavailable", available: false },
   ]);
-  api.checkHostClaude.mockImplementation(async (_company: string, id: string) => ({ loggedIn: id === "shopee-e" }));
+  api.checkHostClaude.mockImplementation(async (_company: string, id: string) => ({ loggedIn: id === "remote-host-a" }));
   mount();
-  await vi.waitFor(() => expect(host.textContent).toContain("Shopee-D 尚未登入"));
-  expect(host.textContent).not.toContain("Shopee-E 尚未登入");
+  await vi.waitFor(() => expect(host.textContent).toContain("Remote-host-B 尚未登入"));
+  expect(host.textContent).not.toContain("Remote-host-A 尚未登入");
   expect(api.checkHostClaude).toHaveBeenCalledTimes(2);
   flushSync(() => button("登入 Claude").click());
-  await vi.waitFor(() => expect(api.startHostClaude).toHaveBeenCalledWith("company", "shopee-d"));
+  await vi.waitFor(() => expect(api.startHostClaude).toHaveBeenCalledWith("company", "remote-host-b"));
 });
 it("submits a private browser code, clears it, restores quotas, and stops polling on success", async () => {
   const invalidate = vi.spyOn(client, "invalidateQueries");

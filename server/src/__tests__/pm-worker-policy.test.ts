@@ -23,9 +23,9 @@ vi.mock("../adapters/registry.js", async original => ({ ...await original<typeof
     { id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", efforts: ["low", "high"] },
     { id: "michael-server/claude/compass-opus5.5", label: "Claude via Bridge", efforts: ["high"] },
     { id: "other-host/antigravity/gemini-test", label: "Another host", efforts: [] },
-    { id: "shopee-d/codex/gpt-6-astra", label: "Astra on shopee-d", efforts: ["high"] },
-    { id: "shopee-e/codex/gpt-6-astra", label: "Astra on shopee-e", efforts: ["high"] },
-    { id: "shopee-e/claude/opus", label: "Claude on shopee-e", efforts: ["high"] },
+    { id: "remote-host-b/codex/gpt-6-astra", label: "Astra on remote-host-b", efforts: ["high"] },
+    { id: "remote-host-a/codex/gpt-6-astra", label: "Astra on remote-host-a", efforts: ["high"] },
+    { id: "remote-host-a/claude/opus", label: "Claude on remote-host-a", efforts: ["high"] },
   ] : type === "agy_local" ? [{ id: "gemini-4-argon-high", label: "Argon High" }] : [{ id: "gpt-6.1-sol", label: "Sol" }]; },
 }));
 
@@ -276,21 +276,21 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
 
   it("offers one shared worker on D and E without probing the other host or another company", async () => {
     const sharedId = randomUUID();
-    await db.insert(agents).values({ id: sharedId, companyId, name: "Shopee Shared Codex", status: "idle", adapterType: "ccpocket_bridge",
-      adapterConfig: { hostId: "shopee-e", provider: "codex" },
-      runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 4, "shopee-e": 4 } } });
+    await db.insert(agents).values({ id: sharedId, companyId, name: "Remote Shared Codex", status: "idle", adapterType: "ccpocket_bridge",
+      adapterConfig: { hostId: "remote-host-a", provider: "codex" },
+      runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "remote-host-b": 4, "remote-host-a": 4 } } });
     try {
-      for (const hostId of ["shopee-d", "shopee-e"]) {
+      for (const hostId of ["remote-host-b", "remote-host-a"]) {
         bridgeProbes.mockClear();
         const catalog = await pmWorkerCatalog(db, companyId, undefined, hostId);
         const shared = catalog.find(entry => entry.agentId === sharedId)!;
         expect(shared).toMatchObject({ hostId, models: [{ id: `${hostId}/codex/gpt-6-astra` }] });
         expect(bridgeProbes.mock.calls.every(([context]) => context?.hostId === hostId)).toBe(true);
       }
-      bridgeProbes.mockImplementation(context => { if (context?.hostId === "shopee-d") throw new Error("D offline"); });
-      await expect(pmWorkerCatalog(db, companyId, undefined, "shopee-d")).rejects.toThrow("D offline");
-      await expect(pmWorkerCatalog(db, companyId, undefined, "shopee-e")).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ agentId: sharedId })]));
-      expect(await pmWorkerCatalog(db, randomUUID(), undefined, "shopee-e")).toEqual([]);
+      bridgeProbes.mockImplementation(context => { if (context?.hostId === "remote-host-b") throw new Error("D offline"); });
+      await expect(pmWorkerCatalog(db, companyId, undefined, "remote-host-b")).rejects.toThrow("D offline");
+      await expect(pmWorkerCatalog(db, companyId, undefined, "remote-host-a")).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ agentId: sharedId })]));
+      expect(await pmWorkerCatalog(db, randomUUID(), undefined, "remote-host-a")).toEqual([]);
       expect((await pmWorkerCatalog(db, companyId, undefined, "michael-server")).some(entry => entry.agentId === sharedId)).toBe(false);
     } finally {
       bridgeProbes.mockReset();
@@ -300,18 +300,18 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
 
   it("offers remote Bridge workers only on their own host and dispatches to registered directories or session-only", async () => {
     const remoteId = randomUUID(), remoteSourceId = randomUUID(), unhostedSourceId = randomUUID(), remoteWorkspaceId = randomUUID(), unhostedWorkspaceId = randomUUID();
-    await db.insert(agents).values({ id: remoteId, companyId, name: "Shopee-E Codex", status: "active", adapterType: "ccpocket_bridge",
-      adapterConfig: { hostId: "shopee-e", provider: "codex", model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" }, runtimeConfig: { requireProjectWorkspace: true } });
+    await db.insert(agents).values({ id: remoteId, companyId, name: "Remote-host-A Codex", status: "active", adapterType: "ccpocket_bridge",
+      adapterConfig: { hostId: "remote-host-a", provider: "codex", model: "remote-host-a/codex/gpt-6-astra", permissionMode: "fullAccess" }, runtimeConfig: { requireProjectWorkspace: true } });
     await db.insert(projectWorkspaces).values([
-      { id: remoteSourceId, companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd: "/home/yoyo/Projects/Fixture", metadata: { hostId: "shopee-e" } },
-      { id: unhostedSourceId, companyId, projectId, name: "Unhosted remote source", sourceType: "remote_managed", cwd: "/home/yoyo/Projects/Unknown" }]);
+      { id: remoteSourceId, companyId, projectId, name: "Remote source", sourceType: "remote_managed", cwd: "/home/worker/Projects/Fixture", metadata: { hostId: "remote-host-a" } },
+      { id: unhostedSourceId, companyId, projectId, name: "Unhosted remote source", sourceType: "remote_managed", cwd: "/home/worker/Projects/Unknown" }]);
     await seedManagedDispatchWorkspace(db, { id: remoteWorkspaceId, companyId, projectId, sourceId: remoteSourceId,
-      cwd: "/home/yoyo/Projects/Fixture", hostId: "shopee-e" });
+      cwd: "/home/worker/Projects/Fixture", hostId: "remote-host-a" });
     await seedManagedDispatchWorkspace(db, { id: unhostedWorkspaceId, companyId, projectId, sourceId: unhostedSourceId,
-      cwd: "/home/yoyo/Projects/Unknown", hostId: "shopee-e" });
+      cwd: "/home/worker/Projects/Unknown", hostId: "remote-host-a" });
     const choice = randomUUID();
     const remote: PmWorkerPolicy = { version: 2, defaultSelectionId: choice, workers: [{ agentId: remoteId, harness: "ccpocket_bridge",
-      selections: [{ id: choice, model: "shopee-e/codex/gpt-6-astra", thinking: "high", permission: "full-access", speed: "standard" }] }] };
+      selections: [{ id: choice, model: "remote-host-a/codex/gpt-6-astra", thinking: "high", permission: "full-access", speed: "standard" }] }] };
     const svc = pmWorkerPolicyService(db);
     // A controller-host owner never sees or saves a worker that runs on another Bridge host.
     const local = await svc.read(companyId, pmId, actor);
@@ -319,15 +319,15 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
     await expect(svc.save(companyId, pmId, { policy: remote, baseRevision: local.revision, baseHash: local.documentHash }, actor))
       .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
     const original = await readAgent();
-    await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { ...original.adapterConfig, hostId: "shopee-e", provider: "codex" } }).where(eq(agents.id, pmId));
+    await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { ...original.adapterConfig, hostId: "remote-host-a", provider: "codex" } }).where(eq(agents.id, pmId));
     try {
       const onHost = await svc.read(companyId, pmId, actor);
       expect(onHost.catalog.map(item => item.agentId)).toEqual([remoteId]);
-      expect(onHost.catalog[0]).toMatchObject({ provider: "codex", hostId: "shopee-e", models: [{ id: "shopee-e/codex/gpt-6-astra" }] });
+      expect(onHost.catalog[0]).toMatchObject({ provider: "codex", hostId: "remote-host-a", models: [{ id: "remote-host-a/codex/gpt-6-astra" }] });
       await svc.save(companyId, pmId, { policy: remote, baseRevision: onHost.revision, baseHash: onHost.documentHash }, actor);
       const existing = (workspaceId: string) => ({ kind: "existing", workspaceId }) as const;
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId,
-        assigneeAdapterOverrides: { workerSelectionId: choice, adapterConfig: { model: "shopee-e/codex/gpt-6-astra", permissionMode: "fullAccess" } } });
+        assigneeAdapterOverrides: { workerSelectionId: choice, adapterConfig: { model: "remote-host-a/codex/gpt-6-astra", permissionMode: "fullAccess" } } });
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(workspaceId), projectId }))
         .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
       // Liveness-first rule 3: a registration whose source lacks a host is logged; the registered host is used.
@@ -341,21 +341,21 @@ describe.each(["split-v1", "compact-v1"] as const)("%s PM worker policy with own
       // Liveness-first rule 3: no explicit workspace and no project default runs in the project default directory.
       await expect(assertPmDispatch(db, await scope(), { projectId })).resolves.toMatchObject({ assigneeAgentId: remoteId });
       // Moving the worker to another host invalidates the saved choice instead of dispatching across hosts.
-      await db.update(agents).set({ adapterConfig: { hostId: "shopee-d", provider: "codex", permissionMode: "fullAccess" } }).where(eq(agents.id, remoteId));
+      await db.update(agents).set({ adapterConfig: { hostId: "remote-host-b", provider: "codex", permissionMode: "fullAccess" } }).where(eq(agents.id, remoteId));
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
         .rejects.toMatchObject({ details: { code: "PM_WORKER_HOST_MISMATCH" } });
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId })).rejects.toThrow();
       // Explicit multi-host opt-in permits the same worker ID on D, with D models only.
-      await db.update(agents).set({ adapterConfig: { hostId: "shopee-e", provider: "codex", permissionMode: "fullAccess" },
-        runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "shopee-d": 4, "shopee-e": 4 } } }).where(eq(agents.id, remoteId));
-      await db.update(agents).set({ adapterConfig: { ...original.adapterConfig, hostId: "shopee-d", provider: "codex" } }).where(eq(agents.id, pmId));
+      await db.update(agents).set({ adapterConfig: { hostId: "remote-host-a", provider: "codex", permissionMode: "fullAccess" },
+        runtimeConfig: { requireProjectWorkspace: true, bridgeWorkerHostCapacity: { "remote-host-b": 4, "remote-host-a": 4 } } }).where(eq(agents.id, remoteId));
+      await db.update(agents).set({ adapterConfig: { ...original.adapterConfig, hostId: "remote-host-b", provider: "codex" } }).where(eq(agents.id, pmId));
       const onD = await svc.read(companyId, pmId, actor);
-      expect(onD.catalog.find(entry => entry.agentId === remoteId)).toMatchObject({ hostId: "shopee-d", models: [{ id: "shopee-d/codex/gpt-6-astra" }] });
+      expect(onD.catalog.find(entry => entry.agentId === remoteId)).toMatchObject({ hostId: "remote-host-b", models: [{ id: "remote-host-b/codex/gpt-6-astra" }] });
       const dPolicy = structuredClone(remote);
-      dPolicy.workers[0]!.selections[0]!.model = "shopee-d/codex/gpt-6-astra";
+      dPolicy.workers[0]!.selections[0]!.model = "remote-host-b/codex/gpt-6-astra";
       await svc.save(companyId, pmId, { policy: dPolicy, baseRevision: onD.revision, baseHash: onD.documentHash }, actor);
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: { kind: "session_only" }, projectId }))
-        .resolves.toMatchObject({ assigneeAgentId: remoteId, assigneeAdapterOverrides: { adapterConfig: { model: "shopee-d/codex/gpt-6-astra" } } });
+        .resolves.toMatchObject({ assigneeAgentId: remoteId, assigneeAdapterOverrides: { adapterConfig: { model: "remote-host-b/codex/gpt-6-astra" } } });
       await expect(assertPmDispatch(db, await scope(), { workspaceSelection: existing(remoteWorkspaceId), projectId }))
         .rejects.toMatchObject({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) });
     } finally {

@@ -132,16 +132,16 @@ describe("PM worker settings", () => {
   it("labels a CC Pocket Antigravity worker and saves its explicit Full access choice", async () => {
     const data = fixture();
     data.catalog = [{ agentId: workerId, name: "Antigravity worker", harness: "ccpocket_bridge", permissions: ["default", "full-access"],
-      models: [{ id: "michael-server/antigravity/gemini-test", label: "Antigravity · gemini-test", thinking: ["low", "high"], speeds: ["standard"] }] }];
+      models: [{ id: "controller-host/antigravity/gemini-test", label: "Antigravity · gemini-test", thinking: ["low", "high"], speeds: ["standard"] }] }];
     api.workerPolicy.mockResolvedValue(data);
     await render(); await click(button("Add worker option"));
     expect(container.querySelector('[aria-label="Worker 1 harness"]')!.textContent).toContain("Antigravity · Antigravity worker");
-    await select("harness", workerId); await select("model", "michael-server/antigravity/gemini-test");
+    await select("harness", workerId); await select("model", "controller-host/antigravity/gemini-test");
     await select("thinking", "high"); await select("permission", "full-access");
     await click(container.querySelector("input[type=radio]")!);
     expect(button("Save workers").disabled).toBe(false);
     expect(preview().workers[0]).toMatchObject({ agentId: workerId, harness: "ccpocket_bridge",
-      selections: [{ model: "michael-server/antigravity/gemini-test", thinking: "high", permission: "full-access", speed: "standard" }] });
+      selections: [{ model: "controller-host/antigravity/gemini-test", thinking: "high", permission: "full-access", speed: "standard" }] });
   });
 
   it("tells a main agent what its native subagents use with the selected default", async () => {
@@ -161,8 +161,8 @@ describe("PM worker settings", () => {
     expect(subagentModelHint("codex", { harness: "agy_local", model: "gemini-4-hydrogen-high", thinking: "high" })).toContain("cannot run as a Codex subagent");
     expect(subagentModelHint("claude", { harness: "claude_local", model: "claude-sonnet-5-5", thinking: null })).toBe(
       "Native subagents use claude-sonnet-5-5, including Explore and Plan. It follows the main's subscription or Compass route and applies from the next turn.");
-    expect(subagentModelHint("codex", { harness: "ccpocket_bridge", model: "shopee-e/codex/gpt-6-astra", thinking: "high" })).toContain("Native subagents use gpt-6-astra (high)");
-    expect(subagentModelHint("codex", { harness: "ccpocket_bridge", model: "shopee-e/claude/sonnet", thinking: null })).toContain("Claude sonnet cannot run as a Codex subagent");
+    expect(subagentModelHint("codex", { harness: "ccpocket_bridge", model: "remote-host-a/codex/gpt-6-astra", thinking: "high" })).toContain("Native subagents use gpt-6-astra (high)");
+    expect(subagentModelHint("codex", { harness: "ccpocket_bridge", model: "remote-host-a/claude/sonnet", thinking: null })).toContain("Claude sonnet cannot run as a Codex subagent");
     expect(subagentModelHint("codex", undefined)).toBeNull();
   });
 });

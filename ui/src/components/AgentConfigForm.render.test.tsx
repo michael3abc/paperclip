@@ -1252,18 +1252,18 @@ describe("AgentConfigForm environment selector", () => {
   });
 
   it("edits a multi-host Bridge worker's per-host run limits instead of the ignored agent-wide limit", async () => {
-    const runtimeConfig = { heartbeat: { maxConcurrentRuns: 4 }, bridgeWorkerHostCapacity: { "shopee-d": 20, "shopee-e": 20 } };
+    const runtimeConfig = { heartbeat: { maxConcurrentRuns: 4 }, bridgeWorkerHostCapacity: { "remote-host-b": 20, "remote-host-a": 20 } };
     const result = await renderForm([], { runtimeConfig });
     roots.push(result.root);
     await clickByText(result.container, "Advanced Run Policy");
     expect(result.container.textContent).not.toMatch(/Max concurrent runs(?! on)/);
-    const shopeeD = result.container.querySelector<HTMLInputElement>('[aria-label="Max concurrent runs on shopee-d"]')!;
-    expect(shopeeD.value).toBe("20");
-    expect(result.container.querySelector('[aria-label="Max concurrent runs on shopee-e"]')).not.toBeNull();
-    await act(async () => setInputValue(shopeeD, "8"));
+    const remoteHostB = result.container.querySelector<HTMLInputElement>('[aria-label="Max concurrent runs on remote-host-b"]')!;
+    expect(remoteHostB.value).toBe("20");
+    expect(result.container.querySelector('[aria-label="Max concurrent runs on remote-host-a"]')).not.toBeNull();
+    await act(async () => setInputValue(remoteHostB, "8"));
     await flushReact();
     await clickByText(result.container, "Save");
-    expect(result.onSave).toHaveBeenCalledWith({ runtimeConfig: { ...runtimeConfig, bridgeWorkerHostCapacity: { "shopee-d": 8, "shopee-e": 20 } } });
+    expect(result.onSave).toHaveBeenCalledWith({ runtimeConfig: { ...runtimeConfig, bridgeWorkerHostCapacity: { "remote-host-b": 8, "remote-host-a": 20 } } });
 
     const single = await renderForm([], { runtimeConfig: { heartbeat: { maxConcurrentRuns: 4 } } });
     roots.push(single.root);
@@ -4722,7 +4722,7 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
   it("shows the worker host and native PM home of a remote project PM", async () => {
     const binding = {
       mode: "project_pm", agentHome: "/srv/paperclip/agents/pm", projectId: "8a3c3c1e-2b8f-4c35-9d0a-111111111111",
-      workerRoot: "/home/yoyo/app", workerHostId: "shopee-e", pmHome: "/home/yoyo/.local/state/pc/agents/pm/home",
+      workerRoot: "/home/worker/app", workerHostId: "remote-host-a", pmHome: "/home/worker/.local/state/pc/agents/pm/home",
       workerIsolation: "shared", workerSlots: 2, inboxIssueId: null,
     };
     const result = await renderForm(
@@ -4731,8 +4731,8 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
     const summary = result.container.querySelector('[aria-label="Project PM workspace"]');
-    expect(summary?.textContent).toContain("Worker hostshopee-e");
-    expect(summary?.textContent).toContain("PM home/home/yoyo/.local/state/pc/agents/pm/home");
+    expect(summary?.textContent).toContain("Worker hostremote-host-a");
+    expect(summary?.textContent).toContain("PM home/home/worker/.local/state/pc/agents/pm/home");
   });
 
   it("shows the host path and execution-engine fields when the policy is off", async () => {

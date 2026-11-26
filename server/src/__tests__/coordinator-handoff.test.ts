@@ -75,7 +75,7 @@ const support = externalDatabase ? { supported: true } : await getEmbeddedPostgr
     const f = await seed();
     const { task: ran } = await f.handoff(), { task: waiting } = await f.handoff(), { task: old } = await f.handoff();
     await db.update(agents).set({ adapterType: "ccpocket_bridge", adapterConfig: { model: "host/claude/default", env: { TOKEN: "PRIVATE" } } }).where(eq(agents.id, f.agentId));
-    await db.update(issues).set({ assigneeAdapterOverrides: { adapterConfig: { model: "shopee-e/claude/sonnet" } } }).where(eq(issues.id, waiting.id));
+    await db.update(issues).set({ assigneeAdapterOverrides: { adapterConfig: { model: "remote-host-a/claude/sonnet" } } }).where(eq(issues.id, waiting.id));
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: ran.id, status: "succeeded" }).returning();
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: old.id, status: "succeeded" });
     await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId, runId: run.id, seq: 1, eventType: "adapter.invoke",

@@ -531,7 +531,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       boundary: { mode: "low_trust_review", companyId: input.agent.companyId, rootIssueId: issue.id } };
     if (kind.startsWith("remote")) {
       input.agent.adapterType = "ccpocket_bridge";
-      input.agent.adapterConfig = { hostId: "shopee-e", provider: "codex", model: "shopee-e/codex/gpt-6-astra" };
+      input.agent.adapterConfig = { hostId: "remote-host-a", provider: "codex", model: "remote-host-a/codex/gpt-6-astra" };
       input.config.mergedConfig = { ...input.agent.adapterConfig, ...(kind === "remote" ? { cwd: "/remote/session-home" } : {}) };
     }
     if (kind === "low_trust") {
@@ -577,7 +577,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(access(join(source,".git"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("keeps sibling project repositories in place for a shared home directory with an ignore-only .git", async () => {
-    // HOM-377: michael's home (/home/michael) holds only .git/info/exclude; a sibling project
+    // HOM-377: the controller user's home holds only .git/info/exclude; a sibling project
     // workspace with a repository URL made every run fail at `git rev-parse --git-path info/exclude`.
     const { input, source, issue } = await fixture(); input.agent.runtimeConfig = { requireProjectWorkspace: true };
     await rm(join(source, ".git"), { recursive: true });

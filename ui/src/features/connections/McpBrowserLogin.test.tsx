@@ -53,16 +53,16 @@ describe("custom connector account login", () => {
     expect(document.querySelector('a[href*="token=owned"]')).toBeTruthy();
     await click("關閉"); expect(document.querySelector('a[href*="token=owned"]')).toBeNull();
   });
-  it("shows the SeaTalk QR and only reports success after the service confirms it", async () => {
+  it("shows the connection service QR and only reports success after the service confirms it", async () => {
     api.browserLoginStatus.mockResolvedValue({ status: "waiting", mode: "qr" });
     api.startBrowserLogin.mockResolvedValue({ status: "waiting", mode: "qr", qrImage: "data:image/png;base64,iVBORw==" });
-    await render({ ...connection, name: "SeaTalk" }); await click("登入帳號");
-    expect(document.querySelector('img[alt="SeaTalk 登入 QR Code"]')).toBeTruthy();
+    await render({ ...connection, name: "Connected service" }); await click("登入帳號");
+    expect(document.querySelector('img[alt="連線服務登入 QR Code"]')).toBeTruthy();
     expect(container.textContent).not.toContain("已登入");
     api.browserLoginStatus.mockResolvedValue({ status: "logged_in", mode: "qr" });
     await click("檢查登入狀態");
     expect(container.textContent).toContain("已登入");
-    expect(document.querySelector('img[alt="SeaTalk 登入 QR Code"]')).toBeNull();
+    expect(document.querySelector('img[alt="連線服務登入 QR Code"]')).toBeNull();
     await click("完成");
   });
   it("keeps unknown and failed states explicit", async () => {

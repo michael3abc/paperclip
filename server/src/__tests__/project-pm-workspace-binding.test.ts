@@ -128,18 +128,18 @@ describe("project_pm binding schema and role table", () => {
   });
 
   it('binds a remote worker host into the claim context and refuses host substitution', () => {
-    const binding = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
+    const binding = { ...base, agentHome: '/home/pm', workerHostId: 'remote-host-a', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
     const worker = buildPaperclipPmWorkspaceContext(binding, 'worker', randomUUID());
-    expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: worker })?.projectPm?.workerHostId).toBe('shopee-e');
-    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...worker, workerHostId: 'shopee-d' } })).toThrow(/does not match/);
+    expect(readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: worker })?.projectPm?.workerHostId).toBe('remote-host-a');
+    expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...worker, workerHostId: 'remote-host-b' } })).toThrow(/does not match/);
     expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...binding, workerHostId: '../host' } })).toThrow();
   });
 
   it('runs a native PM in its home on the worker host and keeps controller setup local', () => {
-    const pmHome = '/home/yoyo/.local/state/paperclip-ccpocket/agents/a1/home';
-    const binding = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', pmHome, workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
+    const pmHome = '/home/worker/.local/state/paperclip-ccpocket/agents/a1/home';
+    const binding = { ...base, agentHome: '/home/pm', workerHostId: 'remote-host-a', pmHome, workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
     const pm = buildPaperclipPmWorkspaceContext(binding, 'pm', null);
-    expect(pm).toMatchObject({ role: 'pm', cwd: pmHome, pmHome, agentHome: '/home/pm', workerHostId: 'shopee-e' });
+    expect(pm).toMatchObject({ role: 'pm', cwd: pmHome, pmHome, agentHome: '/home/pm', workerHostId: 'remote-host-a' });
     expect(buildPaperclipPmWorkspaceContext(binding, 'worker', randomUUID())).toMatchObject({ cwd: '/projects/app', pmHome });
     expect(readPaperclipPmWorkspaceContext(pm)).toEqual(pm);
     const fixed = readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: pm });
@@ -150,13 +150,13 @@ describe("project_pm binding schema and role table", () => {
     expect(() => readWorkspaceBinding({ workspaceBinding: withoutHome }, { paperclipPmWorkspace: pm })).toThrow(/does not match/);
     expect(() => readWorkspaceBinding({ workspaceBinding: binding }, { paperclipPmWorkspace: { ...pm, cwd: '/home/pm' } })).toThrow(/does not match/);
     expect(readPaperclipPmWorkspaceContext({ ...pm, workerHostId: undefined })).toBeNull();
-    for (const bad of ['relative/home', '/home/yoyo/', '/home//yoyo', '/home/./yoyo', '/home/yoyo/..', '/']) {
+    for (const bad of ['relative/home', '/home/worker/', '/home//yoyo', '/home/./yoyo', '/home/worker/..', '/']) {
       expect(() => agentRuntimeConfigSchema.parse({ workspaceBinding: { ...binding, pmHome: bad } })).toThrow();
     }
   });
 
   it('runs controller-local setup from the agent home when the worker root exists only on a remote host', () => {
-    const remote = { ...base, agentHome: '/home/pm', workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
+    const remote = { ...base, agentHome: '/home/pm', workerHostId: 'remote-host-a', workerIsolation: 'shared' as const, workerSlots: 2, inboxIssueId: null };
     const remoteWorker = readWorkspaceBinding({ workspaceBinding: remote }, { paperclipPmWorkspace: buildPaperclipPmWorkspaceContext(remote, 'worker', randomUUID()) });
     expect(remoteWorker?.cwd).toBe('/projects/app');
     expect(controllerLocalCwd(remoteWorker, remoteWorker!.cwd, 'agent-1')).toBe('/home/pm');
@@ -277,22 +277,22 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
 
   it('requires remote workspace metadata to match the explicitly bound worker host', async () => {
     const s = await seed(), remoteRoot = '/remote-only/project';
-    const binding = { mode: 'project_pm' as const, projectId: s.project.id, workerRoot: remoteRoot, workerHostId: 'shopee-e', workerIsolation: 'shared' as const, workerSlots: 2 };
+    const binding = { mode: 'project_pm' as const, projectId: s.project.id, workerRoot: remoteRoot, workerHostId: 'remote-host-a', workerIsolation: 'shared' as const, workerSlots: 2 };
     const resolve = () => resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding, validateInbox: true });
     expect(await reasonOf(resolve())).toBe('project_pm_worker_root_mismatch');
-    await db.update(projectWorkspaces).set({ sourceType: 'remote_managed', cwd: remoteRoot, metadata: { hostId: 'shopee-e' }, remoteWorkspaceRef: 'shopee-e:' + remoteRoot }).where(eq(projectWorkspaces.projectId, s.project.id));
+    await db.update(projectWorkspaces).set({ sourceType: 'remote_managed', cwd: remoteRoot, metadata: { hostId: 'remote-host-a' }, remoteWorkspaceRef: 'remote-host-a:' + remoteRoot }).where(eq(projectWorkspaces.projectId, s.project.id));
     expect(await resolve()).toMatchObject(binding);
     expect(await reasonOf(resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id,
       binding: { ...binding, workerIsolation: 'worktree' }, validateInbox: true }))).toBe('project_pm_invalid');
-    await db.update(projectWorkspaces).set({ metadata: { hostId: 'shopee-d' } }).where(eq(projectWorkspaces.projectId, s.project.id));
+    await db.update(projectWorkspaces).set({ metadata: { hostId: 'remote-host-b' } }).where(eq(projectWorkspaces.projectId, s.project.id));
     expect(await reasonOf(resolve())).toBe('project_pm_worker_root_mismatch');
   });
 
   it('accepts a native PM home only together with its worker host', async () => {
-    const s = await seed(), remoteRoot = '/remote-only/project', pmHome = '/home/yoyo/.local/state/paperclip-ccpocket/agents/x/home';
-    await db.update(projectWorkspaces).set({ sourceType: 'remote_managed', cwd: remoteRoot, metadata: { hostId: 'shopee-e' }, remoteWorkspaceRef: 'shopee-e:' + remoteRoot }).where(eq(projectWorkspaces.projectId, s.project.id));
-    const binding = { mode: 'project_pm' as const, projectId: s.project.id, workerRoot: remoteRoot, workerHostId: 'shopee-e', pmHome, workerIsolation: 'shared' as const, workerSlots: 2 };
-    expect(await resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding, validateInbox: true })).toMatchObject({ pmHome, workerHostId: 'shopee-e' });
+    const s = await seed(), remoteRoot = '/remote-only/project', pmHome = '/home/worker/.local/state/paperclip-ccpocket/agents/x/home';
+    await db.update(projectWorkspaces).set({ sourceType: 'remote_managed', cwd: remoteRoot, metadata: { hostId: 'remote-host-a' }, remoteWorkspaceRef: 'remote-host-a:' + remoteRoot }).where(eq(projectWorkspaces.projectId, s.project.id));
+    const binding = { mode: 'project_pm' as const, projectId: s.project.id, workerRoot: remoteRoot, workerHostId: 'remote-host-a', pmHome, workerIsolation: 'shared' as const, workerSlots: 2 };
+    expect(await resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding, validateInbox: true })).toMatchObject({ pmHome, workerHostId: 'remote-host-a' });
     const { workerHostId: _host, ...local } = binding;
     expect(await reasonOf(resolveProjectPmBinding(db, { companyId: s.companyId, agentId: s.agent.id, binding: local, validateInbox: true }))).toBe('project_pm_invalid');
   });
@@ -436,7 +436,7 @@ describeEmbeddedPostgres("project_pm binding validation against server state", (
     app.use((req, _res, next) => { req.actor = { type: "board", userId: "local-board", source: "local_implicit" }; next(); });
     app.use("/api", agentRoutes(db)); app.use(errorHandler);
     await db.update(agents).set({ adapterType: "ccpocket_bridge", runtimeConfig: { workspaceBinding: { mode: "project_pm",
-      projectId: s.project.id, workerRoot: "/remote/project", workerHostId: "shopee-e", workerIsolation: "shared", workerSlots: 2 } } }).where(eq(agents.id, s.agent.id));
+      projectId: s.project.id, workerRoot: "/remote/project", workerHostId: "remote-host-a", workerIsolation: "shared", workerSlots: 2 } } }).where(eq(agents.id, s.agent.id));
     const response = await request(app).patch(`/api/agents/${s.agent.id}`).send({ adapterType: "process", adapterConfig: { command: "true" } });
     expect(response.status).toBe(400);
     expect(response.body.error).toMatch(/CC Pocket/);

@@ -357,7 +357,7 @@ The relay is off unless both variables are set in the server environment:
 
 | variable | meaning |
 | --- | --- |
-| `PAPERCLIP_LOCAL_VOICE_GATEWAY_URL` | realtime gateway base URL, `ws://` or `wss://`, no query (for example the LAN gateway `ws://192.168.66.11:8792`) |
+| `PAPERCLIP_LOCAL_VOICE_GATEWAY_URL` | realtime gateway base URL, `ws://` or `wss://`, no query (for example `ws://voice-gateway.example:8792`) |
 | `PAPERCLIP_LOCAL_VOICE_GATEWAY_KEY_FILE` | file that holds the gateway client key; read at connect time, never logged or sent to the browser |
 | `PAPERCLIP_LOCAL_VOICE_ENGINE` | optional, `openai` (default) or `gemini`. Without it, a `PAPERCLIP_LOCAL_VOICE_MODEL` that starts with `gemini` selects Gemini; any other value is rejected (relay unconfigured) |
 | `PAPERCLIP_LOCAL_VOICE_MODEL` | optional, default `gpt-realtime-1.5` (openai) or `gemini-3.8-live` (gemini) |

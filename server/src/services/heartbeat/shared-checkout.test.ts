@@ -294,21 +294,21 @@ it.each(["settled", "unknown_stop", "pending_files", "cleanup_pending", "retaine
 
 it("keys a remote Bridge worker's claim on its host and registered path without touching the controller filesystem", async () => {
   const [a,b] = await fixture(false);
-  const remotePath = "/home/yoyo/Projects/Remote_Only";
+  const remotePath = "/home/worker/Projects/Remote_Only";
   a.cwd = remotePath; b.cwd = remotePath;
-  const first = await claimSharedCheckout(db, { ...a, remoteHostId: "shopee-e", requireGit: false });
-  expect(first).toMatchObject({ host: "ccpocket:shopee-e", path: remotePath, issueId: a.issueId });
+  const first = await claimSharedCheckout(db, { ...a, remoteHostId: "remote-host-a", requireGit: false });
+  expect(first).toMatchObject({ host: "ccpocket:remote-host-a", path: remotePath, issueId: a.issueId });
   expect(first.kind).toBeUndefined();
   await expect(access(remotePath)).rejects.toMatchObject({ code: "ENOENT" });
   // Both same-host and other-host participants are admitted; host identity is retained.
-  await expect(claimSharedCheckout(db, { ...b, remoteHostId: "shopee-e" })).resolves.toBeDefined();
-  await expect(claimSharedCheckout(db, { ...b, remoteHostId: "shopee-d" })).resolves.toMatchObject({ host: "ccpocket:shopee-d", path: remotePath });
+  await expect(claimSharedCheckout(db, { ...b, remoteHostId: "remote-host-a" })).resolves.toBeDefined();
+  await expect(claimSharedCheckout(db, { ...b, remoteHostId: "remote-host-b" })).resolves.toMatchObject({ host: "ccpocket:remote-host-b", path: remotePath });
 });
 
-it.each(["relative/path", "/home/yoyo/../etc", "/home/yoyo/Projects/"])("records a non-canonical remote path %s as a mismatch only", async remotePath => {
+it.each(["relative/path", "/home/worker/../etc", "/home/worker/Projects/"])("records a non-canonical remote path %s as a mismatch only", async remotePath => {
   const [a] = await fixture(false);
-  await expect(claimSharedCheckout(db, { ...a, cwd: remotePath, remoteHostId: "shopee-e" }))
-    .resolves.toMatchObject({ host: "ccpocket:shopee-e", path: remotePath, mismatches: ["remote_worker_path_invalid"] });
+  await expect(claimSharedCheckout(db, { ...a, cwd: remotePath, remoteHostId: "remote-host-a" }))
+    .resolves.toMatchObject({ host: "ccpocket:remote-host-a", path: remotePath, mismatches: ["remote_worker_path_invalid"] });
 });
 
 

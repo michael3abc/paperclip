@@ -20,13 +20,13 @@ describe("modelHasEffortSuffix and resolveAgyPrintTimeoutSec", () => {
   });
 
   it("accepts CC Pocket Bridge selectors carried over after a worker switched to agy", () => {
-    expect(normalizeAgyModelId("michael-server/antigravity/gemini-4-argon-high")).toBe("gemini-4-argon-high");
+    expect(normalizeAgyModelId("controller-host/antigravity/gemini-4-argon-high")).toBe("gemini-4-argon-high");
     expect(normalizeAgyModelId("antigravity/gemini-4-hydrogen-xhigh")).toBe("gemini-4-hydrogen-xhigh");
     expect(normalizeAgyModelId(" gemini-4-argon-low ")).toBe("gemini-4-argon-low");
-    expect(normalizeAgyModelId("michael-server/claude/opus")).toBe("michael-server/claude/opus");
-    expect(resolveAgyModelEffort("michael-server/antigravity/gemini-4-argon-high", "high"))
+    expect(normalizeAgyModelId("controller-host/claude/opus")).toBe("controller-host/claude/opus");
+    expect(resolveAgyModelEffort("controller-host/antigravity/gemini-4-argon-high", "high"))
       .toEqual({ model: "gemini-4-argon-high", effort: null, warning: null });
-    expect(resolveAgyModelEffort("michael-server/antigravity/gemini-4-argon-high", ""))
+    expect(resolveAgyModelEffort("controller-host/antigravity/gemini-4-argon-high", ""))
       .toEqual({ model: "gemini-4-argon-high", effort: null, warning: null });
   });
 

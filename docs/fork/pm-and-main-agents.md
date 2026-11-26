@@ -122,7 +122,7 @@ changes. The main agent is not a zero-slot PM and gains no PM decision authority
 Commit `f92bdcc5b`. Released as a backend release (no schema change) after
 related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
 
-- Remote Bridge shared workers (Shopee, 2026-11-10): a plain shared `ccpocket_bridge`
+- Remote Bridge shared workers (remote company, 2026-11-10): a plain shared `ccpocket_bridge`
   worker whose `hostId` is another CC Pocket host runs in the project's `remote_managed`
   source registered on that host (`metadata.hostId`). Its shared-checkout claim keys on
   `ccpocket:<host>` plus the canonical registered path; the controller skips local
@@ -135,7 +135,7 @@ related tests and a candidate smoke; b6ae191596-r1 is kept for rollback.
   rejects AI connections and offers Default or explicit Full access; dispatch, diagnostics and save
   re-checks fail an agent that stops being eligible. Policies hold up to three workers
   (`64a101064`). No schema change.
-- Remote-host main agents (2026-11-10, Shopee): a fixed workspace binding may name a `hostId`
+- Remote-host main agents (2026-11-10, remote company): a fixed workspace binding may name a `hostId`
   for a CC Pocket main agent on a non-shared host (`60ceedfb9`). The run keeps the Local
   execution environment and never stats the remote cwd on the controller (its local cwd is the
   agent home); the binding requires a `remote_managed` project workspace with the same canonical

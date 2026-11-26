@@ -211,7 +211,7 @@ describe("project environment selection", () => {
 
 describe("project main agent", () => {
   const mainAgent = { id: "m1", name: "Other", status: "idle", adapterType: "ccpocket_bridge", reportsTo: "boss",
-    adapterConfig: { role: "main", hostId: "yoyo-server", provider: "claude", model: "yoyo-server/claude/family:opus-5.5", cwd: "/home/yoyo/projects/other" } };
+    adapterConfig: { role: "main", hostId: "remote-host-c", provider: "claude", model: "remote-host-c/claude/family:opus-5.5", cwd: "/home/worker/projects/other" } };
   const submit = async () => { act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))); await settle(); };
 
   it("is not offered when no main agent exists yet", async () => {
@@ -228,7 +228,7 @@ describe("project main agent", () => {
     vi.mocked(projectsApi.update).mockRejectedValueOnce(new Error("lead save failed")).mockResolvedValue({} as Awaited<ReturnType<typeof projectsApi.update>>);
     await renderForm();
     await settle();
-    expect(container.querySelector<HTMLInputElement>("#main-agent-cwd")!.value).toBe("/home/yoyo/projects/environment-project");
+    expect(container.querySelector<HTMLInputElement>("#main-agent-cwd")!.value).toBe("/home/worker/projects/environment-project");
     await submit();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("The project was created, but its main agent was not");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("lead save failed");
@@ -236,7 +236,7 @@ describe("project main agent", () => {
     expect(projectsApi.create).toHaveBeenCalledTimes(1);
     expect(agentsApi.create).toHaveBeenCalledTimes(1);
     expect(agentsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ name: "Environment project",
-      adapterConfig: expect.objectContaining({ role: "main", projectId: "project-1", cwd: "/home/yoyo/projects/environment-project", hostId: "yoyo-server" }) }));
+      adapterConfig: expect.objectContaining({ role: "main", projectId: "project-1", cwd: "/home/worker/projects/environment-project", hostId: "remote-host-c" }) }));
     expect(projectsApi.update).toHaveBeenLastCalledWith("project-1", { leadAgentId: "agent-1" }, "company-1");
     expect(projectsApi.update).toHaveBeenCalledTimes(2);
   });

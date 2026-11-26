@@ -12,9 +12,29 @@ describe the code and which parts describe the maintainer's host.
 | Owner | The maintainer. "Owner 2026-11-13" marks a decision record with its date. Quoted Chinese text is the Owner's original words. |
 | `HOM-123`, `SHO-74` | Issue keys in the maintainer's own Paperclip instance. They are not GitHub issues. |
 | CC Pocket, Bridge, `ccpocket_bridge` | The maintainer's native-session runtime. It runs Claude Code and Codex as resident sessions. It lives in a separate `ccpocket` repository and is loaded as an external adapter; it is not in this repository. |
-| Compass | The maintainer's model gateway. The Compass rate card only prices receipts from that gateway. |
-| Shopee, michael-server | Hosts in the maintainer's fleet. |
+| Model gateway | An external model provider. Its versioned rate card prices only matching receipts. |
+| `controller-host`, `remote-host-a`, `remote-host-b` | Fictional public example host IDs. Use your company-scoped registry values. |
 | T0–T4, `fork-checks.py`, cutover, preempt | The maintainer's release tiers and tools. The tools live under `/home/michael/services` on the host, not in this repository. |
+
+## Public examples and retained contracts
+
+Public documentation, examples and explicit-host test fixtures use fictional host
+and company names; they do not describe the maintainer's fleet. Host policies
+remain binding on the maintainer's machine. The `/home/michael` canonical policy
+and operational paths below are real host references and are deliberately retained.
+
+Some identifiers remain executable contracts: the default Bridge host
+`michael-server` (including missing-host fallback and its fixtures), `compass-*`
+model selectors, billing/receipt/schema keys, versioned pricing cards and native
+router identities. Lucide's Compass icon and Atlassian Compass/scopes are unrelated
+public product names. Generic example IDs do not replace these runtime defaults.
+
+This cleanup changes the branch tip only. Git history, attribution and upstream
+support contacts remain. Private-network ACL/SSRF/classification fixtures also
+remain; a zero count from a limited phone pattern does not establish the absence
+of phone numbers or IPv6. Retained runtime/configuration references mean this is
+not a guarantee that the public repository contains no internal identifiers or
+actual private endpoints.
 
 ## Host paths
 
@@ -28,15 +48,15 @@ These paths exist only on the maintainer's host:
 | `/home/michael/docs/git-fork-workflow.md` | How the maintainer syncs upstream | `FORK.md` "Release" |
 | `~/.config/paperclip-ccpocket/hosts.json` | CC Pocket host registry (also read for Dashboard host quotas) | `doc/DEVELOPING.md` describes the format |
 
-Files that name `/home/michael` today: `AGENTS.md`, `FORK.md`, `doc/DEVELOPING.md`,
+Retained `/home/michael` references include: `AGENTS.md`, `FORK.md`, `doc/DEVELOPING.md`,
 `doc/SPEC-implementation.md`, `doc/execution-semantics.md`, `doc/task-recovery.md`,
 `doc/native-workspace-finalization-recovery.md`,
-`doc/plans/2026-11-10-session-bridge-key-scope.md`, `docs/agents/*.md` (six files),
+`doc/plans/2026-11-10-session-bridge-key-scope.md`, `docs/agents/*.md`,
 `docs/guides/board-operator/costs-and-budgets.md`,
 `rules/heartbeat-execution-boundaries.mdc`, and three server files where the path
 appears only in comments (`server/src/services/recovery/failure-classification.ts`,
 `server/src/services/recovery/liveness-reset.ts`,
-`server/src/services/heartbeat/workspace-preparation.ts`) plus one test fixture.
+`server/src/services/heartbeat/workspace-preparation.ts`).
 No runtime code reads a `/home/michael` path.
 
 ## Which rules apply to you
@@ -56,7 +76,7 @@ In your own clone:
   run execution correctly, even though its policy file is on the maintainer's host.
 - **Host procedures do not apply.** The related-tests-only policy, the managed
   release tools, the T0–T4 tiers, preempt/cutover steps and fleet-specific
-  instructions (Shopee hosts, Compass, named agents and worker IDs) exist for the
+  instructions (fleet hosts, model gateway, named agents and worker IDs) exist for the
   maintainer's host and its memory limits. Use the normal upstream verification
   (`pnpm test`, `pnpm -r typecheck`, `pnpm build`) and release flow instead.
 
