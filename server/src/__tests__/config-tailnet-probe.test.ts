@@ -75,12 +75,12 @@ describe("tailnet bind host detection", () => {
 
   it("honors PAPERCLIP_TAILNET_BIND_HOST on every call without probing", async () => {
     useTailnetConfigEnvironment();
-    vi.stubEnv("PAPERCLIP_TAILNET_BIND_HOST", "100.100.0.1");
+    vi.stubEnv("PAPERCLIP_TAILNET_BIND_HOST", "100.64.0.10");
     const { loadConfig } = await import("../config.js");
 
-    expect(loadConfig().host).toBe("100.100.0.1");
-    vi.stubEnv("PAPERCLIP_TAILNET_BIND_HOST", "100.100.0.2");
-    expect(loadConfig().host).toBe("100.100.0.2");
+    expect(loadConfig().host).toBe("100.64.0.10");
+    vi.stubEnv("PAPERCLIP_TAILNET_BIND_HOST", "100.64.0.11");
+    expect(loadConfig().host).toBe("100.64.0.11");
     expect(tailscaleCalls()).toHaveLength(0);
   });
 });

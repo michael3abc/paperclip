@@ -180,7 +180,7 @@ describe("managed linked Git worktree host operations", () => {
   });
 
   it("treats a started receipt as history only: recheck reads Git and a re-run completes the create", async () => {
-    // A host that died after writing "started" (Shopee-D 2026-11-16 left no receipt at all).
+    // A host that died after writing "started" (Remote-host-B 2026-11-16 left no receipt at all).
     const f = await fixture(), request = f.request("create", { cwd: path.join(f.parent, "still-starting"), branch: "michael/starting" });
     const directory = path.join(request.receiptRoot, request.operationId);
     await fs.mkdir(directory, { mode: 0o700 });
@@ -357,7 +357,7 @@ describe("managed linked Git worktree host operations", () => {
   }
 
   it("creates a missing parent directory on its own host, repeats idempotently, then retires through the host script", async () => {
-    // Shopee-D 2026-11-16 (op cbdd1528): the configured parent did not exist yet and
+    // Remote-host-B 2026-11-16 (op cbdd1528): the configured parent did not exist yet and
     // create failed before writing any receipt. Workspace = directory: create it.
     const f = await fixture(), parentDir = path.join(f.root, "new-host-parent", "trees"), cwd = path.join(parentDir, "nested", "remote");
     const create = f.request("create", { parentDir, cwd, branch: "michael/remote" });

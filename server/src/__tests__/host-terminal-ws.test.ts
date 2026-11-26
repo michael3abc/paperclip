@@ -26,6 +26,7 @@ beforeEach(async () => {
   const db = { select: () => ({ from: (table: unknown) => ({ where: async () => (table === instanceUserRoles ? admin : member) ? [{ id: "allowed" }] : [] }) }) };
   transport = setupHostTerminalWebSocketServer(server, db as never, service, {
     resolveSessionFromHeaders: async headers => headers.get("cookie") === "human=owner" ? { user: { id: "owner" } } as never : null,
+    keepaliveMs: 50,
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -70,6 +71,16 @@ it("accepts one token once, echoes through a real PTY and closes the shell on di
   await vi.waitFor(() => expect(second.frames).toContainEqual({ type: "closed", reason: "invalid_frame", exitCode: null }));
   first.ws.close();
   await vi.waitFor(() => expect(() => process.kill(Number(pid), 0)).toThrow());
+});
+it("pings an idle shell so proxies do not drop the connection", async () => {
+  const minted = await service.create(scope); const client = connect(); await client.opened;
+  let pings = 0; client.ws.on("ping", () => { pings += 1; });
+  client.ws.send(JSON.stringify({ type: "auth", sessionId: minted.id, token: minted.token }));
+  await vi.waitFor(() => expect(client.frames.some(frame => frame.type === "ready")).toBe(true));
+  await vi.waitFor(() => expect(pings).toBeGreaterThanOrEqual(3));
+  expect(client.frames.some(frame => frame.type === "closed")).toBe(false);
+  client.ws.send(JSON.stringify({ type: "input", data: "echo still-open\n" }));
+  await vi.waitFor(() => expect(client.frames.map(frame => frame.data ?? "").join("")).toContain("still-open\r\n"));
 });
 it("reports server shutdown and stops active PTYs", async () => {
   const minted = await service.create(scope); const client = connect(); await client.opened;

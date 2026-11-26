@@ -19,13 +19,13 @@ and route suites, satisfied-connection-intents and attention regressions on owne
 
 Plain shared workers can set `runtimeConfig.bridgeWorkerHostCapacity` to an
 explicit host-to-concurrency map. Full task model IDs are required, such as
-`shopee-d/codex/gpt-6-astra`; the worker's default host/model is never a routing
+`remote-host-b/codex/gpt-6-astra`; the worker's default host/model is never a routing
 fallback. Catalog queries resolve the dispatch owner's host before probing.
 Routing and admission live in `services/bridge-worker-routing.ts` and
 `services/heartbeat/bridge-worker-routing.ts`; heartbeat only coordinates them.
 No schema migration or Bridge restart is required. Verify with the routing unit
 suite, PM worker policy/catalog suites and the assembled heartbeat project-PM
-workspace suite, including concurrent D/E tasks and per-host queue promotion.
+workspace suite, including concurrent tasks on both remote hosts and per-host queue promotion.
 Use owned PostgreSQL and the release-bound related selector.
 
 ## Durable stop settlement
@@ -176,7 +176,8 @@ Set `PAPERCLIP_HOST_SUBSCRIPTION_QUOTA_SOURCES_FILE` to an external version-1 JS
 file with `companies` keyed by verified company ID. Each entry has `hostId` and
 `kind: "local"` or `kind: "ssh"`; SSH entries additionally require a registered
 `sshAlias` and absolute `readerPath` to the sealed standalone `.mjs` collector.
-Home selects local `michael-server`; Shopee selects `shopee-e` / `Shopee-E`.
+For example, company A selects local `controller-host`; company B selects SSH
+host `remote-host-a` with the registered alias `Remote-host-A`.
 Bundle `server/src/bin/host-subscription-quota-cli.ts` with the existing native
 provider readers and install the output in a remote immutable runtime directory.
 The collector runs on demand as the remote login user; credentials never leave
@@ -4924,8 +4925,8 @@ late failures cannot hide the newly selected catalog. Forbidden hosts fail both
 schema and model discovery before probing another machine.
 
 CC Pocket reads explicit companyIds on each external hosts.json entry, using IDs
-rather than company names. Home is configured for michael-server and Shopee for
-shopee-d/shopee-e. Unconfigured companies have no catalog. Only the selected host
+rather than company names. For example, company A permits `controller-host`,
+and company B permits `remote-host-a` and `remote-host-b`. Unconfigured companies have no catalog. Only the selected host
 is probed; models come from the selected Bridge executor in native order. Stored
 model IDs remain host/provider/model. AdapterModel.source supplies a display-only
 source badge beside the short label. Selecting a different host/provider clears

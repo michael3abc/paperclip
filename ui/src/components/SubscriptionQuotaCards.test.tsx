@@ -79,7 +79,7 @@ describe("subscription quota cards", () => {
       "Gemini models · 5h", "Gemini models · 7d",
       "Weekly limit", "Unknown limit",
     ]);
-    const html = render([{ provider: "antigravity", ok: true, accountLabel: "michael-server",
+    const html = render([{ provider: "antigravity", ok: true, accountLabel: "controller-host",
       windows: [w("Claude and GPT models · 7d"), w("Claude and GPT models · 5h")] }]);
     expect(html.indexOf("Claude and GPT models · 5h")).toBeLessThan(html.indexOf("Claude and GPT models · 7d"));
   });

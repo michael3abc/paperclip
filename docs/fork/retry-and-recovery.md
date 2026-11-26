@@ -71,7 +71,7 @@ PostgreSQL tests cover the scheduler, retry writer and original notice lifecycle
   exhausted unknown retries and non-transient failures after accepted input still
   ask Owner once. A later `issue.comment_added`/`issue.updated` by the original
   main on the source task supersedes a pending resend and withdraws its Owner card.
-  Case: Shopee SHO-188, where the Owner's own Chat message interrupted the blocker
+  Case: remote-company task SHO-188, where the Owner's own Chat message interrupted the blocker
   turn and produced a 26-second Owner card. See `server/src/services/recovery/main-blocker.ts`.
 
 - Suppressed disposition repair settlement (2026-11-12): verify the full original

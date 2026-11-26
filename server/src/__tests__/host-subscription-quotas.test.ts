@@ -93,13 +93,13 @@ describe("host subscription quotas", () => {
 describe("company quota sources", () => {
   let directory: string;
   let config: string;
-  const local = { kind: "local", hostId: "michael-server" };
-  const remote = { kind: "ssh", hostId: "shopee-e", sshAlias: "Shopee-E", readerPath: "/home/yoyo/runtimes/quota/reader.mjs" };
+  const local = { kind: "local", hostId: "controller-host" };
+  const remote = { kind: "ssh", hostId: "remote-host-a", sshAlias: "Remote-host-A", readerPath: "/home/worker/runtimes/quota/reader.mjs" };
   const rows = () => ["openai", "anthropic", "antigravity"].map(provider => ({ provider, ok: true, windows: [window], capturedAt: new Date().toISOString() }));
   beforeEach(async () => {
     directory = await mkdtemp(path.join(tmpdir(), "quota-source-"));
     config = path.join(directory, "sources.json");
-    await writeFile(config, JSON.stringify({ version: 1, companies: { home: local, shopee: remote, other: remote } }));
+    await writeFile(config, JSON.stringify({ version: 1, companies: { home: local, remoteCompany: remote, other: remote } }));
     vi.stubEnv("PAPERCLIP_HOST_SUBSCRIPTION_QUOTA_SOURCES_FILE", config);
     mocks.ssh.mockResolvedValue({ stdout: JSON.stringify(rows()) });
   });
@@ -107,13 +107,13 @@ describe("company quota sources", () => {
 
   it("keeps local and remote accounts, pending reads and caches company-scoped", async () => {
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
-    const [home, shopee, shared] = await Promise.all([read("home"), read("shopee"), read("shopee")]);
-    expect(home.every(row => row.accountLabel === "michael-server")).toBe(true);
-    expect(shopee).toBe(shared);
-    expect(shopee.every(row => row.accountLabel === "shopee-e" && row.accountKey?.startsWith("host:shopee-e:"))).toBe(true);
+    const [home, remoteCompany, shared] = await Promise.all([read("home"), read("remoteCompany"), read("remoteCompany")]);
+    expect(home.every(row => row.accountLabel === "controller-host")).toBe(true);
+    expect(remoteCompany).toBe(shared);
+    expect(remoteCompany.every(row => row.accountLabel === "remote-host-a" && row.accountKey?.startsWith("host:remote-host-a:"))).toBe(true);
     expect(mocks.ssh).toHaveBeenCalledTimes(1);
-    expect(mocks.ssh.mock.calls[0][1]).toContain("Shopee-E");
-    await read("shopee");
+    expect(mocks.ssh.mock.calls[0][1]).toContain("Remote-host-A");
+    await read("remoteCompany");
     expect(mocks.ssh).toHaveBeenCalledTimes(1);
     await read("other");
     expect(mocks.ssh).toHaveBeenCalledTimes(2);
@@ -123,8 +123,8 @@ describe("company quota sources", () => {
   it("never falls back to local accounts or exposes remote diagnostics", async () => {
     mocks.ssh.mockRejectedValue(new Error("Authorization: Bearer private-secret /private/credentials"));
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
-    const result = await read("shopee");
-    expect(result.every(row => !row.ok && row.accountLabel === "shopee-e" && row.errorFamily === "remote_unavailable")).toBe(true);
+    const result = await read("remoteCompany");
+    expect(result.every(row => !row.ok && row.accountLabel === "remote-host-a" && row.errorFamily === "remote_unavailable")).toBe(true);
     expect(JSON.stringify(result)).not.toContain("private-secret");
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.token).not.toHaveBeenCalled();
@@ -133,18 +133,18 @@ describe("company quota sources", () => {
   it("rejects unconfigured companies and unsafe SSH coordinates before probing", async () => {
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
     await expect(read("foreign")).rejects.toThrow("not configured");
-    await writeFile(config, JSON.stringify({ version: 1, companies: { shopee: { ...remote, readerPath: "/tmp/reader.mjs; uname" } } }));
-    await expect(read("shopee")).rejects.toThrow("invalid");
+    await writeFile(config, JSON.stringify({ version: 1, companies: { remoteCompany: { ...remote, readerPath: "/tmp/reader.mjs; uname" } } }));
+    await expect(read("remoteCompany")).rejects.toThrow("invalid");
     expect(mocks.ssh).not.toHaveBeenCalled();
     expect(mocks.codex).not.toHaveBeenCalled();
   });
 
   it("does not reuse an old source snapshot after configuration changes", async () => {
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
-    await read("shopee");
-    await writeFile(config, JSON.stringify({ version: 1, companies: { shopee: local } }));
-    const result = await read("shopee");
-    expect(result.every(row => row.accountLabel === "michael-server")).toBe(true);
+    await read("remoteCompany");
+    await writeFile(config, JSON.stringify({ version: 1, companies: { remoteCompany: local } }));
+    const result = await read("remoteCompany");
+    expect(result.every(row => row.accountLabel === "controller-host")).toBe(true);
     expect(mocks.codex).toHaveBeenCalledTimes(1);
   });
 
@@ -153,7 +153,7 @@ describe("company quota sources", () => {
     data[1] = { ...data[1], ok: false, windows: [], error: "private-secret" } as typeof data[1];
     mocks.ssh.mockResolvedValue({ stdout: JSON.stringify(data) });
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
-    const result = await read("shopee");
+    const result = await read("remoteCompany");
     expect(result.map(row => row.ok)).toEqual([true, false, true]);
     expect(JSON.stringify(result)).not.toContain("private-secret");
   });
@@ -162,7 +162,7 @@ describe("company quota sources", () => {
     const data = rows(); data[0].windows[0] = { ...window, usedPercent: 150 };
     mocks.ssh.mockResolvedValue({ stdout: JSON.stringify(data) });
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
-    expect((await read("shopee")).every(row => !row.ok)).toBe(true);
+    expect((await read("remoteCompany")).every(row => !row.ok)).toBe(true);
   });
 
   it("adds the Google Cloud credit card only for a company that configures its credit file", async () => {
@@ -172,12 +172,12 @@ describe("company quota sources", () => {
       creditsOriginal: 9852, creditsRemainingEstimate: 9849.82, spendSinceSnapshot: 0, month: null,
       lastReportAt: null, checkedAt: new Date().toISOString(),
     }));
-    await writeFile(config, JSON.stringify({ version: 1, companies: { home: { ...local, googleCloudCreditsFile: credits }, shopee: remote } }));
+    await writeFile(config, JSON.stringify({ version: 1, companies: { home: { ...local, googleCloudCreditsFile: credits }, remoteCompany: remote } }));
     const { fetchHostSubscriptionQuotas: read } = await import("../services/host-subscription-quotas.js");
     const home = await read("home");
     expect(home.map(row => row.provider)).toEqual(["openai", "anthropic", "antigravity", "google_cloud"]);
     expect(home[3]).toMatchObject({ ok: true, accountLabel: "Google Cloud billing · TWD" });
-    expect((await read("shopee")).map(row => row.provider)).toEqual(["openai", "anthropic", "antigravity"]);
+    expect((await read("remoteCompany")).map(row => row.provider)).toEqual(["openai", "anthropic", "antigravity"]);
     await writeFile(config, JSON.stringify({ version: 1, companies: { home: { ...local, googleCloudCreditsFile: "relative.json; uname" } } }));
     await expect(read("home")).rejects.toThrow("invalid");
   });

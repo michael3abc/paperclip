@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import type {
   NormalizedWorkspaceFileAvailabilityQuery,
@@ -23,6 +23,7 @@ import type {
 } from "@paperclipai/shared";
 import type { RemoteWorkspaceFiles, RemoteWorkspaceFileAccess, RemoteWorkspaceFileEntry } from "./remote-workspace-files.js";
 import { HttpError, notFound, unprocessable } from "../errors.js";
+import { mainAgentProjectId } from "./main-agent-workers.js";
 import {
   isWorkspaceGitScanError,
   WORKSPACE_GIT_SCAN_ERROR_CODES,
@@ -1187,6 +1188,21 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
     return candidate;
   }
 
+  /** The main's workspace whose directory is its fixed cwd, else its project's primary workspace. */
+  async function conversationMainProjectWorkspace(companyId: string, agentId: string): Promise<ProjectWorkspaceRow | null> {
+    const [agent] = await db.select({ id: agents.id, companyId: agents.companyId, adapterType: agents.adapterType,
+      adapterConfig: agents.adapterConfig }).from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
+    const projectId = agent ? mainAgentProjectId(agent) : null;
+    if (!projectId) return null;
+    const rows = await db.select().from(projectWorkspaces).where(
+      and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId)),
+    );
+    const cwd = typeof agent!.adapterConfig?.cwd === "string" ? path.resolve(agent!.adapterConfig.cwd) : null;
+    return rows.find((row) => cwd && row.cwd && path.resolve(row.cwd) === cwd)
+      ?? rows.find((row) => row.isPrimary) ?? null;
+  }
+
   async function listCandidates(
     issue: IssueRow,
     selector: WorkspaceFileSelector,
@@ -1246,6 +1262,15 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor,
       ).limit(1) : [];
       if (primaryRows[0] && !candidates.some((candidate) => candidate.workspaceId === primaryRows[0]!.id)) {
         candidates.push(candidateFromProjectWorkspace(primaryRows[0]));
+      }
+    }
+
+    // A project main's Chat is projectless, but its runs work in the main's own project directory.
+    if ((selector === "auto" || selector === "project") && !issue.projectId && !issue.projectWorkspaceId
+      && issue.conversationAgentId) {
+      const mainWorkspace = await conversationMainProjectWorkspace(issue.companyId, issue.conversationAgentId);
+      if (mainWorkspace && !candidates.some((candidate) => candidate.workspaceId === mainWorkspace.id)) {
+        candidates.push(candidateFromProjectWorkspace(mainWorkspace));
       }
     }
 

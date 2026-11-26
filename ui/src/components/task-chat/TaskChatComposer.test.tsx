@@ -2812,7 +2812,7 @@ it("keeps Shift+Enter with the editor and submits on Enter", async () => {
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const bridge = (role: string) => ({ id: "main-agent", name: "Data-mining", adapterType: "ccpocket_bridge",
-      adapterConfig: { role, hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-sol", effort: "high" } }) as unknown as Agent;
+      adapterConfig: { role, hostId: "controller-host", provider: "codex", model: "controller-host/codex/gpt-6-sol", effort: "high" } }) as unknown as Agent;
     const paint = (agent: Agent, conversationMode: boolean) => render(<QueryClientProvider client={client}><ToastProvider>
       <TaskChatComposer onAdd={vi.fn()} conversationMode={conversationMode} companyId="chat-company" workMode="standard"
         currentAssigneeValue="agent:main-agent" modelAgents={new Map([[agent.id, agent]])} />
@@ -2841,7 +2841,7 @@ it("keeps Shift+Enter with the editor and submits on Enter", async () => {
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const main = (provider: string, model: string) => ({ id: "main-agent", name: "Comfyui", adapterType: "ccpocket_bridge",
-      adapterConfig: { role: "main", hostId: "michael-server", provider, model, effort: "high" } }) as unknown as Agent;
+      adapterConfig: { role: "main", hostId: "controller-host", provider, model, effort: "high" } }) as unknown as Agent;
     const onWorkModeChange = vi.fn();
     // Each paint is a fresh composer (no open menu or pending mode carried over).
     const paint = (agent: Agent | null) => { render(<></>); render(<QueryClientProvider client={client}><ToastProvider>
@@ -2852,7 +2852,7 @@ it("keeps Shift+Enter with the editor and submits on Enter", async () => {
     const hint = () => document.querySelector<HTMLElement>('[data-testid="composer-add-native-plan-hint"]');
     const chip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
     try {
-      paint(main("claude", "michael-server/claude/compass-opus5.5"));
+      paint(main("claude", "controller-host/claude/compass-opus5.5"));
       await flushAsync();
       openComposerAddMenu();
       expect(item()?.textContent).toContain("Native plan");
@@ -2868,13 +2868,13 @@ it("keeps Shift+Enter with the editor and submits on Enter", async () => {
       expect(chip()?.getAttribute("data-pending-work-mode")).toBe("native_plan");
 
       // The provider segment of a qualified model identifies a Claude main without an explicit provider.
-      paint(main("", "michael-server/claude/fable"));
+      paint(main("", "controller-host/claude/fable"));
       await flushAsync();
       openComposerAddMenu();
       expect(hint()).toBeNull();
 
       // Codex mains can choose it too; the tooltip says what an older Bridge does with it.
-      paint(main("codex", "michael-server/codex/gpt-6-astra"));
+      paint(main("codex", "controller-host/codex/gpt-6-astra"));
       await flushAsync();
       openComposerAddMenu();
       expect(item()?.hasAttribute("data-disabled")).toBe(false);
@@ -2916,7 +2916,7 @@ it("keeps Shift+Enter with the editor and submits on Enter", async () => {
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const main = { id: "main-agent", name: "Comfyui", adapterType: "ccpocket_bridge",
-      adapterConfig: { role: "main", hostId: "michael-server", provider: "codex", model: "michael-server/codex/gpt-6-astra", effort: "high" } } as unknown as Agent;
+      adapterConfig: { role: "main", hostId: "controller-host", provider: "codex", model: "controller-host/codex/gpt-6-astra", effort: "high" } } as unknown as Agent;
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
     function ControlledComposer({ agent }: { agent: Agent | null }) {

@@ -6,6 +6,7 @@ import {
   createReorderQueuedComments,
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
+  requireQueuedCommentMutationTarget,
 } from "./queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
@@ -130,6 +131,15 @@ function createFakeIssueLock(locked: LockedQueuedCommentState, transaction: Queu
     withLockedQueue: vi.fn(async (_input, fn) => fn(locked, transaction)),
   };
 }
+
+describe("requireQueuedCommentMutationTarget", () => {
+  it("refuses interrupt, reorder and steer while a Bridge steer awaits confirmation", () => {
+    const queue = queueSnapshot({ steeringDelivery: { commentId: "comment-1", status: "uncertain" } });
+    expect(() => requireQueuedCommentMutationTarget(queue, "wake-1", "rev-1"))
+      .toThrow(expect.objectContaining({ code: "steering_uncertain" }));
+    expect(() => requireQueuedCommentMutationTarget(queueSnapshot(), "wake-1", "rev-1")).not.toThrow();
+  });
+});
 
 describe("editQueuedComment", () => {
   it("updates the comment body and rebuilds the queue snapshot", async () => {

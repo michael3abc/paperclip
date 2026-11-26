@@ -58,7 +58,7 @@ describe("PM worker choices", () => {
     expect(claude).toMatchObject({ modelReasoningEffort: null, reasoningEffort: null, thinkingEffort: null });
   });
   it("maps Antigravity Bridge workers to CC Pocket settings and admits only plain Antigravity agents", () => {
-    const choice = { id: choiceId, model: "michael-server/antigravity/gemini-test", thinking: "high", permission: "full-access" as const, speed: "standard" as const };
+    const choice = { id: choiceId, model: "controller-host/antigravity/gemini-test", thinking: "high", permission: "full-access" as const, speed: "standard" as const };
     expect(workerSelectionOverrides("ccpocket_bridge", choice)).toEqual({ model: choice.model, effort: "high", permissionMode: "fullAccess", dangerouslyBypassApprovalsAndSandbox: true });
     expect(workerSelectionOverrides("ccpocket_bridge", { ...choice, permission: "default", thinking: null }))
       .toEqual({ model: choice.model, effort: null, permissionMode: "default", dangerouslyBypassApprovalsAndSandbox: false });
@@ -73,13 +73,13 @@ describe("PM worker choices", () => {
     for (const config of [{ role: "main" }, { provider: "gemini" }, { defaultWorker: "fast" }, { allowedWorkers: ["a"] }, { isolation: "worktree" }])
       expect(isPmWorkerAgent({ ...plain, adapterConfig: { ...plain.adapterConfig, ...config } })).toBe(false);
     expect(isPmWorkerAgent({ ...plain, runtimeConfig: { workspaceBinding: { mode: "project_pm" } } })).toBe(false);
-    expect(isPmWorkerAgent({ ...plain, runtimeConfig: { workspaceBinding: { mode: "fixed", hostId: "shopee-e" } } })).toBe(false);
+    expect(isPmWorkerAgent({ ...plain, runtimeConfig: { workspaceBinding: { mode: "fixed", hostId: "remote-host-a" } } })).toBe(false);
     expect(isPmWorkerAgent({ adapterType: "codex_local", adapterConfig: {} })).toBe(true);
     expect(isPmWorkerAgent({ adapterType: "gemini_local", adapterConfig: { provider: "antigravity" } })).toBe(false);
     const three = { ...policy, workers: [...policy.workers, { agentId: "00000000-0000-4000-8000-000000000004", harness: "claude_local" as const, selections: [{ ...policy.workers[0]!.selections[0]!, id: "00000000-0000-4000-8000-000000000005" }] },
       { agentId: "00000000-0000-4000-8000-000000000006", harness: "ccpocket_bridge" as const, selections: [{ ...choice, id: "00000000-0000-4000-8000-000000000007" }] }] };
     expect(pmWorkerPolicySchema.safeParse(three).success).toBe(true);
-    expect(renderPmWorkerPolicy(three, "main-v1")).toContain("| Antigravity | michael-server/antigravity/gemini-test | high | standard |");
+    expect(renderPmWorkerPolicy(three, "main-v1")).toContain("| Antigravity | controller-host/antigravity/gemini-test | high | standard |");
     expect(pmWorkerPolicySchema.safeParse({ ...three, workers: [...three.workers, { ...three.workers[2]!, agentId: "00000000-0000-4000-8000-000000000008", selections: [{ ...choice, id: "00000000-0000-4000-8000-000000000009" }] }] }).success).toBe(true);
   });
   it("replaces only the managed block and retains all surrounding instructions", () => {
@@ -108,17 +108,17 @@ describe("PM worker choices", () => {
     expect(pmWorkerPolicySchema.safeParse(annotated).success).toBe(false);
   });
   it("admits plain Claude/Codex Bridge workers on their own host and offers them only to same-host owners", () => {
-    const remote = { adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", hostId: "shopee-e" }, runtimeConfig: { requireProjectWorkspace: true } };
+    const remote = { adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", hostId: "remote-host-a" }, runtimeConfig: { requireProjectWorkspace: true } };
     expect(bridgeWorkerProvider(remote)).toBe("codex");
     expect(bridgeWorkerProvider({ ...remote, adapterConfig: { provider: "claude" } })).toBe("claude");
-    expect(agentHost(remote)).toBe("shopee-e");
+    expect(agentHost(remote)).toBe("remote-host-a");
     expect(agentHost({ ...remote, adapterConfig: { provider: "codex" } })).toBe("michael-server");
-    expect(agentHost({ adapterType: "codex_local", adapterConfig: { hostId: "shopee-e" } })).toBe("michael-server");
-    expect(bridgeWorkerModelPrefix(remote)).toBe("shopee-e/codex/");
-    expect(bridgeWorkerModelPrefix({ adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", role: "main", hostId: "shopee-e" } })).toBeNull();
-    const models = [{ id: "shopee-e/codex/gpt-6-astra", label: "Astra" }, { id: "shopee-e/claude/opus", label: "Opus" }];
-    expect(workerModelChoices("ccpocket_bridge", models, "codex").map(model => model.id)).toEqual(["shopee-e/codex/gpt-6-astra"]);
-    expect(workerModelChoices("ccpocket_bridge", models, "claude").map(model => model.id)).toEqual(["shopee-e/claude/opus"]);
+    expect(agentHost({ adapterType: "codex_local", adapterConfig: { hostId: "remote-host-a" } })).toBe("michael-server");
+    expect(bridgeWorkerModelPrefix(remote)).toBe("remote-host-a/codex/");
+    expect(bridgeWorkerModelPrefix({ adapterType: "ccpocket_bridge", adapterConfig: { provider: "codex", role: "main", hostId: "remote-host-a" } })).toBeNull();
+    const models = [{ id: "remote-host-a/codex/gpt-6-astra", label: "Astra" }, { id: "remote-host-a/claude/opus", label: "Opus" }];
+    expect(workerModelChoices("ccpocket_bridge", models, "codex").map(model => model.id)).toEqual(["remote-host-a/codex/gpt-6-astra"]);
+    expect(workerModelChoices("ccpocket_bridge", models, "claude").map(model => model.id)).toEqual(["remote-host-a/claude/opus"]);
     // Fast: offered for a Codex model (or family) whose Bridge entry advertises it, and rendered as the adapter serviceTier.
     const tiered: Array<{ id: string; label: string; efforts?: string[]; serviceTiers?: string[] }> = [
       { id: "h/codex/family:gpt-6.1-sol", label: "Sol", efforts: ["high"], serviceTiers: ["standard", "fast"] },
@@ -128,15 +128,15 @@ describe("PM worker choices", () => {
     const sol = { id: "00000000-0000-4000-8000-000000000009", model: "h/codex/family:gpt-6.1-sol", thinking: "xhigh", permission: "full-access" as const, speed: "fast" as const };
     expect(workerSelectionOverrides("ccpocket_bridge", sol)).toEqual({ model: sol.model, effort: "xhigh", permissionMode: "fullAccess", dangerouslyBypassApprovalsAndSandbox: true, serviceTier: "fast" });
     expect(workerSelectionOverrides("ccpocket_bridge", { ...sol, speed: "standard" })).not.toHaveProperty("serviceTier");
-    expect(projectSourceHost({ sourceType: "remote_managed", metadata: { hostId: "shopee-d" } })).toBe("shopee-d");
+    expect(projectSourceHost({ sourceType: "remote_managed", metadata: { hostId: "remote-host-b" } })).toBe("remote-host-b");
     expect(projectSourceHost({ sourceType: "remote_managed", metadata: null })).toBeNull();
-    expect(projectSourceHost({ sourceType: "git_repo", metadata: { hostId: "shopee-d" } })).toBe("michael-server");
+    expect(projectSourceHost({ sourceType: "git_repo", metadata: { hostId: "remote-host-b" } })).toBe("michael-server");
     const entry = (agentId: string, hostId?: string) => ({ agentId, name: agentId, harness: "ccpocket_bridge" as const, permissions: [], models: [], ...(hostId ? { hostId } : {}) });
-    const catalog = [entry("e", "shopee-e"), entry("d", "shopee-d"), entry("local", "michael-server"), entry("legacy")];
-    expect(sameHostCatalog(catalog, { adapterType: "ccpocket_bridge", adapterConfig: { hostId: "shopee-e" } }).map(item => item.agentId)).toEqual(["e"]);
+    const catalog = [entry("e", "remote-host-a"), entry("d", "remote-host-b"), entry("local", "michael-server"), entry("legacy")];
+    expect(sameHostCatalog(catalog, { adapterType: "ccpocket_bridge", adapterConfig: { hostId: "remote-host-a" } }).map(item => item.agentId)).toEqual(["e"]);
     expect(sameHostCatalog(catalog, { adapterType: "ccpocket_bridge", adapterConfig: {} }).map(item => item.agentId)).toEqual(["local", "legacy"]);
     const remotePolicy = { ...policy, workers: [{ agentId: "d", harness: "ccpocket_bridge" as const, selections: [{ ...policy.workers[0]!.selections[0]!, model: "x" }] }] };
-    expect(() => validateWorkerChoices(remotePolicy, sameHostCatalog(catalog, { adapterType: "ccpocket_bridge", adapterConfig: { hostId: "shopee-e" } }), "PM_WORKER_HOST_MISMATCH"))
+    expect(() => validateWorkerChoices(remotePolicy, sameHostCatalog(catalog, { adapterType: "ccpocket_bridge", adapterConfig: { hostId: "remote-host-a" } }), "PM_WORKER_HOST_MISMATCH"))
       .toThrow(expect.objectContaining({ details: expect.objectContaining({ code: "PM_WORKER_HOST_MISMATCH" }) }));
   });
 });

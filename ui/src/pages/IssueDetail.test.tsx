@@ -5422,6 +5422,253 @@ describe("IssueDetail", () => {
     },
   );
 
+  describe("resolved interaction response rows while the source run is still running (HOM-673)", () => {
+    const questionPayload = {
+      version: 1,
+      questions: [
+        {
+          id: "runtime",
+          prompt: "Which runtime?",
+          selectionMode: "single",
+          options: [{ id: "node", label: "Node.js" }],
+        },
+      ],
+      questionSet: {
+        schema: "paperclip.question_set.v1",
+        questions: [
+          {
+            id: "runtime",
+            header: "Runtime",
+            prompt: "Which runtime?",
+            required: true,
+            answerMode: "single_select",
+            options: [{ id: "node", label: "Node.js" }],
+          },
+        ],
+      },
+    };
+    const interactionBase = {
+      companyId: "company-1",
+      issueId: "issue-1",
+      resolverPolicy: "human_only",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
+      legacyResolverPolicyAliases: { requested: null, effective: null },
+      sourceRunId: "run-source",
+      resolvedByUserId: "user-1",
+      createdAt: "2026-04-21T00:00:01.000Z",
+      updatedAt: "2026-04-21T00:00:04.000Z",
+      resolvedAt: "2026-04-21T00:00:04.000Z",
+    };
+    const answeredQuestion = (continuationPolicy: string) => ({
+      ...interactionBase,
+      id: "interaction-answers",
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy,
+      payload: questionPayload,
+      result: { version: 1, answers: [{ questionId: "runtime", optionIds: ["node"] }] },
+    });
+    const nativePlanDecision = {
+      ...interactionBase,
+      id: "interaction-plan",
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "none",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: "issue-1",
+          documentId: "document-plan",
+          key: "plan",
+          revisionId: "revision-1",
+          revisionNumber: 1,
+          label: "Plan revision 1",
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    };
+
+    function mockLiveSourceRun() {
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          executionRunId: "run-source",
+        }),
+      );
+      const activeRun = {
+        id: "run-source",
+        status: "running",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: null,
+        contextWakeCommentId: null,
+        startedAt: "2026-04-21T00:00:00.000Z",
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:00.000Z",
+        agentId: "agent-1",
+        agentName: "Main",
+        adapterType: "ccpocket_bridge",
+        issueId: "issue-1",
+      };
+      mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(activeRun);
+      mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([activeRun]);
+    }
+
+    function responseRow(id: string) {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+        comments?: Array<Record<string, unknown>>;
+      };
+      return props.comments?.find((comment) => comment.id === `interaction-response:${id}`);
+    }
+
+    async function renderAndFlush() {
+      await act(async () => {
+        renderIssueView();
+      });
+      await flushReact();
+      await flushReact();
+    }
+
+    function expectNoResponseSideEffects() {
+      expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
+      expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+      expect(mockIssuesApi.acceptInteraction).not.toHaveBeenCalled();
+      expect(mockIssuesApi.rejectInteraction).not.toHaveBeenCalled();
+      expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
+    }
+
+    it("shows a caller-delivered native answer and plan decision as saved, not queued, and stays so after a refresh", async () => {
+      mockLiveSourceRun();
+      mockIssuesApi.listInteractions.mockResolvedValue([
+        answeredQuestion("none"),
+        nativePlanDecision,
+      ]);
+      mockActivityApi.forIssue.mockResolvedValue([]);
+
+      for (let render = 0; render < 2; render += 1) {
+        if (render === 1) {
+          // A page refresh rebuilds the rows from server data alone.
+          act(() => root.unmount());
+          root = createRoot(container);
+          queryClient.clear();
+        }
+        await renderAndFlush();
+        await waitForAssertion(() => {
+          const answer = responseRow("interaction-answers");
+          const plan = responseRow("interaction-plan");
+          expect(answer).toMatchObject({
+            body: "Answered questions\n\n- Runtime — Which runtime?: Node.js",
+          });
+          expect(plan).toMatchObject({ body: "Approved plan" });
+          for (const row of [answer, plan]) {
+            expect(row?.queueState).toBeUndefined();
+            expect(row?.queueTargetRunId).toBeUndefined();
+            // No server receipt exists for caller delivery: do not claim it.
+            expect(row?.consumedByRunId ?? null).toBeNull();
+            expect(row?.steeredIntoRunId).toBeUndefined();
+          }
+        });
+      }
+      expectNoResponseSideEffects();
+    });
+
+    it("keeps a server-continued answer queued behind its live source run", async () => {
+      mockLiveSourceRun();
+      mockIssuesApi.listInteractions.mockResolvedValue([answeredQuestion("wake_assignee")]);
+      mockActivityApi.forIssue.mockResolvedValue([]);
+
+      await renderAndFlush();
+      await waitForAssertion(() => {
+        expect(responseRow("interaction-answers")).toMatchObject({
+          queueState: "queued",
+          queueTargetRunId: "run-source",
+          queueReason: "active_run",
+          consumedByRunId: null,
+        });
+      });
+      expectNoResponseSideEffects();
+    });
+
+    it("ends the queued state on a terminal delivery failure without claiming delivery", async () => {
+      mockLiveSourceRun();
+      mockIssuesApi.listInteractions.mockResolvedValue([answeredQuestion("wake_assignee")]);
+      mockActivityApi.forIssue.mockResolvedValue([
+        {
+          id: "activity-answer-failed",
+          companyId: "company-1",
+          actorType: "system",
+          actorId: "question-response-delivery",
+          agentId: null,
+          runId: null,
+          action: "issue.question_response_delivery_failed",
+          entityType: "issue",
+          entityId: "issue-1",
+          details: {
+            interactionId: "interaction-answers",
+            sourceRunId: "run-source",
+            targetRunId: null,
+            deliveryStatus: "failed",
+            deliveryMode: null,
+            errorCode: "question_response_target_unavailable",
+          },
+          createdAt: "2026-04-21T00:00:05.000Z",
+        },
+      ]);
+
+      await renderAndFlush();
+      await waitForAssertion(() => {
+        const row = responseRow("interaction-answers");
+        expect(row).toBeDefined();
+        expect(row?.queueState).toBeUndefined();
+        expect(row?.consumedByRunId ?? null).toBeNull();
+        expect(row?.steeredIntoRunId).toBeUndefined();
+      });
+      expectNoResponseSideEffects();
+    });
+
+    it("shows a steered answer as delivered into the still-running source run", async () => {
+      mockLiveSourceRun();
+      mockIssuesApi.listInteractions.mockResolvedValue([answeredQuestion("wake_assignee")]);
+      mockActivityApi.forIssue.mockResolvedValue([
+        {
+          id: "activity-answer-delivered",
+          companyId: "company-1",
+          actorType: "system",
+          actorId: "question-response-delivery",
+          agentId: null,
+          runId: "run-source",
+          action: "issue.question_response_delivered",
+          entityType: "issue",
+          entityId: "issue-1",
+          details: {
+            interactionId: "interaction-answers",
+            sourceRunId: "run-source",
+            targetRunId: "run-source",
+            deliveryMode: "steered",
+          },
+          createdAt: "2026-04-21T00:00:05.000Z",
+        },
+      ]);
+
+      await renderAndFlush();
+      await waitForAssertion(() => {
+        const row = responseRow("interaction-answers");
+        expect(row).toMatchObject({
+          consumedByRunId: "run-source",
+          steeredIntoRunId: "run-source",
+        });
+        expect(row?.queueState).toBeUndefined();
+      });
+      expectNoResponseSideEffects();
+    });
+  });
+
   it("queues messages against a queued live run and interrupts that exact run", async () => {
     const postedComment = createDeferred<IssueComment>();
     mockIssuesApi.get.mockResolvedValue(

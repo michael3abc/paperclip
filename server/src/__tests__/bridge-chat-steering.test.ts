@@ -79,6 +79,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
   });
 
+  it("selects steer for a Claude-admitted main Chat run and shows an unconfirmed delivery as locked", async () => {
+    const f = await fixture();
+    const claude = { role: "main", provider: "claude", model: "michael-server/claude/family:opus-5.5" };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "ccpocket_bridge", adapterConfig: claude } } })
+      .where(eq(heartbeatRuns.id, f.input.targetRunId));
+    const response = await request(f.app).get(`/api/issues/${f.input.issueId}/queued-comments`).expect(200);
+    expect(response.body).toMatchObject({ chatDeliveryMode: "steer", steeringDisposition: "available" });
+    const wake = await f.wake();
+    await db.update(agentWakeupRequests).set({ payload: { ...wake.payload, bridgeChatSteering: {
+      commentId: f.input.commentId, runId: f.input.targetRunId, agentId: f.agentId, turnId: "native-turn", status: "uncertain" } } })
+      .where(eq(agentWakeupRequests.id, f.input.queueId));
+    const pending = await request(f.app).get(`/api/issues/${f.input.issueId}/queued-comments`).expect(200);
+    expect(pending.body).toMatchObject({ chatDeliveryMode: "steer", steeringDelivery: { commentId: f.input.commentId, status: "uncertain" },
+      executionWait: { reason: "steering_unconfirmed" } });
+    expect(pending.body.entries[0]).toMatchObject({ canEdit: false, canDiscard: false });
+  });
+
   it("commits the fence before native I/O and reconciles a lost response from the original receipt", async () => {
     const f = await fixture(), { input } = f;
     steering.send.mockImplementationOnce(async () => {

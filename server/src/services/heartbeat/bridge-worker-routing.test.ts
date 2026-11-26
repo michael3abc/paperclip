@@ -6,7 +6,7 @@ const companyId = "company-1";
 const worker = {
   id: "worker-1", companyId, adapterType: "ccpocket_bridge",
   adapterConfig: { provider: "codex", hostId: "michael-server", model: "michael-server/codex/default" },
-  runtimeConfig: { bridgeWorkerHostCapacity: { "michael-server": 20, "yoyo-server": 4 } },
+  runtimeConfig: { bridgeWorkerHostCapacity: { "michael-server": 20, "remote-host-c": 4 } },
 } as any;
 
 function fakeDb(sources: unknown[]) {
@@ -38,7 +38,7 @@ describe("prepareBridgeWorkerRoute", () => {
 
   it("still rejects a local worktree for a remote-host route", async () => {
     await expect(prepareBridgeWorkerRoute(fakeDb([localSource]), { agent: worker, run, context: {},
-      overrides: { adapterConfig: { model: "yoyo-server/codex/family:gpt-6.1-sol" } },
+      overrides: { adapterConfig: { model: "remote-host-c/codex/family:gpt-6.1-sol" } },
       projectId: "project-1", workspace: { metadata: managed(null), projectWorkspaceId: "source-1" } }))
       .rejects.toMatchObject({ status: 422 });
   });

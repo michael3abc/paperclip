@@ -2,7 +2,7 @@
 
 Shared Bridge workers may serve several hosts with the Owner-owned
 `runtimeConfig.bridgeWorkerHostCapacity`, for example
-`{"shopee-d":4,"shopee-e":4}`. This opt-in applies only to plain provider
+`{"remote-host-b":4,"remote-host-a":4}`. This opt-in applies only to plain provider
 workers, without a main role or workspace binding; fixed workers retain their
 existing behavior. Each main's catalog is scoped before discovery to its own
 host, using the same shared worker IDs but that host's complete model selectors.
@@ -16,12 +16,12 @@ host falls back to another host. Existing retry scheduling remains responsible
 for transient failures. Bridge task bindings already isolate company, agent,
 task, host and provider; changing the route never imports another native session.
 
-For Shopee consolidation, retain E worker IDs and their original sessions,
-rename them Shopee Shared Codex/Claude worker, and migrate the three main-agent
+For multi-host consolidation, retain remote-host-a worker IDs and their original sessions,
+rename them Shared Codex/Claude worker, and migrate the three main-agent
 worker policies with revision/document-hash checks. Preserve every model, effort,
-permission, speed, option ID and default; change only the D policies' worker IDs.
-Before opt-in, make any historical E task's implicit model settings explicit
-with their identical prior defaults. Retire redundant D workers only after
+permission, speed, option ID and default; change only remote-host-b policies' worker IDs.
+Before opt-in, make any historical remote-host-a task's implicit model settings explicit
+with their identical prior defaults. Retire redundant remote-host-b workers only after
 confirming they have no assigned tasks or live work; retain their history.
 Main agents, nono, host logins and filesystem locations are unchanged.
 

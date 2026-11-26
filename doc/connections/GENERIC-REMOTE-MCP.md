@@ -393,7 +393,7 @@ node --test scripts/smoke/notion-generic-live.test.mjs
 ## Interactive browser-account login for custom MCP servers
 
 An MCP bearer authenticates Paperclip to a server; it does not log the server's
-browser into 104, SeaTalk, or another provider. Operators may explicitly enable
+browser into a connected service. Operators may explicitly enable
 `config.browserLogin = { enabled: true, allowedOrigins: ["https://login.example"] }`
 on a custom remote connection. The existing Apps → connection → Permissions
 page then shows **帳號登入**, provider-account status, and a login action.
@@ -419,7 +419,8 @@ The UI checks status on demand. Two-second status polling is limited to a visibl
 login dialog, stops on completion/error/close/unmount, and expires after five
 minutes. QR renewal is explicit. The 104 adapter opens the existing interactive
 browser; its navigation events provide status without repeatedly navigating away
-from a login form. SeaTalk returns its current login QR from its already-running
+from a login form. A QR login service returns its current login QR from its already-running
 browser and never starts a competing Chrome profile or screenshots a logged-in
-chat. Neither adapter submits a 104 application or sends a SeaTalk message as
+chat. The QR dialog names the connected service generically. Neither adapter
+submits a 104 application or sends a service message as
 part of login. No database migration is needed.

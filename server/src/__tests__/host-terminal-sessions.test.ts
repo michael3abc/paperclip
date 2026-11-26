@@ -51,8 +51,8 @@ describe("operator host registry", () => {
     await expect(listTerminalHosts("company")).rejects.toMatchObject({ status: 400 });
   });
   it("builds a pinned strict SSH command and never uses local cwd remotely", () => {
-    const command = terminalCommand({ ...local, sshAlias: "Shopee-D", terminal: { enabled: true, cwd: "/work/project" } }, "/bin/sh");
-    expect(command.argv).toEqual(["/usr/bin/ssh", "-tt", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", "Shopee-D", 'cd -- \'/work/project\' && exec "${SHELL:-/bin/sh}" -l']);
+    const command = terminalCommand({ ...local, sshAlias: "Remote-host-B", terminal: { enabled: true, cwd: "/work/project" } }, "/bin/sh");
+    expect(command.argv).toEqual(["/usr/bin/ssh", "-tt", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", "Remote-host-B", 'cd -- \'/work/project\' && exec "${SHELL:-/bin/sh}" -l']);
     expect(command.cwd).toBeUndefined();
   });
 });

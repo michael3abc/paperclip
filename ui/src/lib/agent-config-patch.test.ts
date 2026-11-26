@@ -142,7 +142,7 @@ describe("buildAgentUpdatePatch", () => {
   });
 
   it("keeps heartbeat edits when the whole runtime config is edited in the same save", () => {
-    const capacity = { "shopee-d": 8, "shopee-e": 20 };
+    const capacity = { "remote-host-b": 8, "remote-host-a": 20 };
     const patch = buildAgentUpdatePatch(
       makeAgent(),
       makeOverlay({

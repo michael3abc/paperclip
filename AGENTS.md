@@ -2,7 +2,10 @@
 
 Fork note: this is the `michael3abc/paperclip` fork. Paragraphs that cite the
 Owner, HOM issue keys or `/home/michael` paths are the maintainer's host rules and
-bind every agent on that host. On another machine, read
+bind every agent on that host. Public host/company examples are fictional;
+retain executable default-host, model/billing/routing contracts and real canonical
+host policy paths. Cleanup applies to the tip only, not Git history. See
+`docs/fork/host-operations.md`. On another machine, read
 `docs/fork/host-operations.md` to see which rules apply to you.
 
 Host Claude sign-in replaces the Claude quota card body only for hosts whose native

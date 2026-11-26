@@ -425,6 +425,39 @@ describeEmbeddedPostgres("workspace file resources", () => {
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
+  it("browses a project main's own project workspace from its projectless main Chat", async () => {
+    const { projectRoot, executionRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot });
+    await fs.writeFile(path.join(projectRoot, "cv.md"), "Main Chat CV", "utf8");
+    const mainId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    await db.insert(agents).values([
+      { id: mainId, companyId: graph.companyId, name: "Career", role: "general", adapterType: "ccpocket_bridge",
+        adapterConfig: { role: "main", projectId: graph.projectId, cwd: projectRoot } },
+      { id: otherId, companyId: graph.companyId, name: "Plain", role: "general", adapterType: "process", adapterConfig: {} },
+    ]);
+    const chatId = crypto.randomUUID();
+    await db.insert(issues).values({ id: chatId, companyId: graph.companyId, title: "Chat with Career", status: "in_progress",
+      priority: "medium", conversationAgentId: mainId, conversationUserId: "board-user", conversationState: "active", assigneeAgentId: mainId });
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+
+    const listed = await request(app).get(`/api/issues/${chatId}/file-resources/list`).expect(200);
+    expect(listed.body.unavailableReason ?? null).toBeNull();
+    expect(listed.body.items.map((item: { displayPath: string }) => item.displayPath)).toContain("cv.md");
+    const content = await request(app).get(`/api/issues/${chatId}/file-resources/content`).query({ path: "cv.md" }).expect(200);
+    expect(content.body.content.data).toBe("Main Chat CV");
+    expect(content.body.resource.workspaceId).toBe(graph.projectWorkspaceId);
+
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.projectId));
+    const hidden = await request(app).get(`/api/issues/${chatId}/file-resources/list`).expect(200);
+    expect(hidden.body.unavailableReason).toBe("no_workspace");
+    await db.update(projects).set({ visibility: "open" }).where(eq(projects.id, graph.projectId));
+
+    await db.update(issues).set({ conversationAgentId: otherId, assigneeAgentId: otherId }).where(eq(issues.id, chatId));
+    const plain = await request(app).get(`/api/issues/${chatId}/file-resources/list`).expect(200);
+    expect(plain.body.unavailableReason).toBe("no_workspace");
+  });
+
   it("reads projectless task files before and after organizational project assignment", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
