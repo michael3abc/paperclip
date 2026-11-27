@@ -122,11 +122,28 @@ For status updates, distinguish recorded task status from active execution and v
 Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. Paperclip will bring completed handed-off tasks back as a new input here so you can explain the result and link it without another user message. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
 
 /**
+ * Paragraphs a host-side project main never needs: it runs with the host's own
+ * tools, so terminal-command, dev-lab, teams-catalog, personal inbox and profile
+ * guidance only adds resent prompt tokens to every full main turn (HOM-411).
+ */
+const MAIN_AGENT_OMITTED_PARAGRAPH_PREFIXES = [
+  "When the person asks what is in their inbox or what needs their attention,",
+  "A person's own display name and avatar belong to their account,",
+  "Some developer labs, including the task-chat interaction lab",
+  "Ready-made teams are installable packages in Paperclip's teams catalog,",
+  "When the person asks for a terminal or CLI command,",
+];
+
+function withoutParagraphs(text: string, prefixes: readonly string[]): string {
+  return text.split("\n\n").filter((paragraph) => !prefixes.some((prefix) => paragraph.startsWith(prefix))).join("\n\n");
+}
+
+/**
  * Main agents (ccpocket_bridge `role: main`) plan and implement themselves with
  * native subagents; a separate task is the exception, not the delivery path.
  * Plan mode still stops at an approval request, and Ask mode stays non-mutating.
  */
-export const MAIN_AGENT_CHAT_DIRECTIVE = AGENT_CHAT_DIRECTIVE.replace(
+export const MAIN_AGENT_CHAT_DIRECTIVE = withoutParagraphs(AGENT_CHAT_DIRECTIVE, MAIN_AGENT_OMITTED_PARAGRAPH_PREFIXES).replace(
   "Research, clarify, and develop full plans here using the conversation's plan document. Revise the draft as the discussion develops. Planning alone does not create execution tasks. Put implementation and substantial execution into separate tasks.",
   "Research, clarify, and develop full plans here using the conversation's plan document. Revise the draft as the discussion develops. You are this project's main agent: in Standard mode, plan and implement the requested work directly in this chat, using native subagents for parallel or specialized parts, and verify the result yourself. Create a separate task only when the work needs separate tracking, must outlive this session, or the user asks for one. In Plan mode, only research and write or revise the plan, then ask the user to approve it before implementing anything.",
 ).replace(
