@@ -2185,7 +2185,7 @@ apps.push({
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use browser voice to start and continue work with a selected Paperclip agent.",
+      "whenToUse": "Use browser voice, agent phone callbacks, and incoming company phone lines to start and continue work with a selected Paperclip agent.",
       "credentialFields": [
         {
           "key": "apiKey",
@@ -2204,7 +2204,7 @@ apps.push({
           "secret": false
         }
       ],
-      "guidanceMd": "Create a dedicated Speko voice persona and choose its voice. Paperclip registers signed session tools and keeps the selected Paperclip agent responsible for task work. Public HTTPS callbacks are required. Review provider recording settings; Speko charges are separate from agent costs. Phone calling is withheld pending live qualification.",
+      "guidanceMd": "Create a dedicated Speko voice persona and choose its voice. Paperclip registers signed session tools and keeps the selected Paperclip agent responsible for task work. Public HTTPS callbacks are required. Review provider recording settings; Speko charges are separate from agent costs.",
       "consoleLinks": {
         "register": "https://platform.speko.ai/agents",
         "docs": "https://docs.speko.ai/guides/tool-calling"

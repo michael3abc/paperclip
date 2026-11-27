@@ -78,11 +78,12 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
   const { selectedCompanyId, selectedCompany } = useCompany();
   const taskPanelOpen = breadcrumbPanelControl?.open ?? panelVisible;
   const toggleTaskPanel = breadcrumbPanelControl?.onToggle ?? togglePanelVisible;
-  const propertiesToggle = (showPropertiesToggle || (isMobile && breadcrumbPanelControl)) ? (
+  const canToggleProperties = showPropertiesToggle || (isMobile && Boolean(breadcrumbPanelControl));
+  const propertiesToggle = canToggleProperties ? (
     <Button
       variant="ghost"
       size="icon-sm"
-      className="ml-5 size-9 shrink-0 text-muted-foreground"
+      className="ml-1 size-9 shrink-0 text-muted-foreground md:ml-5"
       onClick={toggleTaskPanel}
       aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
       title={taskPanelOpen ? "Hide properties" : "Show properties"}
@@ -91,7 +92,6 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
     </Button>
   ) : null;
 
-  const mobileTaskPanelControl = isMobile && breadcrumbPanelControl ? propertiesToggle : null;
 
   const globalToolbarSlotContext = useMemo(
     () => ({
@@ -143,7 +143,10 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
 
   const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
   const isTaskTrail = Boolean(currentCrumb.identifier);
-  const visibleBreadcrumbs = isMobile && isTaskTrail && breadcrumbs.length > 1 ? breadcrumbs.slice(1) : breadcrumbs;
+  const mobileBaseBreadcrumbs = isMobile && isTaskTrail && breadcrumbs.length > 1 ? breadcrumbs.slice(1) : breadcrumbs;
+  const visibleBreadcrumbs = isMobile && mobileBaseBreadcrumbs.length > 2
+    ? mobileBaseBreadcrumbs.slice(-2)
+    : mobileBaseBreadcrumbs;
   if (isMobile && isTaskTrail && visibleBreadcrumbs.length === 1) {
     return (
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
@@ -156,7 +159,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
           <CrumbIdentifier identifier={currentCrumb.identifier} />
         </h1>
         {globalToolbarSlots}
-        {mobileTaskPanelControl}
+        {propertiesToggle}
       </div>
     );
   }
@@ -173,8 +176,15 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
             const accessibleLabel = [crumb.label, crumb.identifier].filter(Boolean).join(" ");
             return (
               <Fragment key={i}>
-                {i > 0 && <BreadcrumbSeparator />}
-                <BreadcrumbItem className={cn(isLast || isTask ? "min-w-0" : "shrink-0", isTask && !isLast && "max-w-(--breadcrumb-parent-max-width)", pinnedIdentifier && "flex-1")}>
+                {i > 0 && <BreadcrumbSeparator className="shrink-0" />}
+                <BreadcrumbItem
+                  className={cn(
+                    isLast || isTask || isMobile ? "min-w-0" : "shrink-0",
+                    !isLast && isMobile && (isTask ? "shrink max-w-24" : "shrink max-w-28"),
+                    isTask && !isLast && !isMobile && "max-w-(--breadcrumb-parent-max-width)",
+                    (pinnedIdentifier || (isMobile && isLast)) && "flex-1",
+                  )}
+                >
                   {crumb.control ?? (isLast || !crumb.href ? (
                     crumb.leading || crumb.identifier ? (
                       <BreadcrumbPage aria-current={isLast ? "page" : undefined} aria-label={accessibleLabel} className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline", (isTask || pinnedIdentifier) && "flex-1")}>
@@ -275,7 +285,7 @@ export function BreadcrumbBar({ taskDetailLayout = false, showPropertiesToggle =
       {breadcrumbTrail}
       {pageActions}
       {globalToolbarSlots}
-      {isMobile && isTaskTrail ? mobileTaskPanelControl : propertiesToggle}
+      {propertiesToggle}
     </div>
   );
 }

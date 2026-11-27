@@ -300,12 +300,20 @@ pre-migration backup and a drained service; it cannot be performed by replaying
 an older migration. Disabling local voice does not touch Speko rows, wire
 formats, fingerprints or stored tool responses.
 
-## Speko is unchanged
+## Speko protocol isolation
 
 - HTTPS and signature rules are not relaxed.
 - The tool definitions are byte-identical; a golden hash pins them.
 - The fingerprint is still the SHA-256 of the parsed envelope.
 - Speko's schema still trims text.
+
+Speko outbound calls accept an optional opening message. The service applies the
+safe publication projection, bounds it to 2,000 UTF-16 code units without splitting
+a surrogate pair, and includes the safe text in the request fingerprint, prompt
+and provider first message. Setup test calls are optional and require explicit
+opt-in. Voice transports are excluded from the generic tool-health sweep; the
+voice integration owns their health. Local voice binding, accepted Chat input
+and playback-turn provenance retain their existing contracts.
 
 `spekoToolCommand` is the only addition. It maps a verified envelope to the
 neutral command. A v1 control message is not a valid Speko envelope, and a

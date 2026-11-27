@@ -45,7 +45,8 @@ Incomplete or older responses cannot overwrite a retained available report.
 Eight failures can mark a pending report unavailable; failure cannot downgrade
 an already available report.
 
-Guest transcripts remain confined to the call's quarantined intake task. The
+Speko call transcripts project into the bound task. Guest transcripts remain
+confined to the call's quarantined intake task. The
 worker reads the retained report, keeps the task's source-trust metadata, and
 uses the existing document revision contract. A document lock or conflicting
 edit leaves the saved report and retry intact. After the lock clears, the next

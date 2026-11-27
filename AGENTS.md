@@ -245,7 +245,7 @@ Moved rules stay binding. Read the matching file before acting.
 - `docs/api/attention.md` — Attention caching, invalidation and scoped overlapping reads.
 - `docs/guides/board-operator/costs-and-budgets.md` — Compass receipts, cache TTL pricing and incomplete usage.
 - `doc/connections/AI-CONNECTIONS.md` — AI request lifecycle, cost reports, subscription estimates and project usage.
-- `doc/connections/LOCAL-VOICE.md` — Voice preferences/media, endpoints, answer provenance, natural Chat routing.
+- `doc/connections/LOCAL-VOICE.md` — Voice preferences/media, endpoints, answer provenance, natural Chat routing, Speko outbound opening messages and voice-owned health; report projection is in `doc/idle-voice-call-reports.md`.
 - `doc/connections/GENERIC-REMOTE-MCP.md` — Human browser login and vault/access boundaries.
 - `docs/fork/artifacts-and-mobile.md` — Artifact PDF thumbnails and mobile preview.
 - `docs/adapters/agy-local.md` — Antigravity shared CLI workers, subscription bindings and permissions.

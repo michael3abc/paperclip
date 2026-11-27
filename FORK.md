@@ -37,8 +37,17 @@ for example, a remote company uses remote-host-a through a finite SSH collector.
 Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `dadbc495b3cbdc171fddc40d09aafcc3e9206305` (2026-11-27 integration; not deployed). Previous sync base: `331e1a9fd3891b5be21d6bb1cd7edab58cd29fce`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `c72c4687083db82348baa03a7d57cb6963245f44` (2026-11-28 integration; not deployed). Previous sync base: `dadbc495b3cbdc171fddc40d09aafcc3e9206305`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
+
+## 2026-11-28 upstream merge (HOM-783; not deployed)
+
+Accumulate 12 upstream commits through `c72c468708` on `361941625c`.
+Keep fork native Chat/voice, host login/paste-back, agy_local and liveness-first
+with upstream Speko, GitHub continuation, skill transfer and mobile parity fixes.
+No DB or migration changes. Decisions and verification:
+[sync-decisions](/HOM/issues/HOM-783#document-sync-decisions).
+Saturday integration only; no merge into michael/main, deployment or restart.
 
 ## 2026-11-27 upstream merge (HOM-728; not deployed)
 

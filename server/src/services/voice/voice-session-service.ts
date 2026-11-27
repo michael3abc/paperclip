@@ -12,11 +12,13 @@ import { pushVoiceReplies } from "./voice-reply-push.js";
 import { voiceInboundService } from "./voice-inbound-service.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import { chatVoiceReports, chatVoiceCallbacks, chatConversations, chatEndpointResources, chatEndpoints, chatVoiceSessions, issues, activityLog, type Db } from "@paperclipai/db";
 import { LOCAL_VOICE_CONTROL_PROTOCOL, VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION, type LocalVoiceSessionMedia, type VoiceBindingMode, type VoiceProvider, type VoiceSession, type VoiceSessionMedia, type VoiceCallHistoryEntry, type VoiceCallReport } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, HttpError } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildChatCommunicationGuidance } from "../chat-communication-guidance.js";
+import { projectSafeChatPublicationText } from "../chat-publication-projection.js";
 import { issueService } from "../issues.js";
 import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
 import { isAgentChatFor, isLocalBindingMode, serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
@@ -24,7 +26,7 @@ import { registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
 import { verifySpekoToolRequest } from "./speko-protocol.js";
 import { localVoiceCommand, parseLocalVoiceToolMessage } from "./local-voice-protocol.js";
 import { LOCAL_PROVIDER_SESSION_PREFIX, LOCAL_VOICE_CAPABILITIES, SPEKO_VOICE_CAPABILITIES } from "./voice-provider-port.js";
-import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT } from "./voice-prompts.js";
+import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT, buildOutboundPhoneVoicePrompt } from "./voice-prompts.js";
 
 /**
  * Instructions for the assigned agent on a local voice task (HOM-311, Owner decision 4):
@@ -42,6 +44,19 @@ export const LOCAL_VOICE_TASK_DESCRIPTION = [
 
 const liveStates = ["reserved", "creating", "creation_unknown", "connecting", "active", "ending"] as const;
 const terminalStates = ["ended", "failed", "expired"] as const;
+const MAX_OPENING_MESSAGE_LENGTH = 2000;
+
+function safeOutboundOpeningMessage(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  let safe = projectSafeChatPublicationText(raw).trim();
+  if (safe.length > MAX_OPENING_MESSAGE_LENGTH) {
+    let end = MAX_OPENING_MESSAGE_LENGTH;
+    // Avoid cutting a UTF-16 surrogate pair in half.
+    if (end > 0 && safe.charCodeAt(end - 1) >= 0xd800 && safe.charCodeAt(end - 1) <= 0xdbff) end -= 1;
+    safe = safe.slice(0, end).trim();
+  }
+  return safe || undefined;
+}
 
 type Endpoint = typeof chatEndpoints.$inferSelect;
 export function voiceSessionService(db: Db, options: {
@@ -125,10 +140,11 @@ export function voiceSessionService(db: Db, options: {
       await tx.insert(chatConversations).values({ id: conversationId, companyId: input.companyId, endpointId: input.endpointId, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Voice conversation", communicationGuidance: buildChatCommunicationGuidance({ provider: threadProvider, isDirectMessage: true, communicationInstructions: endpoint.communicationInstructions }), isDirectMessage: true });
       return { issueId: task.id, conversationId };
   }
-  async function start(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; mode?: "outbound_phone" | "inbound_phone"; phoneNumber?: string; providerSessionId?: string; toolToken?: string }): Promise<{ session: VoiceSession; media?: VoiceSessionMedia }> {
+  async function start(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; mode?: "outbound_phone" | "inbound_phone"; phoneNumber?: string; openingMessage?: string; providerSessionId?: string; toolToken?: string }): Promise<{ session: VoiceSession; media?: VoiceSessionMedia }> {
     if (input.mode === "outbound_phone" && !(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Voice connections are disabled");
+    const safeOpeningMessage = safeOutboundOpeningMessage(input.openingMessage);
     const endpoint = await endpointFor(input.companyId, input.endpointId);
-    const requestFingerprint = createHash("sha256").update(JSON.stringify({ endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.mode ? { mode: input.mode, phoneNumber: input.phoneNumber, providerSessionId: input.providerSessionId } : {}), ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
+    const requestFingerprint = createHash("sha256").update(JSON.stringify({ endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.mode ? { mode: input.mode, phoneNumber: input.phoneNumber, providerSessionId: input.providerSessionId } : {}), ...(safeOpeningMessage ? { openingMessage: safeOpeningMessage } : {}), ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
     const reserved = await store.reserve({ ...input, requestFingerprint, prepareBinding: (tx) => prepareBinding(tx, input, endpoint, "speko") });
     // Media credentials are intentionally not stored or reissued. An uncertain
     // browser response must inspect/end this attempt, never blindly create again.
@@ -145,10 +161,10 @@ export function voiceSessionService(db: Db, options: {
       client = provider(credentials.apiKey);
       const shared = { agentId: credentials.agentId, bindingId: session.id, toolToken: reserved.token, maxDurationSeconds: input.maxDurationSeconds };
       created = input.mode === "outbound_phone"
-        ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: PHONE_VOICE_PROMPT })
+        ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: buildOutboundPhoneVoicePrompt(safeOpeningMessage), ...(safeOpeningMessage ? { firstMessage: safeOpeningMessage } : {}) })
         : await client.createBrowserSession({ ...shared, systemPrompt: VOICE_PROMPT });
     } catch (error) {
-      const known = error instanceof SpekoProviderError && !error.outcomeUnknown || error instanceof HttpError && [403, 404].includes(error.status);
+      const known = error instanceof SpekoProviderError && !error.outcomeUnknown || error instanceof HttpError && [403, 404].includes(error.status) || error instanceof z.ZodError;
       await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: known ? "failed" : "creation_unknown", errorCode: error instanceof SpekoProviderError ? error.code : "provider_unavailable", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "creating"))));
       if (error instanceof SpekoProviderError && error.code === "insufficient_credits") throw conflict("Speko needs credits before starting a call. Add credits in Speko, then try again.", {code: "voice_credits_required", sessionId: session.id});
       throw conflict(known ? "Speko could not start the call. Check connection status before trying again." : "Speko may have started this call. Inspect this attempt before starting another.", { code: known ? "voice_creation_failed" : "voice_creation_unknown", sessionId: session.id });
