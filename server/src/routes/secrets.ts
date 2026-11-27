@@ -20,6 +20,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
+import { normalizeSecretKey } from "../services/secrets.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -106,6 +107,34 @@ function userSecretDefinitionActivityActor(req: Parameters<typeof assertBoard>[0
 
 function isCompanyScopedSecret(secret: { scope?: string | null }) {
   return (secret.scope ?? "company") === "company";
+}
+
+/**
+ * Resolve the secret an agent asked for by key. The canonical key is the
+ * secret's normalized key; agents often use the binding alias instead (the
+ * part after `access.`/`env.` in the binding, e.g. OPENGATER_SEED), so accept
+ * a unique case-insensitive alias match as well. An ambiguous alias matches
+ * nothing.
+ */
+export function findAgentSecretAccessEntry<T extends { key: string; configPath: string }>(
+  available: T[],
+  requestedKey: string,
+): T | null {
+  const exact = available.find((entry) => entry.key === requestedKey);
+  if (exact) return exact;
+  const normalized = normalizeSecretKey(requestedKey);
+  if (normalized) {
+    const byKey = available.find((entry) => entry.key === normalized);
+    if (byKey) return byKey;
+  }
+  const alias = requestedKey.trim().toLowerCase();
+  if (!alias) return null;
+  const byAlias = available.filter((entry) => {
+    const dot = entry.configPath.indexOf(".");
+    return dot >= 0 && entry.configPath.slice(dot + 1).toLowerCase() === alias;
+  });
+  const distinctSecrets = new Set(byAlias.map((entry) => entry.key));
+  return distinctSecrets.size === 1 ? byAlias[0] : null;
 }
 
 export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
@@ -363,8 +392,28 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   router.post("/agents/me/secrets/:key/value", async (req, res) => {
     const context = agentSecretContext(req);
     const available = await svc.listAgentSecretAccess(context.companyId, context);
-    const secret = available.find((entry) => entry.key === req.params.key);
-    if (!secret) throw forbidden("Secret access is not granted for this agent");
+    const requestedKey = String(req.params.key ?? "");
+    const secret = findAgentSecretAccessEntry(available, requestedKey);
+    if (!secret) {
+      const availableKeys = [...new Set(available.map((entry) => entry.key))].sort();
+      await logActivity(db, {
+        companyId: context.companyId,
+        actorType: "agent",
+        actorId: context.agentId,
+        action: "secret.value.denied",
+        entityType: "agent",
+        entityId: context.agentId,
+        agentId: context.agentId,
+        runId: context.heartbeatRunId,
+        details: { requestedKey: requestedKey.slice(0, 120), availableKeys },
+      });
+      throw forbidden("Secret access is not granted for this agent", {
+        code: "secret_access_not_granted",
+        requestedKey: requestedKey.slice(0, 120),
+        availableKeys,
+        hint: "Use a key from GET /api/agents/me/secrets.",
+      });
+    }
     const resolution = await svc.resolveSecretValueForAgentAccess(
       context.companyId,
       secret.secretId,

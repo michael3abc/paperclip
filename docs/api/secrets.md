@@ -61,6 +61,15 @@ POST /api/agents/me/secrets/github_token/value
 }
 ```
 
+The path accepts the listed `key`, the same key in any case (`GITHUB_TOKEN`), or
+the binding alias after `env.`/`access.` (case-insensitive) when that alias names
+exactly one granted secret; the response always reports the canonical `key`. A
+key that matches nothing, or an alias shared by different secrets, returns `403`
+with `details.code: "secret_access_not_granted"` and `details.availableKeys`
+listing the keys this run may read. The denial is recorded in `activity_log` as
+`secret.value.denied` with the requested key; it never names or touches an
+ungranted secret.
+
 Prefer env injection when the adapter or its child processes need the value on
 every run. Prefer on-demand fetch for values used only on some runs, large or
 structured values, or skills and tools that do not inherit adapter env. Every
