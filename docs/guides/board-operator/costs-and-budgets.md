@@ -38,6 +38,16 @@ counting an unknown-TTL attempt's writes as one-hour when mixed with known TTLs.
 Pricing evidence states the TTL assumption. Previously priced receipts and
 historical charges remain unchanged; no backfill is performed.
 
+OpenAI fast mode (HOM-411): a Compass OpenAI receipt whose
+`pricingContext.serviceTier` is `fast` (or the older name `priority`) is priced at
+exactly 2x the card's input, cache-read, cache-write and output rates, in short
+and long context, and records `serviceTier: fast` with the evidence line "fast
+processing at 2x standard rates". Other tiers and Anthropic fast modes stay
+unpriced. The ccpocket adapter drops fast on Compass routes and does not yet
+report the tier, so a receipt carries it only when a caller supplies it; the
+host Codex config no longer defaults to priority. Historical receipts are not
+repriced.
+
 Failed/cancelled status does not exclude a run from accounting. If a final
 receipt is lost but counters and Compass identity were saved, settlement can
 price that observed usage as an estimate explicitly marked as a lower bound.

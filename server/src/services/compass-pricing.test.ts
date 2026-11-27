@@ -106,7 +106,8 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
     { model: "compass-haiku5.5[1m]" }, { model: "[1m]" }, { model: "compass-opus5.5[1m]x" },
     { model: "claude-sonnet-5" }, { model: "constructor" }, { model: undefined },
     { usageBasis: "session_cumulative" }, { costUsd: 0.12 }, { costUsd: 0 }, { costUsdExact: "0.12" }, { cacheAdjustedCostUsd: 0.12 },
-    { pricingContext: { serviceTier: "priority" } }, { pricingContext: { contextTier: "long" } },
+    { pricingContext: { serviceTier: "priority" } }, { pricingContext: { serviceTier: "fast" } },
+    { pricingContext: { contextTier: "long" } },
     { usageByModel: [{ model: "other", usage: { inputTokens: 1, outputTokens: 1 }, costUsd: 1 }] },
     { usage: undefined }, { usage: { inputTokens: 1, outputTokens: 1 } },
     { usage: { inputTokens: 1, outputTokens: 1, cacheWriteTokens: 1 } },
@@ -124,6 +125,22 @@ describe("Compass receipt pricing at the upstream vendor's list price", () => {
   ] as Partial<AdapterUsageCheckpoint>[])("preserves GPT receipts it cannot price exactly: %j", override => {
     const original = { ...codex, ...override };
     expect(priceCompassReceipt(original)).toBe(original);
+  });
+  it.each(["fast", "priority"])("prices OpenAI %s service tier at exactly 2x standard", tier => {
+    const standard = priceCompassReceipt(codex);
+    const fast = priceCompassReceipt({ ...codex, pricingContext: { serviceTier: tier } });
+    // 900000*2 + 400000*0.1 + 100000*2.5 + 50000*10 per million tokens, doubled
+    expect(standard.costUsdExact).toBe("2.590000000");
+    expect(fast.costUsdExact).toBe("5.180000000");
+    expect(fast.pricingProvenance).toMatchObject({ serviceTier: "fast", contextTier: "short" });
+    expect(fast.pricingProvenance?.evidence).toContain("fast processing at 2x standard rates");
+    expect(codex.costStatus).toBe("unpriced");
+  });
+  it("prices OpenAI fast long context at 2x the long-context charge", () => {
+    const long = priceCompassReceipt({ ...codex, pricingContext: { contextTier: "long" } });
+    const longFast = priceCompassReceipt({ ...codex, pricingContext: { serviceTier: "fast", contextTier: "long" } });
+    expect(Number(longFast.costUsdExact)).toBeCloseTo(Number(long.costUsdExact) * 2, 9);
+    expect(longFast.pricingProvenance).toMatchObject({ serviceTier: "fast", contextTier: "long" });
   });
   it("leaves non-Compass receipts untouched", () => {
     const direct = { ...claude, biller: "anthropic", provider: "anthropic", model: "claude-sonnet-5" };
