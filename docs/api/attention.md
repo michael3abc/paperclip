@@ -161,3 +161,17 @@ requests per minute. HTTP 429 includes a `Retry-After` header in seconds.
 A closed-source conflict includes `code: attention_already_closed` and the
 recorded resolver when known. Clients should refresh the feed and show that
 outcome instead of retrying a decision automatically.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Attention cache and overlapping reads
+
+Attention feed/summary/task-index queries reuse fresh data for 30 seconds across
+navigation. Preserve live-event/mutation invalidation and company/person/view
+cache scoping; see `docs/agents/ui-features.md`. Server read coalescing is limited
+to overlapping reads of the same company/viewer/authorization context; never
+reuse a completed result or supply default summary totals from a filtered read.
+See `docs/api/attention.md`.

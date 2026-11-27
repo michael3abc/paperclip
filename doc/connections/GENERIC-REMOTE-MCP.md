@@ -424,3 +424,12 @@ browser and never starts a competing Chrome profile or screenshots a logged-in
 chat. The QR dialog names the connected service generically. Neither adapter
 submits a 104 application or sends a service message as
 part of login. No database migration is needed.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Human-only MCP browser sign-in
+
+Custom remote MCP browser sign-in uses the human-only `/api/tool-connections/:id/browser-login` companion proxy. Resolve the acting human's vault grant, preserve company/configuration access, and never persist/cache/audit login URLs or QR codes. Poll only a visible, bounded login attempt; transport health is not provider-account login. See `doc/connections/GENERIC-REMOTE-MCP.md`.

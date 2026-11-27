@@ -754,6 +754,14 @@ still needs release compatibility review and the mandatory isolated DB clone upg
 The pull-request policy job uses `.github/scripts/check-pr-migration-order.mjs`. Migrations
 that were already on `master` when the classifier shipped are not annotated.
 
+HOM-728 retains upstream migration numbers 0500–0510 and moves fork SQL to
+0511–0523 without changing SQL bytes or original journal timestamps. Keep the
+top-level migration execution registry aligned with renamed files. Preserve upstream
+0505_nice_rawhide_kid.sql, 0507_special_kang.sql, 0508_normal_riptide.sql and fork
+0523_ordinary_stardust.sql in that registry. Owned upgrade qualification must cover
+empty, live 0f854195d8 (eleven upstream additions) and HOM-638 eff2c24c62
+(one upstream addition), with fork replay 0.
+
 Deployers read the result from the cloud migrator manifest
 (`cloud-migrators/v1/<sha>/manifest.json`, built by
 `scripts/cloud-migrator-artifacts.mjs`). Its `migrationCompatibility.migrations`

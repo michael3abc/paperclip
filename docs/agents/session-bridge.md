@@ -126,3 +126,49 @@ reconciles a late acknowledgement only for its pinned turn; it never sends input
 Existing run recovery follows liveness-first independently; these input errors do not pause
 or cancel the active worker. Codex Bridge workers require the paired adapter's
 `chatSteering` registration; other providers must expose steering explicitly.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Main Chat compaction
+
+HOM-458 main Chat compaction scope is rebuilt in task-context from the assigned ccpocket_bridge main. mainContextCompactThresholdTokens defaults to 150000, 0 disables. Keep maintenance at the adapter/Bridge idle boundary; never replay unknown maintenance or turn its failure into a user-input retry. Preserve canonical TODO/cards/decisions. See docs/agents/session-bridge.md.
+
+### Main-to-worker steer and decision cards
+
+Main→worker comments default to active-turn steer for a running worker of the lead main's project;
+explicit deliveryMode=queue, idle and already queued inputs keep their boundary. Direct-input
+receipts are never replayed or silently queued after rejection/unknown acknowledgement. Agent Chat
+cards show orange `pending` for Owner-actionable plan/approval decisions, ahead of working/waiting;
+resolved, expired, draft and agent-delegated requests do not qualify. See docs/agents/session-bridge.md
+and docs/agents/ui-features.md.
+
+### Codex main Chat steering
+
+Codex main Chat sends use native steer by default, including Enter during an
+active response. Persist the effective role/provider/model before Bridge dispatch;
+never derive the active run's routing from subsequently edited agent settings.
+Await native acknowledgement and retain original run/thread/turn correlation.
+See `docs/agents/session-bridge.md` for queue and unavailable-turn semantics.
+
+### Human Chat requester ownership
+
+Human Chat wake requesters must be the conversation owner before queue admission;
+an owner-authored saved message never grants another requester's authority. See
+docs/agents/session-bridge.md.
+
+### Queued-message Interrupt
+
+Queued-message Interrupt returns after durable intent and cancellation fencing;
+Stop and ordered queue promotion continue under their original owner in the
+background. A 200 is acceptance, not process-stop proof, including main Chat task
+preemption. See docs/agents/session-bridge.md.
+
+### Session-only MCP definitions
+
+Session-bridge-only MCP definitions live in packages/mcp-server/src/session-bridge-tools.ts;
+keep them separate from the Runner legacy MCP catalog in tools.ts. Regenerate the
+Runner capability source anchors when legacy definitions move, and verify both
+catalog surfaces without granting session-only tools to heartbeat clients.

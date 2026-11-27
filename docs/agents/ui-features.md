@@ -248,3 +248,24 @@ the shared leading-user-command parser and editor-autolink normalization.
 Onboarding browser-sign-in availability gates adapters that use a managed account
 or expose login capability. Other harnesses, including Cursor, retain their native
 environment-test path; selecting them from More harnesses remains valid.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Personal Chat pins
+
+Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`. Coordinator project pins coexist independently; their project rows expand tasks in place via aria-expanded, without changing chat membership.
+
+### Shared image gallery
+
+ImageGalleryModal owns shared media navigation; ZoomableGalleryImage owns image-only
+zoom/pan gestures in both the gallery and ArtifactPreviewProvider. Give artifact images a bounded viewport. Reset its view on item changes and reopen, bound pan to the viewport,
+and preserve video controls, download, Escape and focus restoration. See
+`docs/agents/ui-features.md` for the interaction contract.
+
+### Chat origin provenance
+
+Chat presentation uses the shared IssueComment origin type so native inbox and
+mirrored messages retain their provenance through the UI adapter.

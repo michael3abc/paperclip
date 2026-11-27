@@ -264,12 +264,62 @@ describeEmbeddedPostgres("agent secret routes", () => {
 
     const denied = await request(createApp(fixture)).post("/api/agents/me/secrets/unbound_key/value");
     expect(denied.status).toBe(403);
+    expect(denied.body.details).toMatchObject({
+      code: "secret_access_not_granted",
+      requestedKey: "unbound_key",
+      availableKeys: ["api_only_key", "env_only_key", "project_key"],
+    });
+    expect(JSON.stringify(denied.body)).not.toContain("unbound-secret-value");
+    expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "secret.value.denied",
+        entityId: fixture.agentId,
+        runId: fixture.heartbeatRunId,
+        details: expect.objectContaining({ requestedKey: "unbound_key" }),
+      }),
+    ]));
     expect(await db.select().from(secretAccessEvents)).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ secretId: unboundSecret.id }),
     ]));
     expect(await db.select().from(activityLog)).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "secret.value.read", entityId: unboundSecret.id }),
     ]));
+  });
+
+  it("accepts the uppercase key or a unique binding alias and rejects an ambiguous alias", async () => {
+    const fixture = await seedAgentRun();
+    const svc = secretService(db);
+    const seed = await svc.create(fixture.companyId, {
+      key: "gateway_seed",
+      name: "Gateway seed",
+      provider: "local_encrypted",
+      value: "gateway-seed-value",
+    });
+    await svc.createBinding({
+      companyId: fixture.companyId,
+      secretId: seed.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.WALLET_SEED",
+      projectionClass: "unclassified",
+    });
+    const first = await svc.create(fixture.companyId, { key: "first_dup", name: "First", provider: "local_encrypted", value: "first-dup-value" });
+    const second = await svc.create(fixture.companyId, { key: "second_dup", name: "Second", provider: "local_encrypted", value: "second-dup-value" });
+    await svc.createBinding({ companyId: fixture.companyId, secretId: first.id, targetType: "agent", targetId: fixture.agentId, configPath: "access.SHARED", projectionClass: "unclassified" });
+    await svc.createBinding({ companyId: fixture.companyId, secretId: second.id, targetType: "agent", targetId: fixture.agentId, configPath: "env.SHARED" });
+
+    const upper = await request(createApp(fixture)).post("/api/agents/me/secrets/GATEWAY_SEED/value");
+    expect(upper.status).toBe(200);
+    expect(upper.body).toEqual({ key: "gateway_seed", value: "gateway-seed-value", version: 1 });
+
+    const alias = await request(createApp(fixture)).post("/api/agents/me/secrets/WALLET_SEED/value");
+    expect(alias.status).toBe(200);
+    expect(alias.body).toEqual({ key: "gateway_seed", value: "gateway-seed-value", version: 1 });
+
+    const ambiguous = await request(createApp(fixture)).post("/api/agents/me/secrets/shared/value");
+    expect(ambiguous.status).toBe(403);
+    expect(JSON.stringify(ambiguous.body)).not.toMatch(/first-dup-value|second-dup-value/);
+    expect(ambiguous.body.details.availableKeys).toEqual(["first_dup", "gateway_seed", "second_dup"]);
   });
 
   async function seedDelegation() {

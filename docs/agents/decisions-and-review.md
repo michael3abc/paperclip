@@ -87,3 +87,26 @@ issue stage even without an old executionStage envelope. Require the same active
 run/assignee, pending review stage and policy; never infer authority from a prior
 run or caller payload, and never reopen blocked tasks during binding.
 
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Question answer delivery and audience
+
+Question answers with `continuationPolicy: none` are caller-delivered; save the answer
+without a generic continuation outbox entry. `runtimeRequestId` retains Runner's native
+response delivery. Preserve source runs and test both paths with owned PostgreSQL.
+Worker-only explicit human audience requests go to the task main first; preserve
+governance/quality/security reservations and use existing escalation. See docs/agents/decisions-and-review.md.
+
+### Task cancellation and AI request expiry
+
+Explicit task cancellation by an authorized reviewer, project lead or board actor
+abandons execution review without a changes-requested decision or worker wake. AI
+connection requests expire only on task closure, ownership change or proven changes
+to that task's effective AI requirement. Preserve worker overrides and reviewer
+isolation, including blocked reviews; time, failed source runs and other Chat
+successes prove nothing. Task/card/attention reads share canonical expiry; cleanup
+never grants access or resumes work. See doc/connections/AI-CONNECTIONS.md and
+docs/agents/decisions-and-review.md.

@@ -756,3 +756,33 @@ rejects upgrades with 503) or turn off `enableLocalVoice`. Endpoints, sessions a
 additive rows and need no migration. Migration `0442_loose_masque` only widens
 the `binding_mode` check and lets `agent_chat` rows omit `conversation_id`; a previous release keeps working on it and
 ends any live `agent_chat` session as revoked on its next local reconcile.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Browser-wide voice timbre
+
+Local voice timbre is one browser-wide preference, changed only on the Voice page and used by every agent on the next call. Do not restore per-agent overrides or mutate live call bindings. See `doc/connections/LOCAL-VOICE.md`.
+
+### Voice media ownership
+
+Local voice media belongs to the company/user-scoped provider above routes; navigating chats must neither dispose it nor retarget the active agent. See `docs/agents/ui-features.md`.
+
+### Internal voice endpoint visibility
+
+Internal `local_voice` endpoints remain available to Voice but are excluded by the external chat connector visibility gate, including Connectors and agent Channels. Never filter them out of the shared endpoint API/cache.
+
+### Main answer provenance
+
+New agent_chat voice sessions pin main_answer_v1 in providerSessionId; substantive answers come from the original main Chat and require per-answer, server-verified input provenance before automatic playback. Saved input is not execution evidence; barge-in stops audio only, and an unknown browser write is reconciled without resending. Preserve voice_task and existing calls' policies. See `doc/connections/LOCAL-VOICE.md`.
+
+### Natural voice conversation
+
+New agent-chat calls use `natural_chat_v2`: filtered small talk is answered by
+Realtime; work and project questions forward only the server-held original input
+through a current-turn token. Keep main-answer provenance, replay/deduplication,
+barge-in and voice approval restrictions. Do not restore legacy latest-reply
+routing. Changes require both engine regressions and a real routing smoke; see
+`doc/connections/LOCAL-VOICE.md`. Existing call policies are not rewritten.

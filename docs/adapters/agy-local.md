@@ -74,3 +74,28 @@ The Antigravity CLI catalog entry (agy-local) stores AI provider antigravity
 and reconnects to that entry. Upstream Antigravity (antigravity) stores provider
 google and uses Runner ACPX. Their accounts are not interchangeable. Cloud starter
 inference migration selects agy_local explicitly for CLI accounts.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Antigravity shared workers
+
+The fork ports upstream PR #21121 as `agy_local`, separate from the pending
+Google ACP runtime and from `ccpocket_bridge`. Preserve explicit subscription
+bindings and model/effort/permission through the revision-checked worker policy.
+Shared CLI workers set `subscriptionOnly:true`; all CLI invocations disable
+paid extra credits with `useG1Credits:false`. Plan never skips permissions;
+auto is unsupported. Preserve existing Bridge agents, policies, sessions and
+credentials. See `doc/DEVELOPING.md` and `docs/adapters/agy-local.md`.
+
+### Provider quota and Antigravity ACP (HOM-728)
+
+Provider quota without a reported reset remains transient under the fork classifier;
+upstream account-action hints never gate automatic retry. Antigravity
+ACP 1.5.2 uses one platform-aware admission source with Linux `/proc/self/exe`,
+per-distribution helper digests and the existing remote-browser paste-back;
+`agy_local` and Bridge remain separate. The agy-local catalog entry retains
+provider antigravity; upstream antigravity stores provider google. Keep account
+creation/reconnect and Cloud trial migration routes separate. See doc/DATABASE.md and doc/DEVELOPING.md.

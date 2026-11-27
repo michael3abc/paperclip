@@ -157,6 +157,24 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue: chat, mainAgent: true, coordinationOnly: true })).not.toContain(MAIN_AGENT_CHAT_DIRECTIVE);
   });
 
+  it("drops board-surface paragraphs a host-side main never needs, keeping the rest of the directive", () => {
+    const main = buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId: "agent-1" }, mainAgent: true })!;
+    for (const omitted of [
+      "GET /api/agents/me/inbox/mine",
+      "profile settings at /TEST/company/settings/instance/profile",
+      "task-chat interaction lab",
+      "GET /api/teams/catalog",
+      "npx paperclipai auth login",
+    ]) {
+      expect(main).not.toContain(omitted);
+      expect(AGENT_CHAT_DIRECTIVE.replaceAll("/<prefix>/", "/TEST/")).toContain(omitted);
+    }
+    expect(MAIN_AGENT_CHAT_DIRECTIVE.length).toBeLessThan(AGENT_CHAT_DIRECTIVE.length - 5_000);
+    expect(main).toContain("This conversation and your credentials belong to one company.");
+    expect(main).toContain("Write replies for the person, not for the API.");
+    expect(MAIN_AGENT_CHAT_DIRECTIVE).not.toContain("\n\n\n");
+  });
+
   it("gives a standing chat real company page paths instead of a /<prefix>/ placeholder it could copy into a link", () => {
     const chat = { id: "chat", identifier: "COM-12", title: "Chat", conversationAgentId: "ceo" };
     const markdown = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, conferenceRoomEnabled: true, statusCardsEnabled: true, casesEnabled: true, coordinatorWorkspace: true })!;
