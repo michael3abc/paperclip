@@ -1106,3 +1106,13 @@ uses its existing conditional transition to `stored`; a rejected transition
 rolls back the credentials and connection binding. Already-bound sessions return
 the existing connection without repeating the callback. Local and device login
 services continue to own their final states.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Cost reports and project usage
+
+Cost reports expose ordinary input separately from cached input. Normalize inclusive Codex Bridge subscription counters when reading reports; preserve raw receipts and charged amounts. Dashboard subscription pies show API-equivalent USD estimates, separate from subscription fees. See `doc/connections/AI-CONNECTIONS.md`.
+Dashboard project usage shares the model charts' period and company scope; sum ordinary input, cache reads and output once, retain Unattributed, and keep recorded spend separate from subscription estimates/fees.

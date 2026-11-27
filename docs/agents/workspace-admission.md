@@ -98,3 +98,38 @@ unsaved host changes in settings use ordinary company discovery. Company catalog
 failures retain safe machine codes in the 422 body's `code` field while hiding
 raw transport details; `catalog_host_forbidden` has specific user-facing copy.
 Paperclip and the external CC Pocket adapter changes must ship together.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Workspace directory and preparation semantics
+
+Local preparation never acquires Git source-copy locks; remote materialization
+keeps source-copy coordination inside its own preparation path.
+Workspace = directory. The run cwd is the run-requested cwd, else the agent's fixed
+cwd, else the project default cwd, else `~/.paperclip/instances/default/workspaces/<agentId>`;
+it is created with `mkdir -p` (over ssh on remote hosts). Admission, registration,
+generation/operation receipts, shared-checkout claims, fixed/isolated conflicts and
+host inspection never fail a run; mismatches are logged only. Any number of runs may
+share a directory; the per-issue execution lock still keeps one run per issue. Main
+agents may still create a Git worktree explicitly with the worktree tool; non-Git
+directories are never Git-initialized for dispatch. Session authority is
+last-writer-wins: a claim by a running, uncancelled run of the same task takes over
+(generation+1, prior authority revoked, `takeoverFrom` recorded). 30 minutes without a
+run event interrupts it as `inactivity_timeout`; the server cancels runs silent for 35
+minutes. A per-host in-memory circuit breaker (`server/src/services/host-circuit-breaker.ts`)
+defers wakes for an unavailable host instead of failing them. One-time cleanup:
+`paperclip ops liveness-reset --dry-run|--apply --receipt <path>`. Worktree retirement
+never force-removes and never deletes a directory with dirty or ignored files;
+repository-root retirement only unregisters metadata.
+
+### Agent-pinned catalogs
+
+Agent-pinned company catalog reads accept agentId only after company/adapter and
+explicit hostId match the saved agent. Pass serverVerifiedHostId internally, never
+from query/config. Include agent identity in picker caches; keep company host
+choices, terminals and quota scope unchanged. Same-host model saves may use the
+trusted previous config. Preserve safe adapter failure codes in 422 responses.
+See docs/agents/workspace-admission.md.

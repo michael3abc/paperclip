@@ -238,3 +238,24 @@ Verify these controller, call-button, panel and provider behaviors together with
 related relay/provenance tests and token gates. Desktop/mobile-size browser
 fixtures and a bounded real-gateway test are separate evidence; neither proves
 physical-device microphone quality. Do not report unexecuted checks as passed.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Personal Chat pins
+
+Agent chat pins use an explicit nullable personal chatPinned preference, independent of stars and primary-agent identity; see `docs/agents/ui-features.md`.
+
+### Shared image gallery
+
+ImageGalleryModal owns shared media navigation; ZoomableGalleryImage owns image-only
+zoom/pan gestures in both the gallery and ArtifactPreviewProvider. Give artifact images a bounded viewport. Reset its view on item changes and reopen, bound pan to the viewport,
+and preserve video controls, download, Escape and focus restoration. See
+`docs/agents/ui-features.md` for the interaction contract.
+
+### Chat origin provenance
+
+Chat presentation uses the shared IssueComment origin type so native inbox and
+mirrored messages retain their provenance through the UI adapter.

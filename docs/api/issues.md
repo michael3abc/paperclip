@@ -513,3 +513,21 @@ backlog -> todo -> in_progress -> in_review -> done
 - `started_at` auto-set on `in_progress`
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Inbox archive and Chat retry
+
+The issue-list inboxArchive filter is board-user-only and cannot be combined
+with attention; preserve the viewer-scoped isArchivedForMe projection. See
+docs/api/issues.md. Upstream Chat retry stop-wait polling is intentionally
+excluded: terminal cleanup remains background work under liveness-first.
+
+### Conversation ownership prefilter
+
+Conversation ownership reads use the existing origin-issue index only as a
+prefilter; preserve exact native/legacy matching and empty-ID behavior, and do
+not admit taskId/taskKey aliases. See `docs/api/issues.md`.

@@ -115,3 +115,64 @@ Chat／task 右側面板的「+」選單也列出可用主機（`Terminal: <labe
 面板不結束 shell，其他對話的「+」可接回執行中的終端；關閉分頁、重新整理或換帳號才結束。
 面板只儲存終端參照，不儲存 token 或內容；重新整理後不自動開新 shell。有執行中的終端時，
 Service Worker 更新不自動重新整理頁面。設定頁的終端仍在離開頁面時結束。
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Host Claude and Codex sign-in
+
+Host Claude sign-in replaces the Claude quota card body only for hosts whose native
+status explicitly reports logged out; signed-in/unknown states keep quota content.
+Check company hosts while Dashboard is visible and refresh quota after sign-in.
+Sign-in is human-only and instance-admin-only. Use the
+company-scoped CC Pocket host registry and its explicit `claudeLogin.command`
+and optional `configDir`; never accept a client command, path or SSH target. Run
+native `claude auth login --claudeai` on that host; credentials stay there. Bind
+temporary sessions to company/user/host, allow one active login per host, expire
+after five minutes, and confirm `auth status --json` reports a Claude.ai login.
+Never persist authorization URLs, codes, CLI output or credentials in audit/logs.
+Codex uses the same company/host/human/admin boundary with registry `codexLogin.command`
+and optional `codexHome`: run `codex login --device-auth`, expire sessions after ten
+minutes, and confirm `codex login status` reports `Logged in using ChatGPT`. Show the
+device URL/code only to the initiating administrator; never log or persist either.
+
+### Host terminals
+
+Host terminals require a signed-in human instance-admin session, active company access
+and registry `terminal.enabled: true`; never accept client commands, cwd, SSH targets
+or env. Keep the PTY environment allowlisted, tokens single-use, and terminal contents
+out of logs/storage; see `docs/agents/platform-notes.md`.
+
+### Dashboard quota source
+
+Dashboard subscription quota sources are company-scoped operator configuration; remote credentials stay on the selected host, with no local fallback. See docs/agents/platform-notes.md and doc/DEVELOPING.md.
+
+### Codex monthly credits
+
+Codex Business/Enterprise monthly credit quotas come from RPC individualLimit; preserve its remaining percentage and reset. Metadata-only credits are not reported quota, and RPC credit amounts are not dollars.
+
+### Data-path review levels
+
+7. Name the three data paths correctly.
+This repo has three separate data paths. Do not confuse them. Match a change to a path by its file path, not by the word "observability" or "telemetry" alone.
+
+Apply a review level that matches the path:
+
+- **Telemetry change (strict review).** The author updates the generated contract first. The author updates `packages/shared/src/telemetry/README.md` in the same pull request. The author requests a privacy review. Reason: a Telemetry event goes to a Paperclip endpoint by default, so a mistake sends data immediately.
+- **Observability change (lighter review).** The operator endpoint gate stays in place. The no-operation behaviour stays when no endpoint is set. A privacy review is not necessary while the change stays inside the closed span-attribute allowlist.
+- **Run-log change (no extra review).** A run-log change needs neither review level above, because the data stays in the instance database.
+
+**Exclusion.** The word "observability" in a file such as `server/src/services/recovery-observability.ts` names a different concept. Apply this rule by path, not by word match.
+
+### Runtime-specific delivery
+
+Delivery guidance must match the actual runtime: native tools for Runner, authenticated Paperclip skill
+and task APIs for legacy adapters. Never require a native-only tool in a legacy run.
+
+### Skill headings and capability contracts
+
+Skill heading changes must synchronize both Runner capability inventories
+(`generated/capability` and `spec/capability`), their generated contracts/docs and
+baseline-count tests. Verify both check:capability-contract and check:capability-inventory.

@@ -113,3 +113,16 @@ GET /api/companies/{companyId}/costs/by-project   # Per-project breakdown
 - Monitor the dashboard regularly for unexpected cost spikes
 - Use per-agent budgets to limit exposure from any single agent
 - Critical agents (CEO, CTO) may need higher budgets than ICs
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Compass receipts
+
+Compass receipts optionally carry usage.cacheWrite1hTokens as a subset of cacheWriteTokens.
+Price the remainder at 5m and unknown TTL at 1h with the versioned Compass card;
+never reprice existing charges or backfill history. Invalid subsets stay incomplete.
+Observed Compass usage without a final receipt can settle as an explicit lower bound;
+missing counters stay unpriced. See docs/guides/board-operator/costs-and-budgets.md.

@@ -56,3 +56,15 @@ schema, restart, worker retry or workspace-policy changes are part of this fix.
   stack whose newest artifact is a PDF still shows the icon sheet. Image and video thumbnails and the click-to-preview
   window were already shipped. UI only; the new dependency changes `pnpm-lock.yaml`, so the release is not a pure
   UI-overlay (T1) release.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Artifact PDF thumbnails
+
+Artifacts PDF thumbnails reuse the validated PDF read, render only page one near
+the viewport, and retain the file icon on failure. Keep pdf.js lazy and bounded;
+the shared PDF preview dialog still uses the native viewer. See
+`docs/fork/artifacts-and-mobile.md`.

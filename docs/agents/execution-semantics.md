@@ -203,3 +203,73 @@ completion comment reference (`LRH_COMPLETION v1`). Busy execution retains a
 separate deferred wake for promotion after the active turn. An admission failure
 is surfaced and rolls back the completion, so it cannot consume a waiting target
 without its wake receipt. No monitor columns change.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Due monitors
+
+Due monitors and claimed wake_owner recovery can wake a waiting main Chat only through their persisted schedule
+and claim guard. Named admission waits retain the monitor; unclassified null
+admissions consume the existing attempt ledger and clear at three total attempts
+or the smaller configured limit. Record static refusal reasons; preserve stale
+wake rejection and the agent scheduling API switch. See doc/execution-semantics.md.
+
+### Liveness-first classifier and retry ownership
+
+Execution is liveness-first (Owner 2026-11-13). The binding source is
+`/home/michael/services/docs/agents/liveness-first.md`; it supersedes every
+fail-closed rule in this repository's docs (stop proof, settlement ladders,
+never-replay of unknown input, session-authority CAS, workspace admission gates,
+system-set pause/`needs_attention`/`uncertain`). Historical runs and receipts stay
+unchanged. An unknown prior outcome abandons that run, releases every lock, claim,
+holder and slot, and resends in the original native session if it still exists,
+else a new one, prefixed 「上一次可能已部分執行，先檢查現況再做」. A terminal status
+releases every gate; stop evidence is background best-effort. Failures are
+transient (30s×2ⁿ backoff capped at 30 min, unlimited, one notice at the 5th
+consecutive failure), deterministic (no auto retry, one notice per issue and code)
+or unknown (3 transient retries, then deterministic). Bridge model_provider_mismatch
+is deterministic. Board/project-main assignee or status changes supersede only
+not-started automatic retries; running and ordinary queued ownership stay protected.
+Main Bridge runs use their own adapter/AI settings despite retained task worker
+selections. Shutdown/process-loss retries
+retain the durable backoff counter instead of opening a fresh restart window; see
+`server/src/services/recovery/failure-classification.ts`. Owner Stop/cancel and
+manual pause still apply and revoke automatic retry. New human or project-main
+input supersedes automatic retry of a failed predecessor and keeps its own input
+receipt. See `docs/agents/execution-semantics.md`.
+Sandbox disk exhaustion (native_sandbox_disk_full, sandbox_disk_full) and permanent
+agent_interaction_delivery_denied are deterministic in the unified classifier.
+Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
+require system interruption, process loss or controller loss. Ordinary failures keep
+their failure counter and provider retry deadline.
+
+### LRH wake admission, preflight and Retry
+
+LRH external waits settle with their one-shot heartbeat receipt under issue admission; see docs/agents/execution-semantics.md.
+Issue wake admission belongs to wake-queue.admitIssueWake: retain the company-scoped
+issue row lock and durable receipt writes in one transaction, run fork workspace/main
+policy in its callback, and dispatch only after commit. Do not restore automatic
+blocked recovery or transaction-scope compatibility shims. See
+docs/agents/execution-semantics.md.
+Lightweight preflight preserves conversation-requester ownership; prepareRecovery
+checks saved Retry and queued-comment ownership before busy/fresh admission. Keep
+one-shot execution review/approval/changes handoffs durable in recovery deferral.
+Verified pre-dispatch cancellation receipts need no provider delivery evidence.
+Keep a fresh attempt when that admission never owned the preserved workspace.
+Fresh task Retry keeps its exact terminal source in interruptedRunId for the
+inspect-existing-work prompt, without borrowing preparation continuation authority.
+Only after queue admission may it lift its ancestry's system failure block;
+preserve human, declared, dependency and newer blocks.
+
+### Terminal-run saved input
+
+Saved input behind a terminal native run must not wait for finalization to become
+committed; retain the original evidence. See docs/agents/execution-semantics.md.
+
+### Runner replay responsiveness
+
+Runner replay must keep authenticated lease renewals and order-independent command
+results responsive during slow event commits; bound the queue without pausing TCP ingress.

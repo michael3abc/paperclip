@@ -162,3 +162,24 @@ Exercise the assembled heartbeat path for project-bound non-Git Recovery reuse,
 including preserved files, provider execution and task ownership rejection.
 Retained task-directory anchors carry their source identity and local-path contract
 through the final Claude/Codex launch guard; process-adapter tests alone cannot prove it.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Bridge worker host capacity
+
+Plain Bridge workers may opt into runtimeConfig.bridgeWorkerHostCapacity (host ID to independent concurrent-run limit). Task models retain full host/provider IDs; validate and pin their route before workspace preparation. Catalogs probe only the dispatch owner's host. Preserve historical worker/session identities and never fail over to another host. See docs/agents/pm-agents.md.
+
+### Zero-slot PM and shared workers
+
+Project PMs can be restricted to coordination and review with
+`runtimeConfig.workspaceBinding.workerSlots=0` (the default for new bindings).
+Reject implementation children assigned to such a PM before adapter dispatch,
+including stale worker-role contexts; preserve execution-policy reviews in the PM
+home with the PM's own model. A shared Claude or Codex worker may serve multiple
+projects: use issue-scoped model settings and task sessions,
+and route review to the issuing project's PM. Never resume an Owner replanning
+hold when changing this topology or reuse another task's native session. Any
+directory may be shared; placement follows the workspace = directory rule below.

@@ -69,3 +69,18 @@ Use the "Test Environment" button in the agent configuration UI to validate:
 - Working directory is resolvable and accessible
 - Authentication and credentials are valid
 - Live probe execution succeeds with the configured model and permissions, stream JSON input/output, and `--settings '{"useG1Credits":false}'`. Invalid worker authentication, permission and credit settings fail before probe execution.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Antigravity shared workers
+
+The fork ports upstream PR #21121 as `agy_local`, separate from the pending
+Google ACP runtime and from `ccpocket_bridge`. Preserve explicit subscription
+bindings and model/effort/permission through the revision-checked worker policy.
+Shared CLI workers set `subscriptionOnly:true`; all CLI invocations disable
+paid extra credits with `useG1Credits:false`. Plan never skips permissions;
+auto is unsupported. Preserve existing Bridge agents, policies, sessions and
+credentials. See `doc/DEVELOPING.md` and `docs/adapters/agy-local.md`.

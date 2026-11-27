@@ -44,3 +44,34 @@ expanded work must become quiet, use events and real scheduler deadlines, and
 preserve recovery across transactions, drain, and restart. This rule covers
 `server/src/index.ts` and the worker/producer paths in its scope. It does not
 require unrelated legacy polling to be migrated in the same PR.
+
+## Repository agent rules (HOM-777)
+
+Moved verbatim from `AGENTS.md` on 2026-11-27. These rules remain binding;
+read the matching topic before changing it. Repository policy precedence is unchanged.
+
+### Scoped rule loading
+
+`rules/*.mdc` holds the architecture rules that reviewers apply to a pull
+request. Each file starts with a short header: `description` is a one-sentence
+summary of the rule, `globs` lists the files it covers, and `alwaysApply: true`
+means it covers the whole repository.
+
+You do not need to read the rule bodies before every change. List the headers to
+see which rules exist and what each one asks for:
+
+```sh
+grep -E '^(description|globs|alwaysApply):' rules/*.mdc
+```
+
+Write the change so that it satisfies the descriptions of the rules that cover
+your files. Read the full body of a rule only in these cases:
+
+- You are making a design decision in the area the rule covers, such as adding a
+  module, a background worker, or persisted state.
+- The description does not tell you whether your change complies.
+- A reviewer cites the rule.
+
+These rules supplement this file and any applicable nested `AGENTS.md`
+instructions. See [`rules/README.md`](rules/README.md) for rule authoring and
+Greptile setup.
