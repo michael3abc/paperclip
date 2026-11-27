@@ -67,8 +67,12 @@ export function priceCompassReceipt(
   const card = found && (!oneMillion || found.vendor === "anthropic") ? found : undefined;
   if (!card) return receipt;
   const context = receipt.pricingContext;
+  // OpenAI Fast mode (service_tier "fast", formerly "priority") bills every token
+  // type at 2x Standard in both context tiers. Other tiers, and Anthropic fast
+  // modes, stay unpriced because this card has no exact rate for them.
+  const fast = card.vendor === "openai" && (context?.serviceTier === "fast" || context?.serviceTier === "priority");
   if (
-    (context?.serviceTier && !["standard", "default"].includes(context.serviceTier)) ||
+    (context?.serviceTier && !fast && !["standard", "default"].includes(context.serviceTier)) ||
     (context?.contextTier && context.contextTier !== "short" &&
       !(context.contextTier === "long" && card.vendor === "openai"))
   )
@@ -96,7 +100,7 @@ export function priceCompassReceipt(
   const long = context?.contextTier === "long";
   // OpenAI long context (>272K input tokens): 2x input/cache, 1.5x output.
   let units = counts.reduce((total, count, index) => {
-    const numerator = long ? (index === 3 ? 3n : 4n) : 2n;
+    const numerator = (long ? (index === 3 ? 3n : 4n) : 2n) * (fast ? 2n : 1n);
     return total + BigInt(count) * usdToUnits(card.rates[index]) * numerator;
   }, 0n);
   // Replace the five-minute subset's conservative one-hour charge exactly.
@@ -106,7 +110,7 @@ export function priceCompassReceipt(
   const assumptions = [
     `Compass billed at ${card.upstream} list price`,
     ...(oneMillion ? ["1M context window at the single standard tier"] : []),
-    "standard processing assumed",
+    fast ? "fast processing at 2x standard rates" : "standard processing assumed",
     long ? "long per-request context" : "short per-request context assumed",
     card.vendor === "anthropic"
       ? split
@@ -129,7 +133,7 @@ export function priceCompassReceipt(
       cachedInputCentsPerMillion: unitsToCents(usdToUnits(card.rates[1])),
       cacheWriteCentsPerMillion: unitsToCents(usdToUnits(card.rates[2])),
       outputCentsPerMillion: unitsToCents(usdToUnits(card.rates[3])),
-      serviceTier: "standard",
+      serviceTier: fast ? "fast" : "standard",
       contextTier: long ? "long" : "short",
     },
   };
