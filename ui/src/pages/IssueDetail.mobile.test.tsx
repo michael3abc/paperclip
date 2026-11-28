@@ -12,6 +12,7 @@ import { ThemeProvider } from "../context/ThemeContext";
 import { ToastProvider } from "../context/ToastContext";
 import { DialogProvider } from "../context/DialogContext";
 import { IssueDetail, TaskDetailSurface } from "./IssueDetail";
+import { LocalVoiceCallProvider } from "../components/voice/LocalVoiceCallProvider";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -294,19 +295,21 @@ describe("IssueDetail & AgentChat mobile parity", () => {
   function Harness({ children, initialEntry }: { children: ReactNode; initialEntry: string }) {
     return (
       <QueryClientProvider client={client}>
-        <ThemeProvider>
-          <ToastProvider>
-            <DialogProvider>
-              <PanelProvider>
-                <BreadcrumbProvider>
-                  <MemoryRouter initialEntries={[initialEntry]}>
-                    {children}
-                  </MemoryRouter>
-                </BreadcrumbProvider>
-              </PanelProvider>
-            </DialogProvider>
-          </ToastProvider>
-        </ThemeProvider>
+        <LocalVoiceCallProvider companyId={COMPANY_ID} userId="user-1">
+          <ThemeProvider>
+            <ToastProvider>
+              <DialogProvider>
+                <PanelProvider>
+                  <BreadcrumbProvider>
+                    <MemoryRouter initialEntries={[initialEntry]}>
+                      {children}
+                    </MemoryRouter>
+                  </BreadcrumbProvider>
+                </PanelProvider>
+              </DialogProvider>
+            </ToastProvider>
+          </ThemeProvider>
+        </LocalVoiceCallProvider>
       </QueryClientProvider>
     );
   }

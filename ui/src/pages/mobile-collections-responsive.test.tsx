@@ -207,6 +207,7 @@ vi.mock("@/components/ProductAnalyticsSetting", () => ({
 
 vi.mock("@/components/primary-agent/PrimaryAgentPresentation", () => ({
   PrimaryAgentIndicator: () => null,
+  usePrimaryAgentPresentation: () => null,
 }));
 
 vi.mock("@/components/AgentChatPin", () => ({
