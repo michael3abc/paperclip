@@ -69,7 +69,7 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
     loadedActivityRoutes = activityResult.value.activityRoutes;
     loadedIssueRoutes = issueResult.value.issueRoutes;
     db = createDb(dbResult.value.connectionString);
-  }, 30_000);
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);

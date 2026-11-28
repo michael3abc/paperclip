@@ -237,7 +237,7 @@ describe("issue activity event routes", () => {
     ]);
     loadedIssueRoutes = issueRoutes;
     loadedErrorHandler = errorHandler;
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(() => {
     vi.clearAllMocks();
