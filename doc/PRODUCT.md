@@ -43,6 +43,10 @@ People can use the same area names independently. Dashboard conversations, saved
 the way a person files shared work are visible only to that person and their authorized agent
 where the workflow requires it. Filing an existing task or project keeps its existing access rules.
 
+The Outline v2 dashboard can filter responsibilities by whether they have routines.
+Search and routine filters compose, and counts reflect the visible results.
+Routine avatars use the distinct agents assigned to non-archived member routines.
+
 Each person also has a personal primary agent per company. Their first human-created
 agent becomes primary automatically; they can choose another from its profile.
 An existing primary is replaced only after confirmation. The crown appears on the

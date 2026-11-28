@@ -10,6 +10,11 @@ node state, are excluded from company secret catalogs. Generic secret bindings,
 runtime projection, and agent value reads cannot resolve them. Existing bindings
 do not bypass this restriction; those requests return `403`.
 
+A secret referenced as the saved sign-in of a non-archived connection or its
+non-revoked grant cannot be deleted or disabled. This includes deleting its user
+secret definition. These operations return HTTP `409` with
+`details.code: "secret_used_by_connection"`; disconnect the account first.
+
 ## Agent List and Fetch
 
 These routes require the current run-bound agent JWT. They are not available to

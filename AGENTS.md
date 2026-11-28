@@ -192,6 +192,10 @@ Every route under `server/src/routes/` that reads or writes company data checks
 company access and actor permissions, logs mutations to the activity log, and
 returns consistent HTTP errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
+Connected-account saved sign-ins cannot be deleted or disabled while referenced
+by an active connection/grant; see `docs/api/secrets.md`. Responsibility rollups
+include routine agent IDs and the dashboard routine filter; see `doc/PRODUCT.md`.
+
 ## 9. UI Expectations
 
 - Keep routes and nav aligned with available API surface
