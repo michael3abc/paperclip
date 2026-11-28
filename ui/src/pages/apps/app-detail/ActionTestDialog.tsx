@@ -45,7 +45,9 @@ import {
 } from "@/components/JsonSchemaForm";
 import { cn, relativeTime } from "@/lib/utils";
 import { appTabHref } from "../app-tabs";
+import { actionLabel } from "./action-permissions";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { safeExternalHttpUrl } from "@/lib/safe-url";
 
 // ---------------------------------------------------------------------------
 // Small format helpers
@@ -128,7 +130,7 @@ export function ActionTestDialog({
     ));
     return tool?.decision ?? "off";
   }, [entry.toolName, selectedAgent]);
-  const title = entry.title ?? entry.toolName;
+  const title = actionLabel(entry);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -955,9 +957,9 @@ function PrettyPreview({ value }: { value: unknown }) {
     return (
       <dl className="max-h-64 overflow-auto divide-y divide-border rounded-md border border-border bg-background text-xs">
         {Object.entries(value as Record<string, unknown>).map(([key, field]) => (
-          <div key={key} className="grid grid-cols-3 gap-3 px-3 py-2">
+          <div key={key} className="grid grid-cols-1 gap-1 px-3 py-2 sm:grid-cols-3 sm:gap-3">
             <dt className="min-w-0 break-words text-muted-foreground">{key}</dt>
-            <dd className="col-span-2 min-w-0 break-words whitespace-pre-wrap text-foreground">{typeof field === "object" && field !== null ? safeStringify(collapseDeep(field, 2)) : cellText(field)}</dd>
+            <dd className="min-w-0 break-words whitespace-pre-wrap text-foreground sm:col-span-2">{typeof field === "object" && field !== null ? safeStringify(collapseDeep(field, 2)) : cellText(field)}</dd>
           </div>
         ))}
       </dl>
@@ -973,7 +975,7 @@ function PrettyPreview({ value }: { value: unknown }) {
 function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: number }) {
   const titleKey = ["title", "name", "label"].find((key) => typeof row[key] === "string" && row[key] !== "");
   const summaryKey = ["highlight", "description", "summary"].find((key) => typeof row[key] === "string" && row[key] !== "");
-  const url = typeof row.url === "string" && /^https?:\/\//i.test(row.url) ? row.url : null;
+  const url = safeExternalHttpUrl(row.url);
   const details = Object.entries(row)
     .filter(([key]) => key !== titleKey && key !== summaryKey && (key !== "url" || !url))
     .sort(([left], [right]) => {
@@ -994,9 +996,9 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
       {details.length > 0 && (
         <dl className="mt-2 space-y-1">
           {details.slice(0, 3).map(([key, field]) => (
-            <div key={key} className="grid grid-cols-3 gap-2">
+            <div key={key} className="grid grid-cols-1 gap-0.5 sm:grid-cols-3 sm:gap-2">
               <dt className="min-w-0 break-words text-muted-foreground">{key}</dt>
-              <dd className="col-span-2 min-w-0 break-all text-foreground">{cellText(field)}</dd>
+              <dd className="min-w-0 break-all text-foreground sm:col-span-2">{cellText(field)}</dd>
             </div>
           ))}
         </dl>
@@ -1213,7 +1215,7 @@ function AskFirstResult({
       <dl className="mt-3 space-y-1.5 text-sm">
         <div className="flex gap-3">
           <dt className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</dt>
-          <dd className="text-foreground">{entry.title ?? entry.toolName}</dd>
+          <dd className="text-foreground">{actionLabel(entry)}</dd>
         </div>
         {where && (
           <div className="flex gap-3">
@@ -1270,7 +1272,7 @@ function OffExplanation({
   allAgents: ToolConnectionTestAgent[];
   onSelectAgent: (agentId: string) => void;
 }) {
-  const title = entry.title ?? entry.toolName;
+  const title = actionLabel(entry);
   const permHref = `${appTabHref(connectionId, "permissions")}?focus=${encodeURIComponent(entry.id)}`;
 
   // Other agents are intentionally not summarized up front. Selecting one

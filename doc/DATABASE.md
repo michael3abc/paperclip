@@ -708,7 +708,7 @@ because a failed run starts again from the first statement. The pull-request
 guard fails a new `CONCURRENTLY` migration that is not in that list.
 
 **The rule for a new migration.** A pull request fails when a migration it adds
-is `unknown`. Rewrite the migration, split it into expand and contract
+is `unknown` or `requires_staging`. Rewrite the migration, split it into expand and contract
 migrations, or, when you have verified the migration yourself, state the class
 in the first lines of the migration file:
 
@@ -722,7 +722,10 @@ override is read only from the migration file, so it is reviewed with the SQL
 and travels with it. A contract migration (for example the `DROP COLUMN` that
 follows an expand release) always classifies as `requires_staging`; mark it
 `online_compatible` this way once no running release uses the column.
-`requires_staging` does not fail the pull request yet; it prints a notice.
+Cloud stacks that serve two releases at once refuse a `requires_staging`
+release, so it ships only through a maintenance deploy. Prefer splitting it
+into expand and contract migrations; add the `requires_staging` override only
+when the maintenance deploy is accepted.
 
 Check a migration locally:
 
@@ -738,11 +741,26 @@ build). In this fork, when both refs exist, it compares SQL blobs against the
 ancestor merge bases with `origin/michael/main` and `upstream/master`. Otherwise
 it uses `origin/master`, then `master`. An explicit `--base` uses only that ref.
 This recognizes byte-preserving renumbering and inherited upstream SQL, while
-still checking edits under existing filenames and SQL from unmerged tips. This
-authorship guard is not production upgrade proof: all pending upstream SQL still
-needs release compatibility review and the mandatory isolated DB clone upgrade.
+still checking edits under existing filenames and SQL from unmerged tips.
+HOM-728 preserves upstream 0500–0510 and moves the 13 fork SQL files from
+0510–0522 to 0511–0523 without changing SQL bytes or original journal timestamps.
+The top-level registry includes upstream 0505, 0507, 0508 and fork 0523. Owned
+qualification requires an empty database, live 0f854195d8 (eleven upstream additions)
+and HOM-638 eff2c24c62 (one upstream addition), with no fork replay or history edits.
+The combined snapshot is rebuilt with Drizzle's schema serializer;
+`pnpm --filter @paperclipai/db generate` must then report no schema changes.
+This authorship guard is not production upgrade proof: all pending upstream SQL
+still needs release compatibility review and the mandatory isolated DB clone upgrade.
 The pull-request policy job uses `.github/scripts/check-pr-migration-order.mjs`. Migrations
 that were already on `master` when the classifier shipped are not annotated.
+
+HOM-728 retains upstream migration numbers 0500–0510 and moves fork SQL to
+0511–0523 without changing SQL bytes or original journal timestamps. Keep the
+top-level migration execution registry aligned with renamed files. Preserve upstream
+0505_nice_rawhide_kid.sql, 0507_special_kang.sql, 0508_normal_riptide.sql and fork
+0523_ordinary_stardust.sql in that registry. Owned upgrade qualification must cover
+empty, live 0f854195d8 (eleven upstream additions) and HOM-638 eff2c24c62
+(one upstream addition), with fork replay 0.
 
 Deployers read the result from the cloud migrator manifest
 (`cloud-migrators/v1/<sha>/manifest.json`, built by
@@ -2038,7 +2056,7 @@ preserved; snapshot pruning follows the five-newest-snapshots rule.
 
 ### LRH external waits
 
-Migration `0512_ordinary_stardust.sql` adds `issue_external_waits` and an
+Migration `0523_ordinary_stardust.sql` adds `issue_external_waits` and an
 `external-wait-completed:` partial unique wake index. The prefix is new, so prior
 releases cannot violate it. The large wake table index builds concurrently;
 this migration is registered for top-level execution and every statement is

@@ -435,7 +435,11 @@ function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) 
   const sql = client.$client;
   const end = sql.end;
   sql.end = async (options?: { timeout?: number }) => {
-    await Promise.all([onEnd(options?.timeout), end(options)]);
+    const resolvedOptions =
+      options?.timeout === undefined && process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim()
+        ? { ...options, timeout: 5 }
+        : options;
+    await Promise.all([onEnd(resolvedOptions?.timeout), end(resolvedOptions)]);
   };
 }
 
@@ -855,7 +859,9 @@ async function recordMigrationHistoryEntry(
 // These idempotent migrations require top-level statements for batch commits
 // or concurrent index builds. History is recorded only after completion.
 const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
-  "0512_ordinary_stardust.sql",
+  "0507_special_kang.sql",
+  "0508_normal_riptide.sql",
+  "0523_ordinary_stardust.sql",
   "0313_private_task_access.sql",
   "0314_private_task_draft_assets.sql",
   "0332_little_night_nurse.sql",
@@ -917,6 +923,9 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
 
   "0384_funny_adam_warlock.sql",
   "0383_tool_review_company_expiry.sql",
+  "0505_nice_rawhide_kid.sql",
+  "0508_normal_riptide.sql",
+  "0507_special_kang.sql",
 ]);
 
 async function applyPendingMigrationsManually(

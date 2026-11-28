@@ -1,4 +1,4 @@
-import { EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../queued-comment-delivery.js";
+import { EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../queued-comment-wake-reason.js";
 
 export const ISSUE_CONTINUATION_NEEDED_WAKE_REASON = "issue_continuation_needed";
 

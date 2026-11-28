@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { adapterSupportsAiConnections, isAiConnectionCompatible } from "./index.js";
+import { defaultMigrationTargetForProvider } from "./cloud-inference.js";
+
+describe("Antigravity migration routing", () => {
+  it("keeps CLI subscriptions separate from Runner Google subscriptions", () => {
+    expect(defaultMigrationTargetForProvider("antigravity", "subscription")).toEqual({
+      adapterType: "agy_local", model: "gemini-3.8-flash-high",
+    });
+    expect(defaultMigrationTargetForProvider("google", "subscription")).toMatchObject({
+      adapterType: "paperclip_runner", runnerProvider: "acpx", acpxAgent: "antigravity",
+    });
+  });
+});
 
 describe("adapterSupportsAiConnections", () => {
   it("returns true for adapters supported by AI connection providers", () => {

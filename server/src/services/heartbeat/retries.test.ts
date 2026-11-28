@@ -86,6 +86,7 @@ describe("heartbeat retry module callbacks", () => {
     for (const callback of Object.values(deps.runDispatch)) expect(callback).not.toHaveBeenCalled();
   });
 
+
   it.each(["missing_run", "missing_agent"] as const)("keeps %s lookup behavior and requests the full source result", async (outcome) => {
     const database = guardedDatabase();
     const deps = callbacks();
@@ -270,6 +271,22 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, run };
   }
+
+  it("retries provider quota without a reset under the fork transient policy", async () => {
+    const { run, agent } = await fixture();
+    const [failed] = await db.update(heartbeatRuns).set({
+      errorCode: "provider_quota", error: "Provider quota exceeded",
+      resultJson: { errorFamily: "provider_quota", providerFailure: {
+        schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+        category: "quota_exhausted", message: "Check billing", retryability: "requires_action",
+      } },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now, random: () => 0 });
+    expect(result).toMatchObject({ outcome: "scheduled", attempt: 1, maxAttempts: Infinity });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1, scheduledRetryAt: new Date(now.getTime() + 30_000) });
+  });
 
   it.each(["transient_failure", "workspace_busy"])("keeps shutdown backoff after %s instead of starting a restart window", async scheduledRetryReason => {
     const { run, agent } = await fixture();

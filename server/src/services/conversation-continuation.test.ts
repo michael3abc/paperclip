@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { CONVERSATION_CONTINUATION_POLICY, conversationRecoveryActionPredicate, getConversationOwnershipBlocker, isConversationAdapter, runUsedConversationAdapter } from "./conversation-continuation.js";
 import { deliverExecutionStatuses } from "./execution-status-delivery.js";
+import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { getExecutionBlocker } from "./execution-blocker.js";
+import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -86,5 +89,237 @@ describePostgres("execution identity query contracts", () => {
     expect(result.delivered).toBe(expected.size);
     expect(seen).toEqual(expected);
     expect(await deliverExecutionStatuses(db, { publish: () => { throw new Error("duplicate delivery"); } })).toEqual({ scanned: 0, delivered: 0 });
+  });
+
+  it("keeps terminal hermes_gateway turns unblocked for Retry and board comments without stop proof", async () => {
+    expect(isConversationAdapter("hermes_gateway")).toBe(true);
+
+    const f = await fixture();
+    await db.update(agents).set({ adapterType: "hermes_gateway" }).where(eq(agents.id, f.agentId));
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: f.agentId }).where(eq(issues.id, f.issueId));
+
+    const timedOutRunId = randomUUID();
+    const finishedAt = new Date("2026-09-11T10:00:00Z");
+    await db.insert(heartbeatRuns).values({
+      id: timedOutRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      issueId: f.issueId,
+      status: "timed_out",
+      errorCode: "hermes_gateway_timeout",
+      runtimeMode: "legacy",
+      processPid: null,
+      processGroupId: null,
+      finishedAt,
+      contextSnapshot: { issueId: f.issueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+      resultJson: { run_id: "hermes-remote-1", status: "cancelled" },
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId,
+      sourceIssueId: f.issueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${timedOutRunId}`,
+      evidence: { runId: timedOutRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      nextAction: "Inspect the stopped run before continuing.",
+    }).returning();
+
+    // Terminal runs release system holds before another user turn arrives.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+
+    // (a) Board Retry clears the timed-out hermes_gateway hold (no local PID exists for gateway runs).
+    const retryBlocked: string[] = [];
+    const retryAdmitted = await admitExplicitNativeContinuation({
+      db,
+      companyId: f.companyId,
+      issueId: f.issueId,
+      agentId: f.agentId,
+      actorType: "user",
+      actorId: "board",
+      reason: "retry_failed_run",
+      commentId: null,
+      failedRunId: timedOutRunId,
+      successorRunId: randomUUID(),
+      dryRun: true,
+      onBlocked: reason => retryBlocked.push(reason),
+    });
+    expect(retryBlocked).toEqual([]);
+    expect(retryAdmitted).toBeNull(); // Ordinary admission needs no hold-clearing continuation.
+
+    // (b) Board comment also clears the timed-out hermes_gateway hold.
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: f.companyId,
+      issueId: f.issueId,
+      authorType: "user",
+      authorUserId: "board",
+      body: "Please continue with the remaining steps.",
+      createdAt: new Date("2026-09-11T10:05:00Z"),
+    });
+    const commentBlocked: string[] = [];
+    const commentAdmitted = await admitExplicitNativeContinuation({
+      db,
+      companyId: f.companyId,
+      issueId: f.issueId,
+      agentId: f.agentId,
+      actorType: "user",
+      actorId: "board",
+      reason: "issue_commented",
+      commentId,
+      successorRunId: randomUUID(),
+      onBlocked: reason => commentBlocked.push(reason),
+    });
+    expect(commentBlocked).toEqual([]);
+    expect(commentAdmitted).toBeNull();
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+
+    // (c) New hermes_gateway runs with conversationContinuation policy are retired by conversationRecoveryActionPredicate.
+    const policyRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: policyRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      issueId: f.otherIssueId,
+      status: "timed_out",
+      errorCode: "hermes_gateway_timeout",
+      runtimeMode: "legacy",
+      finishedAt,
+      contextSnapshot: { issueId: f.otherIssueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+      resultJson: { status: "cancelled", conversationContinuation: CONVERSATION_CONTINUATION_POLICY },
+    });
+    const [policyHold] = await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId,
+      sourceIssueId: f.otherIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${policyRunId}`,
+      evidence: { runId: policyRunId },
+      nextAction: "Fixture",
+    }).returning();
+    const matched = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.id, policyHold!.id), conversationRecoveryActionPredicate()));
+    expect(matched).toEqual([{ id: policyHold!.id }]);
+
+    // (d) A cancelled hermes_gateway run (e.g. issue_reassigned) also unblocks on a new board comment.
+    const cancelledIssueId = randomUUID();
+    const cancelledRunId = randomUUID();
+    await db.insert(issues).values({ id: cancelledIssueId, companyId: f.companyId, title: "Cancelled Hermes", status: "blocked", assigneeAgentId: f.agentId });
+    await db.insert(heartbeatRuns).values({
+      id: cancelledRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      issueId: cancelledIssueId,
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+      runtimeMode: "legacy",
+      processPid: null,
+      processGroupId: null,
+      finishedAt,
+      contextSnapshot: { issueId: cancelledIssueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+      resultJson: { run_id: "hermes-remote-2", status: "cancelled" },
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId,
+      sourceIssueId: cancelledIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${cancelledRunId}`,
+      evidence: { runId: cancelledRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      nextAction: "Inspect the stopped run before continuing.",
+    });
+    const followUpCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: followUpCommentId,
+      companyId: f.companyId,
+      issueId: cancelledIssueId,
+      authorType: "user",
+      authorUserId: "board",
+      body: "Reassigned back to you, please continue.",
+      createdAt: new Date("2026-09-11T10:10:00Z"),
+    });
+    const cancelledBlocked: string[] = [];
+    const cancelledAdmitted = await admitExplicitNativeContinuation({
+      db,
+      companyId: f.companyId,
+      issueId: cancelledIssueId,
+      agentId: f.agentId,
+      actorType: "user",
+      actorId: "board",
+      reason: "issue_commented",
+      commentId: followUpCommentId,
+      successorRunId: randomUUID(),
+      onBlocked: reason => cancelledBlocked.push(reason),
+    });
+    expect(cancelledBlocked).toEqual([]);
+    expect(cancelledAdmitted).toBeNull();
+    expect(await getExecutionBlocker(db, f.companyId, cancelledIssueId)).toBeNull();
+
+    // (e) Unknown remote stop evidence stays historical; a terminal run cannot
+    // require reconciliation or hold a new turn behind process-stop proof.
+    const unconfirmedIssueId = randomUUID();
+    const unconfirmedRunId = randomUUID();
+    await db.insert(issues).values({ id: unconfirmedIssueId, companyId: f.companyId, title: "Unconfirmed Hermes timeout", status: "blocked", assigneeAgentId: f.agentId });
+    const [unconfirmedRun] = await db.insert(heartbeatRuns).values({
+      id: unconfirmedRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      issueId: unconfirmedIssueId,
+      status: "timed_out",
+      errorCode: "execution_reconciliation_required",
+      runtimeMode: "legacy",
+      processPid: null,
+      processGroupId: null,
+      finishedAt,
+      contextSnapshot: { issueId: unconfirmedIssueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+      resultJson: { run_id: "hermes-remote-3", status: "timeout" },
+    }).returning();
+    expect(legacyExecutionNeedsReconciliation(unconfirmedRun!)).toBe(false);
+    expect(await runUsedConversationAdapter(db, unconfirmedRun!)).toBe(false);
+    const [unconfirmedHold] = await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId,
+      sourceIssueId: unconfirmedIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${unconfirmedRunId}`,
+      evidence: { runId: unconfirmedRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      nextAction: "Inspect the stopped run before continuing.",
+    }).returning();
+    const unconfirmedRetired = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.id, unconfirmedHold!.id), conversationRecoveryActionPredicate()));
+    expect(unconfirmedRetired).toEqual([]);
+    const unconfirmedBlocked: string[] = [];
+    const unconfirmedAdmitted = await admitExplicitNativeContinuation({
+      db,
+      companyId: f.companyId,
+      issueId: unconfirmedIssueId,
+      agentId: f.agentId,
+      actorType: "user",
+      actorId: "board",
+      reason: "retry_failed_run",
+      commentId: null,
+      failedRunId: unconfirmedRunId,
+      successorRunId: randomUUID(),
+      dryRun: true,
+      onBlocked: reason => unconfirmedBlocked.push(reason),
+    });
+    expect(unconfirmedAdmitted).toBeNull();
+    expect(unconfirmedBlocked).toEqual([]);
+    expect(await getExecutionBlocker(db, f.companyId, unconfirmedIssueId)).toBeNull();
   });
 });

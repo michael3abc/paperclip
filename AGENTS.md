@@ -119,6 +119,13 @@ register work products, link them in the final issue comment, then set status.
 Use workspace-relative work-product metadata for intentionally workspace-only files;
 a bare local path is insufficient. Match delivery to the actual runtime.
 
+6. Keep deployment policy out of Core.
+Do not hardcode Cloud allowlists, provider choices, or deployment-specific
+defaults here. Core provides generic, documented configuration mechanisms;
+the deployment repository supplies and owns its policy. Changing a Cloud
+policy must not require a Core code change. See
+[harness availability](doc/harness-availability.md) for an example contract.
+
 7. Name the three data paths correctly.
 Apply Telemetry, Observability and run-log review by file path, not word matches;
 see `rules/data-paths.mdc` and `docs/agents/platform-notes.md` for paths and review levels.
@@ -185,6 +192,10 @@ Every route under `server/src/routes/` that reads or writes company data checks
 company access and actor permissions, logs mutations to the activity log, and
 returns consistent HTTP errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
+Connected-account saved sign-ins cannot be deleted or disabled while referenced
+by an active connection/grant; see `docs/api/secrets.md`. Responsibility rollups
+include routine agent IDs and the dashboard routine filter; see `doc/PRODUCT.md`.
+
 ## 9. UI Expectations
 
 - Keep routes and nav aligned with available API surface
@@ -238,7 +249,7 @@ Moved rules stay binding. Read the matching file before acting.
 - `docs/api/attention.md` — Attention caching, invalidation and scoped overlapping reads.
 - `docs/guides/board-operator/costs-and-budgets.md` — Compass receipts, cache TTL pricing and incomplete usage.
 - `doc/connections/AI-CONNECTIONS.md` — AI request lifecycle, cost reports, subscription estimates and project usage.
-- `doc/connections/LOCAL-VOICE.md` — Voice preferences/media, endpoints, answer provenance, natural Chat routing.
+- `doc/connections/LOCAL-VOICE.md` — Voice preferences/media, endpoints, answer provenance, natural Chat routing, Speko outbound opening messages and voice-owned health; report projection is in `doc/idle-voice-call-reports.md`.
 - `doc/connections/GENERIC-REMOTE-MCP.md` — Human browser login and vault/access boundaries.
 - `docs/fork/artifacts-and-mobile.md` — Artifact PDF thumbnails and mobile preview.
 - `docs/adapters/agy-local.md` — Antigravity shared CLI workers, subscription bindings and permissions.

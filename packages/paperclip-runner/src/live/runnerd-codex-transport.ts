@@ -13,7 +13,7 @@ export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trus
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
-import { bindAcpxCandidateAdmission, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
+import { bindAcpxCandidateAdmission, isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveClaudeEffort, admittedClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { resolveGrokEffort, admittedGrokEffort } from "../drivers/acpx/grok-effort.js";
@@ -89,6 +89,7 @@ import {
   type RunnerProcessHandle,
   type RunnerProcessConnection,
   type DurablePrpControlPlaneOptions,
+  runAttachToolCatalogFits,
 } from "../control-plane/durable-prp-control-plane.js";
 import {
   type QualifiedAcpxAgent,
@@ -235,22 +236,6 @@ function assertSuspendedRunnerState(
   ) {
     throw new Error("native_runner_authority_rotation_requires_settled_state");
   }
-}
-
-export function isSettledReleasedRunnerCut(
-  state: Record<string, unknown>,
-  expected: DurableRecoveryIdentity,
-): boolean {
-  if (state.schema !== "paperclip.runner.durable.state.v1" || !recoveryIdentityMatches(state, expected)) return false;
-  if (state.lifecycle === "suspended") return true;
-  return state.lifecycle === "ready"
-    && Array.isArray(state.outbox) && state.outbox.length === 0
-    && Number.isSafeInteger(state.nextSourceSeq) && state.ackedSourceSeq === Math.max(0, Number(state.nextSourceSeq) - 1)
-    && state.warmTransition === undefined
-    && (state.pendingTerminalDelivery ?? null) === null
-    && (state.pendingProviderCleanup ?? null) === null
-    && Object.values(record(state.processedCommands)).every(command =>
-      !["pending", "indeterminate"].includes(String(record(command).status)));
 }
 
 function assertRealDirectory(path: string): void {
@@ -2611,6 +2596,10 @@ function commandDigest(value: unknown): string {
   return `sha256:${createHash("sha256").update(durableRecoveryInternals.canonicalJson(value)).digest("hex")}`;
 }
 
+function controllerCommandDigest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(durableRecoveryInternals.controllerJson(value)).digest("hex")}`;
+}
+
 function approvedRunnerArtifact(runnerBinaryPath: string): {
   version: string;
   digest: string;
@@ -2824,7 +2813,7 @@ function completedMaintenanceTerminalReceipt(
   };
   if (
     record(state.runner.processedCommandFingerprints)[pending.commandId] !==
-    commandDigest(wire).slice("sha256:".length)
+    controllerCommandDigest(wire).slice("sha256:".length)
   )
     return null;
   if (command.status === "pending") {
@@ -2862,13 +2851,13 @@ function completedMaintenanceTerminalReplayMatches(
     after.runner.pendingTerminalDelivery == null &&
     after.runner.pendingProviderCleanup == null &&
     after.providerFingerprint === before.providerFingerprint &&
-    commandDigest(after.runner.processedCommands) ===
-      commandDigest(before.runner.processedCommands) &&
-    commandDigest(after.runner.processedCommandFingerprints) ===
-      commandDigest(before.runner.processedCommandFingerprints) &&
+    controllerCommandDigest(after.runner.processedCommands) ===
+      controllerCommandDigest(before.runner.processedCommands) &&
+    controllerCommandDigest(after.runner.processedCommandFingerprints) ===
+      controllerCommandDigest(before.runner.processedCommandFingerprints) &&
     after.runner.lastControllerCommandSeq ===
       before.runner.lastControllerCommandSeq &&
-    commandDigest(after.control.commands) === commandDigest(expectedCommands)
+    controllerCommandDigest(after.control.commands) === controllerCommandDigest(expectedCommands)
   );
 }
 
@@ -3488,8 +3477,8 @@ async function settleRetainedRunnerdSessionOwned(
         settled.runner.pendingTerminalDelivery != null ||
         commandDigest(settled.runner.pendingProviderCleanup) !==
           commandDigest(pendingTerminal) ||
-        commandDigest(settled.control.commands) !==
-          commandDigest(before.control.commands) ||
+        controllerCommandDigest(settled.control.commands) !==
+          controllerCommandDigest(before.control.commands) ||
         epochProviderPids.size !== 0 ||
         ![...pids].every(maintenanceProcessAbsent)
       )
@@ -3727,7 +3716,7 @@ function acpxRunnerLaunchProfile(
     `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
   let candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   if (options.acpxCandidateAdmission) {
-    if (!identity || options.acpxCandidateAdmission.agent === "antigravity" && options.runnerFilesystemRoot) throw new Error("ACPX candidate requires an actual authorized startup identity");
+    if (!identity) throw new Error("ACPX candidate requires an actual authorized startup identity");
     candidateAdmission = bindAcpxCandidateAdmission(options.acpxCandidateAdmission, identity);
   }
   if (!options.runnerFilesystemRoot) {
@@ -3777,7 +3766,7 @@ function acpxRunnerLaunchProfile(
   const authorityDigest = options.providerPackAuthorityDigest;
   if (!commandSha256 || !sidecarScriptSha256 || !authorityDigest) {
     throw new Error(
-      "runner_remote_provider_artifact_incompatible: ACPX launch profile omitted its provider-pack authority or verified artifact digests",
+      "runner_remote_provider_launch_unprepared: ACPX launch profile omitted its provider-pack authority or verified artifact digests",
     );
   }
   return {
@@ -3821,7 +3810,7 @@ function opencodeRunnerLaunchProfile(
     (usesLocalBuildOwnedDefaults ? localDigest(executable) : null);
   if (!commandSha256 || !proxyScriptSha256 || !executableSha256) {
     throw new Error(
-      "runner_remote_provider_artifact_incompatible: OpenCode launch profile omitted verified artifact digests",
+      "runner_remote_provider_launch_unprepared: OpenCode launch profile omitted verified artifact digests",
     );
   }
   return {
@@ -3837,7 +3826,9 @@ function opencodeRunnerLaunchProfile(
 function resolveRunnerOpenCodeExecutable(options: RunnerdCodexTransportOptions): string {
   if (options.opencodeCommand !== undefined) return options.opencodeCommand;
   if (options.runnerFilesystemRoot) {
-    throw new Error("runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack");
+    // The controller did not pass the prepared pack's launch inputs. The pack
+    // itself was not judged, so the controller prepares again and retries.
+    throw new Error("runner_remote_provider_launch_unprepared: OpenCode executable is missing from the provider pack launch inputs");
   }
   return resolvePinnedOpenCodeCommand();
 }
@@ -3863,7 +3854,7 @@ function authorizedToolSet(
   return {
     schema: "paperclip.runner.authorized-tools.v1",
     schemaVersion: 1,
-    catalogDigest: commandDigest(operations),
+    catalogDigest: controllerCommandDigest(operations),
     operations,
   };
 }
@@ -3882,12 +3873,18 @@ export function authorizedToolSetForProvider(
 /** Include the completion tools that the Codex driver adds at session startup. */
 export function runnerCodexDynamicToolsFit(
   tools: readonly Readonly<Record<string, unknown>>[],
+  reservedRunAttachBytes = 0,
 ): boolean {
   const supplied = [...tools, ...codexSemanticToolSpecs()];
   // Keep these bounds aligned with runner-core/provider_bridge.rs. Project
   // large optional catalogs before run.prepare; never raise the protocol caps.
-  return supplied.length <= 256 &&
-    Buffer.byteLength(JSON.stringify(authorizedToolSet(supplied)), "utf8") <= 768 * 1024;
+  if (supplied.length > 256) return false;
+  try {
+    const catalog = authorizedToolSet(supplied);
+    return Buffer.byteLength(JSON.stringify(catalog), "utf8") <= 768 * 1024 && runAttachToolCatalogFits(catalog, reservedRunAttachBytes);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -4055,13 +4052,21 @@ export const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "PAPERCLIP_NATIVE_MCP_NAME",
   "PAPERCLIP_NATIVE_MCP_URL",
   "PAPERCLIP_NATIVE_MCP_TOKEN",
+  "PAPERCLIP_OPENROUTER_PROXY_URL",
+  "PAPERCLIP_OPENROUTER_PROXY_TOKEN",
 ]);
 
 function createSanitizedOpenCodeRunnerEnvironment(
   source: NodeJS.ProcessEnv | undefined,
 ): NodeJS.ProcessEnv {
   const candidate = { ...process.env, ...source };
-  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+  for (const key of [
+    "PAPERCLIP_AGENT_KEY_ID",
+    "PAPERCLIP_AGENT_PUBLIC_KEY",
+    "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "PAPERCLIP_OPENROUTER_PROXY_URL",
+    "PAPERCLIP_OPENROUTER_PROXY_TOKEN",
+  ]) {
     delete candidate[key];
     if (source?.[key] !== undefined) candidate[key] = source[key];
   }
@@ -4406,12 +4411,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const admitted = parseAcpxCandidateAdmission(candidate, { companyId: candidate.companyId, agent: options.acpxAgent ?? "", model: candidate.model });
       this.options = { ...this.options, acpxCandidateAdmission: Object.freeze(admitted), ...(candidate.agent === "antigravity" ? { providerRecoveryPolicy: "same_session_only" as const } : {}) };
       if (candidate.agent === "antigravity") this.prepareConversationResume = params => this.#prepareCandidateConversationResume(params);
-      if (candidate.agent === "antigravity" && (options.provider !== "acpx" || !(process.platform === "darwin" && process.arch === "arm64" || process.platform === "linux" && process.arch === "x64")
-        || options.runnerFilesystemRoot || options.prepareLaunch || options.runnerProcessLauncher
+      // A local grant names this host. A remote grant names the cloud pack's
+      // only Antigravity target, linux-x64; the remote Runner checks that grant
+      // again against its own host before it starts the provider.
+      const remote = options.runnerFilesystemRoot !== undefined;
+      if (candidate.agent === "antigravity" && (options.provider !== "acpx"
+        || (remote ? admitted.platform !== "linux" || admitted.architecture !== "x64"
+          : !isAntigravityNativeTarget(process.platform, process.arch) || admitted.platform !== process.platform || admitted.architecture !== process.arch
+            || options.prepareLaunch || options.runnerProcessLauncher)
         || options.homeMode === "preconfigured" || options.lifecyclePolicy?.mode === "warm"
         || options.adoptExistingRunner || options.resumeActiveTurnId
         )) {
-        throw new Error("ACPX candidate admission supports only a fresh local isolated per-turn execution");
+        throw new Error("ACPX candidate admission supports only a fresh isolated per-turn execution on its admitted platform");
       }
     }
     if (options.acpxCandidateAdmission?.agent === "antigravity" && options.resumeProviderSession) {
@@ -5058,7 +5069,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
         let relaunched: { version: string; digest: string } | undefined;
-        let settled: (() => Promise<void>) | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -5072,7 +5082,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
           outcome = typeof result === "string" ? result : result.outcome;
           relaunched = typeof result === "string" ? undefined : result.runner;
-          settled = typeof result === "string" ? undefined : result.settled;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -5087,7 +5096,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
             this.#relaunchedRunnerArtifact = structuredClone(relaunched);
             await Promise.race([core.flushCheckpoint(), deadline, closed]);
-            await Promise.race([settled?.(), deadline, closed]);
           } catch (error) {
             if (error instanceof Error && error.message === "native_runner_relaunched_build_unaccepted") {
               throw new Error("native_runner_reuse_unavailable");
@@ -5173,7 +5181,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const previous = record(this.#runAttachTemplate?.provider).runtimeContext;
     const current = input.currentRunGrant?.runtimeContext;
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.attach", () => this.#attachRunWork(input, earlyClaim),
-      previous === undefined ? undefined : {contextReused:current === undefined || commandDigest(current) === commandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
+      previous === undefined ? undefined : {contextReused:current === undefined || controllerCommandDigest(current) === controllerCommandDigest(previous)}) : this.#attachRunWork(input, earlyClaim);
   }
 
   #assertRunAttachmentAdmission(): { core: DurablePrpControlPlane; retainingSource: boolean } {
@@ -6455,17 +6463,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       if (!this.options.providerNodeCommand) {
         throw new Error(
-          "runner_remote_provider_artifact_incompatible: remote JS provider omitted its provider-pack Node executable",
+          "runner_remote_provider_launch_unprepared: remote JS provider omitted its provider-pack Node executable",
         );
       }
       if (provider === "opencode" && !this.options.opencodeProxyPath) {
         throw new Error(
-          "runner_remote_provider_artifact_incompatible: remote OpenCode omitted its packaged proxy",
+          "runner_remote_provider_launch_unprepared: remote OpenCode omitted its packaged proxy",
         );
       }
       if (provider === "acpx" && !this.options.acpxSidecarPath) {
         throw new Error(
-          "runner_remote_provider_artifact_incompatible: remote ACPX omitted its packaged sidecar",
+          "runner_remote_provider_launch_unprepared: remote ACPX omitted its packaged sidecar",
         );
       }
     }
@@ -7269,7 +7277,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? core.getCommand(warmRecovery.commandId)?.payload.provider
           : exactAuthority ? record(controlPlaneState!.runAttachTemplate).provider : undefined;
         if ((exactAuthority || warmRecovery !== null)
-          && (recordedProvider === undefined || commandDigest(recordedProvider) !== commandDigest(saved.prepared.provider))) {
+          && (recordedProvider === undefined || controllerCommandDigest(recordedProvider) !== controllerCommandDigest(saved.prepared.provider))) {
           throw new Error("runner_prepared_launch_recovery_changed");
         }
         template.provider = saved.prepared.provider;
@@ -7337,7 +7345,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#runAttachTemplate = structuredClone(runAttachTemplate);
       if (sourceAttachmentTarget) {
         await this.options.onStagedRunAttachment?.(core, { sourceIdentity: desiredIdentity,
-          targetIdentity: sourceAttachmentTarget, templateDigest: commandDigest(runAttachTemplate) });
+          targetIdentity: sourceAttachmentTarget, templateDigest: controllerCommandDigest(runAttachTemplate) });
         core.stageRunAttachment(sourceAttachmentTarget, runAttachTemplate);
       } else {
         core.persistRunAttachTemplate(runAttachTemplate);
@@ -8277,8 +8285,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (existing) {
       if (
         existing.type !== type ||
-        durableRecoveryInternals.canonicalJson(existing.payload) !==
-          durableRecoveryInternals.canonicalJson(payload)
+        durableRecoveryInternals.controllerJson(existing.payload) !==
+          durableRecoveryInternals.controllerJson(payload)
       ) {
         throw new Error(
           `PRP steering correlation ${correlationId} was reused with different content`,

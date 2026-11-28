@@ -1,5 +1,6 @@
 import { creatorRecovery, verifyWorkspaceRecoveryWake, type WorkspaceRecoveryWake } from "./recovery/workspace-creator.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { nativeEffectiveRunTerminalStateSql, nativeEffectiveRunTerminalStateSqlText } from "./native-runtime/native-accepted-outcome.js";
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
 import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
@@ -29,13 +30,14 @@ import {
   environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
-import { executionReconciliationPredicate, getExecutionBlocker, nativeExecutionRecoveryActionPredicate, executionBlockerPredicate, hasPendingRunCleanup, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
+import { executionReconciliationPredicate, getExecutionBlocker, nativeExecutionRecoveryActionPredicate, restoreHoldPredicate, executionBlockerPredicate, hasPendingRunCleanup, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
 import { executionObligationScope } from "./execution-obligations.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
+import { hasHermesGatewayTerminalStopProof } from "@paperclipai/hermes-paperclip-adapter/gateway/server";
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./queued-comment-delivery.js";
@@ -389,6 +391,7 @@ export async function admitExplicitNativeContinuation(input: {
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate(),
+      restoreHoldPredicate(),
       blocker?.recoveryActionId ? eq(issueRecoveryActions.id, blocker.recoveryActionId) : undefined) : undefined,
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     or(executionReconciliationPredicate(), and(
@@ -402,7 +405,7 @@ export async function admitExplicitNativeContinuation(input: {
         where completed.company_id = ${companyId} and result.issue_id = ${issueId}
           and completed.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
           and completed.runtime_mode = 'native' and completed.status = 'succeeded' and finalized.phase = 'committed'
-          and result.schema_status = 'accepted' and result.result_json#>>'{terminal,runTerminalState}' = 'succeeded')`,
+          and result.schema_status = 'accepted' and ${sql.raw(nativeEffectiveRunTerminalStateSqlText("result.result_json"))} = 'succeeded')`,
     )),
   )).for("update");
   const sourceChecks: Array<{ id?: string; cause: string; evidence: Record<string, unknown> }> =
@@ -438,7 +441,7 @@ export async function admitExplicitNativeContinuation(input: {
         eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
         eq(nativeRunResults.runId, latest.id), eq(nativeRunResults.id, coordinator.resultId),
         eq(nativeRunResults.schemaStatus, "accepted"),
-        sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+        sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
       )).limit(1) : [];
       if (!result || await hasPendingRunCleanup(db, companyId, latest.id))
         return blocked("cleanup_pending", "Waiting for the previous run to finish cleanup. Your message is saved.");
@@ -460,7 +463,9 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("delivery_unknown", "The original attempt's delivery state changed. Reconcile its receipt before retrying.");
     // Liveness-first (Owner 2026-11-13): Retry of a finished run with an unknown
     // delivery outcome resends; the adapter adds the check-current-state note.
-    if (!(await isFailedNativePreparation(db, source, coordinator, "admission") || await isPreDispatchExecutionWaitVerified(db, source))) return null;
+    if (!(await isFailedNativePreparation(db, source, coordinator, "admission")
+      || source.errorCode === "adapter_failed" && await isFailedNativePreparationRetryAncestor(db, source, coordinator)
+      || await isPreDispatchExecutionWaitVerified(db, source))) return null;
     sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
@@ -504,7 +509,9 @@ export async function admitExplicitNativeContinuation(input: {
     run = lockedRun;
     const stoppedAt = userStopBoundaryAt(run)!;
     const failedPreparation = recovery && input.workspaceRecoveryRequest?.phase === "repair" && run.id === recovery.state.failedRunId
-      ? true : await isFailedNativePreparation(db, run, coordinator, "admission");
+      ? true : await isFailedNativePreparation(db, run, coordinator, "admission")
+        || taskRetry?.sourceRunId === run.id && run.errorCode === "adapter_failed"
+          && await isFailedNativePreparationRetryAncestor(db, run, coordinator);
     if (recovery && input.workspaceRecoveryRequest?.phase !== "repair" && (
       run.resultJson?.workspaceRecoveryActionId !== recovery.action.id || run.resultJson?.interruptedByActorType !== "system"
     )) return blocked("unrelated_stop", "The system notice cannot override an unrelated Stop.");
@@ -593,7 +600,7 @@ export async function admitExplicitNativeContinuation(input: {
         eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
         eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
         eq(nativeRunResults.schemaStatus, "accepted"),
-        sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+        sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
       )).limit(1);
       const recovery = readSystemRecovery(action.evidence);
       const snapshotSettled = completedResult && freshIntent && action.id && recovery?.state === "complete"
@@ -701,7 +708,7 @@ export async function admitExplicitNativeContinuation(input: {
           eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
           eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
           eq(nativeRunResults.schemaStatus, "accepted"),
-          sql`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState' = 'failed'`,
+          sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'failed'`,
         )).limit(1)
       : [];
     // A terminal failure may retain a result accepted before checkpoint or

@@ -21,6 +21,7 @@ export function createIssueWakePreflight(readIssue: (companyId: string, issueId:
     manualUserWake?: boolean;
     taskRetryActorId: string | null;
     hasIndependentConversationWakeCause: boolean;
+    annotationQuestionReaction?: boolean;
   }): Promise<
     | { kind: "eligible"; onboardingCompletion: boolean }
     | { kind: "skipped" }
@@ -37,7 +38,7 @@ export function createIssueWakePreflight(readIssue: (companyId: string, issueId:
       if (input.manualUserWake && issue.conversationUserId !== input.requestedByActorId) {
         return { kind: "conversation_owner_required", action: "start" };
       }
-      if (input.requestedByActorType === "user" && issue.conversationUserId !== input.requestedByActorId) {
+      if ((input.requestedByActorType === "user" || input.annotationQuestionReaction) && issue.conversationUserId !== input.requestedByActorId) {
         return { kind: "skipped" };
       }
       if (isConversationExecutionWake(issue, input.reason ?? input.wakeReason)

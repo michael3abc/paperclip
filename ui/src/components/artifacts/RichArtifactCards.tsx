@@ -91,9 +91,10 @@ function Card({ children }: { children: ReactNode }) {
 }
 
 function SourceLink({ url, children }: { url: string; children: ReactNode }) {
-  return url ? (
+  const safeUrl = artifactUrl(url);
+  return safeUrl ? (
     <Button variant="outline" size="sm" asChild>
-      <a href={url} target="_blank" rel="noreferrer">
+      <a href={safeUrl} target="_blank" rel="noreferrer">
         {children}
         <ExternalLink className="size-3" />
       </a>
@@ -523,7 +524,7 @@ export function DataCard(props: DataCardProps) {
                 <a
                   download={props.filename}
                   href={
-                    props.downloadUrl ||
+                    artifactUrl(props.downloadUrl) ||
                     `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`
                   }
                 >
@@ -736,9 +737,9 @@ export function FileCard(props: FileCardProps) {
             {props.openUrl && (
               <Button variant="outline" size="sm" asChild><a href={props.openUrl} target="_blank" rel="noreferrer" onClick={event => onPdfClick(event, { href: props.openUrl!, filename: props.filename, contentType: props.contentType })}>Open file<ExternalLink className="size-3" /></a></Button>
             )}
-            {props.downloadUrl ? (
+            {artifactUrl(props.downloadUrl) ? (
               <Button asChild size="sm" variant="outline">
-                <a href={props.downloadUrl} download={props.filename}>
+                <a href={artifactUrl(props.downloadUrl)} download={props.filename}>
                   Download file
                 </a>
               </Button>

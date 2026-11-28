@@ -62,6 +62,8 @@ recovery, stranded-issue reconciliation).
   at the 5th consecutive failure.
 - Deterministic: bad configuration a retry cannot fix. No automatic retry; one
   notice per (issue, code). Notices never block dispatch.
+  A refused Antigravity `/swarm` (`antigravity_swarm_unavailable`) is also
+  deterministic; automatic continuation never repeats a refused command.
   This includes sandbox disk exhaustion (native_sandbox_disk_full and
   sandbox_disk_full) and permanently denied agent-interaction delivery
   (agent_interaction_delivery_denied), and Bridge model/provider configuration
@@ -214,7 +216,10 @@ read the matching topic before changing it. Repository policy precedence is unch
 Due monitors and claimed wake_owner recovery can wake a waiting main Chat only through their persisted schedule
 and claim guard. Named admission waits retain the monitor; unclassified null
 admissions consume the existing attempt ledger and clear at three total attempts
-or the smaller configured limit. Record static refusal reasons; preserve stale
+or the smaller configured limit. Deferred monitors, including unchanged recovery
+holds, recheck with exponential backoff from 30 seconds to at most 60 minutes;
+claim eligibility and the next scheduler wake use the same deadline. Deferrals
+preserve issue updatedAt until the monitor clears. Record static refusal reasons; preserve stale
 wake rejection and the agent scheduling API switch. See doc/execution-semantics.md.
 
 ### Liveness-first classifier and retry ownership
@@ -241,7 +246,7 @@ manual pause still apply and revoke automatic retry. New human or project-main
 input supersedes automatic retry of a failed predecessor and keeps its own input
 receipt. See `docs/agents/execution-semantics.md`.
 Sandbox disk exhaustion (native_sandbox_disk_full, sandbox_disk_full) and permanent
-agent_interaction_delivery_denied are deterministic in the unified classifier.
+agent_interaction_delivery_denied and antigravity_swarm_unavailable are deterministic in the unified classifier.
 Bootstrap non-delivery alone does not select interrupted-preparation retry accounting:
 require system interruption, process loss or controller loss. Ordinary failures keep
 their failure counter and provider retry deadline.

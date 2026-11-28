@@ -1,4 +1,5 @@
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
+import { normalizeOAuthProviderError } from "../services/tool-access/oauth/provider-errors.js";
 import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl, toolCallTimeoutConfigIssues } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { loadPluginAppCatalog } from "../services/plugin-app-catalog.js";
@@ -73,6 +74,9 @@ import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
 import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { revokeGoogleAccessForRemovedInstance } from "../services/tool-access/connections/google-pending-revocation.js";
+import { secretService } from "../services/secrets.js";
+import { logger } from "../middleware/logger.js";
 import { getRunLogStore } from "../services/run-log-store.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
@@ -85,6 +89,7 @@ import {
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
+import { paperclipGoogleSignInAvailable } from "../services/google-sign-in-availability.js";
 import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -220,17 +225,24 @@ export function githubInstallationRecovery(code: string | null | undefined, deta
   return installationUrl || managementUrl ? { installationUrl, managementUrl } : null;
 }
 
+function safeOAuthProviderErrorCode(value: unknown): string | null {
+  const normalized = normalizeOAuthProviderError(value);
+  return normalized && normalized !== "unrecognized" ? normalized : null;
+}
+
 export function connectionIntentOAuthOutcomeHtml(input: {
   interactionId: string | null;
   issueId: string | null;
   outcome: "connected" | "declined" | "failed";
   openerOrigin?: string | null;
   code?: string | null;
+  providerError?: string | null;
   recovery?: { installationUrl: string | null; managementUrl: string | null } | null;
 }) {
   // The callback window is only a signal. Connection identity and every
   // authorization URL stay server-side; the opener refreshes the task from the
   // interaction id instead of trusting provider-window data.
+  const safeProviderError = input.outcome === "connected" ? null : safeOAuthProviderErrorCode(input.providerError);
   const message = JSON.stringify({
     type: "paperclip.connection-intent.oauth",
     ...(input.interactionId ? { interactionId: input.interactionId } : {}),
@@ -238,6 +250,7 @@ export function connectionIntentOAuthOutcomeHtml(input: {
     ...(input.outcome === "failed" && input.code && OAUTH_FAILURE_CODE_PATTERN.test(input.code)
       ? { code: input.code }
       : {}),
+    ...(safeProviderError ? { providerError: safeProviderError } : {}),
     ...(input.outcome === "failed" && input.code === "github_installation_required" && input.recovery
       ? { recovery: input.recovery }
       : {}),
@@ -372,6 +385,7 @@ export function toolAccessRoutes(
       outcome: "connected" | "declined" | "failed";
       openerOrigin?: string | null;
       code?: string | null;
+      providerError?: string | null;
       recovery?: { installationUrl: string | null; managementUrl: string | null } | null;
     },
   ) {
@@ -563,10 +577,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
     outcome: "failed" | "denied",
     code?: string | null,
     providerRecovery?: { installationUrl?: unknown; managementUrl?: unknown },
+    providerError?: string | null,
   ) {
     const detailPermissionsPath = await oauthAppPath(connection.companyId, connection.id);
     const params = new URLSearchParams({ oauth: outcome });
     if (code) params.set("code", code);
+    const safeProviderError = safeOAuthProviderErrorCode(providerError);
+    if (safeProviderError) params.set("provider_error", safeProviderError);
     const addGitHubRecoveryUrls = (target: URLSearchParams) => {
       if (code !== "github_installation_required") return;
       for (const [key, value] of [
@@ -600,6 +617,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       oauth: outcome,
     });
     if (code) setupParams.set("code", code);
+    if (safeProviderError) setupParams.set("provider_error", safeProviderError);
     addGitHubRecoveryUrls(setupParams);
     const setupRoute = connection.credentialSource === "vercel_connect"
       ? "/apps/vercel-connect"
@@ -954,6 +972,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
     const pluginApps = (await loadPluginAppCatalog(db)).definitions;
+    const cloudHosted = paperclipGoogleSignInAvailable();
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
       // Full definitions of plugin-provided connectors. Like the built-in
@@ -976,9 +995,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...pluginApps.map((app) =>
-        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles, cloudHosted)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
   });
@@ -1069,9 +1088,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // client they registered themselves. Report that instead of a 4xx so
           // the wizard can ask for it rather than losing the draft.
           const code = error instanceof HttpError ? String((error.details as { code?: unknown })?.code ?? "") : "";
-          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required") throw error;
+          if (code !== "oauth_manual_client_required" && code !== "oauth_manual_client_rebinding_required"
+            && code !== "oauth_instance_client_endpoint_mismatch") throw error;
+          const reason = (error as HttpError).details as { reason?: unknown } | undefined;
           result.auth.startUrl = null;
           result.auth.manualClientRequired = true;
+          result.auth.manualClientReason = typeof reason?.reason === "string"
+            ? reason.reason
+            : code === "oauth_instance_client_endpoint_mismatch" ? (error as HttpError).message : null;
         }
       }
       await logActivity(db, {
@@ -1241,7 +1265,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
     assertBoard(req);
-    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus());
+    const canEndInstanceAccess = req.actor.type === "board" && (req.actor.isInstanceAdmin || req.actor.source === "local_implicit");
+    res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, canEndInstanceAccess ? async () => {
+      try {
+        await revokeGoogleAccessForRemovedInstance(db, (secretId, expectedVersion) => secretService(db).remove(secretId, { expectedVersion }));
+      } catch (error) {
+        logger.warn({ errorName: error instanceof Error ? error.name : typeof error }, "Could not queue ending Google access after Paperclip Cloud removed this instance");
+      }
+    } : undefined));
   });
 
   router.post("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
@@ -1647,6 +1678,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ? callbackError.details as Record<string, unknown>
         : null;
       const callbackErrorCode = typeof details?.code === "string" ? details.code : null;
+      const callbackProviderError = safeOAuthProviderErrorCode(details?.providerError);
       const callbackFailureCode = callbackErrorCode
         ?? (callbackError instanceof HttpError ? `oauth_callback_http_${callbackError.status}` : "oauth_callback_failed");
       await logActivity(db, {
@@ -1658,6 +1690,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         entityId: pendingState.connectionId,
         details: {
           code: callbackFailureCode,
+          ...(callbackProviderError ? { providerError: callbackProviderError } : {}),
           status: callbackError instanceof HttpError ? callbackError.status : 500,
           // HttpError messages are Paperclip-authored. Provider-authored
           // error_description/error_uri values are never read above and cannot
@@ -1682,6 +1715,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           outcome,
           openerOrigin: pendingState.returnTo,
           code: callbackFailureCode,
+          providerError: callbackProviderError,
           recovery: githubInstallationRecovery(callbackErrorCode, details),
         });
         return;
@@ -1690,6 +1724,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
         pendingConnection,
         callbackErrorCode === "oauth_authorization_denied" ? "denied" : "failed",
         callbackFailureCode,
+        undefined,
+        callbackProviderError,
       ));
       return;
     }
@@ -2103,7 +2139,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.grant_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
-      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}) },
+      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}), ...(grant.signInRemoval ? { signInRemoval: grant.signInRemoval } : {}) },
     });
     res.json(grant);
   });
@@ -2543,6 +2579,38 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
   });
 
+  router.post("/tool-connections/:connectionId/sign-in/cancel", managementGuard("connections:configure", "POST /tool-connections/:connectionId/sign-in/cancel", { personal: true }), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const applicationBefore = await svc.getApplication(existing.applicationId);
+    const result = await svc.abandonFirstSignIn(existing.id, existing.companyId, connectionRequestActor(req));
+    if (!result.abandoned) {
+      res.json({ abandoned: false, connection: result.connection });
+      return;
+    }
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.sign_in_cancelled",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: { transport: existing.transport, ...result.removal },
+    });
+    const applicationAfter = await svc.getApplication(existing.applicationId);
+    if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
+      await logActivity(db, {
+        companyId: applicationAfter.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_application.archived",
+        entityType: "tool_application",
+        entityId: applicationAfter.id,
+        details: { type: applicationAfter.type, name: applicationAfter.name, reason: "sign_in_cancelled" },
+      });
+    }
+    res.json({ abandoned: true, connection: result.connection });
+  });
+
   async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {
     const actor = getActorInfo(req);
     const { deletion, created } = await contentDeletion.request(connection, {
@@ -2686,6 +2754,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", await svc.listProfiles(companyId), row => ({ profileId: row.id })) });
+  });
+
+  router.get("/companies/:companyId/tools/profiles/summary", managementGuard("connections:profiles", "GET /companies/:companyId/tools/profiles/summary", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const profiles = await svc.listProfileSummaries(companyId);
+    res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", profiles, row => ({ profileId: row.id })) });
   });
 
   router.get("/tool-connections/:connectionId/profile-configuration", managementGuard("connections:profiles", "GET /tool-connections/:connectionId/profile-configuration", { personal: true }), async (req, res) => {

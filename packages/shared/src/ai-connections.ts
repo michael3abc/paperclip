@@ -312,6 +312,19 @@ export const LOCAL_LOGIN_REDIRECT_URL_MAX_LENGTH = 4096;
 export const localAiLoginRedirectSchema = z.object({
   redirectUrl: z.string().trim().min(1, "Paste the full address from the browser.").max(LOCAL_LOGIN_REDIRECT_URL_MAX_LENGTH, "The pasted address is too long."),
 }).strict();
+export const LOCAL_AI_LOGIN_CODE_MAX_LENGTH = 4096;
+const LOCAL_AI_LOGIN_CODE_DISALLOWED_CHAR = /[^\x21-\x7E]/;
+export const localAiLoginCodeSchema = z
+  .string()
+  .min(1, "A browser code or redirect URL is required.")
+  .max(LOCAL_AI_LOGIN_CODE_MAX_LENGTH, "The submitted sign-in input is too long.")
+  .regex(/^[\x21-\x7E]+$/u, "The submitted sign-in input has an invalid character.")
+  .refine((value) => !LOCAL_AI_LOGIN_CODE_DISALLOWED_CHAR.test(value), {
+    message: "The submitted sign-in input has an invalid character.",
+  });
+export const submitLocalAiLoginCodeSchema = z.object({
+  browserCode: localAiLoginCodeSchema,
+}).strict();
 export interface LocalAiLoginStatus {
   status: "ready" | "sign_in_required" | "expired";
   authorizationUrl?: string;

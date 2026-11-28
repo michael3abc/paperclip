@@ -39,6 +39,7 @@ import type {
   ToolProfileEntrySelectorType,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileListItem,
   ToolProfileConfiguration,
   ToolProfileNewToolReviewDecision,
   ToolProfileNewToolsReview,
@@ -113,7 +114,7 @@ export type ToolGalleryResponse = {
 export type ToolMcpGatewaysResponse = { gateways: ToolMcpGatewayWithTokens[] };
 export type CloudConnectorEnrollmentStatus = {
   configured: boolean;
-  status: "not_configured" | "unenrolled" | "pending" | "active" | "suspended" | "unverified";
+  status: "not_configured" | "unenrolled" | "pending" | "active" | "suspended" | "unverified" | "misconfigured" | "unreachable";
   brokerBaseUrl: string;
   instanceId: string | null;
   environment: "development" | "test" | "staging" | "production";
@@ -454,6 +455,8 @@ export const toolsApi = {
     api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary; contentDeletion?: ToolConnectionContentDeletion }>(
       `/tool-connections/${connectionId}${options.deleteStoredContent ? "?deleteStoredContent=true" : ""}`,
     ),
+  cancelFirstSignIn: (connectionId: string) =>
+    api.post<{ abandoned: boolean; connection: ToolConnection }>(`/tool-connections/${connectionId}/sign-in/cancel`, {}),
   getStoredContent: (connectionId: string) =>
     api.get<ToolConnectionStoredContent>(`/tool-connections/${connectionId}/stored-content`),
   deleteStoredContent: (connectionId: string) =>
@@ -530,6 +533,8 @@ export const toolsApi = {
     api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`, options),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
+  listProfileSummaries: (companyId: string) =>
+    api.get<{ profiles: ToolProfileListItem[] }>(`/companies/${companyId}/tools/profiles/summary`),
   getProfileNewTools: (profileId: string) =>
     api.get<ToolProfileNewToolsReview>(`/tool-profiles/${profileId}/new-tools`),
   reviewProfileNewTools: (profileId: string, input: ReviewNewToolsInput) =>

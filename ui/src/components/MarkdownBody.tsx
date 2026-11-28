@@ -53,6 +53,7 @@ import {
   externalObjectProviderLabel,
 } from "../lib/external-objects";
 import { normalizeExternalObjectHref } from "../lib/external-object-href";
+import { safeNavigableUrl } from "../lib/safe-url";
 import { copyTextToClipboard } from "../lib/clipboard";
 import type {
   Agent,
@@ -437,7 +438,10 @@ function extractMermaidSource(children: ReactNode): string | null {
 
 function safeMarkdownUrlTransform(url: string): string {
   if (url.startsWith(WORKSPACE_FILE_HREF_PREFIX)) return url;
-  return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+  const mention = parseMentionChipHref(url);
+  if (!mention) return defaultUrlTransform(url);
+  if (mention.kind === "issue") return safeNavigableUrl(url) ?? "";
+  return url;
 }
 
 type MarkdownAstNode = {
@@ -860,7 +864,12 @@ function MarkdownBodyImpl({
       </blockquote>
     ),
     table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
+      <div
+        className="paperclip-markdown-table-scroll max-w-full overflow-x-auto"
+        role="region"
+        aria-label="Scrollable table"
+        tabIndex={0}
+      >
         <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
           {tableChildren}
         </table>
@@ -1012,26 +1021,27 @@ function MarkdownBodyImpl({
       map.img = ({ node: _node, src, alt, ...imgProps }) => {
         const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
         const finalSrc = resolved ?? src;
+        const clickSrc = onImageClick ? safeNavigableUrl(finalSrc) : null;
         return (
           <img
             {...imgProps}
             src={finalSrc}
             alt={alt ?? ""}
-            role={onImageClick && finalSrc ? "button" : undefined}
-            tabIndex={onImageClick && finalSrc ? 0 : undefined}
-            aria-label={onImageClick && finalSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
-            onClick={onImageClick && finalSrc ? (e) => {
+            role={clickSrc ? "button" : undefined}
+            tabIndex={clickSrc ? 0 : undefined}
+            aria-label={clickSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
+            onClick={onImageClick && clickSrc ? (e) => {
               e.preventDefault();
               e.stopPropagation();
-              onImageClick(finalSrc, e.currentTarget);
+              onImageClick(clickSrc, e.currentTarget);
             } : undefined}
-            onKeyDown={onImageClick && finalSrc ? (e) => {
+            onKeyDown={onImageClick && clickSrc ? (e) => {
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               e.stopPropagation();
-              onImageClick(finalSrc, e.currentTarget);
+              onImageClick(clickSrc, e.currentTarget);
             } : undefined}
-            className={cn(imgProps.className, onImageClick && "cursor-pointer")}
+            className={cn(imgProps.className, clickSrc && "cursor-pointer")}
           />
         );
       };

@@ -232,6 +232,8 @@ export type IssueListFilters = {
   sortField?: "updated" | "created" | "id";
   afterId?: string;
   sortDir?: "asc" | "desc";
+  /** ISO 8601 timestamp — only issues whose stored updatedAt is strictly before it. */
+  updatedBefore?: string;
 };
 
 function issueListSearchParams(filters?: IssueListFilters) {
@@ -286,6 +288,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("offset", String(filters.offset));
   if (filters?.sortField) params.set("sortField", filters.sortField);
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+  if (filters?.updatedBefore) params.set("updatedBefore", filters.updatedBefore);
   if (filters?.afterId) params.set("afterId", filters.afterId);
   return params;
 }
@@ -749,11 +752,13 @@ export const issuesApi = {
     clientRequestId?: string,
     voiceSessionId?: string,
     deliveryMode?: "steer" | "queue",
+    nativeCommand?: "swarm",
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
         ...(deliveryMode ? { deliveryMode } : {}),
+        ...(nativeCommand ? { nativeCommand } : {}),
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(voiceSessionId ? { metadata: { version: 1, voiceInput: { sessionId: voiceSessionId },
           sections: [{ title: "Voice input", rows: [{ type: "key_value", label: "Source", value: "Speech recognition; not an approval" }] }] } } : {}),

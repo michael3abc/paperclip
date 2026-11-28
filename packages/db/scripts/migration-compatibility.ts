@@ -7,7 +7,7 @@
 //   tsx scripts/migration-compatibility.ts <file.sql>...   classify the named files
 //   tsx scripts/migration-compatibility.ts --check [--base <ref>]
 //       fail when a migration added since the merge base with <ref>
-//       is `unknown` without an override (see doc/DATABASE.md for fork bases)
+//       is `unknown` or `requires_staging` without an override (see doc/DATABASE.md for fork bases)
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -101,7 +101,7 @@ function check(requestedBase: string | null): number {
   for (const notice of result.notices) console.log(`notice: ${notice}`);
   for (const error of result.errors) console.error(`error: ${error}`);
   if (result.passed) {
-    console.log(`migration compatibility: ${added.files.length} new migration(s) since ${added.base.slice(0, 12)}, none unclassified.`);
+    console.log(`migration compatibility: ${added.files.length} new migration(s) since ${added.base.slice(0, 12)}, none blocked.`);
   }
   return result.passed ? 0 : 1;
 }

@@ -28,6 +28,8 @@ export interface OutlineV2Group {
   items: ResponsibilityWithRollup[];
 }
 
+export type OutlineV2RoutineFilter = "all" | "has_routines" | "no_routines";
+
 /**
  * Every active area, holding what the person owns there or nothing yet, plus
  * any other area (proposed, archived) that holds one of their active
@@ -74,6 +76,25 @@ export function outlineV2CountsLabel({ areas, responsibilities }: OutlineV2Count
 }
 
 /**
+ * Narrow groups by whether each responsibility has one or more non-archived
+ * routines. `"all"` returns the groups unchanged (including empty areas);
+ * active filters keep only matching responsibilities and drop empty areas.
+ */
+export function filterOutlineV2Groups(
+  groups: readonly OutlineV2Group[],
+  routineFilter: OutlineV2RoutineFilter,
+): OutlineV2Group[] {
+  if (routineFilter === "all") return [...groups];
+  const wantRoutines = routineFilter === "has_routines";
+  const found: OutlineV2Group[] = [];
+  for (const group of groups) {
+    const items = group.items.filter((item) => (item.rollup.routines > 0) === wantRoutines);
+    if (items.length > 0) found.push({ ...group, items });
+  }
+  return found;
+}
+
+/**
  * The groups narrowed to a search. Every entered word must appear, in any
  * order and any case, across a responsibility's sentence, its title and its
  * area's name. An area whose name alone matches keeps everything in it; an
@@ -99,15 +120,28 @@ export function searchOutlineV2Groups(groups: readonly OutlineV2Group[], query: 
   return found;
 }
 
+/**
+ * Single selector for the Outline v2 groups shown after applying both the
+ * routine filter and search query, shared by the header counts and the list.
+ */
+export function outlineV2VisibleGroups(
+  groups: readonly OutlineV2Group[],
+  options: { search?: string; routineFilter?: OutlineV2RoutineFilter },
+): OutlineV2Group[] {
+  const routineFilter = options.routineFilter ?? "all";
+  const query = options.search?.trim() ?? "";
+  return searchOutlineV2Groups(filterOutlineV2Groups(groups, routineFilter), query);
+}
+
 /** A row's link: the responsibility page, opened in its simplified view. */
 export function outlineV2Href(responsibilityId: string): string {
   return `${responsibilityPath(responsibilityId)}?view=${OUTLINE_V2_RESPONSIBILITY_VIEW}`;
 }
 
 /** The collapsed groups' keys as stored; empty when nothing is stored or storage is unavailable. Never throws. */
-export function readCollapsedAreas(): Set<string> {
+export function readCollapsedAreas(scope: string): Set<string> {
   try {
-    const stored = globalThis.localStorage?.getItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY);
+    const stored = globalThis.localStorage?.getItem(`${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:${scope}`);
     const parsed: unknown = stored ? JSON.parse(stored) : [];
     return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === "string") : []);
   } catch {
@@ -116,9 +150,9 @@ export function readCollapsedAreas(): Set<string> {
 }
 
 /** Remembers the collapsed groups when storage is available; silently does nothing otherwise. */
-export function writeCollapsedAreas(keys: ReadonlySet<string>): void {
+export function writeCollapsedAreas(keys: ReadonlySet<string>, scope: string): void {
   try {
-    globalThis.localStorage?.setItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY, JSON.stringify([...keys]));
+    globalThis.localStorage?.setItem(`${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:${scope}`, JSON.stringify([...keys]));
   } catch {
     // Private windows and blocked storage: the choice lasts for this visit only.
   }

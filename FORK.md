@@ -37,9 +37,80 @@ for example, a remote company uses remote-host-a through a finite SSH collector.
 Credentials remain remote;
 cache keys include company and source, without local fallback. See doc/DEVELOPING.md.
 
-Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `2898acee2dff4aa58a9f1cc4df906dbb31cc5651` (integrated for 2026-11-21; not deployed). Previous sync base: `806440d12cf3cc5b6e28f546a5e0f4fb625df48c`.
+Upstream reference: `upstream/master` (fetch-only). Recorded upstream tip: `629281b1e8a4bae014d682a99aa6cd790508414d` (2026-11-29 integration). Previous sync base: `c72c4687083db82348baa03a7d57cb6963245f44`.
 The local release line is `michael/main`; previous releases and consolidation merges remain ancestors.
 
+## 2026-11-29 upstream merge (HOM-800)
+
+Add five upstream commits through `629281b1e8` on HOM-783 `c5b2886ee2`,
+without conflicts or new migration/lockfile changes. Retain fork sign-in,
+native Chat, host routing and liveness-first. Include connected-account secret
+protection, responsibility routine filters/avatars, CI and import timeout fixes.
+The accumulated release needs the reviewed 0500–0512 → 0511–0523 fork SQL map
+and eleven pending upstream migrations. Decisions and release evidence:
+[sync-decisions](/HOM/issues/HOM-800#document-sync-decisions).
+
+## 2026-11-28 upstream merge (HOM-783; not deployed)
+
+Accumulate 12 upstream commits through `c72c468708` on `361941625c`.
+Keep fork native Chat/voice, host login/paste-back, agy_local and liveness-first
+with upstream Speko, GitHub continuation, skill transfer and mobile parity fixes.
+No DB or migration changes. Decisions and verification:
+[sync-decisions](/HOM/issues/HOM-783#document-sync-decisions).
+Saturday integration only; no merge into michael/main, deployment or restart.
+
+## 2026-11-27 upstream merge (HOM-728; not deployed)
+
+Accumulate 61 upstream commits through `dadbc495b3` on HOM-638 `eff2c24c62`,
+with main `a1ec765f71` merged first. Preserve upstream 0510 and shift the
+13 fork SQL files to 0511–0523 with identical bytes and original timestamps.
+Retain liveness-first, native Chat, host routing/login and agy_local alongside
+upstream Runner Antigravity. Decisions and verification:
+[sync-decisions](/HOM/issues/HOM-728#document-sync-decisions).
+Friday integration only; no deployment, restart or merge into michael/main.
+
+## 2026-11-26 upstream merge (HOM-638; not deployed)
+
+Accumulate 89 upstream commits through `331e1a9fd3891b5be21d6bb1cd7edab58cd29fce`
+on HOM-604 `bcebb0f9d2`, with main `68c5c4b284` merged first. Preserve upstream
+0506–0509 and move fork SQL 0506–0518 to 0510–0522 byte-for-byte, with original
+journal timestamps. Owned empty/main/HOM-604 migrations pass (521 / 511→521 /
+517→521), fork replay 0. Retain upstream test splits with fork assertions and
+liveness-first, native Chat, host and agy_local contracts. Decisions and the current
+verification status: [sync-decisions](/HOM/issues/HOM-638#document-sync-decisions).
+Check now keeps queued/running retry idempotency and promotes a separate scheduled
+retry while retaining upstream board/read/mutate checks and gate-suppressed refusals.
+Repair verification retains monitor attempt limits alongside 30s–60m deferral
+backoff, including unchanged recovery holds. Person wake reasons come from a
+dependency-free module so delivery-first imports cannot lose the chat reason.
+Fork connector tests use the upstream Plugins Add, Installed and search surfaces.
+Thursday integration only; no deployment, restart or merge into michael/main.
+
+## 2026-11-25 upstream merge (HOM-604; not deployed)
+
+Integrate 64 upstream commits through `9502a12252208d314f61a23c30589b9f31dc82f2`
+on HOM-562 `ea2bf05a9e`. Retain upstream 0500–0505; move fork SQL to
+0506–0518 with identical bytes and journal timestamps. Owned empty/main/HOM-562
+migration paths pass (517 / 511→517 / 514→517), fork replay 0. Keep 31 fork UI
+regression suites; accept three fixture-only deletions. Preserve liveness-first,
+main Chat Native plan, chatPinned and project pinning together. Decisions:
+[sync-decisions](/HOM/issues/HOM-604#document-sync-decisions).
+Wednesday integration only; no deployment, restart or merge into michael/main.
+
+## 2026-11-24 upstream merge (HOM-562; not deployed)
+
+Integrate 80 upstream commits through `ff68490d03`. Retain upstream migrations
+0500–0502 and renumber fork SQL 0500–0512 to 0503–0515 with identical bytes and
+original journal timestamps. Rebuild the combined snapshot from Drizzle schema.
+An owned empty database migrates successfully; an owned `cc06f5e1a7` database
+applies only the three upstream migrations (511 to 514 history rows).
+Upstream 0500 requires staging: Sunday release needs T4, a production-clone
+upgrade and confirmation that local Areas & Responsibilities has no active writers.
+Antigravity ACP uses upstream 1.5.2 with Linux executable/helper admission and
+fork browser paste-back. Preserve delegated external-write review alongside
+human direct-review policy, and retain fork Retry and agent-binding behavior.
+Decisions and verification: [sync-decisions](/HOM/issues/HOM-562#document-sync-decisions).
+Tuesday integration only; no deployment or restart.
 ## 2026-11-25 Chat interrupt latency (HOM-625 / HOM-411; not deployed)
 
 `michael/chat-interrupt-latency` acknowledges durable queue/cancellation intent

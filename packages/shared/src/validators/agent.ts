@@ -155,6 +155,7 @@ export const agentRuntimeConfigSchema = z.object({
   requireTaskWorktree: z.boolean().optional(),
   /** Shared workers may use a configured project checkout with exclusive writer admission. */
   requireProjectWorkspace: z.boolean().optional(),
+  cloudTrialInference: z.boolean().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
@@ -385,7 +386,7 @@ export const wakeAgentSchema = z.object({
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
 
 export const resetAgentSessionSchema = z.object({
-  taskKey: z.string().min(1).optional().nullable(),
+  taskKey: z.string().trim().min(1).optional().nullable(),
 });
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
